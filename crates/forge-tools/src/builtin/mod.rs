@@ -1,0 +1,48 @@
+//! Built-in tools.
+
+mod bash;
+mod edit;
+mod glob;
+mod grep;
+mod ls;
+mod notebook;
+mod read;
+mod todo;
+mod write;
+
+use std::sync::Arc;
+
+pub use bash::{Bash, BashOutput, KillShell};
+pub use edit::{apply_edit, Edit, MultiEdit};
+pub use glob::Glob;
+pub use grep::Grep;
+pub use ls::Ls;
+pub use notebook::NotebookEdit;
+pub use read::Read;
+pub use todo::TodoWrite;
+pub use write::Write;
+
+use crate::ToolRegistry;
+
+/// The core file and shell tools.
+pub fn register_core(reg: &mut ToolRegistry) {
+    reg.register(Arc::new(Bash));
+    reg.register(Arc::new(BashOutput));
+    reg.register(Arc::new(KillShell));
+    reg.register(Arc::new(Glob));
+    reg.register(Arc::new(Grep));
+    reg.register(Arc::new(Ls));
+    reg.register(Arc::new(Read));
+    reg.register(Arc::new(Edit));
+    reg.register(Arc::new(MultiEdit));
+    reg.register(Arc::new(Write));
+    reg.register(Arc::new(NotebookEdit));
+    reg.register(Arc::new(TodoWrite));
+}
+
+fn str_arg<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
+    input.get(key).and_then(serde_json::Value::as_str).unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests;

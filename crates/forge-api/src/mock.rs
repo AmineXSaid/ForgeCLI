@@ -17,6 +17,7 @@ use crate::{ApiError, EventStream, Provider};
 
 /// One scripted response.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum MockTurn {
     /// Stream this message, pausing `delay` between events.
     Message { message: ApiMessage, delay: Duration },
