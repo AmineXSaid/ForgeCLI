@@ -82,7 +82,11 @@ async fn info_commands_answer_locally() {
 
     let (code, out, _) = run(&["-p", "/skills"]).await;
     assert_eq!(code, 0);
-    assert!(out.contains("1 skill(s):") && out.contains("pdf - Read PDF files"), "{out}");
+    assert!(out.contains("12 skill(s):") && out.contains("pdf - Read PDF files"), "{out}");
+    assert!(
+        out.contains("verify - Prove a change works by running it, not by reading it [bundled; you and Forge;"),
+        "{out}"
+    );
 
     let (code, out, _) = run(&["-p", "/memory"]).await;
     assert_eq!(code, 0);

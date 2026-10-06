@@ -47,6 +47,49 @@ pub fn parse_skill(dir: &Path, text: &str, source: &str) -> Result<SkillDef, Str
     })
 }
 
+/// Skills that ship with Forge (Forge's own text). They have the lowest
+/// precedence: a user, project or plugin skill with the same name replaces one.
+const BUNDLED: &[(&str, &str)] = &[
+    ("batch", include_str!("../bundled/batch.md")),
+    ("code-review", include_str!("../bundled/code-review.md")),
+    ("fewer-permission-prompts", include_str!("../bundled/fewer-permission-prompts.md")),
+    ("init", include_str!("../bundled/init.md")),
+    ("run", include_str!("../bundled/run.md")),
+    ("run-skill-generator", include_str!("../bundled/run-skill-generator.md")),
+    ("security-review", include_str!("../bundled/security-review.md")),
+    ("simplify", include_str!("../bundled/simplify.md")),
+    ("update-config", include_str!("../bundled/update-config.md")),
+    ("verify", include_str!("../bundled/verify.md")),
+];
+
+/// The bundled skills. `FORGE_PROMPTS_DIR/skills/<name>.md` replaces one's text.
+/// `/review` is another name for `/code-review` (for people only).
+pub fn bundled_skills(warnings: &mut Vec<String>) -> Vec<SkillDef> {
+    let overrides = std::env::var_os("FORGE_PROMPTS_DIR").map(|d| PathBuf::from(d).join("skills"));
+    let mut out = vec![];
+    for (name, text) in BUNDLED {
+        let custom = overrides.as_ref().and_then(|d| std::fs::read_to_string(d.join(format!("{name}.md"))).ok());
+        let text = custom.as_deref().unwrap_or(text);
+        match parse_skill(Path::new(""), text, "bundled") {
+            Ok(mut s) => {
+                s.name = name.to_string();
+                out.push(s);
+            }
+            Err(e) => warnings.push(format!("bundled skill {name}: {e}")),
+        }
+    }
+    if let Some(review) = out.iter().find(|s| s.name == "code-review").cloned() {
+        out.push(SkillDef {
+            name: "review".into(),
+            description: format!("{} (same as /code-review)", review.description),
+            model_invocable: false,
+            ..review
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// Skills from user, project (`.agents/`, `.forge/`) and plugin `skills/` directories.
 pub fn load_skills(project: &Path, plugins: &[crate::plugins::Plugin], warnings: &mut Vec<String>) -> Vec<SkillDef> {
     let mut dirs: Vec<(PathBuf, String, Option<String>)> = forge_config::resource_dirs("skills", project)
@@ -56,7 +99,7 @@ pub fn load_skills(project: &Path, plugins: &[crate::plugins::Plugin], warnings:
     for p in plugins {
         dirs.push((p.dir.join("skills"), p.name.clone(), Some(p.name.clone())));
     }
-    let mut out: Vec<SkillDef> = vec![];
+    let mut out: Vec<SkillDef> = bundled_skills(warnings);
     for (root, source, prefix) in dirs {
         let Ok(rd) = std::fs::read_dir(&root) else { continue };
         let mut subdirs: Vec<PathBuf> =
@@ -83,7 +126,11 @@ pub fn load_skills(project: &Path, plugins: &[crate::plugins::Plugin], warnings:
 
 /// The text a skill puts in the conversation.
 pub fn skill_prompt(skill: &SkillDef, args: &str) -> String {
-    let mut s = format!("Base directory for this skill: {}\n\n{}", skill.dir.display(), skill.body.trim());
+    let mut s = if skill.dir.as_os_str().is_empty() {
+        skill.body.trim().to_string()
+    } else {
+        format!("Base directory for this skill: {}\n\n{}", skill.dir.display(), skill.body.trim())
+    };
     if !args.trim().is_empty() {
         s.push_str(&format!("\n\nARGUMENTS: {}", args.trim()));
     }
@@ -185,7 +232,8 @@ mod tests {
         mk(".forge/skills/broken", "---\nname: broken\n---\nNo description.");
         let mut w = vec![];
         let skills = load_skills(d.path(), &[], &mut w);
-        assert_eq!(skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["deploy", "pdf"]);
+        let own: Vec<&str> = skills.iter().filter(|s| s.source != "bundled").map(|s| s.name.as_str()).collect();
+        assert_eq!(own, ["deploy", "pdf"]);
         assert_eq!(w.len(), 1, "{w:?}");
         let tool = SkillTool { skills };
         assert!(tool.description().contains("- pdf: Work with PDF files") && !tool.description().contains("deploy"));
@@ -194,5 +242,55 @@ mod tests {
         assert!(out.text_content().contains("Use pdftotext.") && out.text_content().ends_with("ARGUMENTS: report.pdf"));
         assert!(out.text_content().starts_with("Base directory for this skill: "));
         assert!(tool.call(json!({"skill": "deploy"}), &c).await.is_error, "user-only skills are not model-invocable");
+    }
+
+    #[test]
+    fn bundled_skills_load_and_give_way() {
+        let mut w = vec![];
+        let b = bundled_skills(&mut w);
+        assert!(w.is_empty(), "{w:?}");
+        let names: Vec<&str> = b.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "batch",
+                "code-review",
+                "fewer-permission-prompts",
+                "init",
+                "review",
+                "run",
+                "run-skill-generator",
+                "security-review",
+                "simplify",
+                "update-config",
+                "verify"
+            ]
+        );
+        for s in &b {
+            assert!(!s.description.is_empty() && s.description.len() < 110 && s.body.len() > 300, "{}", s.name);
+            assert!(s.user_invocable);
+            assert_eq!(s.source, "bundled");
+        }
+        // Only the ones a model should reach for on its own are offered to it.
+        let offered: Vec<&str> = b.iter().filter(|s| s.model_invocable).map(|s| s.name.as_str()).collect();
+        assert_eq!(offered, ["code-review", "security-review", "simplify", "update-config", "verify"]);
+        let review = b.iter().find(|s| s.name == "review").unwrap();
+        assert!(review.body.contains("--fix") && review.description.ends_with("(same as /code-review)"));
+        // No directory line for bundled skills.
+        assert!(skill_prompt(review, "--fix 12").starts_with("Review code changes"));
+        // Forge's own words only.
+        for s in &b {
+            let low = s.body.to_lowercase();
+            assert!(!low.contains("claude") && !low.contains("anthropic"), "{}", s.name);
+        }
+
+        // A project skill with the same name replaces the bundled one.
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join(".forge/skills/verify");
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("SKILL.md"), "---\ndescription: Our way\n---\nRun make verify.").unwrap();
+        let all = load_skills(d.path(), &[], &mut w);
+        let v: Vec<&SkillDef> = all.iter().filter(|s| s.name == "verify").collect();
+        assert_eq!((v.len(), v[0].description.as_str()), (1, "Our way"));
     }
 }

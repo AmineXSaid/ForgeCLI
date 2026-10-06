@@ -336,6 +336,19 @@ The optional frontmatter takes `description`, `argument-hint` and
   permits it (e.g. `Bash(git status:*)`);
 - `@path` attaches a file.
 
+**Bundled skills** ship with Forge:
+- `/init` writes FORGE.md.
+- `/code-review [low|medium|high|max] [--fix] [pr|branch|path]` (also
+  `/review`) and `/security-review` review changes.
+- `/simplify`, `/verify` and `/run` check and tidy work.
+- `/run-skill-generator` writes a project `/run` skill.
+- `/batch <change>` spreads one change over many files with sub-agents.
+- `/fewer-permission-prompts` proposes safe allow rules.
+- `/update-config` edits settings files.
+
+A skill of yours with the same name replaces one, and so does
+`FORGE_PROMPTS_DIR/skills/<name>.md`.
+
 **Skills** are folders `skills/<name>/SKILL.md`, with frontmatter `name` and
 `description`. The model sees only names and descriptions, and loads a body
 with the `Skill` tool when the task matches. You can load one with

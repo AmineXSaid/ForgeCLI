@@ -85,7 +85,10 @@ async fn commands_skills_styles_and_plugins() {
     for name in ["review", "pdf", "kit:hello", "compact"] {
         assert!(init["slash_commands"].as_array().unwrap().iter().any(|c| c == name), "{name}: {init}");
     }
-    assert_eq!(init["skills"], json!(["pdf"]));
+    let skills = init["skills"].as_array().unwrap();
+    assert!(skills.contains(&json!("pdf")) && skills.contains(&json!("code-review")), "{init}");
+    let reviews = init["slash_commands"].as_array().unwrap().iter().filter(|c| *c == "review").count();
+    assert_eq!(reviews, 1, "the project's /review command shadows the bundled skill");
     assert_eq!(init["plugins"][0]["name"], "kit");
     assert_eq!(init["output_style"], "explanatory");
     assert!(init["agents"].as_array().unwrap().iter().any(|a| a == "greeter"));

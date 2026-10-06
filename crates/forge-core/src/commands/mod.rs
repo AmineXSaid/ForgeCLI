@@ -253,6 +253,13 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Skills a person can type: those a built-in or custom command of the same name doesn't shadow.
+    fn user_skills(&self) -> impl Iterator<Item = &SkillDef> {
+        self.skills.iter().filter(|s| {
+            s.user_invocable && lookup(&s.name).is_none() && !self.commands.iter().any(|c| c.name == s.name)
+        })
+    }
+
     fn mcp_prompts(&self) -> Vec<String> {
         self.mcp.as_ref().map(|m| m.prompt_names()).unwrap_or_default()
     }
@@ -264,7 +271,7 @@ impl Catalog {
             .filter(|c| c.surfaces.has(surface))
             .map(|c| c.name.to_string())
             .chain(self.commands.iter().map(|c| c.name.clone()))
-            .chain(self.skills.iter().filter(|s| s.user_invocable).map(|s| s.name.clone()))
+            .chain(self.user_skills().map(|s| s.name.clone()))
             .chain(self.mcp_prompts())
             .collect()
     }
@@ -277,7 +284,7 @@ impl Catalog {
             .filter(|c| c.surfaces.has(surface))
             .map(|c| row(c.name, c.description, c.args))
             .chain(self.commands.iter().map(|c| row(&c.name, &c.description, c.argument_hint.as_deref().unwrap_or(""))))
-            .chain(self.skills.iter().filter(|s| s.user_invocable).map(|s| row(&s.name, &s.description, "")))
+            .chain(self.user_skills().map(|s| row(&s.name, &s.description, "")))
             .chain(self.mcp_prompts().iter().map(|p| row(p, "MCP prompt", "")))
             .collect()
     }
@@ -301,12 +308,10 @@ impl Catalog {
                 let hint = c.argument_hint.as_deref().map(|h| format!(" {h}")).unwrap_or_default();
                 format!("  /{}{hint} - {} ({})", c.name, c.description, c.source)
             })
-            .chain(
-                self.skills
-                    .iter()
-                    .filter(|s| s.user_invocable)
-                    .map(|s| format!("  /{} - {} (skill)", s.name, s.description)),
-            )
+            .chain(self.user_skills().map(|s| {
+                let tag = if s.source == "bundled" { "bundled skill" } else { "skill" };
+                format!("  /{} - {} ({tag})", s.name, s.description)
+            }))
             .chain(self.mcp_prompts().iter().map(|p| format!("  /{p} (MCP prompt)")))
             .collect();
         if !custom.is_empty() {

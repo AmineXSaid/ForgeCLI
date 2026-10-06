@@ -20,6 +20,9 @@
   summarize part of the conversation), `/branch`, `/resume`, `/cd`,
   `/reload-skills`, `/reload-plugins`; `/clear` now starts a new session
   and keeps the old one resumable.
+- Bundled skills, in Forge's own words: `/init`, `/code-review` (`/review`),
+  `/security-review`, `/simplify`, `/verify`, `/run`, `/run-skill-generator`,
+  `/batch`, `/fewer-permission-prompts`, `/update-config`.
 - Scheduled prompts (C19): `/loop` with an interval or self-paced, and the
   `CronCreate`, `CronList`, `CronDelete` and `ScheduleWakeup` tools. `-p`
   keeps running while tasks are pending.
