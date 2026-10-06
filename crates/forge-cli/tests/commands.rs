@@ -1,0 +1,169 @@
+//! Built-in slash commands in print mode (contract C17): every one answers
+//! locally, with no model call, and failures exit 1.
+
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
+
+use forge_api::MockTurn;
+use forge_test_host::{command, forge_bin, MockApi};
+use serde_json::Value;
+
+struct Env {
+    _dir: tempfile::TempDir,
+    cwd: PathBuf,
+    home: PathBuf,
+}
+
+fn env() -> Env {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (cwd, home) = (root.join("project"), root.join("home"));
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    Env { _dir: dir, cwd, home }
+}
+
+fn write(path: PathBuf, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+async fn forge(e: &Env, api: &str, args: &[&str]) -> (i32, String, String) {
+    let mut c = command(&forge_bin(), &e.cwd, &e.home, api, args);
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = tokio::time::timeout(Duration::from_secs(60), c.output()).await.unwrap().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn info_commands_answer_locally() {
+    let e = env();
+    write(e.cwd.join("FORGE.md"), "Use tabs.");
+    write(e.cwd.join(".forge/skills/pdf/SKILL.md"), "---\ndescription: Read PDF files\n---\nUse pdftotext.");
+    write(
+        e.cwd.join(".forge/settings.json"),
+        r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "true"}]}]}}"#,
+    );
+    let api = MockApi::start(vec![]).await;
+    let run = |args: &'static [&'static str]| {
+        let (e, url) = (&e, api.url.clone());
+        async move { forge(e, &url, args).await }
+    };
+
+    let (code, out, _) = run(&["-p", "/help"]).await;
+    assert_eq!(code, 0);
+    for want in [
+        "/usage - Show this session's cost, token use and activity (also /cost, /stats)",
+        "/clear - Start the conversation over with empty context (also /reset, /new)",
+        "/compact [instructions] -",
+        "/pdf - Read PDF files (skill)",
+    ] {
+        assert!(out.contains(want), "/help lacks {want:?}:\n{out}");
+    }
+
+    let (code, out, _) = run(&["-p", "/status"]).await;
+    assert_eq!(code, 0);
+    for want in
+        ["ForgeCLI ", "Session:", "Directory:", "Model:", "Permissions:    default mode", "Memory:         1 file(s)"]
+    {
+        assert!(out.contains(want), "/status lacks {want:?}:\n{out}");
+    }
+
+    for cmd in [&["-p", "/usage"][..], &["-p", "/cost"], &["-p", "/stats"]] {
+        let (code, out, _) = forge(&e, &api.url, cmd).await;
+        assert_eq!(code, 0);
+        assert!(out.contains("Total cost:     $0.0000") && out.contains("Usage by model: none yet"), "{out}");
+    }
+
+    let (code, out, _) = run(&["-p", "/skills"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("1 skill(s):") && out.contains("pdf - Read PDF files"), "{out}");
+
+    let (code, out, _) = run(&["-p", "/memory"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("FORGE.md"), "{out}");
+
+    let (code, out, _) = run(&["-p", "/hooks"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("PreToolUse:") && out.contains("[Bash] true"), "{out}");
+
+    let (code, out, _) = run(&["-p", "/agents"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("Subagents:") && out.contains("To add one"), "{out}");
+
+    let (code, out, _) = run(&["-p", "/plugin"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("No plugins loaded"), "{out}");
+
+    let (code, out, _) = run(&["-p", "/mcp"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("No MCP servers configured"), "{out}");
+
+    let (code, out, _) = run(&["-p", "/tasks"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("No background tasks."), "{out}");
+
+    let (code, out, _) = run(&["-p", "/release-notes"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("0.1.0"), "{out}");
+
+    let (code, out, _) = run(&["-p", "/clear"]).await;
+    assert_eq!((code, out.trim()), (0, "Conversation cleared."));
+
+    let (code, out, _) = run(&["-p", "/doctor"]).await;
+    assert!(out.contains("settings") && out.contains("credentials") && out.contains("model"), "{out}");
+    assert!(code == 0 || code == 1, "{code}");
+
+    let (code, out, _) = run(&["-p", "/exit"]).await;
+    assert_eq!((code, out.as_str()), (0, ""));
+
+    assert!(api.requests().is_empty(), "no model calls for local commands");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bad_commands_fail_with_exit_1() {
+    let e = env();
+    let api = MockApi::start(vec![]).await;
+    // Account and cloud commands are out of scope: they don't exist.
+    for name in ["nope", "login", "logout", "upgrade", "remote-control", "teleport"] {
+        let (code, out, err) = forge(&e, &api.url, &["-p", &format!("/{name}")]).await;
+        assert_eq!((code, out.as_str()), (1, ""), "/{name}");
+        assert!(err.contains(&format!("Unknown command: /{name}")), "{err}");
+    }
+    let (code, _, err) = forge(&e, &api.url, &["-p", "/tasks stop nope"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("No background task nope."), "{err}");
+    let (code, _, err) = forge(&e, &api.url, &["-p", "/plugin install x"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("marketplaces aren't supported"), "{err}");
+    assert!(api.requests().is_empty());
+
+    // A path or a slash inside a name is a prompt, not a command.
+    let api = MockApi::start(vec![MockTurn::text("a"), MockTurn::text("b")]).await;
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/tmp is full"]).await;
+    assert_eq!((code, out.trim()), (0, "a"));
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/a/b c"]).await;
+    assert_eq!((code, out.trim()), (0, "b"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn json_output_marks_local_results() {
+    let e = env();
+    let api = MockApi::start(vec![]).await;
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/usage", "--output-format", "json"]).await;
+    assert_eq!(code, 0);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["num_turns"], 0);
+    assert_eq!(v["is_error"], false);
+    assert!(v["result"].as_str().unwrap().contains("Total cost:"));
+
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/login", "--output-format", "json"]).await;
+    assert_eq!(code, 1);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!((v["is_error"].as_bool(), v["exit_code"].as_i64()), (Some(true), Some(1)));
+}

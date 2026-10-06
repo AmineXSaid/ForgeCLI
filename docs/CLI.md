@@ -245,21 +245,35 @@ them.
 
 ## Slash commands
 
-A prompt that starts with `/name` (in any mode) is a command:
+A prompt that starts with `/name` (in any mode) is a command. `/help` lists
+them all. The built-ins so far:
 
 | Command | Does |
 | --- | --- |
+| `/help` | Lists every command, with aliases, then custom commands, skills and MCP prompts |
+| `/status` | Version, session, directories, model, permission mode, sandbox, API key source, settings files, MCP and hooks |
+| `/usage` (`/cost`, `/stats`) | Cost, time, model calls, tool calls, tokens per model, and context now |
 | `/compact [what to keep]` | Summarizes the conversation now |
-| `/clear` | Starts the conversation over (the transcript keeps the old part) |
-| `/cost` | Tokens and cost so far |
-| `/help` | Lists every command |
+| `/clear` (`/reset`, `/new`) | Starts the conversation over (the transcript keeps the old part) |
+| `/doctor` (`/checkup`) | `forge doctor` plus this session's MCP, model and warnings |
+| `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin`, `/mcp` | What is loaded, and from where |
+| `/tasks [stop <id>]` (`/bashes`) | Background shells; `stop` ends one |
+| `/release-notes` | The changelog |
+| `/exit` (`/quit`) | Ends the session |
 | `/<custom> [args]` | A custom command from `commands/*.md` |
-| `/<skill> [args]` | Loads a skill |
+| `/<skill> [args]` | Loads a skill; `/a /b text` chains up to six |
 | `/mcp__<server>__<prompt> [args]` | An MCP server's prompt |
 
-**Local commands:** `/compact`, `/clear`, `/cost` and `/help` answer without
-calling the model. An unknown command fails with exit status `1`. A word that
-looks like a path (`/usr/bin/env ...`) is sent as an ordinary prompt.
+`docs/PARITY.md` ("Slash commands") tracks the rest of the reference's
+commands.
+
+**Local commands** answer without calling the model: the result has
+`num_turns: 0`, and in text mode the answer goes to stdout. A failed or
+unknown command (`Unknown command: /name`) goes to stderr with exit status
+`1`. Account and cloud commands such as `/login` don't exist in Forge.
+
+A word that looks like a path (`/usr/bin/env ...`, or any name containing
+`/`) is sent as an ordinary prompt.
 
 **Custom commands** are Markdown files in `<config>/commands/`,
 `.agents/commands/` or `.forge/commands/` (later wins). A file in a

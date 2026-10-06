@@ -491,6 +491,41 @@ not found".
 **`forge mcp serve`** exposes the built-in tools without prompts, since the
 client approves, but refuses commands matching dangerous-command patterns.
 
+### C17. Command dispatch and surfaces
+
+**One registry.** `forge_core::commands::BUILTINS` is the only list of
+built-in commands: name, aliases, argument hint, description, the surfaces
+it runs on, and whether it is immediate. `/help`, `system/init`
+`slash_commands`, the `initialize` response's `commands` and the TUI menu
+are all generated from it.
+
+**Resolution**, only at the start of a user message:
+1. a built-in, by name or alias;
+2. a custom command;
+3. a skill, or a chain of up to six (`/a /b text`);
+4. an MCP prompt (`/mcp__server__prompt`).
+
+A name containing `/` or `\`, or one that is an existing root path, is an
+ordinary prompt. Anything else is `Unknown command: /name`. Commands the
+reference ties to its vendor's account or cloud are not registered, so they
+get the same answer.
+
+**One driver.** `forge_core::Driver` owns the engine and the catalog. Every
+front end (print, stream-json, REPL, TUI) passes each input to
+`Driver::input`, which returns either a `TurnResult` or `Exit`.
+- A command either expands to a prompt for the model, or answers locally.
+- A local answer is a `TurnResult` with `num_turns: 0`, no stop reason and
+  `is_error` on failure, so every output format and exit status works
+  unchanged.
+- Commands need no front-end code. A command that needs a choice takes
+  its answer as arguments, so it works in `-p`; the TUI (M8) will draw a
+  picker that fills those arguments in.
+
+**Immediate commands** (`/status`, `/usage`, `/tasks`, `/mcp`) only read
+state. They are marked in the registry so the TUI and stream-json hosts
+can run them while a turn is in progress; today every command still waits
+for the turn to finish.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

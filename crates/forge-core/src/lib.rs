@@ -1,7 +1,11 @@
 //! Builds a ready-to-run session from launch options and settings.
 
-pub mod slash;
+pub mod commands;
+pub mod doctor;
+pub mod driver;
 pub mod web;
+
+pub use driver::{Driver, Outcome};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -206,6 +210,7 @@ pub struct Session {
     pub skills: Vec<forge_agents::SkillDef>,
     pub styles: Vec<forge_agents::OutputStyle>,
     pub plugins: Vec<forge_agents::Plugin>,
+    pub agents: Vec<forge_agents::AgentDef>,
     pub settings: LoadedSettings,
     pub warnings: Vec<String>,
     pub session_id: String,
@@ -710,13 +715,13 @@ pub fn build_session(
             .unwrap_or_default(),
         model,
         permission_mode: mode.as_str().into(),
-        slash_commands: slash::BUILTIN
-            .iter()
-            .map(|(n, _)| n.to_string())
-            .chain(commands.iter().map(|c| c.name.clone()))
-            .chain(skills.iter().filter(|s| s.user_invocable).map(|s| s.name.clone()))
-            .chain(opts.mcp.as_ref().map(|m| m.prompt_names()).unwrap_or_default())
-            .collect(),
+        slash_commands: commands::Catalog {
+            commands: commands.clone(),
+            skills: skills.clone(),
+            mcp: opts.mcp.clone(),
+            ..Default::default()
+        }
+        .names(commands::Surface::Stream),
         api_key_source: if opts.provider.is_some() { "none".into() } else { key_source(&settings) },
         forge_version: VERSION.into(),
         output_style: style.name.clone(),
@@ -725,7 +730,7 @@ pub fn build_session(
         plugins: plugins.iter().map(|p| json!({"name": p.name, "path": p.dir})).collect(),
         uuid: uuid::Uuid::new_v4().to_string(),
     };
-    Ok(Session { engine, init, commands, skills, styles, plugins, settings, warnings, session_id, resumed })
+    Ok(Session { engine, init, commands, skills, styles, plugins, agents, settings, warnings, session_id, resumed })
 }
 
 /// `auto` or a token count between 100k and 1M (`200000`, `200k`, `1m`).

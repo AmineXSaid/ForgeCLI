@@ -329,6 +329,11 @@ impl Engine {
         &self.shared.tools
     }
 
+    /// The model provider's short name (`messages`, `openai`, `mock`).
+    pub fn provider_name(&self) -> &str {
+        self.shared.provider.name()
+    }
+
     pub fn tool_ctx(&self) -> &ToolContext {
         &self.shared.tool_ctx
     }

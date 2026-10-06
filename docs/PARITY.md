@@ -152,10 +152,10 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | Sub-agents (Task) with built-in types (general-purpose, Explore, Plan) | done | `agents::explore_agent_reports_back_in_its_own_context`, `agents::child_edits_are_checkpointed_in_the_parent_turn` | Isolated context; shared rules, prompt lock, checkpoints and budget; no nesting |
 | Custom agents `agents/*.md`, `--agents`, `--agent` | done | `agents::markdown_agents`, `agents::json_agents_and_precedence`, `core::sub_agents_are_offered_and_configurable` |  |
 | Skills `skills/*/SKILL.md` (Skill tool, `/name`) | done | `skills::discovers_and_loads_skills_on_demand`, `extend::commands_skills_styles_and_plugins` | Names and descriptions up front, bodies on demand; `disable-model-invocation`, `user-invocable` |
-| Custom slash commands `commands/*.md` | done | `commands::expands_arguments_commands_and_files`, `commands::loads_namespaced_commands_with_precedence`, `slash::routes_commands_skills_and_paths`, `extend::commands_skills_styles_and_plugins` | `$ARGUMENTS`, `$1`..`$9`, ``!`cmd` `` gated by `allowed-tools`, `@file`, `dir:name` namespaces. `allowed-tools` does not yet grant tool permissions for the turn, and `model` is not applied |
+| Custom slash commands `commands/*.md` | done | `commands::expands_arguments_commands_and_files`, `commands::loads_namespaced_commands_with_precedence`, `core::commands::tests::parses_commands_skills_paths_and_unknowns`, `extend::commands_skills_styles_and_plugins` | `$ARGUMENTS`, `$1`..`$9`, ``!`cmd` `` gated by `allowed-tools`, `@file`, `dir:name` namespaces. `allowed-tools` does not yet grant tool permissions for the turn, and `model` is not applied |
 | Output styles: default, explanatory, learning + custom | done | `styles::builtins_and_custom_styles`, `extend::commands_skills_styles_and_plugins` | `outputStyle` setting; Forge's own style texts |
 | Plugins (`--plugin-dir`, `pluginDirs`) | done | `plugins::manifests_and_components`, `extend::commands_skills_styles_and_plugins` | Commands, agents, skills, output styles, hooks and `.mcp.json`. No marketplace (out of scope) |
-| Built-in `/compact`, `/clear`, `/cost`, `/help` in every mode | done | `slash::routes_commands_skills_and_paths`, `extend::commands_skills_styles_and_plugins` | Local commands answer without a model call |
+| Built-in commands in every mode | done | See "Slash commands" below | One registry (C17) |
 
 ## MCP (M6)
 
@@ -165,7 +165,7 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | Streamable HTTP client (JSON and SSE answers, `Mcp-Session-Id`, protocol header, DELETE on close) | done | `client::streamable_http_json_sse_and_sessions` | |
 | SSE client (2024-11-05 transport) | partial | | Built; no test against an SSE server yet |
 | Tools (`mcp__<server>__<tool>`), resources (`ListMcpResourcesTool`, `ReadMcpResourceTool`) | done | `client::stdio_server_tools_resources_and_server_requests`, `tools::converts_every_content_type`, `tools::names_are_clean_and_short` | |
-| Prompts as slash commands | done | `slash::routes_commands_skills_and_paths` (routing) | `/mcp__<server>__<prompt> args`; arguments fill the declared ones in order. No end-to-end test with a prompt server yet |
+| Prompts as slash commands | done | `core::commands::tests::parses_commands_skills_paths_and_unknowns` (routing) | `/mcp__<server>__<prompt> args`; arguments fill the declared ones in order. No end-to-end test with a prompt server yet |
 | Server instructions in the system prompt | done | `client::stdio_server_tools_resources_and_server_requests` | |
 | `--mcp-config` / `--strict-mcp-config` / `.mcp.json` with approval (C16) | done | `config::project_servers_need_the_users_approval`, `config::precedence_and_strict_mode`, `mcp::project_servers_wait_for_approval` | |
 | `${VAR}` / `${VAR:-default}` expansion | done | `config::expands_environment_variables` | |
@@ -206,6 +206,71 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | `agents` (list) | todo | | Background-session management is out |
 | `auth`, `setup-token`, `install`, `update`, `gateway`, `ultrareview`, `attach`, `logs`, `stop`, `rm`, `respawn`, `purge`, `import`, `auto-mode`, `plugin` marketplace | out | | Accounts, cloud, distribution or background-session services |
 
-## TUI (M8) and slash commands (M9)
+## Slash commands (C17)
+
+The reference is the official command list (`/help` of version 2.1.290 and
+the commands page). Every built-in sits in one registry,
+`crates/forge-core/src/commands/mod.rs` `BUILTINS`, which also feeds `/help`,
+`system/init` `slash_commands` and the `initialize` response's `commands`.
+The test `core::commands::tests::registry_is_consistent` checks that names
+and aliases are unique, sorted and never shadow each other.
+
+Prefix `cmds::` is `crates/forge-cli/tests/commands.rs`.
+
+**Modes:** **P** is `-p` (text, json, stream-json), **R** the line REPL, **T**
+the full-screen UI (M8). The REPL and `-p` share one driver
+(`forge_core::Driver`), so a command tested in `-p` behaves the same in R.
+
+| Command (aliases) | Status | Modes | Test | Notes |
+| --- | --- | --- | --- | --- |
+| `/help` | done | PR | `cmds::info_commands_answer_locally`, `core::commands::tests::help_and_catalog_come_from_the_registry` | Built-ins with hints and aliases, then custom commands, skills and MCP prompts |
+| `/exit` (`/quit`) | done | PR | `cmds::info_commands_answer_locally` | In `-p` it ends quietly with exit 0 |
+| `/clear` (`/reset`, `/new`) | partial | PR | `cmds::info_commands_answer_locally` | Empties the context. Gap: the reference starts a new session id; Forge keeps the id (phase 3, session switching) |
+| `/compact [instructions]` | done | PR | `extend::commands_skills_styles_and_plugins`, engine compaction tests (C9) |  |
+| `/usage` (`/cost`, `/stats`) | done | PR | `cmds::info_commands_answer_locally`, `cmds::json_output_marks_local_results` | Cost, wall and API time, model calls, prompts, tool calls, tokens per model, context now. No plan limits: Forge has no subscription |
+| `/status` | done | PR | `cmds::info_commands_answer_locally` | Version, session and title, directories, model, effort, thinking, mode, output style, sandbox, API key source, settings files, memory, MCP, hooks. Immediate |
+| `/doctor` (`/checkup`) | done | PR | `cmds::info_commands_answer_locally` | `forge doctor`'s checks plus session warnings, MCP failures and model pricing |
+| `/release-notes` | done | PR | `cmds::info_commands_answer_locally` | `CHANGELOG.md`, embedded at build time |
+| `/hooks` | partial | PR | `cmds::info_commands_answer_locally` | Read-only list per event and matcher; the reference's editor dialog is T (M8) |
+| `/mcp` | partial | PR | `cmds::info_commands_answer_locally` | Status list. `reconnect`, `enable`, `disable` are phase 1b |
+| `/skills` | done | PR | `cmds::info_commands_answer_locally` | Source, who can invoke it, token estimate |
+| `/agents` | partial | PR | `cmds::info_commands_answer_locally` | List plus how to add one; the creation wizard is T (M8) |
+| `/plugin` | partial | PR | `cmds::bad_commands_fail_with_exit_1` | `list` only. Marketplaces are out (vendor service) |
+| `/memory` | partial | PR | `cmds::info_commands_answer_locally` | Lists the files; opening one in `$EDITOR` comes with R/T editing |
+| `/tasks` (`/bashes`) | partial | PR | `cmds::info_commands_answer_locally`, `cmds::bad_commands_fail_with_exit_1` | Background shells and `stop <id>`; subagents join in phase 6 |
+| Unknown and out-of-scope names | done | PR | `cmds::bad_commands_fail_with_exit_1` | `Unknown command: /name`, exit 1; a path or `a/b` is a prompt |
+| Skill chaining `/a /b text` | done | PR | `core::commands::tests::parses_commands_skills_paths_and_unknowns` | Up to 6 skills; the text goes to each |
+| `/context [all]` | todo | PRT |  | Phase 1b |
+| `/model [model]` | todo | PRT |  | Phase 1b |
+| `/effort [level\|auto\|status]` | todo | PRT |  | Phase 1b |
+| `/fast [on\|off]` | todo | PRT |  | Phase 1b; only where the model supports fast mode |
+| `/config [key=value]` (`/settings`) | todo | PRT |  | Phase 1b |
+| `/output-style [style]` | todo | PRT |  | Phase 1b |
+| `/autocompact [auto\|tokens]` | todo | PRT |  | Phase 1b |
+| `/permissions` (`/allowed-tools`) | todo | PRT |  | Phase 1b |
+| `/add-dir <path>` | todo | PRT |  | Phase 1b |
+| `/sandbox [on\|off\|mode]` | todo | PRT |  | Phase 1b |
+| `/reload-skills`, `/reload-plugins` | todo | PRT |  | Phase 3 (session switching) |
+| `/rename [name]` | todo | PRT |  | Phase 1b |
+| `/export [file]` | todo | PRT |  | Phase 1b |
+| `/diff` | todo | PRT |  | Phase 1b |
+| `/debug [description]` | todo | PRT |  | Phase 1b |
+| `/plan [description]` | todo | PRT |  | Phase 2 |
+| `/goal [condition\|clear]` | todo | PRT |  | Phase 2 |
+| `/btw [question]` | todo | PRT |  | Phase 2 |
+| `/recap` | todo | PRT |  | Phase 2 |
+| `!command` shell mode | todo | PRT |  | Phase 2 |
+| `/rewind` (`/checkpoint`, `/undo`) | todo | PRT |  | Phase 3 |
+| `/branch [name]` | todo | PRT |  | Phase 3 |
+| `/resume` (`/continue`) | todo | RT |  | Phase 3; in `-p` use `--resume` |
+| `/cd <path>` | todo | PRT |  | Phase 3 |
+| `/loop [interval] [prompt]`, `CronCreate`, `CronList`, `CronDelete`, `ScheduleWakeup` | todo | PRT |  | Phase 4 |
+| Bundled skills: `/init`, `/code-review` (`/review`), `/security-review`, `/simplify`, `/verify`, `/run`, `/run-skill-generator`, `/batch`, `/fewer-permission-prompts`, `/update-config` | todo | PRT |  | Phase 5; Forge-written prompts |
+| `/subtask`, `/advisor`, `/import`, `/feedback` (`/bug`, `/share`) | todo | PRT |  | Phase 6; `/feedback` writes a local bundle, nothing is uploaded |
+| `/theme`, `/color`, `/focus`, `/tui`, `/scroll-speed`, `/statusline`, `/keybindings`, `/terminal-setup`, `/copy` | todo | T |  | M8 |
+| `/login`, `/logout`, `/upgrade`, `/usage-credits`, `/rate-limit-options`, `/privacy-settings`, `/passes`, `/stickers`, `/mobile`, `/desktop`, `/chrome`, `/remote-control`, `/remote-env`, `/teleport`, `/web-setup`, `/autofix-pr`, `/schedule`, `/install-github-app`, `/install-slack-app`, `/ultrareview`, `/insights`, `/team-onboarding` and other account, cloud or vendor commands | out | P | `cmds::bad_commands_fail_with_exit_1` | They need the vendor's account or cloud. Each answers `Unknown command` |
+| `/vim`, `/pr-comments`, `/ultraplan` | out |  |  | Removed upstream |
+
+## TUI (M8)
 
 The rows are added when M8 starts.

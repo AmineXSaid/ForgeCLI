@@ -116,7 +116,7 @@ async fn commands_skills_styles_and_plugins() {
     );
     let (code, _, err) = forge(&e, &api.url, &["-p", "/nope"]).await;
     assert_eq!(code, 1);
-    assert!(err.contains("Unknown command /nope"), "{err}");
+    assert!(err.contains("Unknown command: /nope"), "{err}");
     assert!(api.requests().is_empty(), "no model calls for local commands");
     // A path is a prompt, not a command.
     let api = MockApi::start(vec![MockTurn::text("it is a shell")]).await;

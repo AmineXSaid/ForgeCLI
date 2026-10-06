@@ -211,15 +211,14 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
     for w in session.warnings.iter().chain(&mcp_warnings) {
         eprintln!("forge: {w}");
     }
-    let cmds = crate::turn::Commands { commands: session.commands, skills: session.skills, mcp: Some(mcp.clone()) };
-    let mut engine = session.engine;
-    let handle = engine.handle();
     eprintln!(
         "ForgeCLI {} · {} · {}  (Ctrl-C interrupts a turn; /exit quits)",
         forge_core::VERSION,
         session.init.model,
         session.init.cwd
     );
+    let mut driver = forge_core::Driver::new(session, forge_core::commands::Surface::Repl, Some(mcp.clone()));
+    let handle = driver.handle();
     // Ctrl-C interrupts the running turn instead of killing the process.
     let h2 = handle.clone();
     tokio::spawn(async move {
@@ -244,10 +243,10 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         if t.is_empty() {
             continue;
         }
-        if t == "/exit" || t == "/quit" {
-            break;
-        }
-        let r = crate::turn::run(&mut engine, &cmds, MessageContent::Text(t.to_string())).await;
+        let r = match driver.input(MessageContent::Text(t.to_string())).await {
+            forge_core::Outcome::Result(r) => *r,
+            forge_core::Outcome::Exit => break,
+        };
         if let Some(b) = r.prompt_blocked {
             eprintln!("{b}");
         } else if r.num_turns == 0 && r.stop_reason.is_none() {
@@ -260,7 +259,6 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
             }
         }
     }
-    engine.end_session("prompt_input_exit").await;
-    mcp.shutdown().await;
+    driver.shutdown("prompt_input_exit").await;
     Ok(0)
 }

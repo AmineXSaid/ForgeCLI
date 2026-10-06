@@ -19,7 +19,6 @@ mod mcp_cmd;
 mod output;
 mod repl;
 mod term;
-mod turn;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -265,14 +264,14 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         }
     }
     let session_id = session.session_id.clone();
-    let cmds = turn::Commands { commands: session.commands, skills: session.skills, mcp: Some(mcp.clone()) };
-    let mut engine = session.engine;
     if stream_out {
         out.line(&SdkMessage::System(SystemMessage::init(&session.init)));
     }
+    let surface = if stream_in { forge_core::commands::Surface::Stream } else { forge_core::commands::Surface::Print };
+    let mut driver = forge_core::Driver::new(session, surface, Some(mcp.clone()));
 
     // Ctrl-C interrupts the current turn (the result is still written); a second one exits at once.
-    let handle = engine.handle();
+    let handle = driver.handle();
     let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = interrupted.clone();
     tokio::spawn(async move {
@@ -297,23 +296,13 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         let ctx = Arc::new(ControlContext {
             out: out.clone(),
             pending: pending.clone(),
-            handle: engine.handle(),
-            history: engine.history().clone(),
+            handle: driver.handle(),
+            history: driver.engine.history().clone(),
             mcp: Some(mcp.clone()),
             init_response: json!({
-                "commands": forge_core::slash::BUILTIN
-                    .iter()
-                    .map(|(n, d)| json!({"name": n, "description": d, "argumentHint": ""}))
-                    .chain(cmds.commands.iter().map(|c| json!({
-                        "name": c.name, "description": c.description,
-                        "argumentHint": c.argument_hint.clone().unwrap_or_default()
-                    })))
-                    .chain(cmds.skills.iter().filter(|s| s.user_invocable).map(|s| json!({
-                        "name": s.name, "description": s.description, "argumentHint": ""
-                    })))
-                    .collect::<Vec<_>>(),
-                "output_style": session.init.output_style.clone(),
-                "available_output_styles": session.styles.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                "commands": driver.catalog.catalog_json(surface),
+                "output_style": driver.info.init.output_style.clone(),
+                "available_output_styles": driver.catalog.styles.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
                 "models": models,
                 "pid": std::process::id(),
             }),
@@ -328,7 +317,10 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     while let Some(input) = rx.recv().await {
         match input {
             Input::User(content) => {
-                let r = turn::run(&mut engine, &cmds, content).await;
+                let r = match driver.input(content).await {
+                    forge_core::Outcome::Result(r) => *r,
+                    forge_core::Outcome::Exit => break,
+                };
                 let c = exit::for_result(&r);
                 if code == exit::OK {
                     code = c;
@@ -358,6 +350,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                 }
             }
             Input::SystemPrompt { replace, append } => {
+                let engine = &mut driver.engine;
                 let env = forge_engine::EnvInfo::collect(&engine.tool_ctx().project_dir, &[], &engine.handle().model());
                 let opts = forge_engine::SystemPromptOptions { replace, append, ..Default::default() };
                 engine.set_system(forge_engine::build_system(&opts, &env).0);
@@ -365,8 +358,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             Input::Eof => break,
         }
     }
-    engine.end_session("other").await;
-    mcp.shutdown().await;
+    driver.shutdown("other").await;
     if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(exit::INTERRUPTED);
     }
@@ -375,66 +367,13 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
 
 fn run_doctor() -> Result<i32, Fail> {
     let cwd = std::env::current_dir().map_err(|e| Fail::config(e.to_string()))?;
-    let mut problems = 0;
-    let mut line = |ok: bool, what: &str, detail: String| {
-        if !ok {
-            problems += 1;
-        }
-        let mark = if ok { term::paint("32", "ok  ") } else { term::red("FAIL") };
-        outln!("{mark} {what:<12} {detail}");
-    };
     outln!("ForgeCLI {}", forge_core::VERSION);
-    let settings = forge_config::load_settings(&forge_config::SettingsOptions::new(&cwd));
-    line(
-        settings.errors.is_empty(),
-        "settings",
-        format!(
-            "{} layer(s) loaded{}",
-            settings.layers.len(),
-            if settings.errors.is_empty() {
-                String::new()
-            } else {
-                format!("; invalid: {}", settings.errors.join("; "))
-            }
-        ),
-    );
-    let has = |k: &str| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
-    let openai = has("FORGE_OPENAI_BASE_URL");
-    let creds = has("FORGE_API_KEY") || has("FORGE_AUTH_TOKEN") || settings.str("/apiKeyHelper").is_some();
-    line(
-        openai || creds,
-        "credentials",
-        if openai {
-            "OpenAI-compatible endpoint (FORGE_OPENAI_BASE_URL)".into()
-        } else if creds {
-            "found (FORGE_API_KEY, FORGE_AUTH_TOKEN or apiKeyHelper)".into()
-        } else {
-            "missing: set FORGE_API_KEY".into()
-        },
-    );
-    let endpoint = std::env::var("FORGE_BASE_URL").unwrap_or_else(|_| "default".into());
-    line(true, "endpoint", endpoint);
-    line(
-        which("git"),
-        "git",
-        if which("git") { "found".into() } else { "not found: git status and worktrees are unavailable".into() },
-    );
-    let sb = forge_tools::sandbox::backend();
-    line(
-        true,
-        "sandbox",
-        match sb {
-            Some(b) => format!("{b:?} available (use --sandbox workspace-write)"),
-            None => "unavailable: install bubblewrap (Linux) to confine shell commands".into(),
-        },
-    );
-    line(true, "config dir", forge_config::config_dir().display().to_string());
-    line(true, "state dir", forge_config::state_dir().display().to_string());
-    Ok(if problems == 0 { exit::OK } else { exit::CONFIG })
-}
-
-fn which(bin: &str) -> bool {
-    std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file())).unwrap_or(false)
+    let checks = forge_core::doctor::checks(&cwd);
+    for c in &checks {
+        let mark = if c.ok { term::paint("32", "ok  ") } else { term::red("FAIL") };
+        outln!("{mark} {:<12} {}", c.name, c.detail);
+    }
+    Ok(if checks.iter().all(|c| c.ok) { exit::OK } else { exit::CONFIG })
 }
 
 fn run_config(action: Option<ConfigAction>) -> Result<i32, Fail> {

@@ -44,6 +44,7 @@ pub struct Transcript {
     pub git_branch: Option<String>,
     last_uuid: Mutex<Option<String>>,
     file: Mutex<Option<File>>,
+    title: Mutex<Option<String>>,
 }
 
 impl Transcript {
@@ -74,12 +75,16 @@ impl Transcript {
             git_branch,
             last_uuid: Mutex::new(None),
             file: Mutex::new(None),
+            title: Mutex::new(None),
         })
     }
 
     /// Continue writing after a loaded session (same file), or into a fork.
     pub fn continue_from(&self, loaded: &LoadedSession) {
         *self.last_uuid.lock().unwrap() = loaded.last_uuid.clone();
+        if self.session_id == loaded.session_id {
+            *self.title.lock().unwrap() = loaded.title.clone();
+        }
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -179,7 +184,13 @@ impl Transcript {
     }
 
     pub fn set_title(&self, title: &str) {
+        *self.title.lock().unwrap() = Some(title.to_string());
         self.write_line(&json!({"type": "title", "title": title, "sessionId": self.session_id, "timestamp": now()}));
+    }
+
+    /// The session's name, if it has one (`--name`, `/rename`, or a resumed title).
+    pub fn title(&self) -> Option<String> {
+        self.title.lock().unwrap().clone()
     }
 
     /// Copy a loaded chain into this (new) transcript: `--fork-session`.
