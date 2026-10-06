@@ -4,10 +4,11 @@ pub mod commands;
 pub mod debug;
 pub mod doctor;
 pub mod driver;
+pub mod goal;
 pub mod prompt;
 pub mod web;
 
-pub use driver::{Driver, Outcome};
+pub use driver::{Driver, Flow, Report};
 pub use prompt::PromptSpec;
 
 use std::collections::HashMap;

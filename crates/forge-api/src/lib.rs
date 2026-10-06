@@ -54,6 +54,19 @@ impl ApiError {
         }
     }
 
+    /// An error retrying won't fix: credentials, billing, a missing model.
+    pub fn is_unrecoverable(&self) -> bool {
+        match self {
+            ApiError::MissingCredentials => true,
+            ApiError::Http { status, kind, message, .. } => {
+                matches!(status, 401..=404)
+                    || matches!(kind.as_str(), "authentication_error" | "permission_error" | "billing_error")
+                    || message.to_ascii_lowercase().contains("credit balance")
+            }
+            _ => false,
+        }
+    }
+
     /// Overloaded (529) - the trigger for `--fallback-model`.
     pub fn is_overloaded(&self) -> bool {
         match self {

@@ -18,6 +18,7 @@ mod session;
 mod settings;
 
 pub use run::{execute, Exec};
+pub(crate) use session::side_request;
 pub use session::{clean_title, render_conversation};
 pub use settings::Scope;
 
@@ -65,6 +66,7 @@ pub enum Builtin {
     AddDir,
     Agents,
     Autocompact,
+    Btw,
     Clear,
     Compact,
     Config,
@@ -76,6 +78,7 @@ pub enum Builtin {
     Exit,
     Export,
     Fast,
+    Goal,
     Help,
     Hooks,
     Mcp,
@@ -83,7 +86,9 @@ pub enum Builtin {
     Model,
     OutputStyle,
     Permissions,
+    Plan,
     Plugin,
+    Recap,
     ReleaseNotes,
     Rename,
     Sandbox,
@@ -134,6 +139,15 @@ pub static BUILTINS: &[CommandSpec] = &[
         "[on|off|auto|<tokens>]",
         "Show or set when the conversation is compacted automatically"
     ),
+    cmd!(
+        Btw,
+        "btw",
+        [],
+        "[question]",
+        "Ask a side question without tools; the conversation stays as it was",
+        Surfaces::ALL,
+        true
+    ),
     cmd!(Clear, "clear", ["reset", "new"], "", "Start the conversation over with empty context"),
     cmd!(Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
     cmd!(Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
@@ -145,6 +159,7 @@ pub static BUILTINS: &[CommandSpec] = &[
     cmd!(Exit, "exit", ["quit"], "", "Exit Forge"),
     cmd!(Export, "export", [], "[file]", "Export the conversation as plain text"),
     cmd!(Fast, "fast", [], "[on|off]", "Turn fast mode on or off, where the model offers it"),
+    cmd!(Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
     cmd!(Help, "help", [], "", "Show help and the available commands"),
     cmd!(Hooks, "hooks", [], "", "View the configured hooks"),
     cmd!(Mcp, "mcp", [], "", "Show MCP server status", Surfaces::ALL, true),
@@ -158,7 +173,9 @@ pub static BUILTINS: &[CommandSpec] = &[
         "[add|remove ...]",
         "Show the permission rules and working directories, or change the rules"
     ),
+    cmd!(Plan, "plan", [], "[description]", "Enter plan mode; with a description, start planning it"),
     cmd!(Plugin, "plugin", [], "[list]", "List loaded plugins"),
+    cmd!(Recap, "recap", [], "", "Summarize the session in one line"),
     cmd!(ReleaseNotes, "release-notes", [], "", "Show what changed in each version"),
     cmd!(Rename, "rename", [], "[name]", "Rename this session (Forge suggests a name when you give none)"),
     cmd!(
@@ -351,12 +368,16 @@ pub fn parse<'a>(text: &'a str, cat: &'a Catalog) -> Invocation<'a> {
 
 /// The text of a prompt that may be a slash command (a plain text prompt starting with `/`).
 pub fn command_text(content: &forge_types::MessageContent) -> Option<String> {
-    let text = match content {
-        forge_types::MessageContent::Text(t) => t.clone(),
-        forge_types::MessageContent::Blocks(b) if b.len() == 1 => b[0].as_text()?.to_string(),
-        _ => return None,
-    };
-    text.trim_start().starts_with('/').then_some(text)
+    command_text_any(content).filter(|t| t.trim_start().starts_with('/'))
+}
+
+/// The text of a message that is a single piece of text.
+pub fn command_text_any(content: &forge_types::MessageContent) -> Option<String> {
+    match content {
+        forge_types::MessageContent::Text(t) => Some(t.clone()),
+        forge_types::MessageContent::Blocks(b) if b.len() == 1 => b[0].as_text().map(str::to_string),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

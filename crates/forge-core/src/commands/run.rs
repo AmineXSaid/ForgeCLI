@@ -60,6 +60,13 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Builtin::Exit => Exec::Exit,
         Builtin::Clear => {
             d.engine.clear();
+            if d.goal.as_ref().is_some_and(|g| g.is_active()) {
+                if let Some(g) = d.goal.as_mut() {
+                    g.status = crate::goal::Status::Cleared;
+                }
+                d.goal_changed();
+            }
+            d.goal = None;
             ok("Conversation cleared.")
         }
         Builtin::Compact => match d.engine.compact(Some(args).filter(|a| !a.is_empty())).await {
@@ -100,6 +107,13 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Builtin::Debug => super::session::debug(d, args),
         Builtin::Permissions => super::session::permissions(d, args),
         Builtin::AddDir => super::session::add_dir(d, args),
+        Builtin::Goal => super::session::goal(d, args),
+        Builtin::Btw => super::session::btw(d, args).await,
+        Builtin::Recap => match args {
+            "" => super::session::recap(d).await,
+            _ => err("Usage: /recap"),
+        },
+        Builtin::Plan => super::session::plan(d, args),
     }
 }
 
@@ -115,7 +129,7 @@ pub(super) fn thousands(n: u64) -> String {
     out
 }
 
-fn duration(d: std::time::Duration) -> String {
+pub(super) fn duration(d: std::time::Duration) -> String {
     let s = d.as_secs();
     match s {
         0..=59 => format!("{s}s"),

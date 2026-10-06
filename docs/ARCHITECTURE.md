@@ -547,6 +547,49 @@ state. They are marked in the registry so the TUI and stream-json hosts
 can run them while a turn is in progress; today every command still waits
 for the turn to finish.
 
+### C18. Goals
+
+`/goal <condition>` sets a condition (at most 4,000 characters) and sends it
+as the prompt. After every model turn while the goal is active:
+
+1. A small model (`smallFastModel`) checks the conversation against the
+   condition. It sees the prompts, replies, tool calls and the end of each
+   tool result (the newest 60,000 characters), and answers
+   `{"verdict": "met" | "not_met" | "impossible", "reason": ...}`. Anything
+   it can't parse counts as `not_met`; text without JSON is never a pass.
+2. **met:** the goal is achieved. **impossible:** it fails, with the reason.
+3. **not_met:** the driver starts another turn with a reminder that names
+   the reason and the condition.
+
+**Guards.** The loop stops but keeps the goal (paused) when:
+- three turns in a row used no tool;
+- a turn was interrupted, or a hook blocked the prompt;
+- the check itself failed;
+- `--max-turns` (counted across the loop) or the budget ran out;
+- a transient API error occurred.
+
+The next prompt that reaches the model resumes it; local commands don't.
+An error that won't go away by itself (bad credentials, billing, a missing
+model, a conversation too long even after compaction; `TurnResult.fatal`)
+clears the goal.
+
+**Ending it.** `/goal clear` (or `stop`, `off`, `reset`, `none`, `cancel`)
+and `/clear` end it. `/goal` alone shows the status, the checks so far, the
+time and the cost.
+
+**Persistence.** Each change is a top-level `goal` record in the transcript,
+outside the message chain like the title, so compaction can't drop it. A
+resumed session gets back a goal that was still active.
+
+**Output.** Every turn's `result` goes to the host as it finishes, followed
+by a `system/goal` event (`status`: `active`, `achieved`, `failed` or
+`cleared`, plus the reason). With a single `-p` prompt, the run exits with
+status 1 when the goal ends unmet. In text mode, failures and pauses are
+warnings on stderr; an achieved goal is reported only with `--verbose`.
+
+`/goal` is refused while `disableAllHooks` is set, as in the reference,
+where goals run as an end-of-turn check.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

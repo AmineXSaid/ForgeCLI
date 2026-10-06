@@ -16,6 +16,9 @@
 - Session commands: `/rename` (Forge suggests a name), `/export`, `/diff`,
   `/context [all]` and `/debug`, which turns on a session debug log and
   has Forge read it.
+- `/goal`: Forge keeps working until a small-model check finds the goal
+  met, with guards against loops (C18). `/plan`, `/btw` side questions,
+  `/recap`, and `!command` shell mode.
 - Fast mode on models that offer it (`fastMode` setting, `/fast`).
 - Custom commands, skills, output styles and plugins (`--plugin-dir`).
 

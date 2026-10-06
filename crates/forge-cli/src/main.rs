@@ -359,36 +359,52 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     while let Some(input) = rx.recv().await {
         match input {
             Input::User(content) => {
-                let r = match driver.input(content).await {
-                    forge_core::Outcome::Result(r) => *r,
-                    forge_core::Outcome::Exit => break,
-                };
-                let c = exit::for_result(&r);
-                if code == exit::OK {
-                    code = c;
-                }
-                match o.output_format {
-                    OutputFormat::StreamJson => out.line(&SdkMessage::Result(result_message(&r, &session_id))),
-                    OutputFormat::Json => {
-                        let mut v = serde_json::to_value(SdkMessage::Result(result_message(&r, &session_id)))
-                            .unwrap_or_default();
-                        v["exit_code"] = json!(c);
-                        outln!("{v}");
+                // One input can run several turns (a goal): each result is reported as it
+                // finishes. JSON output is one object, so it carries the last result.
+                let mut last_json = None;
+                let format = o.output_format;
+                let mut report = |r: &forge_engine::TurnResult| {
+                    let c = exit::for_result(r);
+                    if code == exit::OK {
+                        code = c;
                     }
-                    OutputFormat::Text => {
-                        if let Some(b) = &r.prompt_blocked {
-                            eprintln!("{} prompt blocked by a UserPromptSubmit hook: {b}", term::red("forge:"));
-                        } else if r.is_error {
-                            let msg = r
-                                .result
-                                .clone()
-                                .or_else(|| r.errors.first().cloned())
-                                .unwrap_or_else(|| "the run failed".into());
-                            eprintln!("{} {msg}", term::red("forge:"));
-                        } else if let Some(t) = &r.result {
-                            outln!("{t}");
+                    match format {
+                        OutputFormat::StreamJson => out.line(&SdkMessage::Result(result_message(r, &session_id))),
+                        OutputFormat::Json => {
+                            let mut v = serde_json::to_value(SdkMessage::Result(result_message(r, &session_id)))
+                                .unwrap_or_default();
+                            v["exit_code"] = json!(c);
+                            last_json = Some(v);
+                        }
+                        OutputFormat::Text => {
+                            if let Some(b) = &r.prompt_blocked {
+                                eprintln!("{} prompt blocked by a UserPromptSubmit hook: {b}", term::red("forge:"));
+                            } else if r.is_error {
+                                let msg = r
+                                    .result
+                                    .clone()
+                                    .or_else(|| r.errors.first().cloned())
+                                    .unwrap_or_else(|| "the run failed".into());
+                                eprintln!("{} {msg}", term::red("forge:"));
+                            } else if let Some(t) = &r.result {
+                                outln!("{t}");
+                            }
                         }
                     }
+                };
+                let flow = driver.input(content, &mut report).await;
+                // A single prompt that set a goal fails when the goal ends unmet.
+                if !stream_in && code == exit::OK && driver.goal.as_ref().is_some_and(|g| g.ended_unmet()) {
+                    code = exit::FAILED;
+                    if let Some(v) = last_json.as_mut() {
+                        v["exit_code"] = json!(code);
+                    }
+                }
+                if let Some(v) = last_json {
+                    outln!("{v}");
+                }
+                if flow == forge_core::Flow::Exit {
+                    break;
                 }
             }
             Input::SystemPrompt { replace, append } => driver.set_system_prompt(replace, append),

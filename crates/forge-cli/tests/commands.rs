@@ -229,3 +229,55 @@ async fn debug_turns_on_a_session_log() {
     assert_eq!(logs.len(), 2, "one log per session");
     assert!(logs.iter().any(|f| std::fs::metadata(f.path()).unwrap().len() > 0), "the turn was logged");
 }
+
+fn verdict(v: &str, reason: &str) -> MockTurn {
+    MockTurn::text(&serde_json::json!({"verdict": v, "reason": reason}).to_string())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_runs_to_completion_in_print_mode() {
+    let e = env();
+    let glob = || MockTurn::tool("Glob", serde_json::json!({"pattern": "*"}));
+    let script = || {
+        vec![
+            glob(),
+            MockTurn::text("Started."),
+            verdict("not_met", "not yet"),
+            glob(),
+            MockTurn::text("Done."),
+            verdict("met", "it's done"),
+        ]
+    };
+    let api = MockApi::start(script()).await;
+    let (code, out, err) =
+        forge(&e, &api.url, &["-p", "/goal finish the work", "--output-format", "stream-json", "--verbose"]).await;
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let results: Vec<&Value> = lines.iter().filter(|l| l["type"] == "result").collect();
+    assert_eq!(results.len(), 2, "one result per turn");
+    assert_eq!(results[1]["result"], "Done.");
+    let goals: Vec<&str> = lines
+        .iter()
+        .filter(|l| l["type"] == "system" && l["subtype"] == "goal")
+        .filter_map(|l| l["status"].as_str())
+        .collect();
+    assert_eq!(goals, ["active", "active", "achieved"], "{out}");
+    // Results come in order: the first turn's result before the second turn starts.
+    let first_result = lines.iter().position(|l| l["type"] == "result").unwrap();
+    let done = lines.iter().position(|l| l.to_string().contains("\"Done.\"")).unwrap();
+    assert!(first_result < done);
+
+    // Text mode prints each turn's answer; success is quiet unless --verbose.
+    let api = MockApi::start(script()).await;
+    let (code, out, err) = forge(&e, &api.url, &["-p", "/goal finish the work"]).await;
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "Started.\nDone.\n", ""));
+    let api = MockApi::start(script()).await;
+    let (_, _, err) = forge(&e, &api.url, &["-p", "/goal finish the work", "--verbose"]).await;
+    assert!(err.contains("Goal achieved: it's done"), "{err}");
+
+    // A goal that can't be met says so, even without --verbose.
+    let api = MockApi::start(vec![MockTurn::text("Hmm."), verdict("impossible", "no such file")]).await;
+    let (code, _, err) = forge(&e, &api.url, &["-p", "/goal fix missing.rs"]).await;
+    assert_eq!(code, 1, "an unmet goal fails the run");
+    assert!(err.contains("Goal can't be met: no such file"), "{err}");
+}

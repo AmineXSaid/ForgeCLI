@@ -26,7 +26,7 @@ fn small_model(d: &Driver) -> String {
 }
 
 /// A one-off request with no tools, outside the conversation.
-async fn side_request(d: &Driver, system: &str, user: String, max_tokens: u32) -> Result<String, String> {
+pub(crate) async fn side_request(d: &Driver, system: &str, user: String, max_tokens: u32) -> Result<String, String> {
     let req = MessagesRequest {
         model: small_model(d),
         max_tokens,
@@ -589,4 +589,100 @@ pub(super) fn add_dir(d: &mut Driver, args: &str) -> Exec {
         "(This session only; add --save to keep it.)".into()
     };
     ok(format!("Added working directory {}. {saved}", dir.display()))
+}
+
+pub(super) fn goal(d: &mut Driver, args: &str) -> Exec {
+    use crate::goal::{is_clear_word, Goal, Status, MAX_CONDITION};
+    if args.is_empty() {
+        return ok(match &d.goal {
+            None => "No goal set. Set one with /goal <condition>.".to_string(),
+            Some(g) => {
+                let spent = d.engine.state.total_cost_usd - g.cost_at_start;
+                let mut s = format!("Goal: {}\nStatus: {}", g.condition, g.status.as_str());
+                if let Some(p) = &g.paused {
+                    let _ = write!(s, " (paused: {p})");
+                }
+                let _ = write!(
+                    s,
+                    "\nChecked {} time(s) · {} · ${spent:.4} spent",
+                    g.checks,
+                    super::run::duration(g.started.elapsed())
+                );
+                match (&g.status, &g.last_reason) {
+                    (Status::Failed(r), _) | (_, Some(r)) if !r.is_empty() => {
+                        let _ = write!(s, "\nLast check: {r}");
+                    }
+                    _ => {}
+                }
+                s
+            }
+        });
+    }
+    if is_clear_word(args) {
+        return match d.goal.take() {
+            Some(mut g) if g.is_active() => {
+                let c = g.condition.clone();
+                g.status = Status::Cleared;
+                d.goal = Some(g);
+                d.goal_changed();
+                d.goal = None;
+                ok(format!("Goal cleared: {c}"))
+            }
+            _ => ok("No goal set."),
+        };
+    }
+    if d.info.settings.bool("/disableAllHooks") == Some(true) {
+        return err("/goal is unavailable while disableAllHooks is set: goals run as a check at the end of each turn.");
+    }
+    if args.chars().count() > MAX_CONDITION {
+        return err(format!(
+            "The goal is too long ({} characters; the limit is {MAX_CONDITION}).",
+            args.chars().count()
+        ));
+    }
+    d.goal = Some(Goal::new(args, d.engine.state.total_cost_usd));
+    d.goal_changed();
+    Exec::Submit(MessageContent::Text(args.to_string()))
+}
+
+pub(super) async fn btw(d: &mut Driver, args: &str) -> Exec {
+    if args.is_empty() {
+        return match d.side_questions.last() {
+            Some((q, a)) => ok(format!("/btw {q}\n\n{a}")),
+            None => ok("No side questions yet. Ask one with /btw <question>: Forge answers from the conversation, without tools, and leaves the conversation as it was."),
+        };
+    }
+    let earlier = d.side_questions.clone();
+    match d.engine.side_question(args, &earlier).await {
+        Ok(answer) => {
+            d.side_questions.push((args.to_string(), answer.clone()));
+            let extra = d.side_questions.len().saturating_sub(crate::driver::MAX_SIDE_QUESTIONS);
+            d.side_questions.drain(..extra);
+            ok(answer)
+        }
+        Err(e) => err(format!("Could not answer: {e}")),
+    }
+}
+
+const RECAP_PROMPT: &str = "You summarize coding sessions. Given a conversation between a user and a coding agent, \
+reply with one line (at most 30 words): what was asked, what has been done, and what is still open. No preamble.";
+
+pub(super) async fn recap(d: &Driver) -> Exec {
+    let text = crate::goal::evaluator_transcript(&d.engine.state.messages);
+    if text.is_empty() {
+        return err("Nothing to recap yet.");
+    }
+    match side_request(d, RECAP_PROMPT, text, 120).await {
+        Ok(line) => ok(line.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")),
+        Err(e) => err(format!("Could not summarize: {e}")),
+    }
+}
+
+pub(super) fn plan(d: &mut Driver, args: &str) -> Exec {
+    d.engine.handle().set_permission_mode(forge_permissions::PermissionMode::Plan);
+    d.info.init.permission_mode = "plan".into();
+    if args.is_empty() {
+        return ok("Plan mode on: Forge will look around and propose a plan before changing anything. Approving the plan ends plan mode.");
+    }
+    Exec::Submit(MessageContent::Text(args.to_string()))
 }

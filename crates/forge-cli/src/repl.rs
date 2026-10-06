@@ -243,20 +243,21 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         if t.is_empty() {
             continue;
         }
-        let r = match driver.input(MessageContent::Text(t.to_string())).await {
-            forge_core::Outcome::Result(r) => *r,
-            forge_core::Outcome::Exit => break,
-        };
-        if let Some(b) = r.prompt_blocked {
-            eprintln!("{b}");
-        } else if r.num_turns == 0 && r.stop_reason.is_none() {
-            // Answered locally (a slash command): show it, since nothing streamed.
-            let text = r.result.unwrap_or_default();
-            if r.is_error {
-                eprintln!("{}", crate::term::red(&text));
-            } else {
-                outln!("{text}");
+        let mut report = |r: &forge_engine::TurnResult| {
+            if let Some(b) = &r.prompt_blocked {
+                eprintln!("{b}");
+            } else if r.num_turns == 0 && r.stop_reason.is_none() {
+                // Answered locally (a slash command): show it, since nothing streamed.
+                let text = r.result.clone().unwrap_or_default();
+                if r.is_error {
+                    eprintln!("{}", crate::term::red(&text));
+                } else {
+                    outln!("{text}");
+                }
             }
+        };
+        if driver.input(MessageContent::Text(t.to_string()), &mut report).await == forge_core::Flow::Exit {
+            break;
         }
     }
     driver.shutdown("prompt_input_exit").await;

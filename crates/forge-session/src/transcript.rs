@@ -33,6 +33,9 @@ pub struct LoadedSession {
     pub worktree: Option<Value>,
     /// The task list recorded at the last compaction (`system/todos`).
     pub todos: Option<Vec<Value>>,
+    /// The last `/goal` record. Kept outside the message chain, like the
+    /// title, so compaction doesn't drop it.
+    pub goal: Option<Value>,
 }
 
 /// Append-only writer for one session's JSONL file.
@@ -188,6 +191,11 @@ impl Transcript {
         self.write_line(&json!({"type": "title", "title": title, "sessionId": self.session_id, "timestamp": now()}));
     }
 
+    /// Record the session's goal (`/goal`): its condition and status.
+    pub fn set_goal(&self, goal: Value) {
+        self.write_line(&json!({"type": "goal", "goal": goal, "sessionId": self.session_id, "timestamp": now()}));
+    }
+
     /// The session's name, if it has one (`--name`, `/rename`, or a resumed title).
     pub fn title(&self) -> Option<String> {
         self.title.lock().unwrap().clone()
@@ -264,6 +272,7 @@ pub fn load(path: &Path, leaf: Option<&str>) -> Result<LoadedSession, SessionErr
                 }
             }
             Some("title") => out.title = v.get("title").and_then(Value::as_str).map(str::to_string),
+            Some("goal") => out.goal = v.get("goal").cloned(),
             Some(_) => {
                 if let Some(u) = v.get("uuid").and_then(Value::as_str) {
                     by_uuid.insert(u.to_string(), entries.len());

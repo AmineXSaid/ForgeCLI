@@ -271,6 +271,11 @@ them all. The built-ins so far:
 | `/export [file]` | The conversation as plain text, to a file or stdout |
 | `/diff` | Uncommitted changes (`git diff HEAD` and untracked files), or outside git the files Forge changed; then the files each prompt changed |
 | `/context [all]` | Estimated tokens for the system prompt, tools, skills, memory and messages against the window, with suggestions |
+| `/goal [condition\|clear]` | Sets a goal and keeps working until a check finds it met (see below) |
+| `/plan [description]` | Plan mode; with a description, starts planning it |
+| `/btw [question]` | A side question, answered from the conversation without tools; it doesn't enter the conversation |
+| `/recap` | One line: what was asked, what's done, what's open |
+| `!command` | Runs `command` in the shell as you (no prompt, no sandbox) and gives the model the command and its output; the model answers unless `respondToBashCommands` is `false` |
 | `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, Forge reads the log and diagnoses it |
 | `/release-notes` | The changelog |
 | `/exit` (`/quit`) | Ends the session |
@@ -280,6 +285,15 @@ them all. The built-ins so far:
 
 `docs/PARITY.md` ("Slash commands") tracks the rest of the reference's
 commands.
+
+**Goals:** `/goal <condition>` sends the condition as the prompt. After each
+turn a small model checks the conversation against it, and Forge keeps going
+until the check says it is met or can't be met. It pauses after three turns
+without a tool call, an interrupt or an error, and resumes with your next
+prompt. In `-p` the whole loop runs in one invocation: one `result` per turn
+plus `system/goal` events in stream-json, and exit status `1` if the goal
+ends unmet. `/goal` shows its status; `/goal clear` ends it. Contract C18
+has the details.
 
 **Saving defaults:** `/model`, `/effort`, `/fast`, `/output-style`,
 `/autocompact` and `/sandbox` apply at once. In the REPL (and later the

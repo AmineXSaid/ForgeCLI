@@ -120,6 +120,11 @@ pub enum EngineError {
     UnknownPricing(String),
 }
 
+/// Sent with a `/btw` question.
+const SIDE_QUESTION_NOTE: &str = "<system-reminder>\nThis is a side question from the user. Answer it briefly from \
+what you already know of this conversation. You can't use tools for it, and neither the question nor your answer \
+becomes part of the main conversation.\n</system-reminder>";
+
 /// The beta flag fast mode needs.
 pub const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 
@@ -243,6 +248,9 @@ pub struct TurnResult {
     pub structured_output: Option<Value>,
     /// The user's prompt was blocked by a UserPromptSubmit hook (shown to the user, not the model).
     pub prompt_blocked: Option<String>,
+    /// The turn failed in a way the next turn would too: credentials, billing,
+    /// a missing model, or a conversation too long even after compaction.
+    pub fatal: bool,
 }
 
 pub struct Engine {
@@ -352,6 +360,12 @@ impl Engine {
     /// The model provider, for side requests (titles, summaries) outside the conversation.
     pub fn provider(&self) -> Arc<dyn Provider> {
         self.shared.provider.clone()
+    }
+
+    /// Add a user message to the conversation without running a turn
+    /// (`!command` output when the model shouldn't answer it).
+    pub fn add_user_note(&mut self, text: impl Into<String>) {
+        self.push_user(Message::user_text(text.into()), false, None, true);
     }
 
     /// Tell the model something with the next prompt (a system reminder).
@@ -496,6 +510,11 @@ impl Engine {
         self.state.messages.push(msg.to_message());
         self.state.uuids.push(uuid.clone());
         uuid
+    }
+
+    /// Tell the host about something (`system/<subtype>`) without recording it.
+    pub fn announce(&self, subtype: &str, data: Value) {
+        self.emit(EngineEvent::System { subtype: subtype.into(), data });
     }
 
     fn system_event(&self, subtype: &str, data: Value) {
@@ -787,6 +806,7 @@ impl Engine {
             errors: vec![],
             structured_output: None,
             prompt_blocked: None,
+            fatal: false,
         }
     }
 
@@ -817,6 +837,41 @@ impl Engine {
     }
 
     /// A fresh cancellation token for this turn.
+    /// `/btw`: answer a side question with the conversation as context, but no
+    /// tools, and without adding to the conversation. Earlier side exchanges
+    /// ride along. The request keeps the conversation's system prompt and
+    /// tools, so the cached prefix is reused; its cost counts toward the session.
+    pub async fn side_question(&mut self, question: &str, earlier: &[(String, String)]) -> Result<String, String> {
+        let model = self.handle.model();
+        let mut req = self.build_request(&model);
+        let mut extra = vec![];
+        for (q, a) in earlier {
+            extra.push(Message::user_text(q.clone()));
+            extra.push(Message::assistant(vec![ContentBlock::text(a.clone())]));
+        }
+        extra.push(Message::user_text(format!("{SIDE_QUESTION_NOTE}\n\n{question}")));
+        for m in extra {
+            match req.messages.last_mut() {
+                Some(last) if last.role == m.role => last.content.extend(m.content),
+                _ => req.messages.push(m),
+            }
+        }
+        req.tool_choice = Some(json!({"type": "none"}));
+        let cancel = self.new_turn_token();
+        let msg = forge_api::complete(self.shared.provider.as_ref(), req, &cancel).await.map_err(|e| match e {
+            ApiError::Cancelled => "interrupted".to_string(),
+            e => e.describe(),
+        })?;
+        let context = self.state.context_tokens;
+        self.record_usage(&model, &msg.usage, &mut TurnAcc::default());
+        self.state.context_tokens = context;
+        let text = msg.to_message().text();
+        if text.trim().is_empty() {
+            return Err("the model gave no answer".into());
+        }
+        Ok(text.trim().to_string())
+    }
+
     fn new_turn_token(&self) -> CancellationToken {
         let t = CancellationToken::new();
         *self.handle.cancel.lock().unwrap() = t.clone();
@@ -1016,7 +1071,7 @@ impl Engine {
                         Err(err) => {
                             let text = format!("API Error: {e} (compaction failed: {err})");
                             turn.errors.push(text.clone());
-                            return self.finish(
+                            let mut r = self.finish(
                                 started,
                                 turn,
                                 ResultSubtype::ErrorDuringExecution,
@@ -1024,6 +1079,8 @@ impl Engine {
                                 Some("api_error".into()),
                                 None,
                             );
+                            r.fatal = true;
+                            return r;
                         }
                     }
                 }
@@ -1046,7 +1103,7 @@ impl Engine {
                     let text = format!("API Error: {}", e.describe());
                     self.notice(NoticeLevel::Error, text.clone());
                     turn.errors.push(text.clone());
-                    return self.finish(
+                    let mut r = self.finish(
                         started,
                         turn,
                         ResultSubtype::ErrorDuringExecution,
@@ -1054,6 +1111,8 @@ impl Engine {
                         Some("api_error".into()),
                         None,
                     );
+                    r.fatal = e.is_unrecoverable();
+                    return r;
                 }
             };
             turn.api_calls += 1;
@@ -1363,6 +1422,7 @@ impl Engine {
             errors: turn.errors,
             structured_output,
             prompt_blocked,
+            fatal: false,
         }
     }
 

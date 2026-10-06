@@ -10,7 +10,7 @@ use forge_types::MessageContent;
 use serde_json::Value;
 
 use crate::commands::Surface;
-use crate::{build_session, Driver, LaunchOptions, Outcome};
+use crate::{build_session, Driver, Flow, LaunchOptions};
 
 struct T {
     _dir: tempfile::TempDir,
@@ -43,11 +43,16 @@ fn driver() -> T {
     driver_with(|_, _| {})
 }
 
+/// Every result one input produced.
+async fn run_all(d: &mut Driver, text: &str) -> Vec<TurnResult> {
+    let mut out = vec![];
+    let mut report = |r: &TurnResult| out.push(r.clone());
+    assert_eq!(d.input(MessageContent::Text(text.into()), &mut report).await, Flow::Continue, "unexpected exit");
+    out
+}
+
 async fn run(d: &mut Driver, text: &str) -> TurnResult {
-    match d.input(MessageContent::Text(text.into())).await {
-        Outcome::Result(r) => *r,
-        Outcome::Exit => panic!("unexpected exit"),
-    }
+    run_all(d, text).await.pop().expect("a result")
 }
 
 async fn local(d: &mut Driver, text: &str) -> String {
@@ -326,4 +331,217 @@ async fn interactive_surfaces_save_defaults() {
     d.surface = Surface::Print;
     local(d, "/model haiku").await;
     assert_eq!(read_json(&user)["model"], "sonnet");
+}
+
+fn verdict(v: &str, reason: &str) -> MockTurn {
+    MockTurn::text(&serde_json::json!({"verdict": v, "reason": reason}).to_string())
+}
+
+fn last_user_text(req: &forge_types::MessagesRequest) -> String {
+    serde_json::to_string(req.messages.last().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn goal_runs_until_the_check_passes() {
+    let mut t = driver();
+    let glob = || MockTurn::tool("Glob", serde_json::json!({"pattern": "*"}));
+    for turn in [
+        glob(),
+        MockTurn::text("Started."),
+        verdict("not_met", "the tests were never run"),
+        glob(),
+        MockTurn::text("Ran them; all pass."),
+        verdict("met", "the transcript shows passing tests"),
+    ] {
+        t.p.push(turn);
+    }
+    let results = run_all(&mut t.d, "/goal the tests pass").await;
+    assert_eq!(results.len(), 2, "the first turn, then one continuation");
+    assert_eq!(results[1].result.as_deref(), Some("Ran them; all pass."));
+    let g = t.d.goal.as_ref().unwrap();
+    assert_eq!((g.status.as_str(), g.checks), ("achieved", 2));
+
+    let reqs = t.p.requests();
+    assert_eq!(reqs.len(), 6);
+    assert!(last_user_text(&reqs[0]).contains("the tests pass"));
+    // The check runs on the small model, without tools, over the transcript.
+    assert_eq!(reqs[2].model, forge_api::models::SMALL_FAST_MODEL);
+    assert!(reqs[2].tools.is_empty());
+    let check = last_user_text(&reqs[2]);
+    assert!(check.contains("Goal: the tests pass") && check.contains("TOOL CALL Glob"), "{check}");
+    let cont = last_user_text(&reqs[3]);
+    assert!(
+        cont.contains("Goal check: not met yet. the tests were never run")
+            && cont.contains("Keep working toward the goal: the tests pass"),
+        "{cont}"
+    );
+    let status = local(&mut t.d, "/goal").await;
+    assert!(status.contains("Status: achieved") && status.contains("Checked 2 time(s)"), "{status}");
+
+    // The goal is recorded outside the message chain.
+    let path = t.d.engine.transcript().path().unwrap().to_path_buf();
+    let loaded = forge_session::LoadedSession::load(&path, None).unwrap();
+    assert_eq!(loaded.goal.unwrap()["status"], "achieved");
+}
+
+#[tokio::test]
+async fn goal_pauses_without_progress_and_resumes_on_a_prompt() {
+    let mut t = driver();
+    for _ in 0..3 {
+        t.p.push(MockTurn::text("Thinking about it."));
+        t.p.push(verdict("not_met", "nothing done"));
+    }
+    let results = run_all(&mut t.d, "/goal ship it").await;
+    assert_eq!(results.len(), 3, "three turns without a tool, then a pause");
+    let g = t.d.goal.as_ref().unwrap();
+    assert_eq!((g.is_active(), g.paused.as_deref()), (true, Some("no progress")));
+    assert!(local(&mut t.d, "/goal").await.contains("(paused: no progress)"));
+
+    // The next prompt resumes it: its turn is checked again.
+    t.p.push(MockTurn::text("ok"));
+    t.p.push(verdict("impossible", "there is nothing to ship"));
+    let results = run_all(&mut t.d, "try again").await;
+    assert_eq!(results.len(), 1);
+    let g = t.d.goal.as_ref().unwrap();
+    assert_eq!(g.status, crate::goal::Status::Failed("there is nothing to ship".into()));
+    assert!(local(&mut t.d, "/goal").await.contains("Last check: there is nothing to ship"));
+}
+
+#[tokio::test]
+async fn goal_is_cleared_by_fatal_errors_and_by_request() {
+    let mut t = driver();
+    t.p.push(MockTurn::tool("Glob", serde_json::json!({"pattern": "*"})));
+    t.p.push(MockTurn::text("halfway"));
+    t.p.push(verdict("not_met", "more to do"));
+    t.p.push(MockTurn::http_error(401, "authentication_error"));
+    let results = run_all(&mut t.d, "/goal finish").await;
+    assert_eq!(results.len(), 2);
+    assert!(results[1].is_error && results[1].fatal);
+    assert_eq!(t.d.goal.as_ref().unwrap().status, crate::goal::Status::Cleared);
+
+    // A transient error only pauses it.
+    let mut t = driver();
+    t.p.push(MockTurn::text("a"));
+    t.p.push(verdict("not_met", "x"));
+    t.p.push(MockTurn::http_error(400, "invalid_request_error"));
+    run_all(&mut t.d, "/goal finish").await;
+    let g = t.d.goal.as_ref().unwrap();
+    assert_eq!((g.is_active(), g.paused.as_deref()), (true, Some("error")));
+
+    assert_eq!(local(&mut t.d, "/goal stop").await, "Goal cleared: finish");
+    assert_eq!(local(&mut t.d, "/goal").await, "No goal set. Set one with /goal <condition>.");
+    assert_eq!(local(&mut t.d, "/goal cancel").await, "No goal set.");
+    assert!(fails(&mut t.d, &format!("/goal {}", "x".repeat(4001))).await.contains("too long"));
+
+    // /clear ends it too.
+    t.d.goal = Some(crate::goal::Goal::new("y", 0.0));
+    local(&mut t.d, "/clear").await;
+    assert!(t.d.goal.is_none());
+}
+
+#[tokio::test]
+async fn goal_is_refused_when_hooks_are_disabled_and_restored_on_resume() {
+    let mut t = driver_with(|dir, _| {
+        std::fs::write(dir.join("proj/.forge/settings.json"), r#"{"disableAllHooks": true}"#).unwrap();
+    });
+    assert!(fails(&mut t.d, "/goal x").await.contains("disableAllHooks"));
+
+    // An active goal comes back with --resume.
+    let mut t = driver();
+    t.p.push(MockTurn::text("on it"));
+    t.p.push(MockTurn::http_error(400, "invalid_request_error"));
+    run_all(&mut t.d, "/goal keep going").await;
+    assert!(t.d.goal.as_ref().unwrap().is_active());
+    let id = t.d.info.session_id.clone();
+    let store = t._dir.path().join("store");
+    let s = build_session(
+        LaunchOptions {
+            cwd: t.proj.clone(),
+            provider: Some(t.p.clone()),
+            store_root: Some(store),
+            setting_sources: Some(vec![SettingSource::Project, SettingSource::Local]),
+            resume: crate::Resume::Id(id),
+            ..Default::default()
+        },
+        Arc::new(NullSink),
+        Arc::new(DenyPrompter),
+    )
+    .unwrap();
+    let d = Driver::new(s, Surface::Print, None);
+    let g = d.goal.as_ref().unwrap();
+    assert_eq!((g.condition.as_str(), g.is_active()), ("keep going", true));
+}
+
+#[tokio::test]
+async fn btw_answers_without_touching_the_conversation() {
+    let mut t = driver();
+    t.p.push(MockTurn::text("Edited main.rs."));
+    run(&mut t.d, "fix the bug").await;
+    let before = t.d.engine.state.messages.clone();
+    assert!(local(&mut t.d, "/btw").await.starts_with("No side questions yet"));
+
+    t.p.push(MockTurn::text("main.rs"));
+    assert_eq!(local(&mut t.d, "/btw which file did you edit?").await, "main.rs");
+    t.p.push(MockTurn::text("No."));
+    assert_eq!(local(&mut t.d, "/btw any others?").await, "No.");
+    assert_eq!(t.d.engine.state.messages, before, "side questions stay out of the conversation");
+
+    let reqs = t.p.requests();
+    let side = &reqs[2];
+    assert_eq!(side.tool_choice, Some(serde_json::json!({"type": "none"})));
+    assert!(!side.tools.is_empty(), "tools stay listed, so the cached prefix holds");
+    assert_eq!(side.system, reqs[0].system);
+    let text = serde_json::to_string(&side.messages).unwrap();
+    assert!(text.contains("which file did you edit?") && text.contains("main.rs") && text.contains("any others?"));
+    assert!(local(&mut t.d, "/btw").await.starts_with("/btw any others?"));
+
+    // The next real turn doesn't see them.
+    t.p.push(MockTurn::text("done"));
+    run(&mut t.d, "next").await;
+    let text = serde_json::to_string(&t.p.requests().last().unwrap().messages).unwrap();
+    assert!(!text.contains("any others?"));
+}
+
+#[tokio::test]
+async fn recap_plan_and_shell_mode() {
+    let mut t = driver();
+    assert!(fails(&mut t.d, "/recap").await.contains("Nothing to recap"));
+    t.p.push(MockTurn::text("Done."));
+    run(&mut t.d, "add a flag").await;
+    t.p.push(MockTurn::text("Added --verbose;\nnothing open."));
+    assert_eq!(local(&mut t.d, "/recap").await, "Added --verbose; nothing open.");
+
+    assert!(local(&mut t.d, "/plan").await.starts_with("Plan mode on"));
+    assert_eq!(t.d.engine.handle().permissions.read().unwrap().mode.as_str(), "plan");
+    t.p.push(MockTurn::text("Here's a plan."));
+    let r = run(&mut t.d, "/plan add caching").await;
+    assert_eq!(r.result.as_deref(), Some("Here's a plan."));
+
+    // `!command` runs in the shell and the model sees command and output.
+    t.p.push(MockTurn::text("It printed hi."));
+    let r = run(&mut t.d, "!echo hi; echo oops >&2; exit 3").await;
+    assert_eq!(r.result.as_deref(), Some("It printed hi."));
+    let prompt = last_user_text(t.p.requests().last().unwrap());
+    assert!(
+        prompt.contains("<shell-command>echo hi; echo oops >&2; exit 3</shell-command>")
+            && prompt.contains("exit-code=\\\"3\\\"")
+            && prompt.contains("hi\\noops"),
+        "{prompt}"
+    );
+}
+
+#[tokio::test]
+async fn shell_mode_can_skip_the_model() {
+    let mut t = driver_with(|dir, _| {
+        std::fs::write(dir.join("proj/.forge/settings.json"), r#"{"respondToBashCommands": false}"#).unwrap();
+    });
+    let calls = t.p.requests().len();
+    assert_eq!(local(&mut t.d, "!echo hi").await, "hi");
+    assert_eq!(t.p.requests().len(), calls, "no model call");
+    let last = serde_json::to_string(t.d.engine.state.messages.last().unwrap()).unwrap();
+    assert!(last.contains("<shell-command>echo hi</shell-command>"), "{last}");
+    assert!(fails(&mut t.d, "!exit 2").await.is_empty());
+    // A lone "!" is an ordinary prompt.
+    t.p.push(MockTurn::text("?"));
+    assert_eq!(run(&mut t.d, "!").await.num_turns, 1);
 }

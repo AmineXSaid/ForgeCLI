@@ -255,11 +255,11 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 | `/export [file]` | done | PR | `core::driver_tests::rename_export_context_and_diff` | No argument prints it (no clipboard dialog) |
 | `/diff` | done | PR | `core::driver_tests::rename_export_context_and_diff` | Text output; the interactive viewer is T (M8) |
 | `/debug [description]` | done | PR | `cmds::debug_turns_on_a_session_log` | A reloadable logger that is off until `/debug`; requests, responses, tool calls, permission checks, hooks and compaction are logged |
-| `/plan [description]` | todo | PRT |  | Phase 2 |
-| `/goal [condition\|clear]` | todo | PRT |  | Phase 2 |
-| `/btw [question]` | todo | PRT |  | Phase 2 |
-| `/recap` | todo | PRT |  | Phase 2 |
-| `!command` shell mode | todo | PRT |  | Phase 2 |
+| `/plan [description]` | done | PR | `core::driver_tests::recap_plan_and_shell_mode` | Plan mode; with a description, that prompt runs in plan mode |
+| `/goal [condition\|clear]` | done | PR | `core::driver_tests::goal_runs_until_the_check_passes`, `core::driver_tests::goal_pauses_without_progress_and_resumes_on_a_prompt`, `core::driver_tests::goal_is_cleared_by_fatal_errors_and_by_request`, `core::driver_tests::goal_is_refused_when_hooks_are_disabled_and_restored_on_resume`, `cmds::goal_runs_to_completion_in_print_mode` | Contract C18. Forge's own evaluator prompt. Extra: an unmet goal makes a single `-p` run exit 1 |
+| `/btw [question]` | done | PR | `core::driver_tests::btw_answers_without_touching_the_conversation` | Same system prompt and tools with `tool_choice: none`; the 20 newest exchanges ride along; cost counts. Not yet runnable while a turn is busy (needs immediate commands) |
+| `/recap` | done | PR | `core::driver_tests::recap_plan_and_shell_mode` | One line from the small model |
+| `!command` shell mode | done | PR | `core::driver_tests::recap_plan_and_shell_mode`, `core::driver_tests::shell_mode_can_skip_the_model` | Runs as the user (no prompt, no sandbox), 2-minute limit; the model answers unless `respondToBashCommands` is false |
 | `/rewind` (`/checkpoint`, `/undo`) | todo | PRT |  | Phase 3 |
 | `/branch [name]` | todo | PRT |  | Phase 3 |
 | `/resume` (`/continue`) | todo | RT |  | Phase 3; in `-p` use `--resume` |
