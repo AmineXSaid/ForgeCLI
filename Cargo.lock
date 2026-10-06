@@ -296,6 +296,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "forge-api",
+ "forge-git",
+ "forge-hooks",
+ "forge-permissions",
+ "forge-session",
+ "forge-tools",
+ "forge-types",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "forge-git"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "forge-hooks"
 version = "0.1.0"
 dependencies = [

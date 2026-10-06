@@ -42,6 +42,12 @@ forge-config = { path = "crates/forge-config" }
 forge-permissions = { path = "crates/forge-permissions" }
 forge-hooks = { path = "crates/forge-hooks" }
 forge-tools = { path = "crates/forge-tools" }
+forge-session = { path = "crates/forge-session" }
+forge-git = { path = "crates/forge-git" }
+forge-engine = { path = "crates/forge-engine" }
+forge-compact = { path = "crates/forge-compact" }
+forge-mcp = { path = "crates/forge-mcp" }
+forge-agents = { path = "crates/forge-agents" }
 forge-core = { path = "crates/forge-core" }
 
 [profile.release]

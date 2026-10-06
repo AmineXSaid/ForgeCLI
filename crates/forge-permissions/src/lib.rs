@@ -90,11 +90,40 @@ impl Decision {
     }
 }
 
-/// A change the user can accept along with an approval ("always allow").
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// One rule in SDK shape: `{"toolName": "Bash", "ruleContent": "git *"}`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleValue {
+    pub tool_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_content: Option<String>,
+}
+
+impl RuleValue {
+    /// Parse `Tool` / `Tool(content)`.
+    pub fn parse(s: &str) -> Self {
+        match s.find('(') {
+            Some(i) if s.ends_with(')') => {
+                RuleValue { tool_name: s[..i].to_string(), rule_content: Some(s[i + 1..s.len() - 1].to_string()) }
+            }
+            _ => RuleValue { tool_name: s.to_string(), rule_content: None },
+        }
+    }
+
+    pub fn to_rule_string(&self) -> String {
+        match &self.rule_content {
+            Some(c) => format!("{}({c})", self.tool_name),
+            None => self.tool_name.clone(),
+        }
+    }
+}
+
+/// A change the user can accept along with an approval ("always allow"),
+/// in the SDK's `PermissionUpdate` shape.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Suggestion {
-    AddRules { rules: Vec<String>, behavior: Behavior, destination: String },
+    AddRules { rules: Vec<RuleValue>, behavior: Behavior, destination: String },
     SetMode { mode: String, destination: String },
     AddDirectories { directories: Vec<String>, destination: String },
 }
@@ -301,13 +330,15 @@ impl Engine {
         let dest = "localSettings".to_string();
         match &req.subject {
             Subject::Command(c) => {
-                let rules: Vec<String> = split_compound(c)
+                let rules: Vec<RuleValue> = split_compound(c)
                     .iter()
                     .filter_map(|part| {
                         let words: Vec<&str> = part.split_whitespace().collect();
                         let n = if words.len() > 1 && !words[1].starts_with('-') { 2 } else { 1 };
-                        (!words.is_empty())
-                            .then(|| format!("{}({} *)", req.tool, words[..n.min(words.len())].join(" ")))
+                        (!words.is_empty()).then(|| RuleValue {
+                            tool_name: req.tool.to_string(),
+                            rule_content: Some(format!("{} *", words[..n.min(words.len())].join(" "))),
+                        })
                     })
                     .collect();
                 if rules.is_empty() {
@@ -333,20 +364,23 @@ impl Engine {
             }
             Subject::Url(u) => match rule::host_of(u) {
                 Some(h) => vec![Suggestion::AddRules {
-                    rules: vec![format!("{}(domain:{h})", req.tool)],
+                    rules: vec![RuleValue {
+                        tool_name: req.tool.to_string(),
+                        rule_content: Some(format!("domain:{h}")),
+                    }],
                     behavior: Behavior::Allow,
                     destination: dest,
                 }],
                 None => vec![],
             },
             Subject::Name(n) => vec![Suggestion::AddRules {
-                rules: vec![format!("{}({n})", req.tool)],
+                rules: vec![RuleValue { tool_name: req.tool.to_string(), rule_content: Some(n.clone()) }],
                 behavior: Behavior::Allow,
                 destination: dest,
             }],
             Subject::None => {
                 vec![Suggestion::AddRules {
-                    rules: vec![req.tool.to_string()],
+                    rules: vec![RuleValue { tool_name: req.tool.to_string(), rule_content: None }],
                     behavior: Behavior::Allow,
                     destination: dest,
                 }]

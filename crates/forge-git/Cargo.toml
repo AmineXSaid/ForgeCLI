@@ -1,0 +1,11 @@
+[package]
+name = "forge-git"
+description = "Git facts for the prompt and session metadata; worktrees."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true
