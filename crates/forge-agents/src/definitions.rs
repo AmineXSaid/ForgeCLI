@@ -247,4 +247,28 @@ mod tests {
         assert!(all.iter().any(|a| a.name == "reviewer" && a.source == AgentSource::Flag));
         assert!(parse_agents_json(r#"{"x": {"prompt": "p"}}"#).is_err());
     }
+
+    #[test]
+    fn vendor_neutral_agents_dir_is_read_and_forge_wins() {
+        let d = tempfile::tempdir().unwrap();
+        for (dir, body) in [(".agents/agents", "shared"), (".forge/agents", "forge")] {
+            std::fs::create_dir_all(d.path().join(dir)).unwrap();
+            std::fs::write(
+                d.path().join(dir).join("reviewer.md"),
+                format!("---\nname: reviewer\ndescription: {body} reviewer\n---\nReview."),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            d.path().join(".agents/agents/docs.md"),
+            "---\nname: docs\ndescription: writes docs\n---\nWrite docs.",
+        )
+        .unwrap();
+        let mut warnings = vec![];
+        let agents = load_agents(d.path(), &[], &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let find = |n: &str| agents.iter().find(|a| a.name == n).unwrap();
+        assert_eq!(find("reviewer").description, "forge reviewer");
+        assert_eq!(find("docs").source, AgentSource::Project);
+    }
 }

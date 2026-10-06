@@ -8,6 +8,7 @@
 pub mod builtin;
 mod context;
 mod files;
+pub mod injection;
 mod registry;
 pub mod sandbox;
 pub mod shells;

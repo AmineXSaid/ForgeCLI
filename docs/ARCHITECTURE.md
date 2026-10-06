@@ -376,6 +376,35 @@ Tests:
 - `engine::max_tokens_continues_text_and_answers_cut_off_calls`;
 - `accumulate::invalid_tool_json_is_marked_truncated`.
 
+### C14. Dangerous commands and injected instructions
+
+**Threat patterns** (`forge-permissions/threat.rs`):
+- Every Bash command is scanned.
+- A high- or critical-risk match makes `decide` return `Ask`, with
+  `Reason::Threat` and no suggestions (`Deny` under `dontAsk`). This happens
+  after deny rules and before ask rules, allow rules, mode defaults and the
+  sandbox. `bypassPermissions` is exempt.
+- Medium-risk matches (history tampering) are reported by `scan_command`
+  but not escalated.
+
+**Injection markers** (`forge-tools/injection.rs`):
+- After a successful call, and after the PostToolUse hooks, the output of
+  every tool except the edit tools and TodoWrite is checked for:
+  - phrases aimed at an agent;
+  - chat-template tokens;
+  - system tags;
+  - Unicode tag characters.
+- On a match, a note quoting the match is appended to the tool result.
+  Known false positive: reading an agent harness's own source, where those
+  tags appear as string literals.
+
+Tests:
+- `threat::flags_dangerous_commands`;
+- `threat::leaves_ordinary_commands_alone`;
+- `permissions::flagged_commands_are_never_approved_automatically`;
+- `injection::*`;
+- `engine::injected_instructions_in_tool_output_are_marked`.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

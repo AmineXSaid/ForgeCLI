@@ -67,6 +67,7 @@ fn push(files: &mut Vec<MemoryFile>, path: PathBuf, kind: MemoryKind) {
 /// Memory for a session in `cwd`: the user file, then project files from the
 /// filesystem root down to `cwd` (closer files later, so they read last and
 /// take precedence), with each directory's local file after its project file.
+/// A directory's `AGENTS.md` is read when it has no `FORGE.md`.
 pub fn load_memory(cwd: &Path) -> Vec<MemoryFile> {
     let mut files = vec![];
     push(&mut files, forge_home().join("FORGE.md"), MemoryKind::User);
@@ -74,8 +75,13 @@ pub fn load_memory(cwd: &Path) -> Vec<MemoryFile> {
     let mut chain: Vec<&Path> = cwd.ancestors().take_while(|a| *a != home && a.parent().is_some()).collect();
     chain.reverse();
     for dir in chain {
+        let before = files.len();
         for name in ["FORGE.md", ".forge/FORGE.md"] {
             push(&mut files, dir.join(name), MemoryKind::Project);
+        }
+        // AGENTS.md, the cross-tool convention, when the directory has no FORGE.md of its own.
+        if files.len() == before {
+            push(&mut files, dir.join("AGENTS.md"), MemoryKind::Project);
         }
         push(&mut files, dir.join("FORGE.local.md"), MemoryKind::Local);
     }
@@ -116,5 +122,19 @@ mod tests {
         let f = load_memory(&root);
         let mine = f.iter().find(|f| f.path.starts_with(&root)).unwrap();
         assert!(mine.content.contains('A'));
+    }
+
+    #[test]
+    fn agents_md_when_no_forge_md() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let sub = root.join("svc");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "shared agent rules").unwrap();
+        std::fs::write(sub.join("AGENTS.md"), "svc agent rules").unwrap();
+        std::fs::write(sub.join("FORGE.md"), "svc forge rules").unwrap();
+        let files = load_memory(&sub);
+        let ours: Vec<&str> = files.iter().filter(|f| f.path.starts_with(&root)).map(|f| f.content.trim()).collect();
+        assert_eq!(ours, ["shared agent rules", "svc forge rules"]);
     }
 }

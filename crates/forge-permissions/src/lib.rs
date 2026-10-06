@@ -10,6 +10,7 @@ mod mode;
 mod paths;
 mod rule;
 mod shell;
+pub mod threat;
 
 pub use mode::PermissionMode;
 pub use paths::{is_within, normalize};
@@ -60,10 +61,18 @@ pub enum Behavior {
 /// Why a decision was made (surfaced to the model and the host).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reason {
-    Rule { behavior: Behavior, rule: String },
+    Rule {
+        behavior: Behavior,
+        rule: String,
+    },
     Mode(PermissionMode),
     ReadOnlyInWorkingDir,
     Sandboxed,
+    /// A dangerous-command pattern matched (never approved automatically).
+    Threat {
+        name: String,
+        description: String,
+    },
     OutsideWorkingDirs(PathBuf),
     PlanMode,
     Default,
@@ -76,6 +85,7 @@ impl std::fmt::Display for Reason {
             Reason::Mode(m) => write!(f, "permission mode {}", m.as_str()),
             Reason::ReadOnlyInWorkingDir => write!(f, "read-only access inside the working directories"),
             Reason::Sandboxed => write!(f, "runs inside the sandbox"),
+            Reason::Threat { description, .. } => write!(f, "flagged as dangerous: this command {description}"),
             Reason::OutsideWorkingDirs(p) => write!(f, "{} is outside the working directories", p.display()),
             Reason::PlanMode => write!(f, "plan mode allows only read-only tools"),
             Reason::Default => write!(f, "this tool requires permission"),
@@ -283,6 +293,16 @@ impl Engine {
         // 2. Bypass skips prompts, not deny rules.
         if self.mode == PermissionMode::BypassPermissions {
             return Decision::Allow { reason: Reason::Mode(self.mode) };
+        }
+        // 2b. Dangerous commands always ask (or are denied headless); no "always allow" offered.
+        if let Subject::Command(cmd) = &req.subject {
+            if let Some(t) = threat::flagged(cmd) {
+                let reason = Reason::Threat { name: t.name.into(), description: t.description.into() };
+                if self.mode == PermissionMode::DontAsk {
+                    return Decision::Deny { reason };
+                }
+                return Decision::Ask { reason, suggestions: vec![] };
+            }
         }
         // 3. Ask rules.
         if let Some(r) = self.first_match(&self.rules.ask, req) {

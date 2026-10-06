@@ -182,7 +182,7 @@ them.
 | Config (settings, `FORGE.md`, agents, commands) | `$XDG_CONFIG_HOME/forge`, else `~/.config/forge` (Linux), `~/Library/Application Support/forge` (macOS), `%APPDATA%\forge` (Windows) | `FORGE_HOME` |
 | State (sessions, file history) | `$XDG_STATE_HOME/forge`, else the platform state or local-data directory | `FORGE_HOME/state` |
 | Cache | `$XDG_CACHE_HOME/forge`, else the platform cache directory | `FORGE_HOME/cache` |
-| Project | `.forge/` in the project, plus `FORGE.md` files from the root down to the cwd | — |
+| Project | `.forge/` in the project, plus `FORGE.md` files from the root down to the cwd (a directory's `AGENTS.md` when it has no `FORGE.md`). Agents (and later commands, skills and output styles) are also read from the vendor-neutral `.agents/<kind>/`, below `.forge/<kind>/` in precedence | — |
 
 **Environment variables:**
 
@@ -225,6 +225,34 @@ listed in the system prompt's environment section.
 | `verification.enabled` | `true` | `false` turns the loop off (as does `FORGE_VERIFY=0`) |
 | `verification.commands` | detected | The project's check commands |
 | `verification.maxReminders` | `1` | Reminders per user turn |
+
+## Security
+
+**Dangerous commands are never approved automatically.**
+- A Bash command matching a high- or critical-risk pattern always asks (and
+  is denied in `-p` runs and in `dontAsk` mode), whatever allow rules,
+  `acceptEdits`, `auto` or the sandbox would say. The patterns cover:
+  - recursive deletion of `/` or home;
+  - disk overwrite;
+  - a downloaded script piped to a shell;
+  - reverse shells and fork bombs;
+  - credential files sent over the network;
+  - decoded payloads piped to a shell;
+  - startup-file, cron and service persistence;
+  - sudoers and setuid changes.
+- The prompt says why the command was flagged, and offers no "always allow".
+- Deny rules still apply first.
+- `--dangerously-skip-permissions` (`bypassPermissions`) still skips the
+  check, as its name says.
+
+**Injected instructions in tool output are marked as data.**
+- This applies when a file, web page or command output contains text that
+  reads like instructions to an AI agent: "ignore previous instructions",
+  chat-template tokens, fake system tags, or invisible Unicode tag
+  characters.
+- Forge then appends a note to that tool result, telling the model the text
+  is data and not to follow it. Nothing is removed. This is OWASP LLM01:
+  prompt injection.
 
 ## Sandbox
 

@@ -65,7 +65,13 @@ pub enum Scope {
 }
 
 /// Directories holding `kind` resources (`agents`, `commands`, `skills`,
-/// `output-styles`), lowest precedence first: user, then project.
+/// `output-styles`), lowest precedence first: user, then the project's
+/// vendor-neutral `.agents/<kind>` (shared with other agent CLIs), then its
+/// `.forge/<kind>`.
 pub fn resource_dirs(kind: &str, project: &Path) -> Vec<(Scope, PathBuf)> {
-    vec![(Scope::User, forge_home().join(kind)), (Scope::Project, project.join(".forge").join(kind))]
+    vec![
+        (Scope::User, forge_home().join(kind)),
+        (Scope::Project, project.join(".agents").join(kind)),
+        (Scope::Project, project.join(".forge").join(kind)),
+    ]
 }

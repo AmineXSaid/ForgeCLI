@@ -294,6 +294,12 @@ async fn run_one(
             stop = o.stop;
         }
     }
+    // 6. Output that carries instructions for an agent is marked as data (OWASP LLM01).
+    if !output.is_error && !matches!(name, "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "TodoWrite") {
+        if let Some(why) = forge_tools::injection::suspicious(&output.text_content()) {
+            output = append_text(output, &forge_tools::injection::note(name, &why));
+        }
+    }
     CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop, writes_after: 0 }
 }
 
