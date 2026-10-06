@@ -80,10 +80,43 @@ pub struct LaunchOptions {
     pub agent: Option<String>,
     /// `--sandbox <off|read-only|workspace-write>` for shell commands.
     pub sandbox: Option<String>,
+    /// `--mcp-config`: server config files or JSON strings.
+    pub mcp_configs: Vec<String>,
+    /// `--strict-mcp-config`: only the servers from `mcp_configs`.
+    pub strict_mcp_config: bool,
+    /// Connected MCP servers (from [`connect_mcp`]); their tools join the session.
+    pub mcp: Option<Arc<forge_mcp::McpManager>>,
     /// Replace the provider (tests, embedding).
     pub provider: Option<Arc<dyn Provider>>,
     /// Where sessions live (default `~/.forge/projects`).
     pub store_root: Option<PathBuf>,
+}
+
+/// Load the session's settings the way [`build_session`] does.
+fn session_settings(opts: &LaunchOptions, cwd: &Path) -> LoadedSettings {
+    let mut sopts = SettingsOptions::new(cwd);
+    if let Some(s) = &opts.setting_sources {
+        sopts.sources = s.clone();
+    }
+    sopts.flag = opts.settings.clone();
+    load_settings(&sopts)
+}
+
+/// Which MCP servers this session would start (contract C16). `--bare` keeps only `--mcp-config`.
+pub fn resolve_mcp(opts: &LaunchOptions) -> forge_mcp::Resolved {
+    let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let settings = session_settings(opts, &cwd);
+    forge_mcp::resolve(&settings, &cwd, &opts.mcp_configs, opts.strict_mcp_config || opts.bare)
+}
+
+/// Connect the session's MCP servers. Failures are reported in the manager, never fatal.
+pub async fn connect_mcp(opts: &LaunchOptions) -> (Arc<forge_mcp::McpManager>, Vec<String>) {
+    let resolved = resolve_mcp(opts);
+    let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let manager = forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(&cwd)).await;
+    let mut warnings = resolved.warnings;
+    warnings.extend(manager.warnings());
+    (Arc::new(manager), warnings)
 }
 
 /// A built session, ready for `engine.submit`.
@@ -212,12 +245,7 @@ pub fn build_session(
     let mut warnings = vec![];
 
     // Settings.
-    let mut sopts = SettingsOptions::new(&cwd);
-    if let Some(s) = &opts.setting_sources {
-        sopts.sources = s.clone();
-    }
-    sopts.flag = opts.settings.clone();
-    let settings = load_settings(&sopts);
+    let settings = session_settings(&opts, &cwd);
     warnings.extend(settings.errors.iter().map(|e| format!("settings: {e}")));
 
     let provider = match opts.provider.clone() {
@@ -339,6 +367,12 @@ pub fn build_session(
             tools.retain(|n| names.iter().any(|x| x == n));
         }
     }
+    // MCP tools join after `--tools` (which names built-ins) and before `--disallowedTools`.
+    if let Some(m) = &opts.mcp {
+        for t in m.tools() {
+            tools.register(t);
+        }
+    }
     let removed = removed_tools(&opts.disallowed_tools);
     tools.retain(|n| !removed.iter().any(|r| Rule::parse(r).map(|rule| rule.covers_tool(n)).unwrap_or(false)));
 
@@ -421,6 +455,11 @@ pub fn build_session(
         (Some(a), None) => Some(a.prompt.clone()),
         (None, extra) => extra.clone(),
     };
+    let mcp_instructions = opts.mcp.as_ref().and_then(|m| m.instructions());
+    let append = match (append, mcp_instructions) {
+        (Some(a), Some(m)) => Some(format!("{a}\n\n{m}")),
+        (a, m) => a.or(m),
+    };
     let sp_opts = SystemPromptOptions {
         replace: opts.system_prompt.clone(),
         append,
@@ -461,6 +500,7 @@ pub fn build_session(
             working_dirs: tool_ctx.working_dirs.clone(),
             env: tool_ctx.env.clone(),
             sandbox: tool_ctx.sandbox.clone(),
+            extra_tools: opts.mcp.as_ref().map(|m| m.tools()).unwrap_or_default(),
             store: agent_store,
             session_id: session_id.clone(),
             hooks: hooks.clone(),
@@ -535,7 +575,11 @@ pub fn build_session(
         cwd: cwd.display().to_string(),
         session_id: session_id.clone(),
         tools: tool_names,
-        mcp_servers: Vec::<McpServerStatus>::new(),
+        mcp_servers: opts
+            .mcp
+            .as_ref()
+            .map(|m| m.status().into_iter().map(|(name, status)| McpServerStatus { name, status }).collect())
+            .unwrap_or_default(),
         model,
         permission_mode: mode.as_str().into(),
         slash_commands: vec![],

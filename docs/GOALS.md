@@ -128,7 +128,8 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 5. Budgets on tool output, and no repeated reads. **Done.**
 6. A plan that survives compaction. **Done** (the task list; a notes file is
    still to build).
-7. Parity features in order of use: MCP, web tools, plan mode and
+7. Parity features in order of use: MCP (**done**: stdio, HTTP and SSE
+   client, `forge mcp`, `forge mcp serve`), web tools, plan mode and
    AskUserQuestion, slash commands, skills, output styles, then the
    full-screen UI.
 8. Remaining flags and polish.

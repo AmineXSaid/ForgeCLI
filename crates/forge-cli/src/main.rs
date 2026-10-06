@@ -5,6 +5,7 @@
 mod args;
 mod exit;
 mod host;
+mod mcp_cmd;
 mod output;
 mod repl;
 mod term;
@@ -123,6 +124,9 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
         agents_json: o.agents.clone(),
         agent: o.agent.clone(),
         sandbox: o.sandbox.clone(),
+        mcp_configs: o.mcp_config.clone(),
+        strict_mcp_config: o.strict_mcp_config,
+        mcp: None,
         provider: None,
         store_root: None,
     })
@@ -225,14 +229,22 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         Arc::new(QuietSink { verbose: o.verbose, quiet: o.quiet })
     };
 
+    let (mcp, mcp_warnings) = forge_core::connect_mcp(&lo).await;
+    lo.mcp = Some(mcp.clone());
     let session = match build_session(lo, sink, prompter) {
         Ok(s) => s,
         Err(e) => {
             let f = Fail::from(e);
             machine_error(o.output_format, &f);
+            mcp.shutdown().await;
             return Err(f);
         }
     };
+    if !o.quiet {
+        for w in &mcp_warnings {
+            eprintln!("{} {w}", term::yellow("forge: warning:"));
+        }
+    }
     *sink_id.lock().unwrap() = session.session_id.clone();
     if !o.quiet {
         for w in &session.warnings {
@@ -273,6 +285,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             pending: pending.clone(),
             handle: engine.handle(),
             history: engine.history().clone(),
+            mcp: Some(mcp.clone()),
             init_response: json!({
                 "commands": [],
                 "output_style": "default",
@@ -329,6 +342,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         }
     }
     engine.end_session("other").await;
+    mcp.shutdown().await;
     if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(exit::INTERRUPTED);
     }
@@ -485,6 +499,7 @@ fn main() {
                 clap_complete::generate(shell, &mut Cli::command(), "forge", &mut std::io::stdout());
                 Ok(exit::OK)
             }
+            Some(Command::Mcp { action }) => mcp_cmd::run(action, &cli.opts).await,
             None if cli.opts.print => run_print(cli.prompt, cli.opts).await,
             None => {
                 let t = term::get();

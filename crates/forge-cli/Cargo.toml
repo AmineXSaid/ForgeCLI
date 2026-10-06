@@ -19,6 +19,7 @@ forge-engine.workspace = true
 forge-agents.workspace = true
 forge-tools.workspace = true
 forge-core.workspace = true
+forge-mcp.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true

@@ -120,6 +120,32 @@ when anything fails. It never makes network calls.
 
 Read-only. The output goes to stdout.
 
+### `forge mcp ...`: MCP servers
+
+| Command | Does |
+| --- | --- |
+| `forge mcp add [-s local\|project\|user] [-t stdio\|http\|sse] [-e K=V]... [-H "K: V"]... <name> <command-or-url> [-- args...]` | Saves a server. `local` writes `.forge/settings.local.json` (private), `project` writes `.mcp.json` (shared) and `user` writes `<config>/settings.json` |
+| `forge mcp add-json [-s scope] <name> '<json>'` | The same, from a JSON config |
+| `forge mcp remove [-s scope] <name>` | Removes it (from every scope when none is given). Exits 1 if it was not found |
+| `forge mcp list` | Starts each server and reports `connected, N tools`, `failed: <why>` or `needs approval`. Exits 1 if any failed |
+| `forge mcp get <name>` | Config (secret values hidden), status, server info and tools |
+| `forge mcp approve <name>` / `--all` | Trusts servers from this project's `.mcp.json` (local settings) |
+| `forge mcp serve` | Forge's built-in tools as an MCP server on stdio |
+
+**Config shapes:**
+- `{"command": "...", "args": [...], "env": {...}}`
+- `{"type": "http", "url": "...", "headers": {...}}`
+- `{"type": "sse", "url": "..."}`
+
+Values may use `${VAR}` and `${VAR:-default}`.
+
+**In a session:**
+- `--mcp-config <file-or-json>...` adds servers, and `--strict-mcp-config`
+  uses only those.
+- Server tools appear as `mcp__<server>__<tool>`, and are allowed with rules
+  like `mcp__github` or `mcp__github__create_issue`.
+- `system/init` lists each server's status.
+
 ### `forge completion <bash|zsh|fish|elvish|powershell>`
 
 Prints a completion script generated from the same definitions as `--help`.
@@ -201,6 +227,7 @@ them.
 | `FORGE_HOME` | One root for config, state and cache |
 | `FORGE_SANDBOX` | Same as `--sandbox` |
 | `FORGE_VERIFY` | `0` turns the verification loop off |
+| `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT` | MCP connect and call timeouts, in milliseconds (30 s, 10 min) |
 | `FORGE_NO_INPUT` | Same as `--no-input` |
 | `FORGE_LOG` | Log filter, with `--debug` |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |

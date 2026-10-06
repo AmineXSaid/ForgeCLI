@@ -71,6 +71,10 @@ pub fn red(s: &str) -> String {
     paint("31", s)
 }
 
+pub fn green(s: &str) -> String {
+    paint("32", s)
+}
+
 pub fn yellow(s: &str) -> String {
     paint("33", s)
 }

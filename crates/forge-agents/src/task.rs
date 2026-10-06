@@ -31,6 +31,8 @@ pub struct AgentRuntime {
     pub env: Arc<std::collections::HashMap<String, String>>,
     /// The session's shell sandbox, inherited by sub-agents.
     pub sandbox: Option<Arc<forge_tools::sandbox::SandboxPolicy>>,
+    /// Tools beyond the built-ins (MCP servers' tools), offered to sub-agents too.
+    pub extra_tools: Vec<Arc<dyn Tool>>,
     /// Where sub-agent transcripts go (`None` = not persisted).
     pub store: Option<SessionStore>,
     pub session_id: String,
@@ -57,8 +59,12 @@ impl TaskTool {
     fn registry_for(&self, agent: &AgentDef) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         forge_tools::builtin::register_core(&mut reg);
+        for t in &self.rt.extra_tools {
+            reg.register(t.clone());
+        }
         if let Some(allowed) = &agent.tools {
-            reg.retain(|n| allowed.iter().any(|a| a == n));
+            // `mcp__server` in an agent's list covers every tool of that server.
+            reg.retain(|n| allowed.iter().any(|a| a == n || n.starts_with(&format!("{a}__"))));
         }
         // No nested sub-agents.
         reg.retain(|n| n != "Task");

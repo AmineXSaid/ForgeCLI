@@ -20,7 +20,7 @@ use futures::Stream;
 use tokio_util::sync::CancellationToken;
 
 pub use accumulate::{MessageAccumulator, TRUNCATED_INPUT};
-pub use messages::{MessagesConfig, MessagesProvider};
+pub use messages::{describe_network_error, MessagesConfig, MessagesProvider};
 pub use mock::{MockProvider, MockTurn};
 pub use models::{resolve_model, ModelInfo, ThinkingStyle};
 pub use openai::{OpenAiConfig, OpenAiProvider};

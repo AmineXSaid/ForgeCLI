@@ -124,10 +124,12 @@ impl EventSink for PrintSink {
 
 pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fail> {
     let lines = spawn_stdin();
-    let lo = crate::launch_options(&o)?;
+    let mut lo = crate::launch_options(&o)?;
+    let (mcp, mcp_warnings) = forge_core::connect_mcp(&lo).await;
+    lo.mcp = Some(mcp.clone());
     let session = forge_core::build_session(lo, Arc::new(PrintSink), Arc::new(LinePrompter { lines: lines.clone() }))
         .map_err(crate::exit::Fail::from)?;
-    for w in &session.warnings {
+    for w in session.warnings.iter().chain(&mcp_warnings) {
         eprintln!("forge: {w}");
     }
     let mut engine = session.engine;
@@ -178,5 +180,6 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         }
     }
     engine.end_session("prompt_input_exit").await;
+    mcp.shutdown().await;
     Ok(0)
 }

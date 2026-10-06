@@ -164,6 +164,11 @@ impl MessagesProvider {
 
 /// A transport failure with its root cause ("connection refused", "timed out", ...).
 pub(crate) fn network_error(e: reqwest::Error) -> ApiError {
+    ApiError::Network(describe_network_error(&e))
+}
+
+/// "could not connect to <url>: <root cause>", for any reqwest failure.
+pub fn describe_network_error(e: &reqwest::Error) -> String {
     let mut msg = if e.is_timeout() {
         "request timed out".to_string()
     } else if e.is_connect() {
@@ -174,7 +179,7 @@ pub(crate) fn network_error(e: reqwest::Error) -> ApiError {
     if let Some(url) = e.url() {
         msg.push_str(&format!(" to {}", url.as_str().split('?').next().unwrap_or("")));
     }
-    let mut source = std::error::Error::source(&e);
+    let mut source = std::error::Error::source(e);
     let mut last = None;
     while let Some(s) = source {
         last = Some(s.to_string());
@@ -183,7 +188,7 @@ pub(crate) fn network_error(e: reqwest::Error) -> ApiError {
     if let Some(cause) = last {
         msg.push_str(&format!(": {cause}"));
     }
-    ApiError::Network(msg)
+    msg
 }
 
 fn header_value(v: &str) -> Result<HeaderValue, ApiError> {

@@ -45,7 +45,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `control_request` `set_permission_mode` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
 | `control_request` `set_model` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
 | `control_request` `set_max_thinking_tokens` | done | inferred | `e2e::host_sets_thinking_tokens` |  |
-| `control_request` `mcp_status` | partial | inferred |  | Returns an empty list until MCP lands (M6) |
+| `control_request` `mcp_status` | done | inferred | `mcp::session_uses_mcp_tools_and_reports_status` | `{mcpServers: [{name, status, scope, serverInfo, tools, error}]}` |
 | `control_request` `rewind_files` | done | inferred | `e2e::replay_uuid_drives_rewind_files` | Contract C4 |
 | `system/compact_boundary` | done | inferred | `engine::c9_auto_triggers_at_threshold` | `compact_metadata: {trigger, pre_tokens}` |
 | `system/model_fallback` | done | inferred | `engine::c6_fallback_on_overload_for_this_turn_only` | Contract C6 |
@@ -160,13 +160,18 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
-| stdio client | todo | | |
-| Streamable HTTP client | todo | | |
-| SSE client | todo | | |
-| Tools, resources, prompts (as slash commands) | todo | | |
-| `--mcp-config` / `--strict-mcp-config` / `.mcp.json` | todo | | |
-| `forge mcp add/remove/list/get` | todo | | |
-| `forge mcp serve` | todo | | |
+| stdio client (server requests `ping`, `roots/list`; `list_changed`; stderr in errors) | done | `client::stdio_server_tools_resources_and_server_requests`, `client::failures_are_reported_not_fatal`, `transport::dispatch_routes_responses_requests_and_notifications` | |
+| Streamable HTTP client (JSON and SSE answers, `Mcp-Session-Id`, protocol header, DELETE on close) | done | `client::streamable_http_json_sse_and_sessions` | |
+| SSE client (2024-11-05 transport) | partial | | Built; no test against an SSE server yet |
+| Tools (`mcp__<server>__<tool>`), resources (`ListMcpResourcesTool`, `ReadMcpResourceTool`) | done | `client::stdio_server_tools_resources_and_server_requests`, `tools::converts_every_content_type`, `tools::names_are_clean_and_short` | |
+| Prompts as slash commands | todo | | Waits for slash commands (M5); `prompts/list` and `prompts/get` exist in the client |
+| Server instructions in the system prompt | done | `client::stdio_server_tools_resources_and_server_requests` | |
+| `--mcp-config` / `--strict-mcp-config` / `.mcp.json` with approval (C16) | done | `config::project_servers_need_the_users_approval`, `config::precedence_and_strict_mode`, `mcp::project_servers_wait_for_approval` | |
+| `${VAR}` / `${VAR:-default}` expansion | done | `config::expands_environment_variables` | |
+| `forge mcp add/add-json/remove/list/get/approve` | done | `mcp::add_list_get_remove`, `mcp::project_servers_wait_for_approval` | `approve` is Forge's (the reference asks interactively) |
+| `forge mcp serve` | done | `client::forge_serves_its_tools`, `mcp::add_list_get_remove` | Dangerous-command patterns are refused (C14) |
+| MCP tools in sub-agents | done | `core` wiring via `AgentRuntime.extra_tools` | Agent tool lists may name `mcp__<server>` |
+| OAuth for remote servers | todo | | Headers (`-H`) only for now |
 
 ## CLI flags (from the reference `--help`)
 
@@ -180,7 +185,7 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | `--system-prompt[-file]`, `--append-system-prompt[-file]`, `--exclude-dynamic-system-prompt-sections` | done | `prompts::replace_append_and_exclude_dynamic` |  |
 | `-c/--continue`, `-r/--resume`, `--fork-session`, `--session-id`, `--no-session-persistence`, `-n/--name` | partial | `core::continue_and_fork`, `e2e::max_turns_and_continue` | `--name` is accepted but not shown anywhere until the TUI |
 | `--max-turns`, `--max-budget-usd`, `--json-schema` | partial | `e2e::max_turns_and_continue`, `engine::c7_budget_and_max_turns_stop_the_run` | `--json-schema` sends `output_config.format` and parses the result; no retry on invalid output yet |
-| `--mcp-config`, `--strict-mcp-config` | todo | | |
+| `--mcp-config`, `--strict-mcp-config` | done | `mcp::session_uses_mcp_tools_and_reports_status`, `mcp::project_servers_wait_for_approval` | |
 | `--settings`, `--setting-sources`, `--bare`, `--safe-mode`, `--restricted` | partial | `config::layers_merge_in_order` | `--restricted` not implemented yet |
 | `--agents`, `--agent`, `--plugin-dir`, `--disable-slash-commands` | todo | | |
 | `--debug`, `--debug-file`, `--verbose`, `-v/--version` | done | `e2e::version_and_help` |  |
@@ -193,7 +198,7 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 
 | Command | Status | Test | Notes |
 | --- | --- | --- | --- |
-| `mcp` | todo | | |
+| `mcp` | done | `mcp::add_list_get_remove` | `serve`, `add`, `add-json`, `remove`, `list`, `get`, `approve` |
 | `doctor` | partial |  | Basic checks only |
 | `config` (get/set/list/add/remove) | partial |  | `list` and `get` only |
 | `agents` (list) | todo | | Background-session management is out |

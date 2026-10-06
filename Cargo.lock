@@ -431,6 +431,7 @@ dependencies = [
  "forge-core",
  "forge-engine",
  "forge-eval",
+ "forge-mcp",
  "forge-permissions",
  "forge-session",
  "forge-test-host",
@@ -475,6 +476,7 @@ dependencies = [
  "forge-engine",
  "forge-git",
  "forge-hooks",
+ "forge-mcp",
  "forge-permissions",
  "forge-session",
  "forge-tools",
@@ -541,6 +543,27 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "forge-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "forge-api",
+ "forge-config",
+ "forge-permissions",
+ "forge-tools",
+ "forge-types",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tracing",

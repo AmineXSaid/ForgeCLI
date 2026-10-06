@@ -441,6 +441,48 @@ Tests:
 - `engine::the_plan_survives_compaction_and_resume`;
 - `engine::the_model_is_told_when_turns_run_low`.
 
+### C16. MCP servers and trust
+
+**Sources**, later ones replacing earlier ones by name:
+1. `.mcp.json`;
+2. `mcpServers` in settings;
+3. `--mcp-config`.
+
+`--strict-mcp-config` and `--bare` read only `--mcp-config`.
+
+**Trust:** a `.mcp.json` server is a command shipped with the repository.
+- It starts only when the user's own settings trust it: the user or local
+  layer, via `enableAllProjectMcpServers` or `enabledMcpjsonServers`
+  (`forge mcp approve`).
+- `disabledMcpjsonServers` wins over both.
+- The project's checked-in settings cannot approve it.
+- An unapproved server shows as `disabled` in `system/init`, with a warning
+  on stderr.
+
+**Startup:**
+- All servers connect concurrently before the first turn: `initialize`,
+  then `notifications/initialized`, then `tools/list` (paged).
+- Each has `MCP_TIMEOUT` (default 30 s) to connect. Calls have
+  `MCP_TOOL_TIMEOUT` (default 10 min).
+- A failing server is reported, with its stderr tail, and never fails the
+  session.
+
+**Tools:**
+- Server tools are named `mcp__<server>__<tool>`: cleaned to
+  `[A-Za-z0-9_-]`, at most 64 characters, with a hash suffix when cut.
+- They join after `--tools` filtering and before `--disallowedTools`.
+- They always go through permissions, since `readOnlyHint` is trusted only
+  for running calls in parallel.
+- Their output passes through the output budget (C15) and the injection
+  markers (C14).
+
+**Server requests:** the client answers `ping` and `roots/list` (the project
+directory). Other server requests (`sampling`, `elicitation`) get "method
+not found".
+
+**`forge mcp serve`** exposes the built-in tools without prompts, since the
+client approves, but refuses commands matching dangerous-command patterns.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

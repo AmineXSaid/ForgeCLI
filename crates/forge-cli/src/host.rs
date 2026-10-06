@@ -86,6 +86,7 @@ pub struct ControlContext {
     pub pending: Pending,
     pub handle: EngineHandle,
     pub history: Arc<FileHistory>,
+    pub mcp: Option<Arc<forge_mcp::McpManager>>,
     pub init_response: Value,
 }
 
@@ -131,7 +132,10 @@ impl ControlContext {
                 self.handle.set_max_thinking_tokens(n);
                 self.answer(id, Ok(None));
             }
-            "mcp_status" => self.answer(id, Ok(Some(json!({"mcpServers": []})))),
+            "mcp_status" => {
+                let servers = self.mcp.as_ref().map(|m| m.status_json()).unwrap_or_else(|| json!([]));
+                self.answer(id, Ok(Some(json!({"mcpServers": servers}))))
+            }
             "rewind_files" => {
                 let Some(msg_id) = b.get_str("user_message_id") else {
                     return self.answer(id, Err("user_message_id is required".into()));

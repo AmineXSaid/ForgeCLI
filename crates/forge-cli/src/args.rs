@@ -124,6 +124,12 @@ pub struct Opts {
     /// Additional directories to allow tool access to
     #[arg(long = "add-dir", num_args = 1..)]
     pub add_dir: Vec<PathBuf>,
+    /// Load MCP servers from JSON files or strings (space separated)
+    #[arg(long = "mcp-config", num_args = 1.., value_name = "CONFIGS")]
+    pub mcp_config: Vec<String>,
+    /// Use only the MCP servers from --mcp-config
+    #[arg(long = "strict-mcp-config")]
+    pub strict_mcp_config: bool,
 
     /// System prompt for the session
     #[arg(long = "system-prompt")]
@@ -206,6 +212,63 @@ pub enum Command {
     Completion {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+    /// Configure and manage MCP servers
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum McpAction {
+    /// Run Forge's built-in tools as an MCP server on stdio
+    Serve,
+    /// Add a server: `forge mcp add name -- command args...` or `forge mcp add -t http name https://...`
+    Add {
+        /// Where to save it: local (this project, private), project (.mcp.json, shared), or user
+        #[arg(short, long, default_value = "local")]
+        scope: String,
+        /// stdio (default for commands), http (default for URLs) or sse
+        #[arg(short, long)]
+        transport: Option<String>,
+        /// Environment for a stdio server, KEY=value (repeatable)
+        #[arg(short, long = "env")]
+        env: Vec<String>,
+        /// Header for an HTTP server, "Name: value" (repeatable)
+        #[arg(short = 'H', long = "header")]
+        header: Vec<String>,
+        name: String,
+        /// The command (stdio) or URL (http, sse)
+        command_or_url: String,
+        /// Arguments for the command
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Add a server from its JSON config
+    AddJson {
+        #[arg(short, long, default_value = "local")]
+        scope: String,
+        name: String,
+        json: String,
+    },
+    /// Remove a server (from the given scope, or from wherever it is)
+    Remove {
+        #[arg(short, long)]
+        scope: Option<String>,
+        name: String,
+    },
+    /// List servers and check that each one starts
+    List,
+    /// Show one server's configuration (secrets redacted) and status
+    Get { name: String },
+    /// Trust servers from this project's .mcp.json (saved in local settings)
+    Approve {
+        /// The server to trust
+        name: Option<String>,
+        /// Trust every server in this project's .mcp.json
+        #[arg(long)]
+        all: bool,
     },
 }
 
