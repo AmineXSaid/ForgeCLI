@@ -1,0 +1,12 @@
+[package]
+name = "forge-compact"
+description = "Context compaction (contract C9): micro-compaction of stale tool results, thresholds and the summary prompt."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+forge-types.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

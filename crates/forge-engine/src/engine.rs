@@ -65,6 +65,10 @@ pub struct EngineConfig {
     /// Text prepended (as a system reminder) to the first user message of a new session.
     pub initial_context: Option<String>,
     pub metadata_user_id: Option<String>,
+    /// Context window used for compaction thresholds (`--autocompact`); default: the model's window.
+    pub autocompact_window: Option<u64>,
+    /// Summarize automatically when the window is nearly full (contract C9).
+    pub auto_compact: bool,
 }
 
 impl Default for EngineConfig {
@@ -81,6 +85,8 @@ impl Default for EngineConfig {
             pricing: HashMap::new(),
             initial_context: None,
             metadata_user_id: None,
+            autocompact_window: None,
+            auto_compact: true,
         }
     }
 }
@@ -212,6 +218,16 @@ pub struct Engine {
     handle: EngineHandle,
     system: Vec<SystemBlock>,
     session_started: bool,
+    /// Memory and environment context, re-attached after compaction.
+    session_context: Option<String>,
+}
+
+/// What a compaction did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactInfo {
+    pub trigger: String,
+    pub pre_tokens: u64,
+    pub summary: String,
 }
 
 /// Per-turn accounting.
@@ -265,7 +281,16 @@ impl Engine {
             history: parts.history,
             on_permission_update: Mutex::new(None),
         });
-        Ok(Engine { cfg, shared, state: TurnState::default(), handle, system: parts.system, session_started: false })
+        let session_context = cfg.initial_context.clone();
+        Ok(Engine {
+            cfg,
+            shared,
+            state: TurnState::default(),
+            handle,
+            system: parts.system,
+            session_started: false,
+            session_context,
+        })
     }
 
     pub fn handle(&self) -> EngineHandle {
@@ -406,6 +431,10 @@ impl Engine {
 
     /// Stream one model response, emitting events. Keeps a usable partial on interrupt.
     async fn stream_once(&self, req: MessagesRequest, cancel: &CancellationToken) -> StreamOutcome {
+        self.stream_inner(req, cancel, true).await
+    }
+
+    async fn stream_inner(&self, req: MessagesRequest, cancel: &CancellationToken, emit: bool) -> StreamOutcome {
         let mut stream = match self.shared.provider.stream(req, cancel.clone()).await {
             Ok(s) => s,
             Err(ApiError::Cancelled) => return StreamOutcome::Interrupted(None),
@@ -426,7 +455,9 @@ impl Engine {
                     if let Err(e) = acc.push(&ev) {
                         return StreamOutcome::Failed(e);
                     }
-                    self.emit(EngineEvent::Stream { event: ev, parent_tool_use_id: None });
+                    if emit {
+                        self.emit(EngineEvent::Stream { event: ev, parent_tool_use_id: None });
+                    }
                 }
                 Some(Err(ApiError::Cancelled)) => {
                     let partial = acc.snapshot().cloned().map(|mut m| {
@@ -481,6 +512,121 @@ impl Engine {
             add(e, "webSearchRequests", n);
         }
         e["costUSD"] = json!(e["costUSD"].as_f64().unwrap_or(0.0) + cost);
+    }
+
+    fn compact_window(&self, model: &str) -> u64 {
+        self.cfg.autocompact_window.unwrap_or_else(|| forge_api::models::model_info_or_default(model).context_window)
+    }
+
+    /// Micro-compact and, if the window is nearly full, summarize (contract C9).
+    async fn maybe_compact(
+        &mut self,
+        model: &str,
+        continue_work: bool,
+        cancel: &CancellationToken,
+        turn: &mut TurnAcc,
+    ) {
+        let window = self.compact_window(model);
+        let max_out = self.cfg.max_output_tokens;
+        let used = self.state.context_tokens;
+        if used > forge_compact::micro_threshold(window, max_out) {
+            let ids = forge_compact::micro_candidates(&self.state.messages, &self.state.microcompacted);
+            if !ids.is_empty() {
+                self.shared.transcript.append_system("microcompact", json!({"toolUseIds": ids}));
+                self.state.microcompacted.extend(ids);
+            }
+        }
+        if self.cfg.auto_compact
+            && used >= forge_compact::autocompact_threshold(window, max_out)
+            && !self.state.messages.is_empty()
+        {
+            if let Err(e) = self.compact_inner(None, "auto", continue_work, model, cancel, turn).await {
+                self.notice(NoticeLevel::Warning, format!("Automatic compaction failed: {e}"));
+            }
+        }
+    }
+
+    /// Summarize the conversation now (`/compact [instructions]`).
+    pub async fn compact(&mut self, instructions: Option<&str>) -> Result<CompactInfo, String> {
+        let cancel = self.new_turn_token();
+        let model = self.handle.model();
+        let mut turn = TurnAcc::default();
+        self.compact_inner(instructions, "manual", false, &model, &cancel, &mut turn).await
+    }
+
+    async fn compact_inner(
+        &mut self,
+        instructions: Option<&str>,
+        trigger: &str,
+        continue_work: bool,
+        model: &str,
+        cancel: &CancellationToken,
+        turn: &mut TurnAcc,
+    ) -> Result<CompactInfo, String> {
+        if self.state.messages.is_empty() {
+            return Err("nothing to compact yet".into());
+        }
+        let o = self
+            .shared
+            .hooks
+            .run(
+                HookEvent::PreCompact,
+                Some(trigger),
+                self.mode_str(),
+                json!({"trigger": trigger, "custom_instructions": instructions.unwrap_or("")}),
+                cancel,
+            )
+            .await;
+        for m in o.user_messages.iter().chain(o.blocked.iter()) {
+            self.notice(NoticeLevel::Warning, m.clone());
+        }
+        let mut extra = instructions.map(str::to_string).unwrap_or_default();
+        for c in &o.additional_context {
+            extra.push('\n');
+            extra.push_str(c);
+        }
+        let mut req = self.build_request(model);
+        let ask = ContentBlock::text(forge_compact::summary_instruction(
+            Some(extra.as_str()).filter(|e| !e.trim().is_empty()),
+        ));
+        match req.messages.last_mut() {
+            Some(last) if last.role == forge_types::Role::User => last.content.push(ask),
+            _ => req.messages.push(Message::user(vec![ask])),
+        }
+        req.tool_choice = Some(json!({"type": "none"}));
+        req.output_config = req.output_config.map(|mut oc| {
+            if let Some(o) = oc.as_object_mut() {
+                o.remove("format");
+            }
+            oc
+        });
+        req.max_tokens = req.max_tokens.min(20_000);
+        let t0 = Instant::now();
+        let outcome = self.stream_inner(req, cancel, false).await;
+        turn.api_ms += t0.elapsed().as_millis() as u64;
+        let msg = match outcome {
+            StreamOutcome::Done(m) => m,
+            StreamOutcome::Interrupted(_) => return Err("interrupted".into()),
+            StreamOutcome::Failed(e) => return Err(e.to_string()),
+        };
+        self.record_usage(model, &msg.usage.clone(), turn);
+        let summary = forge_compact::extract_summary(&msg.to_message().text());
+        if summary.is_empty() {
+            return Err("the model returned an empty summary".into());
+        }
+        let pre_tokens = self.state.context_tokens;
+        self.shared.transcript.append_compact_boundary(json!({"trigger": trigger, "preTokens": pre_tokens}));
+        self.emit(EngineEvent::System {
+            subtype: "compact_boundary".into(),
+            data: json!({"compact_metadata": {"trigger": trigger, "pre_tokens": pre_tokens}}),
+        });
+        self.state.messages.clear();
+        self.state.uuids.clear();
+        self.state.microcompacted.clear();
+        let first = forge_compact::summary_message(&summary, self.session_context.as_deref(), continue_work);
+        self.push_user(first, true, None, false);
+        self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
 
     /// A fresh cancellation token for this turn.
@@ -548,6 +694,8 @@ impl Engine {
             )));
         }
 
+        let model0 = self.handle.model();
+        self.maybe_compact(&model0, false, &cancel, &mut turn).await;
         let user_msg = Message::user(blocks);
         let user_uuid = self.push_user(user_msg.clone(), false, None, false);
         self.emit(EngineEvent::PromptAccepted { message: user_msg, uuid: user_uuid.clone() });
@@ -558,6 +706,7 @@ impl Engine {
         let mut fallback: Option<String> = None;
         let mut fallbacks = self.cfg.fallback_models.clone().into_iter();
         let mut stop_hook_active = false;
+        let mut compacted_for_length = false;
         let mut last_text: Option<String> = None;
 
         loop {
@@ -580,6 +729,9 @@ impl Engine {
             }
             // A host may switch models between calls; a fallback wins for this turn.
             model = fallback.clone().unwrap_or_else(|| self.handle.model());
+            if turn.api_calls > 0 {
+                self.maybe_compact(&model, true, &cancel, &mut turn).await;
+            }
             let req = self.build_request(&model);
             let t0 = Instant::now();
             let outcome = self.stream_once(req, &cancel).await;
@@ -610,6 +762,28 @@ impl Engine {
                         Some("interrupted".into()),
                         None,
                     );
+                }
+                StreamOutcome::Failed(e) if e.is_prompt_too_long() && !compacted_for_length => {
+                    compacted_for_length = true;
+                    self.notice(
+                        NoticeLevel::Warning,
+                        "The conversation no longer fits the context window; compacting.",
+                    );
+                    match self.compact_inner(None, "auto", true, &model, &cancel, &mut turn).await {
+                        Ok(_) => continue,
+                        Err(err) => {
+                            let text = format!("API Error: {e} (compaction failed: {err})");
+                            turn.errors.push(text.clone());
+                            return self.finish(
+                                started,
+                                turn,
+                                ResultSubtype::ErrorDuringExecution,
+                                Some(text),
+                                Some("api_error".into()),
+                                None,
+                            );
+                        }
+                    }
                 }
                 StreamOutcome::Failed(e) => {
                     let switch = e.is_overloaded() || matches!(&e, ApiError::Http { status: 404, .. });

@@ -69,6 +69,8 @@ pub struct LaunchOptions {
     /// `--bare` / `--safe-mode`: no hooks, no memory files.
     pub bare: bool,
     pub betas: Vec<String>,
+    /// `--autocompact <auto|tokens>`: the window compaction thresholds use.
+    pub autocompact: Option<String>,
     /// Replace the provider (tests, embedding).
     pub provider: Option<Arc<dyn Provider>>,
     /// Where sessions live (default `~/.forge/projects`).
@@ -347,6 +349,11 @@ pub fn build_session(
         pricing: pricing_from_settings(&settings),
         initial_context: (!initial.is_empty()).then(|| initial.join("\n\n")),
         metadata_user_id: None,
+        autocompact_window: match opts.autocompact.as_deref() {
+            Some(v) => parse_autocompact(v)?,
+            None => settings.get("/autoCompactWindow").and_then(Value::as_u64),
+        },
+        auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
     };
     let parts = EngineParts {
         provider: provider.clone(),
@@ -389,6 +396,25 @@ pub fn build_session(
         uuid: uuid::Uuid::new_v4().to_string(),
     };
     Ok(Session { engine, init, settings, warnings, session_id, resumed })
+}
+
+/// `auto` or a token count between 100k and 1M (`200000`, `200k`, `1m`).
+pub fn parse_autocompact(v: &str) -> Result<Option<u64>, CoreError> {
+    let t = v.trim().to_ascii_lowercase();
+    if t == "auto" {
+        return Ok(None);
+    }
+    let n = if let Some(k) = t.strip_suffix('k') {
+        k.parse::<f64>().ok().map(|n| (n * 1_000.0) as u64)
+    } else if let Some(m) = t.strip_suffix('m') {
+        m.parse::<f64>().ok().map(|n| (n * 1_000_000.0) as u64)
+    } else {
+        t.replace('_', "").parse::<u64>().ok()
+    };
+    match n {
+        Some(n) if (100_000..=1_000_000).contains(&n) => Ok(Some(n)),
+        _ => Err(CoreError::Config(format!("--autocompact must be auto or 100k-1M tokens, got {v:?}"))),
+    }
 }
 
 fn key_source(settings: &LoadedSettings) -> String {

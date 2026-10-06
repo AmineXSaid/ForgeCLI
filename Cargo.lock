@@ -412,6 +412,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-compact"
+version = "0.1.0"
+dependencies = [
+ "forge-types",
+ "serde_json",
+]
+
+[[package]]
 name = "forge-config"
 version = "0.1.0"
 dependencies = [
@@ -450,6 +458,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "forge-api",
+ "forge-compact",
  "forge-git",
  "forge-hooks",
  "forge-permissions",

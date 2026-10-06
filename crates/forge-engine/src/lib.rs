@@ -12,7 +12,9 @@ mod exec;
 pub mod prompts;
 pub mod request;
 
-pub use engine::{Engine, EngineConfig, EngineError, EngineHandle, EngineParts, Pricing, TurnResult, TurnState};
+pub use engine::{
+    CompactInfo, Engine, EngineConfig, EngineError, EngineHandle, EngineParts, Pricing, TurnResult, TurnState,
+};
 pub use events::{
     DenyPrompter, EngineEvent, EventSink, NoticeLevel, NullSink, PermissionAnswer, PermissionPrompt,
     PermissionPrompter, VecSink,

@@ -90,6 +90,7 @@ fn launch_options(o: &Opts) -> anyhow::Result<LaunchOptions> {
         no_session_persistence: o.no_session_persistence,
         bare: o.bare || o.safe_mode,
         betas: o.betas.clone(),
+        autocompact: o.autocompact.clone(),
         provider: None,
         store_root: None,
     })

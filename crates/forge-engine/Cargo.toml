@@ -13,6 +13,7 @@ forge-hooks.workspace = true
 forge-tools.workspace = true
 forge-session.workspace = true
 forge-git.workspace = true
+forge-compact.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 futures.workspace = true

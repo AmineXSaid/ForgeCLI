@@ -507,3 +507,111 @@ async fn cache_breakpoints_on_system_tools_and_last_message() {
         assert!(req.tools[..req.tools.len() - 1].iter().all(|t| t.cache_control.is_none()));
     }
 }
+
+fn usage(input: u64) -> forge_types::Usage {
+    forge_types::Usage { input_tokens: input, output_tokens: 10, ..Default::default() }
+}
+
+fn small_window() -> EngineConfig {
+    // threshold = 60_000 - 32_000 - 13_000 = 15_000; micro at 7_500.
+    EngineConfig { autocompact_window: Some(60_000), ..Default::default() }
+}
+
+fn result_text(req: &forge_types::MessagesRequest, id: &str) -> Option<String> {
+    req.messages.iter().flat_map(|m| m.content.iter()).find_map(|b| match b {
+        ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == id => Some(content.to_text()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn c9_micro_is_sticky_across_requests() {
+    let h = Harness::new(vec![]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    let big = h.cwd().join("big.txt");
+    std::fs::write(&big, "line of text\n".repeat(1500)).unwrap();
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    // Turn 1 reads the big file; later turns are plain. Usage stays between micro and auto thresholds.
+    h.provider.push(MockTurn::tool("Read", json!({"file_path": big})).with_usage(usage(9_000)));
+    h.provider.push(MockTurn::text("read it").with_usage(usage(9_000)));
+    for i in 2..=5 {
+        h.provider.push(MockTurn::text(&format!("answer {i}")).with_usage(usage(9_000)));
+    }
+    for i in 1..=5 {
+        e.submit(prompt(&format!("turn {i}"))).await;
+    }
+    let reqs = h.provider.requests();
+    let first_id = "toolu_00_read";
+    assert!(result_text(&reqs[1], first_id).unwrap().contains("line of text"), "fresh result sent in full");
+    let cleared_at = reqs
+        .iter()
+        .position(|r| result_text(r, first_id).as_deref() == Some(request::CLEARED_RESULT))
+        .expect("cleared eventually");
+    assert!(
+        reqs[cleared_at..].iter().all(|r| result_text(r, first_id).as_deref() == Some(request::CLEARED_RESULT)),
+        "stays cleared"
+    );
+    let t = h.transcript_text();
+    assert_eq!(t.matches("\"subtype\":\"microcompact\"").count(), 1, "recorded once");
+    assert!(t.contains("line of text"), "the transcript keeps the original");
+}
+
+#[tokio::test]
+async fn c9_auto_triggers_at_threshold() {
+    let h = Harness::new(vec![
+        MockTurn::text("first answer").with_usage(usage(20_000)),
+        MockTurn::text("<analysis>a</analysis><summary>The user asked about X.</summary>"),
+        MockTurn::text("second answer"),
+    ]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    let r = e.submit(prompt("second")).await;
+    assert_eq!(r.result.as_deref(), Some("second answer"));
+    let reqs = h.provider.requests();
+    assert_eq!(reqs.len(), 3);
+    assert_eq!(reqs[1].tool_choice, Some(json!({"type": "none"})), "summary request uses no tools");
+    assert!(reqs[1].messages.last().unwrap().text().contains("<summary>"));
+    let after = &reqs[2];
+    assert_eq!(after.messages.len(), 1, "history replaced by the summary plus the new prompt");
+    let t = after.messages[0].text();
+    assert!(t.contains("The user asked about X.") && t.contains("second"), "{t}");
+    assert!(!t.contains("Continue the work"), "compaction before a new prompt does not tell the model to continue");
+    assert!(h.sink.take().iter().any(|ev| matches!(ev, EngineEvent::System { subtype, data } if subtype == "compact_boundary" && data["compact_metadata"]["trigger"] == "auto")));
+    // A resume loads only what follows the boundary.
+    let path = SessionStore::new(h.dir.path().join("store")).session_path(&h.cwd(), SID).unwrap();
+    let loaded = forge_session::LoadedSession::load(&path, None).unwrap();
+    assert_eq!(loaded.messages.len(), 3);
+    assert!(loaded.messages[0].message.text().contains("The user asked about X."));
+}
+
+#[tokio::test]
+async fn manual_compact_passes_instructions() {
+    let h = Harness::new(vec![MockTurn::text("hello"), MockTurn::text("<summary>short</summary>")]);
+    let mut e = h.engine();
+    e.submit(prompt("hi")).await;
+    let info = e.compact(Some("keep the API details")).await.unwrap();
+    assert_eq!(info.trigger, "manual");
+    assert_eq!(info.summary, "short");
+    assert!(h.provider.requests()[1].messages.last().unwrap().text().contains("keep the API details"));
+    assert_eq!(e.state.messages.len(), 1);
+}
+
+#[tokio::test]
+async fn prompt_too_long_compacts_and_retries() {
+    let h = Harness::new(vec![
+        MockTurn::text("ok").with_usage(usage(100)),
+        MockTurn::HttpError {
+            status: 400,
+            kind: "invalid_request_error".into(),
+            message: "prompt is too long: 1000001 tokens > 1000000 maximum".into(),
+        },
+        MockTurn::text("<summary>compressed</summary>"),
+        MockTurn::text("answered after compaction"),
+    ]);
+    let mut e = h.engine();
+    e.submit(prompt("one")).await;
+    let r = e.submit(prompt("two")).await;
+    assert_eq!(r.result.as_deref(), Some("answered after compaction"));
+    let last = h.provider.requests().last().unwrap().clone();
+    assert!(last.messages[0].text().contains("Continue the work"), "mid-turn compaction tells the model to continue");
+}

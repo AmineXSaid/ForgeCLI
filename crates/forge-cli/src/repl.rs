@@ -159,6 +159,13 @@ pub async fn run(prompt: Option<String>, o: Opts) -> anyhow::Result<i32> {
         if t == "/exit" || t == "/quit" {
             break;
         }
+        if let Some(rest) = t.strip_prefix("/compact") {
+            match engine.compact(Some(rest.trim()).filter(|r| !r.is_empty())).await {
+                Ok(info) => eprintln!("Compacted ({} tokens summarized).", info.pre_tokens),
+                Err(e) => eprintln!("Could not compact: {e}"),
+            }
+            continue;
+        }
         let r = engine.submit(MessageContent::Text(t.to_string())).await;
         if let Some(b) = r.prompt_blocked {
             eprintln!("{b}");

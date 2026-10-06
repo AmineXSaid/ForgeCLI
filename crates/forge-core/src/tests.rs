@@ -86,6 +86,16 @@ async fn skip_permissions_flag_beats_settings_mode() {
 }
 
 #[test]
+fn autocompact_values() {
+    assert_eq!(parse_autocompact("auto").unwrap(), None);
+    assert_eq!(parse_autocompact("200k").unwrap(), Some(200_000));
+    assert_eq!(parse_autocompact("1m").unwrap(), Some(1_000_000));
+    assert_eq!(parse_autocompact("150000").unwrap(), Some(150_000));
+    assert!(parse_autocompact("50k").is_err());
+    assert!(parse_autocompact("lots").is_err());
+}
+
+#[test]
 fn permission_updates_persist_to_named_file() {
     let d = tempfile::tempdir().unwrap();
     persist_permission_update(

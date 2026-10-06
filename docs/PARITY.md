@@ -85,8 +85,8 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `--max-turns` / `--max-budget-usd` | done | `engine::c7_unknown_model_budget_fails_closed`, `engine::c7_budget_and_max_turns_stop_the_run`, `e2e::max_turns_and_continue` | Contract C7 |
 | Thinking / effort per model | done | `request::thinking_per_model` |  |
 | Prompt-cache breakpoints | done | `engine::cache_breakpoints_on_system_tools_and_last_message` | System, last tool and last message |
-| Micro-compaction | todo | `compact::c9_micro_clears_only_eligible_results`, `compact::c9_micro_is_sticky_across_requests` | Contract C9 |
-| Auto-compact / `/compact` | todo | `compact::c9_auto_triggers_at_threshold` | Contract C9 |
+| Micro-compaction | done | `compact::c9_micro_clears_only_eligible_results`, `engine::c9_micro_is_sticky_across_requests` | Contract C9 |
+| Auto-compact / `/compact` | done | `engine::c9_auto_triggers_at_threshold`, `engine::manual_compact_passes_instructions`, `engine::prompt_too_long_compacts_and_retries` | Contract C9. `/compact` works in the line REPL now and in every mode once slash commands land (M5) |
 
 ## Permissions
 
@@ -107,7 +107,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | Settings layers + `--setting-sources` | done | `config::layers_merge_in_order`, `config::sources_filter_layers` |  |
 | `--settings` file or JSON | done | `config::layers_merge_in_order` |  |
 | FORGE.md discovery + `@import` | done | `config::discovers_and_imports`, `config::import_cycles_stop` |  |
-| Hooks: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification | partial | `engine::hooks_in_the_loop`, `engine::user_prompt_hook_can_block` | All events run; SubagentStop waits for sub-agents (M5), PreCompact for compaction (M4), Notification for the TUI (M8) |
+| Hooks: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification | partial | `engine::hooks_in_the_loop`, `engine::user_prompt_hook_can_block` | All events run; SubagentStop waits for sub-agents (M5), Notification for the TUI (M8) |
 | Hook exit-code semantics per event | todo | `hooks::c11_exit2_semantics_per_event` | Contract C11 |
 | Hook JSON output (decision, reason, `updatedInput`, `additionalContext`) | todo | `hooks::c11_json_permission_decision` | Contract C11 |
 
@@ -117,7 +117,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | --- | --- | --- | --- |
 | JSONL transcript | done | `session::c5_key_collision_keeps_projects_apart`, `session::write_and_resume_round_trip` | Contract C5 |
 | `additionalDirectories` restored on resume | done | `core::resume_restores_additional_directories` | Contract C5 |
-| System events in JSONL (fallback, compact, microcompact, mode) | partial | `engine::c6_fallback_on_overload_for_this_turn_only` | Fallback and mode done; compaction events come with M4 |
+| System events in JSONL (fallback, compact, microcompact, mode) | done | `engine::c6_fallback_on_overload_for_this_turn_only`, `engine::c9_micro_is_sticky_across_requests`, `engine::c9_auto_triggers_at_threshold` | Contracts C5, C6 and C9 |
 | `--continue` / `--resume <id>` | done | `core::continue_and_fork`, `e2e::max_turns_and_continue` |  |
 | `--fork-session` / `--session-id` | done | `core::continue_and_fork`, `session::fork_copies_chain_under_new_id` |  |
 | `--no-session-persistence` | done | `session::no_persistence_writes_nothing` |  |

@@ -148,6 +148,9 @@ pub struct Opts {
     #[arg(short = 'n', long = "name")]
     pub name: Option<String>,
 
+    /// Auto-compact window size (auto, or 100k-1M tokens)
+    #[arg(long)]
+    pub autocompact: Option<String>,
     /// Maximum number of agentic turns (print mode)
     #[arg(long = "max-turns")]
     pub max_turns: Option<u32>,
