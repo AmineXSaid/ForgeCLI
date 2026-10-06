@@ -266,6 +266,28 @@ fn apply_edit_rules() {
     assert!(apply_edit("abc", "x", "y", false).unwrap_err().contains("not found"));
 }
 
+#[test]
+fn edit_failures_point_at_the_nearest_text() {
+    let file =
+        "def total(items):\n    s = 0\n    for i in items:\n        s += i.price\n    return s\n\nx = 1\nx = 1\n";
+    // Wrong indentation: the hint quotes the real lines with their numbers.
+    let e = apply_edit(file, "  for i in items:\n      s += i.price", "", false).unwrap_err();
+    assert!(e.contains("except for whitespace") && e.contains("lines 3-4"), "{e}");
+    assert!(e.contains("     3\t    for i in items:"), "{e}");
+    // Read's line-number prefixes copied into old_string.
+    let e = apply_edit(file, "     2\t    s = 0\n     3\t    for i in items:", "", false).unwrap_err();
+    assert!(e.contains("line-number prefixes"), "{e}");
+    // A near miss: the closest window, scored.
+    let e = apply_edit(file, "    for item in items:\n        s += item.price", "", false).unwrap_err();
+    assert!(e.contains("Closest match, lines 3-4") && e.contains("% similar"), "{e}");
+    // Nothing close.
+    let e = apply_edit(file, "class Unrelated(Base):\n    pass", "", false).unwrap_err();
+    assert!(e.contains("Nothing similar"), "{e}");
+    // Ambiguous matches name their lines.
+    let e = apply_edit(file, "x = 1", "x = 2", false).unwrap_err();
+    assert!(e.contains("Found 2 matches") && e.contains("lines 7, 8"), "{e}");
+}
+
 fn sandboxed_ctx(dir: &std::path::Path) -> Option<ToolContext> {
     crate::sandbox::backend()?;
     let mut c = ctx(dir);

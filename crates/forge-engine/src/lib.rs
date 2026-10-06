@@ -11,6 +11,7 @@ mod events;
 mod exec;
 pub mod prompts;
 pub mod request;
+mod stuck;
 pub mod verify;
 
 pub use engine::{

@@ -19,18 +19,112 @@ pub fn apply_edit(content: &str, old: &str, new: &str, all: bool) -> Result<Stri
     }
     let count = content.matches(old).count();
     match count {
-        0 => Err(format!("String to replace not found in file.\nString: {old}")),
+        0 => Err(format!("String to replace not found in file.\nString: {old}\n\n{}", not_found_hint(content, old))),
         1 => Ok(content.replacen(old, new, 1)),
-        n if all => {
-            let _ = n;
-            Ok(content.replace(old, new))
+        _ if all => Ok(content.replace(old, new)),
+        n => {
+            let at: Vec<String> =
+                content.match_indices(old).map(|(i, _)| (content[..i].matches('\n').count() + 1).to_string()).collect();
+            Err(format!(
+                "Found {n} matches of the string to replace (starting at lines {}), but replace_all is false. To \
+                 replace all occurrences, set replace_all to true. To replace only one occurrence, provide more \
+                 context to uniquely identify the instance.\nString: {old}",
+                at.join(", ")
+            ))
         }
-        n => Err(format!(
-            "Found {n} matches of the string to replace, but replace_all is false. To replace all occurrences, \
-             set replace_all to true. To replace only one occurrence, provide more context to uniquely identify \
-             the instance.\nString: {old}"
-        )),
     }
+}
+
+/// `   12\t` (Read's line-number prefix) removed, if `line` has one.
+fn strip_line_number(line: &str) -> Option<&str> {
+    let (num, rest) = line.split_once('\t')?;
+    (!num.trim().is_empty() && num.trim().chars().all(|c| c.is_ascii_digit())).then_some(rest)
+}
+
+/// Why `old` is not in `content`, and the nearest text that is (GOALS pillar 2:
+/// an error that says what to do next).
+fn not_found_hint(content: &str, old: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let old_lines: Vec<&str> = old.lines().collect();
+    let m = old_lines.len();
+    if m == 0 || lines.is_empty() {
+        return "The file is empty.".into();
+    }
+    // Line-number prefixes copied from Read output.
+    if old_lines.iter().all(|l| strip_line_number(l).is_some()) {
+        let stripped: Vec<&str> = old_lines.iter().filter_map(|l| strip_line_number(l)).collect();
+        if content.contains(&stripped.join("\n")) {
+            return "old_string includes Read's line-number prefixes (the number and tab at the start of each \
+                    line). Remove them and try again."
+                .into();
+        }
+    }
+    // The same lines with different whitespace.
+    if m <= lines.len() {
+        let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let target: Vec<String> = old_lines.iter().map(|l| norm(l)).collect();
+        let hits: Vec<usize> =
+            (0..=lines.len() - m).filter(|&i| (0..m).all(|j| norm(lines[i + j]) == target[j])).collect();
+        if let Some(&i) = hits.first() {
+            let more = if hits.len() > 1 { format!(" (and {} other places)", hits.len() - 1) } else { String::new() };
+            return format!(
+                "These lines match except for whitespace or indentation: lines {}-{}{more}. The file has:\n{}Copy \
+                 old_string from them exactly, without the line-number prefixes.",
+                i + 1,
+                i + m,
+                number_lines(&lines[i..i + m], i + 1)
+            );
+        }
+    }
+    match most_similar(&lines, &old_lines) {
+        Some((start, len, ratio)) => format!(
+            "Closest match, lines {}-{} ({}% similar):\n{}If that is the text you meant, copy it exactly (without \
+             the line-number prefixes). Otherwise Read the file again: it may have changed.",
+            start + 1,
+            start + len,
+            (ratio * 100.0).round() as u32,
+            number_lines(&lines[start..start + len], start + 1)
+        ),
+        None => "Nothing similar is in the file. Read it again (it may have changed since you last read it), or \
+                 check that this is the right file."
+            .into(),
+    }
+}
+
+fn ratio(a: &str, b: &str) -> f32 {
+    const CAP: usize = 400;
+    let cut = |s: &str| s.char_indices().nth(CAP).map(|(i, _)| &s[..i]).unwrap_or(s).to_string();
+    similar::TextDiff::configure()
+        .timeout(std::time::Duration::from_millis(20))
+        .diff_chars(cut(a).as_str(), cut(b).as_str())
+        .ratio()
+}
+
+/// The window of `old.len()` lines most like `old`: anchored on `old`'s
+/// longest line, scored on the whole window. `(start, len, ratio)`.
+fn most_similar(lines: &[&str], old: &[&str]) -> Option<(usize, usize, f32)> {
+    if lines.len() > 20_000 || old.len() > 200 {
+        return None;
+    }
+    let (k, anchor) = old.iter().enumerate().max_by_key(|(_, l)| l.trim().len())?;
+    let anchor = anchor.trim();
+    if anchor.is_empty() {
+        return None;
+    }
+    let mut cands: Vec<(f32, usize)> =
+        lines.iter().enumerate().map(|(i, l)| (ratio(anchor, l.trim()), i)).filter(|(r, _)| *r >= 0.5).collect();
+    cands.sort_by(|a, b| b.0.total_cmp(&a.0));
+    cands.truncate(5);
+    let joined = old.join("\n");
+    cands
+        .into_iter()
+        .map(|(_, i)| {
+            let start = i.saturating_sub(k);
+            let len = old.len().min(lines.len() - start);
+            (start, len, ratio(&joined, &lines[start..start + len].join("\n")))
+        })
+        .filter(|c| c.2 >= 0.6)
+        .max_by(|a, b| a.2.total_cmp(&b.2))
 }
 
 /// Unified-diff hunks for SDK hosts (`structuredPatch`).

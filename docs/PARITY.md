@@ -111,6 +111,9 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
 | Verification loop (contract C12): detected checks, reminder before finishing on unchecked changes | done | `engine::verify_reminds_once_when_changes_are_unchecked`, `engine::verify_accepts_a_check_after_the_last_change`, `engine::verify_sees_shell_writes_through_git_and_failed_checks`, `verify::detects_checks_from_manifests`, `verify::recognizes_check_commands`, `eval::eval_measures_a_pass_and_a_false_finish` | Verification / false-finish rate. Eval task `invoice-rounding` |
+| Edit "not found" hints: whitespace-only differences, line-number prefixes, closest window; ambiguous matches list lines (C13) | done | `builtin::edit_failures_point_at_the_nearest_text` | Recovery / turns after first error. Eval task `makefile-tabs` |
+| Loop guard: repeated failure, no progress, oscillating edits, error streak (C13) | done | `stuck::repeated_failures_fire_once`, `stuck::same_result_three_times_is_no_progress`, `stuck::edits_that_undo_each_other`, `stuck::a_streak_of_different_failures`, `engine::loop_guard_reminds_after_repeated_failures` | Recovery |
+| `max_tokens` recovery: cut-off tool calls answered, text continued, output cap raised (C13) | done | `engine::max_tokens_continues_text_and_answers_cut_off_calls`, `accumulate::invalid_tool_json_is_marked_truncated` | Recovery |
 | OS sandbox for Bash (`--sandbox`, `FORGE_SANDBOX`, `sandbox.*` settings) | partial | `builtin::sandbox_confines_writes_and_network`, `sandbox::bwrap_arguments`, `sandbox::failure_hints`, `permissions::sandboxed_commands_need_no_prompt_but_rules_still_apply`, `e2e::sandbox_lets_headless_runs_build_without_prompts` | Tool design / safety. The Codex pattern. Linux bubblewrap done; the macOS Seatbelt profile is untested |
 
 ## Config, memory, hooks (M3)

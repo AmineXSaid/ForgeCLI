@@ -49,15 +49,25 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 
 ### 2. Failure recovery
 
-- **Done:** API retries with backoff, fallback models, and interrupt with
-  rewind.
-- **To build:**
-  - tool errors that say what to do next, for example Edit's
-    "old_string not found" listing the closest matches in the file;
-  - stuck-loop detection: the same failing call repeated, or edits that undo
-    each other, trigger a reminder to step back and change approach;
-  - recovering from crashes and truncated output (`max_tokens` mid-tool-call).
-- **Measured by:** recovery rate, and turns wasted after the first error.
+- **Done** (contract C13):
+  - API retries with backoff, fallback models, and interrupt with rewind.
+  - Edit's "not found" error gives the next step:
+    - text that matches except for whitespace, quoted with line numbers;
+    - Read's line-number prefixes copied into `old_string`;
+    - otherwise the closest window, scored.
+    Ambiguous matches name their lines.
+  - Stuck-loop detection: the same failing call three times, the same result
+    three times, edits that undo each other, or five failures in a row each
+    trigger one reminder to change approach.
+  - Truncated output:
+    - a tool call cut off by `max_tokens` is answered with an error, not
+      sent as a failed turn;
+    - cut-off text is continued, up to 3 times;
+    - the output cap is raised to 64k for the rest of the turn.
+- **To build:** recovery after a crash (resume an interrupted turn from the
+  transcript).
+- **Measured by:** recovery rate, and turns wasted after the first error
+  (tasks `build-recovery`, `makefile-tabs`).
 
 ### 3. Verification
 
@@ -108,7 +118,7 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
    context.
 3. The verification loop. **Done**, without LSP feedback.
 4. Recovery: Edit match suggestions, stuck-loop detection, `max_tokens`
-   recovery.
+   recovery. **Done.**
 5. Budgets on tool output, and no repeated reads.
 6. A plan and notes that survive compaction.
 7. Parity features in order of use: MCP, web tools, plan mode and

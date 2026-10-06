@@ -494,6 +494,7 @@ pub fn build_session(
         auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
         is_subagent: false,
         verify,
+        escalate_output: env_nonempty("FORGE_MAX_OUTPUT_TOKENS").is_none(),
     };
     let parts = EngineParts {
         provider: provider.clone(),

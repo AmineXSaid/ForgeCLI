@@ -73,7 +73,18 @@ pub struct EngineConfig {
     pub is_subagent: bool,
     /// The verification loop; `None` turns it off. Never runs in sub-agents.
     pub verify: Option<crate::verify::VerifyConfig>,
+    /// After a `max_tokens` stop, raise the output cap to [`ESCALATED_OUTPUT_TOKENS`]
+    /// for the rest of the turn (off when the user set the cap).
+    pub escalate_output: bool,
 }
+
+/// The output cap after a `max_tokens` stop (capped by the model).
+pub const ESCALATED_OUTPUT_TOKENS: u32 = 64_000;
+/// Times one turn may continue a reply cut off by `max_tokens`.
+const MAX_CONTINUATIONS: u32 = 3;
+const CONTINUE_PROMPT: &str = "<system-reminder>\nYour reply was cut off by the output token limit. Continue \
+                               exactly where it stopped: no apology, no recap, and do not repeat what you already \
+                               wrote.\n</system-reminder>";
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -93,6 +104,7 @@ impl Default for EngineConfig {
             auto_compact: true,
             is_subagent: false,
             verify: None,
+            escalate_output: true,
         }
     }
 }
@@ -227,6 +239,9 @@ pub struct Engine {
     /// Memory and environment context, re-attached after compaction.
     session_context: Option<String>,
     verify: crate::verify::Tracker,
+    guard: crate::stuck::LoopGuard,
+    /// This turn's raised output cap, after a `max_tokens` stop.
+    output_cap: Option<u32>,
 }
 
 /// What a compaction did.
@@ -298,6 +313,8 @@ impl Engine {
             session_started: false,
             session_context,
             verify: Default::default(),
+            guard: Default::default(),
+            output_cap: None,
         })
     }
 
@@ -410,8 +427,12 @@ impl Engine {
     fn build_request(&self, model: &str) -> MessagesRequest {
         let rt = self.handle.runtime.read().unwrap().clone();
         let info = forge_api::models::model_info_or_default(model);
-        let (thinking, output_config, max_tokens) =
-            thinking_params(&info, rt.max_thinking_tokens, rt.effort.as_deref(), self.cfg.max_output_tokens);
+        let (thinking, output_config, max_tokens) = thinking_params(
+            &info,
+            rt.max_thinking_tokens,
+            rt.effort.as_deref(),
+            self.output_cap.unwrap_or(self.cfg.max_output_tokens),
+        );
         let mut output_config = output_config;
         if let Some(schema) = &self.cfg.json_schema {
             let oc = output_config.get_or_insert_with(|| json!({}));
@@ -753,6 +774,8 @@ impl Engine {
             self.shared.history.begin_turn(&user_uuid);
         }
         self.verify = Default::default();
+        self.guard = Default::default();
+        self.output_cap = None;
         if self.verifying() {
             self.verify.fingerprint = self.worktree_fingerprint().await;
         }
@@ -764,6 +787,8 @@ impl Engine {
         let mut stop_hook_active = false;
         let mut compacted_for_length = false;
         let mut last_text: Option<String> = None;
+        let mut continuations = 0;
+        let mut continuing = false;
 
         loop {
             if cancel.is_cancelled() {
@@ -873,7 +898,10 @@ impl Engine {
             turn.api_calls += 1;
             self.record_usage(&model, &msg.usage.clone(), &mut turn);
             let text = msg.to_message().text();
-            if !text.is_empty() {
+            if continuing {
+                // A reply continued after `max_tokens` is one answer.
+                last_text = Some(format!("{}{text}", last_text.take().unwrap_or_default()));
+            } else if !text.is_empty() {
                 last_text = Some(text);
             }
             let stop_reason = msg.stop_reason;
@@ -908,11 +936,41 @@ impl Engine {
                 }
             }
 
+            // Output cut off (GOALS pillar 2): a larger cap for the rest of the turn; a cut-off tool
+            // call is answered with an error by exec; cut-off text is continued.
+            continuing = false;
+            if stop_reason == Some(StopReason::MaxTokens) {
+                if self.cfg.escalate_output
+                    && self.output_cap.is_none()
+                    && self.cfg.max_output_tokens < ESCALATED_OUTPUT_TOKENS
+                {
+                    self.output_cap = Some(ESCALATED_OUTPUT_TOKENS);
+                    self.system_event(
+                        "output_limit",
+                        json!({"from": self.cfg.max_output_tokens, "to": ESCALATED_OUTPUT_TOKENS}),
+                    );
+                }
+                if tool_uses.is_empty() && continuations < MAX_CONTINUATIONS {
+                    continuations += 1;
+                    continuing = true;
+                    self.push_user(Message::user_text(CONTINUE_PROMPT), true, None, true);
+                    continue;
+                }
+            }
+
             if !tool_uses.is_empty() {
                 let results = crate::exec::run_tools(&self.shared, &tool_uses, &cancel, self.mode_str()).await;
                 if self.verifying() {
                     self.track_verification(&tool_uses, &results).await;
                 }
+                let stuck: Vec<crate::stuck::Stuck> = tool_uses
+                    .iter()
+                    .zip(&results)
+                    .filter(|(_, r)| r.denial.is_none())
+                    .filter_map(|((_, name, input), r)| {
+                        self.guard.observe(name, input, &r.output.text_content(), r.output.is_error)
+                    })
+                    .collect();
                 let mut interrupted = cancel.is_cancelled();
                 for r in results {
                     if let Some(d) = r.denial {
@@ -934,6 +992,10 @@ impl Engine {
                         cache_control: None,
                     };
                     self.push_user(Message::user(vec![block]), false, r.output.structured.clone(), true);
+                }
+                if let (Some(s), false) = (stuck.first(), interrupted) {
+                    self.system_event("loop_guard", s.record());
+                    self.push_user(Message::user_text(s.text()), true, None, true);
                 }
                 if interrupted {
                     cancel.cancel();

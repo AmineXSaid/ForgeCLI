@@ -334,6 +334,48 @@ Tests: `engine::verify_reminds_once_when_changes_are_unchecked`,
 `engine::verify_accepts_a_check_after_the_last_change`,
 `engine::verify_sees_shell_writes_through_git_and_failed_checks`.
 
+### C13. Recovery
+
+**Edit errors** (`forge-tools`): when `old_string` isn't found, the error
+adds, in this order of preference:
+1. `old_string` contains Read's line-number prefixes;
+2. the lines match except for whitespace (shown numbered);
+3. the most similar window of the same length, at least 60% similar (shown
+   numbered);
+4. "nothing similar".
+
+When there are several matches, the error lists the line each one starts on.
+
+**Loop guard** (`forge-engine/stuck.rs`): within one user turn, each pattern
+below fires at most once. When it fires, a meta user message follows the tool
+results, and `system/loop_guard` `{kind, ...}` is recorded and emitted. The
+patterns:
+- the same tool call (name and input) failing 3 times;
+- the same call returning the same result 3 times (TodoWrite excluded);
+- an Edit or MultiEdit replacement that reverses an earlier one on the same
+  file;
+- 5 failed calls in a row.
+
+Denied calls are not counted.
+
+**Truncated output:**
+- A tool input that isn't valid JSON when its block stops (the `max_tokens`
+  case) is kept, as `{"_truncated_input": ...}`, instead of failing the
+  stream. The call is answered with an error explaining how to split the
+  work.
+- A text reply stopped by `max_tokens` is continued with a meta prompt, up
+  to 3 times. The pieces join into one result.
+- After the first `max_tokens` stop, the turn's output cap rises to 64,000
+  (bounded by the model), unless the user set `FORGE_MAX_OUTPUT_TOKENS`, and
+  `system/output_limit` is emitted.
+
+Tests:
+- `builtin::edit_failures_point_at_the_nearest_text`;
+- `stuck::*`;
+- `engine::loop_guard_reminds_after_repeated_failures`;
+- `engine::max_tokens_continues_text_and_answers_cut_off_calls`;
+- `accumulate::invalid_tool_json_is_marked_truncated`.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

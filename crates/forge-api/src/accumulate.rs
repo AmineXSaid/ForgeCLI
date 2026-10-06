@@ -5,6 +5,9 @@ use serde_json::Value;
 
 use crate::ApiError;
 
+/// The key a tool input gets when the stream cut it off before it was valid JSON.
+pub const TRUNCATED_INPUT: &str = "_truncated_input";
+
 /// Builds the final message while events arrive; tool inputs arrive as
 /// partial JSON and are parsed when their block stops.
 #[derive(Debug, Default)]
@@ -77,8 +80,11 @@ impl MessageAccumulator {
                     msg.content.get_mut(*index)
                 {
                     if !json.trim().is_empty() {
-                        *input = serde_json::from_str(&json)
-                            .map_err(|e| ApiError::Parse(format!("tool input is not valid JSON: {e}")))?;
+                        // Cut off mid-input (usually `max_tokens`): keep the call, marked, so the
+                        // engine can answer it with an error instead of failing the whole turn.
+                        *input = serde_json::from_str(&json).unwrap_or_else(|e| {
+                            serde_json::json!({ TRUNCATED_INPUT: format!("incomplete JSON ({e}), {} bytes", json.len()) })
+                        });
                     } else if input.is_null() {
                         *input = Value::Object(Default::default());
                     }
@@ -173,13 +179,14 @@ mod tests {
     }
 
     #[test]
-    fn invalid_tool_json_is_an_error() {
+    fn invalid_tool_json_is_marked_truncated() {
         let mut acc = MessageAccumulator::new();
         let start: StreamEvent = serde_json::from_value(json!({"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"x","content":[],"stop_reason":null,"usage":{}}})).unwrap();
         acc.push(&start).unwrap();
         acc.push(&serde_json::from_value(json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t","name":"Bash","input":{}}})).unwrap()).unwrap();
         acc.push(&serde_json::from_value(json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\": "}})).unwrap()).unwrap();
-        let err = acc.push(&serde_json::from_value(json!({"type":"content_block_stop","index":0})).unwrap());
-        assert!(err.is_err());
+        acc.push(&serde_json::from_value(json!({"type":"content_block_stop","index":0})).unwrap()).unwrap();
+        let ContentBlock::ToolUse { input, .. } = &acc.snapshot().unwrap().content[0] else { panic!() };
+        assert!(input[TRUNCATED_INPUT].as_str().unwrap().contains("incomplete JSON"), "{input}");
     }
 }

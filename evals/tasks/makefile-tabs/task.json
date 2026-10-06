@@ -1,0 +1,7 @@
+{
+  "instruction": "Make the Makefile's `test` target run the unit tests verbosely (`-v`) instead of quietly. Change nothing else.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "recovery",
+  "tags": ["edit", "whitespace"],
+  "timeout_secs": 300
+}

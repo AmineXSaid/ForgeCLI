@@ -711,3 +711,68 @@ async fn verify_sees_shell_writes_through_git_and_failed_checks() {
     let reminder = last_user_text(&h.provider.requests()[n - 1]);
     assert!(reminder.contains("The last check (`false`) failed"), "{reminder}");
 }
+
+#[tokio::test]
+async fn loop_guard_reminds_after_repeated_failures() {
+    let h = Harness::new(vec![]);
+    for _ in 0..3 {
+        h.provider.push(MockTurn::tool("Bash", json!({"command": "exit 3"})));
+    }
+    h.provider.push(MockTurn::text("giving up"));
+    let mut e = h.engine();
+    let r = e.submit(prompt("build")).await;
+    assert_eq!(r.num_turns, 4);
+    let reqs = h.provider.requests();
+    assert!(!last_user_text(&reqs[2]).contains("failed 3 times"), "not before the third failure");
+    let text = last_user_text(&reqs[3]);
+    assert!(text.contains("This exact Bash call has now failed 3 times"), "{text}");
+    assert!(h.transcript_text().contains(r#""subtype":"loop_guard""#));
+}
+
+#[tokio::test]
+async fn max_tokens_continues_text_and_answers_cut_off_calls() {
+    use forge_types::StopReason;
+    let h = Harness::new(vec![
+        MockTurn::blocks(vec![ContentBlock::text("The first half, ")], StopReason::MaxTokens),
+        MockTurn::text("and the second half."),
+    ]);
+    let mut e = h.engine();
+    let r = e.submit(prompt("write a lot")).await;
+    assert_eq!(r.result.as_deref(), Some("The first half, and the second half."));
+    assert_eq!((r.num_turns, r.stop_reason.as_deref()), (2, Some("end_turn")));
+    let reqs = h.provider.requests();
+    assert_eq!((reqs[0].max_tokens, reqs[1].max_tokens), (32_000, 64_000), "the cap is raised after a cut-off");
+    assert!(last_user_text(&reqs[1]).contains("cut off by the output token limit"));
+
+    // A tool call cut off mid-input is answered with an error, not run, and the turn goes on.
+    let f = h.cwd().join("big.txt");
+    h.provider.push(MockTurn::blocks(
+        vec![ContentBlock::ToolUse {
+            id: "toolu_cut".into(),
+            name: "Write".into(),
+            input: json!({ forge_api::TRUNCATED_INPUT: "incomplete JSON" }),
+            cache_control: None,
+        }],
+        StopReason::MaxTokens,
+    ));
+    h.provider.push(MockTurn::text("will write in parts"));
+    let r = e.submit(prompt("write big file")).await;
+    assert_eq!(r.num_turns, 2);
+    assert!(!f.exists());
+    let (_, text, is_error) = tool_results(&e).into_iter().find(|(id, _, _)| id == "toolu_cut").unwrap();
+    assert!(is_error && text.contains("smaller steps"), "{text}");
+    assert_eq!(h.provider.requests()[2].max_tokens, 32_000, "the raised cap lasts one turn");
+
+    // Without escalation (a user-set cap), continuation still happens at the same cap.
+    let h = Harness::new(vec![
+        MockTurn::blocks(vec![ContentBlock::text("a")], StopReason::MaxTokens),
+        MockTurn::blocks(vec![ContentBlock::text("b")], StopReason::MaxTokens),
+        MockTurn::blocks(vec![ContentBlock::text("c")], StopReason::MaxTokens),
+        MockTurn::blocks(vec![ContentBlock::text("d")], StopReason::MaxTokens),
+    ]);
+    let cfg = EngineConfig { escalate_output: false, ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("go")).await;
+    assert_eq!((r.num_turns, r.result.as_deref(), r.stop_reason.as_deref()), (4, Some("abcd"), Some("max_tokens")));
+    assert!(h.provider.requests().iter().all(|q| q.max_tokens == 32_000));
+}

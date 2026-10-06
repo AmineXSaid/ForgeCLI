@@ -112,6 +112,16 @@ async fn run_one(
     if cancel.is_cancelled() {
         return CallResult::plain(id, ToolOutput::error(INTERRUPTED));
     }
+    if input.get(forge_api::TRUNCATED_INPUT).is_some() {
+        return CallResult::plain(
+            id,
+            ToolOutput::error(
+                "<tool_use_error>This call was cut off by the output token limit before its input was complete, \
+                 so it did not run. Make the change in smaller steps: write a large file in parts (Write the \
+                 first part, then Edit to add the rest), or split a big edit into several Edit calls.</tool_use_error>",
+            ),
+        );
+    }
     let Some(tool) = shared.tools.get(name) else {
         return CallResult::plain(id, ToolOutput::error(format!("Error: No such tool available: {name}")));
     };

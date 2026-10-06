@@ -19,7 +19,7 @@ use forge_types::{MessagesRequest, StreamEvent};
 use futures::Stream;
 use tokio_util::sync::CancellationToken;
 
-pub use accumulate::MessageAccumulator;
+pub use accumulate::{MessageAccumulator, TRUNCATED_INPUT};
 pub use messages::{MessagesConfig, MessagesProvider};
 pub use mock::{MockProvider, MockTurn};
 pub use models::{resolve_model, ModelInfo, ThinkingStyle};
