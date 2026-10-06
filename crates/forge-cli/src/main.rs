@@ -124,6 +124,7 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
         agents_json: o.agents.clone(),
         agent: o.agent.clone(),
         sandbox: o.sandbox.clone(),
+        worktree: o.worktree.clone(),
         mcp_configs: o.mcp_config.clone(),
         strict_mcp_config: o.strict_mcp_config,
         mcp: None,

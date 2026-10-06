@@ -159,6 +159,9 @@ pub struct Opts {
     /// Use a specific session ID (a UUID)
     #[arg(long = "session-id")]
     pub session_id: Option<String>,
+    /// Run in a new git worktree (`.forge/worktrees/<name>`, branch `forge/<name>`)
+    #[arg(short = 'w', long = "worktree", num_args = 0..=1, default_missing_value = "", value_name = "NAME")]
+    pub worktree: Option<String>,
     /// Do not save the session to disk (print mode)
     #[arg(long = "no-session-persistence")]
     pub no_session_persistence: bool,

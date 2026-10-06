@@ -66,8 +66,8 @@ impl TaskTool {
             // `mcp__server` in an agent's list covers every tool of that server.
             reg.retain(|n| allowed.iter().any(|a| a == n || n.starts_with(&format!("{a}__"))));
         }
-        // No nested sub-agents.
-        reg.retain(|n| n != "Task");
+        // No nested sub-agents, and only the main session talks to the person.
+        reg.retain(|n| !matches!(n, "Task" | "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode"));
         reg
     }
 }

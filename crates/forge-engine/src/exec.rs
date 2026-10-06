@@ -147,6 +147,20 @@ async fn run_one(
         sandboxed: tool.sandboxed(&input, &ctx),
     };
     let mut decision = perm.decide(&req);
+    // Questions for the person always reach them (contract C8): only deny rules and
+    // bypassPermissions (which approves plans) skip the prompt.
+    if tool.needs_user() {
+        decision = match decision {
+            d @ Decision::Deny { reason: forge_permissions::Reason::Rule { .. } } => d,
+            _ if perm.mode == PermissionMode::BypassPermissions => {
+                Decision::Allow { reason: forge_permissions::Reason::Mode(perm.mode) }
+            }
+            _ if perm.mode == PermissionMode::DontAsk => {
+                Decision::Deny { reason: forge_permissions::Reason::Mode(perm.mode) }
+            }
+            _ => Decision::Ask { reason: forge_permissions::Reason::Default, suggestions: vec![] },
+        };
+    }
     let rule_denied = matches!(decision, Decision::Deny { .. });
 
     // 2. PreToolUse hooks.
@@ -265,6 +279,21 @@ async fn run_one(
     };
     if call_cancel.is_cancelled() {
         return CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop, writes_after: 0 };
+    }
+
+    // Plan mode follows the plan tools: EnterPlanMode turns it on; an approved plan turns it off,
+    // unless the approval already chose a mode.
+    if !output.is_error {
+        let mut perm = shared.permissions.write().unwrap();
+        let next = match name {
+            "EnterPlanMode" => Some(PermissionMode::Plan),
+            "ExitPlanMode" if perm.mode == PermissionMode::Plan => Some(PermissionMode::Default),
+            _ => None,
+        };
+        if let Some(m) = next.filter(|m| *m != perm.mode) {
+            perm.mode = m;
+            shared.transcript.append_system("permission_mode", json!({"mode": m.as_str()}));
+        }
     }
 
     // 5. PostToolUse / PostToolUseFailure.

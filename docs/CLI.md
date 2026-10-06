@@ -77,6 +77,16 @@ a note in `CHANGELOG.md`.
   - `--fallback-model M` switches models on overload.
 - **Interrupting:** Ctrl-C stops the run; the result is written and the exit
   status is `130`.
+- **Worktree:** `-w/--worktree [name]` runs the session in
+  `.forge/worktrees/<name>`, on a new branch `forge/<name>` (the name is
+  generated when left out). The worktree is kept afterwards, and the main
+  checkout is untouched.
+- **Web:**
+  - `WebFetch` answers its `prompt` from the page with the small model
+    (`smallFastModel` setting), so whole pages stay out of the context.
+  - `WebSearch` uses the provider's web-search server tool.
+  - Both need permission. Allow sites with rules like
+    `WebFetch(domain:docs.rs)`.
 
 ### `forge -p --input-format stream-json --output-format stream-json`: IDE host protocol
 

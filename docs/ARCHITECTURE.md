@@ -188,6 +188,14 @@ session JSONL (C5). 429 doesn't trigger a fallback; it's retried with
   ("no interactive user; proceed with your best judgement and state your
   assumptions"), and ExitPlanMode is denied, which keeps the session in plan
   mode.
+- **Always asked:** these tools (and EnterPlanMode) report `needs_user`, so
+  they ask whatever allow rules or modes say. There are two exceptions:
+  - deny rules deny them, and `dontAsk` denies them;
+  - `bypassPermissions` approves them.
+- **Mode changes:** a successful EnterPlanMode sets `plan`. A successful
+  ExitPlanMode leaves `plan` for `default`, unless the approval's
+  `updatedPermissions` already set a mode (e.g. `acceptEdits`).
+- **Sub-agents** never get these tools.
 
 ### C9. Compaction
 

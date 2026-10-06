@@ -160,3 +160,40 @@ async fn resume_restores_additional_directories() {
     assert!(perm.working_dirs.iter().any(|w| w == &canonical || w == &extra), "{:?}", perm.working_dirs);
     assert!(s.engine.tool_ctx().in_working_dirs(&extra.join("file.txt")));
 }
+
+#[tokio::test]
+async fn c10_worktree_flag_runs_the_session_in_a_new_worktree() {
+    let (d, p) = setup();
+    let proj = d.path().join("proj").canonicalize().unwrap();
+    let mut o = opts(d.path(), p.clone());
+    o.worktree = Some("feature-x".into());
+    assert!(
+        matches!(build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)), Err(CoreError::Config(e)) if e.contains("git repository"))
+    );
+
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@t"],
+        &["config", "user.name", "t"],
+        &["commit", "-q", "--allow-empty", "-m", "first"],
+    ] {
+        assert!(std::process::Command::new("git").args(args).current_dir(&proj).status().unwrap().success());
+    }
+    let mut o = opts(d.path(), p.clone());
+    o.worktree = Some("feature-x".into());
+    let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
+    let wt = proj.join(".forge/worktrees/feature-x");
+    assert_eq!(s.engine.tool_ctx().project_dir, wt.canonicalize().unwrap());
+    assert_eq!(forge_git::current_branch(&wt).as_deref(), Some("forge/feature-x"));
+    assert!(std::fs::read_to_string(proj.join(".git/info/exclude")).unwrap().contains(".forge/worktrees/"));
+    assert!(!forge_git::is_dirty(&proj), "the main checkout stays clean");
+    // The same name again reuses it; a generated name comes from the session id.
+    let mut o = opts(d.path(), p.clone());
+    o.worktree = Some("feature-x".into());
+    assert!(build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).is_ok());
+    let mut o = opts(d.path(), p);
+    o.worktree = Some(String::new());
+    o.session_id = Some("12345678-0000-4000-8000-000000000000".into());
+    let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
+    assert!(s.engine.tool_ctx().project_dir.ends_with(".forge/worktrees/session-12345678"));
+}

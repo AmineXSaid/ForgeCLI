@@ -95,6 +95,22 @@ pub fn worktree_fingerprint(dir: &Path) -> Option<u64> {
     Some(h.finish())
 }
 
+/// Add `pattern` to the repository's `.git/info/exclude` (untracked, local ignore) if missing.
+pub fn exclude(repo_root: &Path, pattern: &str) -> std::io::Result<()> {
+    let git_dir = repo_root.join(".git");
+    if !git_dir.is_dir() {
+        return Ok(());
+    }
+    let path = git_dir.join("info").join("exclude");
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    if current.lines().any(|l| l.trim() == pattern) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(path.parent().expect("info dir"))?;
+    let sep = if current.is_empty() || current.ends_with('\n') { "" } else { "\n" };
+    std::fs::write(&path, format!("{current}{sep}{pattern}\n"))
+}
+
 /// Uncommitted changes in a working tree?
 pub fn is_dirty(dir: &Path) -> bool {
     git(dir, &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(false)

@@ -470,6 +470,7 @@ dependencies = [
 name = "forge-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "forge-agents",
  "forge-api",
  "forge-config",
@@ -485,6 +486,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -615,10 +617,12 @@ dependencies = [
  "chrono",
  "forge-permissions",
  "forge-types",
+ "futures",
  "globset",
  "ignore",
  "libc",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "similar",

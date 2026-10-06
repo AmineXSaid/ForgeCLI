@@ -145,6 +145,26 @@ pub struct DenyPrompter;
 #[async_trait::async_trait]
 impl PermissionPrompter for DenyPrompter {
     async fn ask(&self, p: PermissionPrompt) -> PermissionAnswer {
+        // Contract C8: no person to answer.
+        let message = match p.tool_name.as_str() {
+            "AskUserQuestion" => Some(
+                "There is no interactive user in this run, so nobody can answer. Proceed with your best judgement \
+                 and state the assumptions you made."
+                    .to_string(),
+            ),
+            "ExitPlanMode" => Some(
+                "There is no interactive user in this run, so the plan cannot be approved and the session stays in \
+                 plan mode. Give the plan as your final answer."
+                    .to_string(),
+            ),
+            "EnterPlanMode" => {
+                Some("There is no interactive user in this run to agree to plan mode. Continue without it.".to_string())
+            }
+            _ => None,
+        };
+        if let Some(message) = message {
+            return PermissionAnswer::Deny { message, interrupt: false };
+        }
         PermissionAnswer::Deny {
             message: format!(
                 "Permission to use {} was denied: running non-interactively and nobody can approve it ({}). To allow it, \

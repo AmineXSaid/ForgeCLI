@@ -1,5 +1,7 @@
 //! Builds a ready-to-run session from launch options and settings.
 
+pub mod web;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -80,6 +82,8 @@ pub struct LaunchOptions {
     pub agent: Option<String>,
     /// `--sandbox <off|read-only|workspace-write>` for shell commands.
     pub sandbox: Option<String>,
+    /// `--worktree [name]`: run in a new git worktree (`Some("")` = a generated name).
+    pub worktree: Option<String>,
     /// `--mcp-config`: server config files or JSON strings.
     pub mcp_configs: Vec<String>,
     /// `--strict-mcp-config`: only the servers from `mcp_configs`.
@@ -90,6 +94,55 @@ pub struct LaunchOptions {
     pub provider: Option<Arc<dyn Provider>>,
     /// Where sessions live (default `~/.forge/projects`).
     pub store_root: Option<PathBuf>,
+}
+
+/// WebFetch (always) and WebSearch (when the provider can search), backed by a small model.
+fn web_tools(provider: &Arc<dyn Provider>, settings: &LoadedSettings) -> Vec<Arc<dyn forge_tools::Tool>> {
+    let backend = Arc::new(web::ProviderWeb {
+        provider: provider.clone(),
+        model: settings
+            .str("/smallFastModel")
+            .map(forge_api::resolve_model)
+            .unwrap_or_else(|| forge_api::models::SMALL_FAST_MODEL.to_string()),
+        search: provider.name() != "openai",
+        search_tool: settings.str("/webSearch/toolType").unwrap_or("web_search_20250305").to_string(),
+    });
+    let mut out: Vec<Arc<dyn forge_tools::Tool>> =
+        vec![Arc::new(forge_tools::builtin::WebFetch::new(Some(backend.clone())))];
+    if forge_tools::builtin::WebBackend::can_search(backend.as_ref()) {
+        out.push(Arc::new(forge_tools::builtin::WebSearch { backend }));
+    }
+    out
+}
+
+struct Worktree {
+    name: String,
+    path: PathBuf,
+    main_repo: PathBuf,
+}
+
+/// `--worktree [name]` (contract C10): `<repo>/.forge/worktrees/<name>` on branch `forge/<name>`,
+/// created from HEAD, or reused when it already exists.
+fn enter_worktree(cwd: &Path, name: &str, session_id: Option<&str>) -> Result<Worktree, CoreError> {
+    let root = forge_git::repo_root(cwd)
+        .ok_or_else(|| CoreError::Config("--worktree needs a git repository; run forge inside one".into()))?;
+    let name = match name.trim() {
+        "" => {
+            let id = session_id.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            format!("session-{}", &id[..8.min(id.len())])
+        }
+        n => n.to_string(),
+    };
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') || name.starts_with('.') {
+        return Err(CoreError::Config(format!("--worktree name {name:?}: use letters, digits, '-', '_' and '.'")));
+    }
+    let path = root.join(".forge").join("worktrees").join(&name);
+    if !path.exists() {
+        forge_git::add_worktree(&root, &path, &format!("forge/{name}"))
+            .map_err(|e| CoreError::Config(format!("--worktree: git could not create it: {e}")))?;
+        let _ = forge_git::exclude(&root, ".forge/worktrees/");
+    }
+    Ok(Worktree { name, path: path.canonicalize().unwrap_or(path), main_repo: root })
 }
 
 /// Load the session's settings the way [`build_session`] does.
@@ -241,8 +294,16 @@ pub fn build_session(
     sink: Arc<dyn EventSink>,
     prompter: Arc<dyn PermissionPrompter>,
 ) -> Result<Session, CoreError> {
-    let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let mut cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
     let mut warnings = vec![];
+    let worktree = match &opts.worktree {
+        Some(name) => {
+            let w = enter_worktree(&cwd, name, opts.session_id.as_deref())?;
+            cwd = w.path.clone();
+            Some(w)
+        }
+        None => None,
+    };
 
     // Settings.
     let settings = session_settings(&opts, &cwd);
@@ -307,6 +368,12 @@ pub fn build_session(
             transcript.write_fork_of(r);
         }
     }
+    if let Some(w) = &worktree {
+        transcript.append_meta(json!({"worktree": {"name": w.name, "path": w.path, "mainRepo": w.main_repo}}));
+        if !opts.no_session_persistence {
+            store.register_project(&cwd, Some(&w.main_repo))?;
+        }
+    }
 
     // Working directories: flags, settings, and whatever the resumed session had.
     let mut add_dirs: Vec<PathBuf> = opts.add_dirs.iter().map(|d| forge_permissions::normalize(d, &cwd)).collect();
@@ -358,6 +425,10 @@ pub fn build_session(
     // Tools.
     let mut tools = ToolRegistry::new();
     forge_tools::builtin::register_core(&mut tools);
+    let web_tools = web_tools(&provider, &settings);
+    for t in &web_tools {
+        tools.register(t.clone());
+    }
     let agent_store =
         (!opts.no_session_persistence).then(|| SessionStore::new(store.root.join("agents").join(&session_id)));
     let agent_rt_slot: Arc<std::sync::OnceLock<Arc<forge_agents::AgentRuntime>>> = Arc::new(std::sync::OnceLock::new());
@@ -500,7 +571,11 @@ pub fn build_session(
             working_dirs: tool_ctx.working_dirs.clone(),
             env: tool_ctx.env.clone(),
             sandbox: tool_ctx.sandbox.clone(),
-            extra_tools: opts.mcp.as_ref().map(|m| m.tools()).unwrap_or_default(),
+            extra_tools: web_tools
+                .iter()
+                .cloned()
+                .chain(opts.mcp.as_ref().map(|m| m.tools()).unwrap_or_default())
+                .collect(),
             store: agent_store,
             session_id: session_id.clone(),
             hooks: hooks.clone(),

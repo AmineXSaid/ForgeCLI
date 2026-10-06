@@ -102,6 +102,30 @@ impl ApiError {
 }
 
 /// A source of model turns.
+/// Run one request to completion and return the whole message (for side
+/// requests such as summaries; the agent loop streams instead).
+pub async fn complete(
+    provider: &dyn Provider,
+    request: MessagesRequest,
+    cancel: &CancellationToken,
+) -> Result<forge_types::ApiMessage, ApiError> {
+    use futures::StreamExt;
+    let mut stream = provider.stream(request, cancel.clone()).await?;
+    let mut acc = MessageAccumulator::new();
+    loop {
+        let next = tokio::select! {
+            n = stream.next() => n,
+            _ = cancel.cancelled() => return Err(ApiError::Cancelled),
+        };
+        match next {
+            Some(Ok(ev)) => acc.push(&ev)?,
+            Some(Err(e)) => return Err(e),
+            None => break,
+        }
+    }
+    acc.finish()
+}
+
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     /// Short identifier (`messages`, `openai`, `mock`).

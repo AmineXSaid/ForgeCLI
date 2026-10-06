@@ -4,10 +4,12 @@ mod bash;
 mod edit;
 mod glob;
 mod grep;
+mod interact;
 mod ls;
 mod notebook;
 mod read;
 mod todo;
+mod web;
 mod write;
 
 use std::sync::Arc;
@@ -16,10 +18,12 @@ pub use bash::{Bash, BashOutput, KillShell};
 pub use edit::{apply_edit, Edit, MultiEdit};
 pub use glob::Glob;
 pub use grep::Grep;
+pub use interact::{AskUserQuestion, EnterPlanMode, ExitPlanMode};
 pub use ls::Ls;
 pub use notebook::NotebookEdit;
 pub use read::Read;
 pub use todo::TodoWrite;
+pub use web::{normalize_url, WebBackend, WebFetch, WebSearch};
 pub use write::Write;
 
 use crate::ToolRegistry;
@@ -38,6 +42,9 @@ pub fn register_core(reg: &mut ToolRegistry) {
     reg.register(Arc::new(Write));
     reg.register(Arc::new(NotebookEdit));
     reg.register(Arc::new(TodoWrite));
+    reg.register(Arc::new(AskUserQuestion));
+    reg.register(Arc::new(EnterPlanMode));
+    reg.register(Arc::new(ExitPlanMode));
 }
 
 fn str_arg<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {

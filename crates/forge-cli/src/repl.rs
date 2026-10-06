@@ -38,6 +38,36 @@ struct LinePrompter {
 #[async_trait::async_trait]
 impl PermissionPrompter for LinePrompter {
     async fn ask(&self, p: PermissionPrompt) -> PermissionAnswer {
+        match p.tool_name.as_str() {
+            "AskUserQuestion" => return self.questions(&p).await,
+            "ExitPlanMode" => {
+                eprintln!("\n{}\n{}", crate::term::bold("Plan:"), p.input["plan"].as_str().unwrap_or(""));
+                eprint!("\n  Approve this plan? [y]es / yes, and [a]ccept edits / [n]o, keep planning: ");
+                let _ = std::io::stderr().flush();
+                let answer = self.lines.lock().await.recv().await.unwrap_or_default();
+                return match answer.trim().to_ascii_lowercase().as_str() {
+                    "y" | "yes" => PermissionAnswer::Allow { updated_input: None, updated_permissions: vec![] },
+                    "a" => PermissionAnswer::Allow {
+                        updated_input: None,
+                        updated_permissions: vec![
+                            serde_json::json!({"type": "setMode", "mode": "acceptEdits", "destination": "session"}),
+                        ],
+                    },
+                    _ => PermissionAnswer::Deny {
+                        message: format!(
+                            "The user wants to keep planning.{}",
+                            if answer.trim().len() > 1 {
+                                format!(" They said: {}", answer.trim())
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        interrupt: false,
+                    },
+                };
+            }
+            _ => {}
+        }
         let summary = summarize_input(&p.tool_name, &p.input);
         eprint!("\n  Allow {}{}? [y]es / [a]lways / [n]o: ", p.tool_name, summary);
         let _ = std::io::stderr().flush();
@@ -53,11 +83,60 @@ impl PermissionPrompter for LinePrompter {
     }
 }
 
+impl LinePrompter {
+    /// AskUserQuestion: number the options; an answer is option numbers or free text.
+    async fn questions(&self, p: &PermissionPrompt) -> PermissionAnswer {
+        let mut input = p.input.clone();
+        let mut answers = serde_json::Map::new();
+        for q in input["questions"].as_array().cloned().unwrap_or_default() {
+            let question = q["question"].as_str().unwrap_or("").to_string();
+            let options: Vec<String> = q["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|o| o["label"].as_str().map(str::to_string))
+                .collect();
+            eprintln!("\n{}", crate::term::bold(&question));
+            for (i, o) in q["options"].as_array().into_iter().flatten().enumerate() {
+                eprintln!(
+                    "  {}. {} {}",
+                    i + 1,
+                    o["label"].as_str().unwrap_or(""),
+                    crate::term::dim(o["description"].as_str().unwrap_or(""))
+                );
+            }
+            let multi = q["multiSelect"].as_bool().unwrap_or(false);
+            eprint!(
+                "  {} ",
+                if multi { "Numbers (e.g. 1,3) or your own answer:" } else { "Number or your own answer:" }
+            );
+            let _ = std::io::stderr().flush();
+            let line = self.lines.lock().await.recv().await.unwrap_or_default();
+            let picked: Option<Vec<String>> = line
+                .split(',')
+                .map(|t| t.trim().parse::<usize>().ok().and_then(|n| options.get(n.wrapping_sub(1)).cloned()))
+                .collect();
+            let answer = match picked {
+                Some(p) if !p.is_empty() && (multi || p.len() == 1) => p.join(", "),
+                _ => line.trim().to_string(),
+            };
+            if answer.is_empty() {
+                return PermissionAnswer::Deny { message: "The user did not answer.".into(), interrupt: false };
+            }
+            answers.insert(question, serde_json::json!(answer));
+        }
+        input["answers"] = serde_json::Value::Object(answers);
+        PermissionAnswer::Allow { updated_input: Some(input), updated_permissions: vec![] }
+    }
+}
+
 fn summarize_input(tool: &str, input: &serde_json::Value) -> String {
     let key = match tool {
         "Bash" => "command",
         "Read" | "Write" | "Edit" | "MultiEdit" => "file_path",
         "Glob" | "Grep" => "pattern",
+        "WebFetch" => "url",
+        "WebSearch" => "query",
         _ => "",
     };
     match input.get(key).and_then(|v| v.as_str()) {

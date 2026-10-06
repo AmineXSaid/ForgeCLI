@@ -66,10 +66,10 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | LS | done | `builtin::ls_lists_tree` |  |
 | TodoWrite | done | `builtin::todo_write_validates_and_stores` |  |
 | Task / Agent | done | `agents::explore_agent_reports_back_in_its_own_context`, `agents::parallel_agents_run_concurrently` | Named `Task` |
-| WebFetch | todo | | |
-| WebSearch | todo | | server tool `web_search_20260209` |
-| ExitPlanMode / EnterPlanMode | todo | | Contract C8 |
-| AskUserQuestion | todo | | Contract C8 |
+| WebFetch | done | `builtin::web_fetch_converts_summarizes_and_reports_redirects`, `web::urls_are_upgraded_and_metadata_hosts_refused`, `html::converts_a_typical_page` | HTML to Markdown, small-model answer to `prompt`, cross-host redirects reported, metadata hosts blocked, 15 min cache, 10 MB cap |
+| WebSearch | done | `builtin::web_fetch_converts_summarizes_and_reports_redirects`, `web::search_results_list_their_sources` | Through the provider's `web_search_20250305` server tool (`webSearch.toolType` overrides); not offered with OpenAI-compatible providers. No live test |
+| ExitPlanMode / EnterPlanMode | done | `engine::c8_questions_and_plan_approval_with_a_person`, `engine::c8_headless_questions_and_plans_are_answered_by_contract` | Contract C8; approval ends plan mode, or sets the mode the approval names |
+| AskUserQuestion | done | `engine::c8_questions_and_plan_approval_with_a_person`, `engine::c8_headless_questions_and_plans_are_answered_by_contract` | Contract C8; the line REPL numbers the options |
 | Skill | todo | | |
 | SlashCommand | todo | | |
 | ListMcpResources / ReadMcpResource | todo | | |
@@ -189,7 +189,7 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | `--settings`, `--setting-sources`, `--bare`, `--safe-mode`, `--restricted` | partial | `config::layers_merge_in_order` | `--restricted` not implemented yet |
 | `--agents`, `--agent`, `--plugin-dir`, `--disable-slash-commands` | todo | | |
 | `--debug`, `--debug-file`, `--verbose`, `-v/--version` | done | `e2e::version_and_help` |  |
-| `-w/--worktree` | todo | `git::c10_worktree_session_listed_from_main_repo` | Contract C10 |
+| `-w/--worktree` | done | `core::c10_worktree_flag_runs_the_session_in_a_new_worktree`, `git::c10_worktree_session_listed_from_main_repo` | Contract C10. The exit prompt to remove it waits for the TUI |
 | `--autocompact` | done | `core::autocompact_values` | Also `autoCompactWindow` and `autoCompactEnabled` in settings |
 | `--brief`, `--prompt-suggestions`, `--forward-subagent-text` | todo | | |
 | `--cloud`, `--teleport`, `--remote-control*`, `--desktop`, `--chrome`/`--no-chrome`, `--ide`, `--from-pr`, `--environment`, `--file`, `--bg`, `--tmux`, `--plugin-url`, `--ax-screen-reader`, `--system-prompt-snapshot` | out | | Need a vendor's cloud, desktop or IDE services, or hosted infrastructure that a personal CLI doesn't have |

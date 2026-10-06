@@ -8,6 +8,7 @@
 pub mod builtin;
 mod context;
 mod files;
+pub mod html;
 pub mod injection;
 mod registry;
 pub mod sandbox;
@@ -75,6 +76,12 @@ pub trait Tool: Send + Sync {
     /// The call may run in parallel with other concurrency-safe calls.
     fn is_concurrency_safe(&self, input: &Value) -> bool {
         self.is_read_only(input)
+    }
+
+    /// The call is a question for the person (AskUserQuestion, plan approval): it always
+    /// asks, whatever the mode or rules allow (contract C8).
+    fn needs_user(&self) -> bool {
+        false
     }
 
     /// Will this call run inside the OS sandbox? Sandboxed calls need no permission prompt.

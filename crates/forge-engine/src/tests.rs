@@ -841,3 +841,67 @@ async fn the_model_is_told_when_turns_run_low() {
     assert_eq!(warned, vec![3], "once, when 3 calls are left");
     assert!(last_user_text(&reqs[3]).contains("3 model calls left"));
 }
+
+/// Answers every prompt: questions get the first option, everything else is allowed.
+struct Answering;
+
+#[async_trait::async_trait]
+impl PermissionPrompter for Answering {
+    async fn ask(&self, p: PermissionPrompt) -> PermissionAnswer {
+        let mut input = p.input.clone();
+        if p.tool_name == "AskUserQuestion" {
+            let mut answers = serde_json::Map::new();
+            for q in input["questions"].as_array().unwrap() {
+                answers.insert(q["question"].as_str().unwrap().into(), q["options"][0]["label"].clone());
+            }
+            input["answers"] = Value::Object(answers);
+        }
+        PermissionAnswer::Allow { updated_input: Some(input), updated_permissions: vec![] }
+    }
+}
+
+fn question() -> Value {
+    json!({"questions": [{"question": "Which database?", "header": "DB", "multiSelect": false,
+        "options": [{"label": "Postgres", "description": "x"}, {"label": "SQLite", "description": "y"}]}]})
+}
+
+#[tokio::test]
+async fn c8_questions_and_plan_approval_with_a_person() {
+    let h = Harness::new(vec![
+        MockTurn::tool("AskUserQuestion", question()),
+        MockTurn::tool("EnterPlanMode", json!({})),
+        MockTurn::tool("Write", json!({"file_path": "/tmp/forge-should-not-exist.txt", "content": "x"})),
+        MockTurn::tool("ExitPlanMode", json!({"plan": "1. do it"})),
+        MockTurn::text("done"),
+    ]);
+    let mut e = h.engine_with(EngineConfig::default(), PermissionMode::AcceptEdits, Arc::new(Answering), json!({}));
+    e.submit(prompt("build it")).await;
+    let r = tool_results(&e);
+    assert!(r[0].1.contains("\"Which database?\" = \"Postgres\"") && !r[0].2, "{r:?}");
+    assert!(r[1].1.contains("Plan mode is on"));
+    assert!(r[2].2 && r[2].1.contains("plan mode"), "writes are denied in plan mode: {r:?}");
+    assert!(!std::path::Path::new("/tmp/forge-should-not-exist.txt").exists());
+    assert!(r[3].1.contains("approved the plan"));
+    assert_eq!(e.handle().permissions.read().unwrap().mode, PermissionMode::Default, "plan mode ends on approval");
+}
+
+#[tokio::test]
+async fn c8_headless_questions_and_plans_are_answered_by_contract() {
+    let h = Harness::new(vec![
+        MockTurn::tools(&[("AskUserQuestion", question()), ("ExitPlanMode", json!({"plan": "p"}))]),
+        MockTurn::text("assumed Postgres"),
+    ]);
+    let mut e = h.engine_with(EngineConfig::default(), PermissionMode::Plan, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("go")).await;
+    let res = tool_results(&e);
+    assert!(res[0].2 && res[0].1.contains("best judgement"), "{res:?}");
+    assert!(res[1].2 && res[1].1.contains("stays in plan mode"), "{res:?}");
+    assert_eq!(e.handle().permissions.read().unwrap().mode, PermissionMode::Plan);
+    assert_eq!(r.permission_denials.len(), 2);
+
+    // Bypass approves plans by itself; deny rules still win.
+    let h = Harness::new(vec![MockTurn::tool("ExitPlanMode", json!({"plan": "p"})), MockTurn::text("ok")]);
+    let mut e = h.engine();
+    e.submit(prompt("go")).await;
+    assert!(!tool_results(&e)[0].2);
+}
