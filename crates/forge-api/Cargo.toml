@@ -1,0 +1,23 @@
+[package]
+name = "forge-api"
+description = "Model providers: Anthropic Messages API (SSE streaming), OpenAI-compatible endpoints, and a scripted mock."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+forge-types.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
