@@ -10,17 +10,18 @@
 //! to the front end as it finishes.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use forge_config::LoadedSettings;
-use forge_engine::{Engine, EngineHandle, NoticeLevel, TurnResult};
+use forge_engine::{Engine, EngineHandle, EventSink, NoticeLevel, PermissionPrompter, TurnResult};
+use forge_session::{Entry, FileHistory, LoadedSession};
 use forge_types::sdk::{InitInfo, ResultSubtype};
 use forge_types::MessageContent;
 
 use crate::commands::{self, Catalog, Surface};
 use crate::goal::{self, Goal, Status, Verdict};
-use crate::{PromptSpec, Session};
+use crate::{build_session, LaunchOptions, PromptSpec, Resume, Session};
 
 /// Facts about the session for `/status`, `/doctor` and friends.
 pub struct SessionInfo {
@@ -41,6 +42,57 @@ pub struct Activity {
     pub prompts: u32,
 }
 
+/// The session a front end is talking to. It stays valid when the driver
+/// switches sessions (`/clear`, `/resume`, `/branch`, `/cd`), so Ctrl-C and
+/// SDK control requests always reach the current engine.
+#[derive(Clone)]
+pub struct Live(Arc<RwLock<(EngineHandle, Arc<FileHistory>, String)>>);
+
+impl Live {
+    fn new(engine: &Engine, session_id: &str) -> Self {
+        Live(Arc::new(RwLock::new((engine.handle(), engine.history().clone(), session_id.to_string()))))
+    }
+
+    fn set(&self, engine: &Engine, session_id: &str) {
+        *self.0.write().unwrap() = (engine.handle(), engine.history().clone(), session_id.to_string());
+    }
+
+    pub fn handle(&self) -> EngineHandle {
+        self.0.read().unwrap().0.clone()
+    }
+
+    pub fn history(&self) -> Arc<FileHistory> {
+        self.0.read().unwrap().1.clone()
+    }
+
+    pub fn session_id(&self) -> String {
+        self.0.read().unwrap().2.clone()
+    }
+}
+
+/// What the driver needs to build another session (switching sessions).
+#[derive(Clone)]
+pub struct Rebuild {
+    pub opts: LaunchOptions,
+    pub sink: Arc<dyn EventSink>,
+    pub prompter: Arc<dyn PermissionPrompter>,
+}
+
+/// Where a session switch goes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Switch {
+    /// A new, empty session (`/clear`).
+    New,
+    /// A saved session (`/resume`).
+    Resume(String),
+    /// A copy of this conversation under a new id (`/branch`).
+    Branch,
+    /// A copy of this conversation in another directory (`/cd`).
+    Cd(PathBuf),
+    /// This session again, with commands, skills, plugins and settings re-read.
+    Reload,
+}
+
 /// `/btw` exchanges kept as context for the next side question.
 pub const MAX_SIDE_QUESTIONS: usize = 20;
 
@@ -56,6 +108,8 @@ pub struct Driver {
     pub goal: Option<Goal>,
     /// Earlier `/btw` questions and answers, oldest first.
     pub side_questions: Vec<(String, String)>,
+    live: Live,
+    rebuild: Option<Rebuild>,
 }
 
 /// What to do after an input.
@@ -80,6 +134,7 @@ impl Driver {
         let cwd = s.engine.tool_ctx().project_dir.clone();
         let cost = s.engine.state.total_cost_usd;
         let goal = s.resumed.as_ref().and_then(|r| r.goal.as_ref()).and_then(|g| Goal::restore(g, cost));
+        let live = Live::new(&s.engine, &s.session_id);
         Driver {
             engine: s.engine,
             catalog: Catalog {
@@ -104,11 +159,141 @@ impl Driver {
             activity: Activity::default(),
             goal,
             side_questions: vec![],
+            live,
+            rebuild: None,
         }
     }
 
     pub fn handle(&self) -> EngineHandle {
         self.engine.handle()
+    }
+
+    /// The current session, for Ctrl-C handlers and SDK control requests.
+    pub fn live(&self) -> Live {
+        self.live.clone()
+    }
+
+    /// Let the driver build other sessions: `opts` as the session was launched.
+    pub fn set_rebuild(
+        &mut self,
+        opts: LaunchOptions,
+        sink: Arc<dyn EventSink>,
+        prompter: Arc<dyn PermissionPrompter>,
+    ) {
+        self.rebuild = Some(Rebuild { opts, sink, prompter });
+    }
+
+    pub fn can_switch(&self) -> bool {
+        self.rebuild.is_some()
+    }
+
+    /// Where sessions are stored, when the launch options set it.
+    pub(crate) fn rebuild_store(&self) -> Option<PathBuf> {
+        self.rebuild.as_ref().and_then(|r| r.opts.store_root.clone())
+    }
+
+    /// The conversation in memory, as a loaded session.
+    pub fn snapshot(&self) -> LoadedSession {
+        let st = &self.engine.state;
+        let t = self.engine.transcript();
+        LoadedSession {
+            session_id: self.info.session_id.clone(),
+            cwd: self.info.cwd.clone(),
+            messages: st
+                .uuids
+                .iter()
+                .zip(&st.messages)
+                .map(|(u, m)| Entry { uuid: u.clone(), message: m.clone(), is_meta: false })
+                .collect(),
+            additional_dirs: self.prompt.env.additional_dirs.clone(),
+            microcompacted: st.microcompacted.clone(),
+            title: t.title(),
+            last_uuid: t.last_uuid(),
+            permission_mode: Some(self.engine.handle().permissions.read().unwrap().mode.as_str().to_string()),
+            model: Some(self.engine.handle().model()),
+            worktree: None,
+            todos: Some(self.engine.tool_ctx().todos.lock().unwrap().clone()).filter(|t| !t.is_empty()),
+            goal: self.goal.as_ref().map(Goal::record),
+        }
+    }
+
+    /// Replace the session: a new one, a saved one, a branch of this one, or
+    /// this one rebuilt. MCP connections, the running model and mode, the cost
+    /// so far and the front end's [`Live`] carry over.
+    pub async fn switch(&mut self, to: Switch) -> Result<(), String> {
+        let rb = self.rebuild.clone().ok_or("this front end can't switch sessions")?;
+        let mut opts = rb.opts.clone();
+        opts.cwd = self.info.cwd.clone();
+        opts.worktree = None;
+        opts.mcp = self.catalog.mcp.clone();
+        opts.session_id = None;
+        opts.fork_session = false;
+        let rt = self.engine.handle().runtime();
+        opts.model = Some(rt.model.clone());
+        opts.effort = rt.effort.clone();
+        let mode = self.engine.handle().permissions.read().unwrap().mode;
+        opts.permission_mode = Some(mode.as_str().to_string());
+        let (source, ends) = match &to {
+            Switch::New => {
+                opts.resume = Resume::New;
+                ("clear", Some("clear"))
+            }
+            Switch::Resume(id) => {
+                opts.resume = Resume::Id(id.clone());
+                ("resume", Some("resume"))
+            }
+            Switch::Branch => {
+                opts.resume = Resume::Loaded(Box::new(self.snapshot()));
+                opts.fork_session = true;
+                ("resume", Some("other"))
+            }
+            Switch::Cd(dir) => {
+                opts.resume = Resume::Loaded(Box::new(self.snapshot()));
+                opts.fork_session = true;
+                opts.cwd = dir.clone();
+                ("resume", Some("other"))
+            }
+            Switch::Reload => {
+                opts.resume = Resume::Loaded(Box::new(self.snapshot()));
+                ("resume", None)
+            }
+        };
+        let s = build_session(opts, rb.sink.clone(), rb.prompter.clone()).map_err(|e| e.to_string())?;
+        if let Some(reason) = ends {
+            self.engine.end_session(reason).await;
+        }
+        let mut next = Driver::new(s, self.surface, self.catalog.mcp.clone());
+        next.engine.set_start_source(source);
+        // Carry over what the person set in this process.
+        let h = next.engine.handle();
+        h.set_fast(rt.fast);
+        h.set_max_thinking_tokens(rt.max_thinking_tokens);
+        let old = &self.engine.state;
+        let st = &mut next.engine.state;
+        st.total_cost_usd += old.total_cost_usd;
+        st.total_usage.add(&old.total_usage);
+        for (model, usage) in &old.model_usage {
+            let e = st.model_usage.entry(model.clone()).or_insert_with(|| serde_json::json!({}));
+            for (k, v) in usage.as_object().into_iter().flatten() {
+                let sum = e.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) + v.as_f64().unwrap_or(0.0);
+                e[k] = if v.is_u64() { serde_json::json!(sum as u64) } else { serde_json::json!(sum) };
+            }
+        }
+        if next.info.cwd == self.info.cwd {
+            next.prompt.output_style = self.prompt.output_style.clone();
+            next.info.init.output_style = self.info.init.output_style.clone();
+        }
+        next.prompt.replace = self.prompt.replace.clone();
+        next.prompt.append = self.prompt.append.clone();
+        next.rebuild_system();
+        next.info.user_settings = self.info.user_settings.clone();
+        next.activity = self.activity.clone();
+        next.started = self.started;
+        next.rebuild = self.rebuild.take();
+        next.live = self.live.clone();
+        next.live.set(&next.engine, &next.info.session_id);
+        *self = next;
+        Ok(())
     }
 
     /// Run one input. `report` gets each turn's result as it finishes.

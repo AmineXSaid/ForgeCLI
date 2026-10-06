@@ -206,8 +206,10 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
     let mut lo = crate::launch_options(&o)?;
     let (mcp, mcp_warnings) = forge_core::connect_mcp(&lo).await;
     lo.mcp = Some(mcp.clone());
-    let session = forge_core::build_session(lo, Arc::new(PrintSink), Arc::new(LinePrompter { lines: lines.clone() }))
-        .map_err(crate::exit::Fail::from)?;
+    let sink: Arc<dyn forge_engine::EventSink> = Arc::new(PrintSink);
+    let prompter: Arc<dyn forge_engine::PermissionPrompter> = Arc::new(LinePrompter { lines: lines.clone() });
+    let rebuild = (lo.clone(), sink.clone(), prompter.clone());
+    let session = forge_core::build_session(lo, sink, prompter).map_err(crate::exit::Fail::from)?;
     for w in session.warnings.iter().chain(&mcp_warnings) {
         eprintln!("forge: {w}");
     }
@@ -218,12 +220,13 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         session.init.cwd
     );
     let mut driver = forge_core::Driver::new(session, forge_core::commands::Surface::Repl, Some(mcp.clone()));
-    let handle = driver.handle();
+    driver.set_rebuild(rebuild.0, rebuild.1, rebuild.2);
+    let handle = driver.live();
     // Ctrl-C interrupts the running turn instead of killing the process.
     let h2 = handle.clone();
     tokio::spawn(async move {
         while tokio::signal::ctrl_c().await.is_ok() {
-            h2.interrupt();
+            h2.handle().interrupt();
         }
     });
     let mut next = prompt;

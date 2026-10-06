@@ -49,6 +49,8 @@ pub enum Resume {
     New,
     Latest,
     Id(String),
+    /// A conversation already in memory (`/branch`, `/cd`, `/reload-*`).
+    Loaded(Box<LoadedSession>),
 }
 
 /// Everything the command line can say about a session.
@@ -407,6 +409,7 @@ pub fn build_session(
             }
         },
         Resume::Id(id) => Some(LoadedSession::load(&store.find(id)?, None)?),
+        Resume::Loaded(l) => Some((**l).clone()),
     };
     let session_id = match (&resumed, opts.fork_session, &opts.session_id) {
         (Some(_), true, Some(id)) | (None, _, Some(id)) => id.clone(),
@@ -699,6 +702,7 @@ pub fn build_session(
     }
     if let Some(r) = resumed.as_mut() {
         engine.restore(r);
+        engine.set_start_source("resume");
     }
 
     // Persist "always allow" answers to the settings file they name.

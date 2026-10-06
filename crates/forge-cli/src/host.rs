@@ -5,9 +5,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use forge_engine::{EngineHandle, PermissionAnswer, PermissionPrompt, PermissionPrompter};
+use forge_engine::{PermissionAnswer, PermissionPrompt, PermissionPrompter};
 use forge_permissions::PermissionMode;
-use forge_session::FileHistory;
 use forge_types::sdk::{ControlRequest, ControlRequestBody, PermissionResult, SdkMessage};
 use forge_types::MessageContent;
 use serde_json::{json, Value};
@@ -84,8 +83,8 @@ pub enum Input {
 pub struct ControlContext {
     pub out: Arc<Out>,
     pub pending: Pending,
-    pub handle: EngineHandle,
-    pub history: Arc<FileHistory>,
+    /// The current session (it changes with /clear, /resume, /branch, /cd).
+    pub live: forge_core::driver::Live,
     pub mcp: Option<Arc<forge_mcp::McpManager>>,
     pub init_response: Value,
 }
@@ -113,23 +112,23 @@ impl ControlContext {
                 self.answer(id, Ok(Some(self.init_response.clone())));
             }
             "interrupt" => {
-                self.handle.interrupt();
+                self.live.handle().interrupt();
                 self.answer(id, Ok(None));
             }
             "set_permission_mode" => match b.get_str("mode").and_then(PermissionMode::parse) {
                 Some(m) => {
-                    self.handle.set_permission_mode(m);
+                    self.live.handle().set_permission_mode(m);
                     self.answer(id, Ok(None));
                 }
                 None => self.answer(id, Err(format!("invalid permission mode {:?}", b.data.get("mode")))),
             },
             "set_model" => {
-                self.handle.set_model(b.get_str("model").unwrap_or("default"));
+                self.live.handle().set_model(b.get_str("model").unwrap_or("default"));
                 self.answer(id, Ok(None));
             }
             "set_max_thinking_tokens" => {
                 let n = b.data.get("max_thinking_tokens").and_then(Value::as_u64).map(|n| n as u32);
-                self.handle.set_max_thinking_tokens(n);
+                self.live.handle().set_max_thinking_tokens(n);
                 self.answer(id, Ok(None));
             }
             "mcp_status" => {
@@ -141,7 +140,7 @@ impl ControlContext {
                     return self.answer(id, Err("user_message_id is required".into()));
                 };
                 let dry = b.data.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
-                match self.history.rewind(msg_id, dry) {
+                match self.live.history().rewind(msg_id, dry) {
                     Ok(plan) => {
                         let files: Vec<String> =
                             plan.restore.iter().chain(plan.delete.iter()).map(|p| p.display().to_string()).collect();

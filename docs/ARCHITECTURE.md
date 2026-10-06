@@ -542,6 +542,37 @@ default to the same layer the reference uses. In `-p` and stream-json they
 don't. A write is mirrored into the loaded layers, and the answer names any
 higher-precedence layer that overrides it.
 
+**Switching sessions.** `/clear`, `/resume`, `/branch`, `/cd` and `/reload-*`
+replace the session through `Driver::switch`. It rebuilds the session with
+`build_session` from the launch options the front end handed over
+(`set_rebuild`). Several things carry over:
+- the MCP manager, so connections stay up;
+- the running model, effort, thinking, fast mode and permission mode;
+- the output style and an SDK host's system prompt;
+- the cost and usage so far.
+
+`/branch`, `/cd` and `/reload-*` take the conversation from memory
+(`Resume::Loaded`, a snapshot of the live state), so they work with
+`--no-session-persistence`. The old session gets SessionEnd (except on a
+reload) and the new one SessionStart with `source` set to `clear` or
+`resume`.
+
+Front ends hold a `Live` handle, never an `EngineHandle`: Ctrl-C and SDK
+control requests (`interrupt`, `set_model`, `rewind_files`, ...) always
+reach the current engine. After a switch, stream-json hosts get a new
+`system/init` with the new session id.
+
+**Rewind.** `/rewind` works on the person's prompts (user text that isn't a
+tool result or only a system reminder):
+- **Conversation:** truncates the messages and branches the transcript from
+  the message before, with a `system/rewind` record so a resume sees the
+  same thing.
+- **Code:** the file checkpoints of that turn (C4).
+- **Partial summaries:** replace a range with a summary note. For
+  `summarize-to`, the kept messages are written again after a compact
+  boundary under their original uuids, so checkpoints and SDK `rewind_files`
+  ids stay valid.
+
 **Immediate commands** (`/status`, `/usage`, `/tasks`, `/mcp`, `/context`) only read
 state. They are marked in the registry so the TUI and stream-json hosts
 can run them while a turn is in progress; today every command still waits

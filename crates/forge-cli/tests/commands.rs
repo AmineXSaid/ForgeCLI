@@ -59,7 +59,7 @@ async fn info_commands_answer_locally() {
     assert_eq!(code, 0);
     for want in [
         "/usage - Show this session's cost, token use and activity (also /cost, /stats)",
-        "/clear - Start the conversation over with empty context (also /reset, /new)",
+        "/clear [name] - Start a new conversation; the current one stays resumable (also /reset, /new)",
         "/compact [instructions] -",
         "/pdf - Read PDF files (skill)",
     ] {
@@ -113,7 +113,8 @@ async fn info_commands_answer_locally() {
     assert!(out.contains("0.1.0"), "{out}");
 
     let (code, out, _) = run(&["-p", "/clear"]).await;
-    assert_eq!((code, out.trim()), (0, "Conversation cleared."));
+    assert_eq!(code, 0);
+    assert!(out.starts_with("Conversation cleared. The previous one is saved: /resume "), "{out}");
 
     let (code, out, _) = run(&["-p", "/doctor"]).await;
     assert!(out.contains("settings") && out.contains("credentials") && out.contains("model"), "{out}");
@@ -280,4 +281,46 @@ async fn goal_runs_to_completion_in_print_mode() {
     let (code, _, err) = forge(&e, &api.url, &["-p", "/goal fix missing.rs"]).await;
     assert_eq!(code, 1, "an unmet goal fails the run");
     assert!(err.contains("Goal can't be met: no such file"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_starts_a_new_session_for_stream_hosts() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("one"), MockTurn::text("two")]).await;
+    let mut c = command(
+        &forge_bin(),
+        &e.cwd,
+        &e.home,
+        &api.url,
+        &["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+    );
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().unwrap();
+        for text in ["first", "/clear", "second"] {
+            let line = serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
+            stdin.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+        }
+    }
+    let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output()).await.unwrap().unwrap();
+    let lines: Vec<Value> =
+        String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let inits: Vec<&str> = lines
+        .iter()
+        .filter(|l| l["type"] == "system" && l["subtype"] == "init")
+        .filter_map(|l| l["session_id"].as_str())
+        .collect();
+    assert_eq!(inits.len(), 2, "a new init after /clear");
+    assert_ne!(inits[0], inits[1]);
+    let results: Vec<&Value> = lines.iter().filter(|l| l["type"] == "result").collect();
+    assert_eq!(results.len(), 3);
+    assert_eq!(
+        (results[0]["session_id"].as_str(), results[2]["session_id"].as_str()),
+        (Some(inits[0]), Some(inits[1]))
+    );
+    // The second conversation starts empty.
+    let reqs = api.requests();
+    assert_eq!(reqs[1]["messages"].as_array().unwrap().len(), 1);
 }

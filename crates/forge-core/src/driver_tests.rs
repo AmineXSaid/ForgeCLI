@@ -34,8 +34,10 @@ fn driver_with(f: impl FnOnce(&Path, &mut LaunchOptions)) -> T {
         ..Default::default()
     };
     f(dir.path(), &mut o);
+    let rebuild = o.clone();
     let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
-    let d = Driver::new(s, Surface::Print, None);
+    let mut d = Driver::new(s, Surface::Print, None);
+    d.set_rebuild(rebuild, Arc::new(NullSink), Arc::new(DenyPrompter));
     T { _dir: dir, proj, p, d }
 }
 
@@ -544,4 +546,189 @@ async fn shell_mode_can_skip_the_model() {
     // A lone "!" is an ordinary prompt.
     t.p.push(MockTurn::text("?"));
     assert_eq!(run(&mut t.d, "!").await.num_turns, 1);
+}
+
+fn write_turn(path: &Path, content: &str) -> MockTurn {
+    MockTurn::tool("Write", serde_json::json!({"file_path": path, "content": content}))
+}
+
+/// Edits allowed, and no verification reminders (they would take scripted replies).
+fn accept_edits(dir: &Path, o: &mut LaunchOptions) {
+    o.permission_mode = Some("acceptEdits".into());
+    std::fs::write(dir.join("proj/.forge/settings.json"), r#"{"verification": {"enabled": false}}"#).unwrap();
+}
+
+#[tokio::test]
+async fn rewind_restores_code_and_conversation() {
+    let mut t = driver_with(accept_edits);
+    let a = t.proj.join("a.txt");
+    for turn in [
+        write_turn(&a, "one"),
+        MockTurn::text("created"),
+        write_turn(&a, "two"),
+        MockTurn::text("changed"),
+        MockTurn::text("hi"),
+    ] {
+        t.p.push(turn);
+    }
+    run(&mut t.d, "create a").await;
+    run(&mut t.d, "change a").await;
+    run(&mut t.d, "hello").await;
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "two");
+
+    let list = local(&mut t.d, "/rewind").await;
+    assert!(list.contains("1. create a  · 1 file(s) changed since"), "{list}");
+    assert!(list.contains("2. change a  · 1 file(s) changed since") && list.contains("3. hello\n"), "{list}");
+
+    // Code only: the file goes back, the conversation stays.
+    let n = t.d.engine.state.messages.len();
+    assert_eq!(local(&mut t.d, "/rewind 2 code").await, "Restored 1 file(s). The conversation is unchanged.");
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "one");
+    assert_eq!(t.d.engine.state.messages.len(), n);
+
+    // Conversation only: back to before "change a", and the prompt comes back.
+    let out = local(&mut t.d, "/rewind 2 conversation").await;
+    assert!(out.ends_with("Your prompt was:\n\nchange a"), "{out}");
+    assert_eq!(t.d.engine.prompt_points().len(), 1);
+    // The rewind survives a resume.
+    let path = t.d.engine.transcript().path().unwrap().to_path_buf();
+    let loaded = forge_session::LoadedSession::load(&path, None).unwrap();
+    assert_eq!(loaded.messages.len(), t.d.engine.state.messages.len());
+
+    // Both, from the first prompt: a.txt didn't exist before it.
+    let out = local(&mut t.d, "/rewind 1 both").await;
+    assert!(out.contains("Restored 0 file(s), deleted 1 new one(s).") && out.ends_with("create a"), "{out}");
+    assert!(!a.exists());
+    assert!(t.d.engine.state.messages.is_empty());
+    assert!(fails(&mut t.d, "/rewind").await.contains("Nothing to rewind"));
+}
+
+#[tokio::test]
+async fn rewind_summarizes_part_of_the_conversation() {
+    let mut t = driver();
+    for (q, a) in [("one", "A1"), ("two", "A2"), ("three", "A3")] {
+        t.p.push(MockTurn::text(a));
+        run(&mut t.d, q).await;
+    }
+    assert!(fails(&mut t.d, "/rewind 1 summarize-to").await.contains("Nothing before"));
+    assert!(fails(&mut t.d, "/rewind 9 both").await.contains("No prompt 9"));
+    assert!(fails(&mut t.d, "/rewind 1 sideways").await.contains("Unknown action"));
+
+    t.p.push(MockTurn::text("<summary>Asked one and two.</summary>"));
+    let out = local(&mut t.d, "/rewind 3 summarize-to keep names").await;
+    assert!(out.starts_with("Summarized the conversation before prompt 3"), "{out}");
+    let req = t.p.requests().last().unwrap().clone();
+    assert_eq!(req.tool_choice, Some(serde_json::json!({"type": "none"})));
+    let sent = serde_json::to_string(&req.messages).unwrap();
+    assert!(sent.contains("\"two\"") && !sent.contains("three") && sent.contains("keep names"), "{sent}");
+    let msgs = &t.d.engine.state.messages;
+    assert_eq!(msgs.len(), 3, "summary, then the third prompt and its answer");
+    assert!(
+        msgs[0].text().contains("before this point was summarized") && msgs[0].text().contains("Asked one and two.")
+    );
+    assert_eq!(t.d.engine.prompt_points().len(), 1, "a summary isn't a prompt");
+
+    // On disk the same conversation comes back.
+    let path = t.d.engine.transcript().path().unwrap().to_path_buf();
+    let loaded = forge_session::LoadedSession::load(&path, None).unwrap();
+    let texts: Vec<String> = loaded.messages.iter().map(|e| e.message.text()).collect();
+    assert_eq!(texts.len(), 3);
+    assert!(texts[0].contains("Asked one and two.") && texts[1] == "three" && texts[2] == "A3", "{texts:?}");
+
+    // Summarize from a prompt on: the end is replaced.
+    t.p.push(MockTurn::text("Asked three."));
+    local(&mut t.d, "/rewind 1 summarize-from").await;
+    let msgs = &t.d.engine.state.messages;
+    assert_eq!(msgs.len(), 2);
+    assert!(msgs[1].text().contains("from this point on was summarized") && msgs[1].text().contains("Asked three."));
+}
+
+#[tokio::test]
+async fn clear_resume_and_branch_switch_sessions() {
+    let mut t = driver();
+    t.p.push(
+        MockTurn::text("first answer").with_usage(forge_types::Usage { input_tokens: 1_000_000, ..Default::default() }),
+    );
+    run(&mut t.d, "first").await;
+    let first = t.d.info.session_id.clone();
+    let cost = t.d.engine.state.total_cost_usd;
+    assert!(cost > 0.0);
+    let live = t.d.live();
+
+    let out = local(&mut t.d, "/clear old work").await;
+    assert_eq!(
+        out,
+        format!("Conversation cleared. The previous one is saved as \"old work\": /resume {first} brings it back.")
+    );
+    let second = t.d.info.session_id.clone();
+    assert_ne!(first, second);
+    assert_eq!(live.session_id(), second, "front ends follow the switch");
+    assert!(t.d.engine.state.messages.is_empty());
+    assert_eq!(t.d.engine.state.total_cost_usd, cost, "the cost so far carries over");
+
+    // /resume is for the interactive session.
+    assert!(fails(&mut t.d, "/resume").await.contains("--resume"));
+    t.d.surface = Surface::Repl;
+    t.p.push(MockTurn::text("second answer"));
+    run(&mut t.d, "second").await;
+    let list = local(&mut t.d, "/resume").await;
+    assert!(list.contains("1. old work") && list.contains(&first[..8]), "{list}");
+    assert!(fails(&mut t.d, "/resume nothing-like-it").await.contains("No conversation matches"));
+    let out = local(&mut t.d, "/resume old work").await;
+    assert_eq!(out, format!("Resumed {first} \"old work\" (2 messages)."));
+    assert_eq!(t.d.engine.state.messages[0].text(), "first");
+    assert_eq!(t.d.engine.transcript().title().as_deref(), Some("old work"));
+
+    // A branch copies the conversation under a new id; the original stays put.
+    let out = local(&mut t.d, "/branch try another way").await;
+    let branch = t.d.info.session_id.clone();
+    assert_eq!(
+        out,
+        format!(
+            "Branched into {branch} \"try another way\". The original stays as it was: /resume {first} returns to it."
+        )
+    );
+    assert_eq!(t.d.engine.state.messages.len(), 2);
+    t.p.push(MockTurn::text("branch answer"));
+    run(&mut t.d, "in the branch").await;
+    let store = forge_session::SessionStore::new(t._dir.path().join("store"));
+    let original = forge_session::LoadedSession::load(&store.find(&first).unwrap(), None).unwrap();
+    assert_eq!(original.messages.len(), 2, "the original is untouched");
+    let copy = forge_session::LoadedSession::load(&store.find(&branch).unwrap(), None).unwrap();
+    assert_eq!(copy.messages.len(), 4);
+}
+
+#[tokio::test]
+async fn cd_and_reload_rebuild_the_session() {
+    let mut t = driver();
+    t.p.push(MockTurn::text("ok"));
+    run(&mut t.d, "remember 42").await;
+    let other = t._dir.path().join("other");
+    std::fs::create_dir_all(other.join(".forge/skills/deploy")).unwrap();
+    std::fs::write(other.join(".forge/skills/deploy/SKILL.md"), "---\ndescription: Deploy it\n---\nRun make deploy.")
+        .unwrap();
+    let other = other.canonicalize().unwrap();
+    assert!(fails(&mut t.d, "/cd /no/such/dir").await.contains("/no/such/dir"));
+    let first = t.d.info.session_id.clone();
+    let out = local(&mut t.d, &format!("/cd {}", other.display())).await;
+    assert!(out.starts_with(&format!("Now working in {}", other.display())), "{out}");
+    assert_ne!(t.d.info.session_id, first);
+    assert_eq!(t.d.engine.tool_ctx().project_dir, other);
+    assert_eq!(t.d.info.cwd, other);
+    assert!(t.d.catalog.skills.iter().any(|s| s.name == "deploy"), "the new directory's skills load");
+    t.p.push(MockTurn::text("still 42"));
+    run(&mut t.d, "what number?").await;
+    let req = serde_json::to_string(&t.p.requests().last().unwrap().messages).unwrap();
+    assert!(req.contains("remember 42") && req.contains("moved this session to"), "{req}");
+
+    // A new skill appears after /reload-skills, in the same conversation.
+    std::fs::create_dir_all(other.join(".forge/skills/lint")).unwrap();
+    std::fs::write(other.join(".forge/skills/lint/SKILL.md"), "---\ndescription: Lint it\n---\nRun make lint.")
+        .unwrap();
+    let id = t.d.info.session_id.clone();
+    let n = t.d.engine.state.messages.len();
+    let out = local(&mut t.d, "/reload-skills").await;
+    assert!(out.starts_with("Reloaded: 2 skills (+1, -0)"), "{out}");
+    assert_eq!((t.d.info.session_id.clone(), t.d.engine.state.messages.len()), (id, n));
+    assert!(local(&mut t.d, "/skills").await.contains("lint - Lint it"));
 }

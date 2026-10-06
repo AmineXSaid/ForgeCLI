@@ -16,6 +16,10 @@
 - Session commands: `/rename` (Forge suggests a name), `/export`, `/diff`,
   `/context [all]` and `/debug`, which turns on a session debug log and
   has Forge read it.
+- Session commands: `/rewind` (restore code, conversation or both, or
+  summarize part of the conversation), `/branch`, `/resume`, `/cd`,
+  `/reload-skills`, `/reload-plugins`; `/clear` now starts a new session
+  and keeps the old one resumable.
 - `/goal`: Forge keeps working until a small-model check finds the goal
   met, with guards against loops (C18). `/plan`, `/btw` side questions,
   `/recap`, and `!command` shell mode.

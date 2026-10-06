@@ -285,6 +285,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
 
     let (mcp, mcp_warnings) = forge_core::connect_mcp(&lo).await;
     lo.mcp = Some(mcp.clone());
+    let rebuild = (lo.clone(), sink.clone(), prompter.clone());
     let session = match build_session(lo, sink, prompter) {
         Ok(s) => s,
         Err(e) => {
@@ -305,21 +306,23 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             eprintln!("{} {w}", term::yellow("forge: warning:"));
         }
     }
-    let session_id = session.session_id.clone();
+    let mut session_id = session.session_id.clone();
     if stream_out {
         out.line(&SdkMessage::System(SystemMessage::init(&session.init)));
     }
     let surface = if stream_in { forge_core::commands::Surface::Stream } else { forge_core::commands::Surface::Print };
     let mut driver = forge_core::Driver::new(session, surface, Some(mcp.clone()));
+    driver.set_rebuild(rebuild.0, rebuild.1, rebuild.2);
+    let live = driver.live();
 
     // Ctrl-C interrupts the current turn (the result is still written); a second one exits at once.
-    let handle = driver.handle();
+    let handle = live.clone();
     let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = interrupted.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            handle.interrupt();
+            handle.handle().interrupt();
             if tokio::signal::ctrl_c().await.is_ok() {
                 std::process::exit(exit::INTERRUPTED);
             }
@@ -338,8 +341,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         let ctx = Arc::new(ControlContext {
             out: out.clone(),
             pending: pending.clone(),
-            handle: driver.handle(),
-            history: driver.engine.history().clone(),
+            live: live.clone(),
             mcp: Some(mcp.clone()),
             init_response: json!({
                 "commands": driver.catalog.catalog_json(surface),
@@ -369,9 +371,11 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                         code = c;
                     }
                     match format {
-                        OutputFormat::StreamJson => out.line(&SdkMessage::Result(result_message(r, &session_id))),
+                        OutputFormat::StreamJson => {
+                            out.line(&SdkMessage::Result(result_message(r, &live.session_id())))
+                        }
                         OutputFormat::Json => {
-                            let mut v = serde_json::to_value(SdkMessage::Result(result_message(r, &session_id)))
+                            let mut v = serde_json::to_value(SdkMessage::Result(result_message(r, &live.session_id())))
                                 .unwrap_or_default();
                             v["exit_code"] = json!(c);
                             last_json = Some(v);
@@ -393,6 +397,14 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     }
                 };
                 let flow = driver.input(content, &mut report).await;
+                // A command switched sessions (/clear, /resume, /branch, /cd): say so to stream hosts.
+                if driver.info.session_id != session_id {
+                    session_id = driver.info.session_id.clone();
+                    *sink_id.lock().unwrap() = session_id.clone();
+                    if stream_out {
+                        out.line(&SdkMessage::System(SystemMessage::init(&driver.info.init)));
+                    }
+                }
                 // A single prompt that set a goal fails when the goal ends unmet.
                 if !stream_in && code == exit::OK && driver.goal.as_ref().is_some_and(|g| g.ended_unmet()) {
                     code = exit::FAILED;

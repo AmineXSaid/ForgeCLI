@@ -225,14 +225,14 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 | --- | --- | --- | --- | --- |
 | `/help` | done | PR | `cmds::info_commands_answer_locally`, `core::commands::tests::help_and_catalog_come_from_the_registry` | Built-ins with hints and aliases, then custom commands, skills and MCP prompts |
 | `/exit` (`/quit`) | done | PR | `cmds::info_commands_answer_locally` | In `-p` it ends quietly with exit 0 |
-| `/clear` (`/reset`, `/new`) | partial | PR | `cmds::info_commands_answer_locally` | Empties the context. Gap: the reference starts a new session id; Forge keeps the id (phase 3, session switching) |
+| `/clear [name]` (`/reset`, `/new`) | done | PR | `cmds::info_commands_answer_locally`, `cmds::clear_starts_a_new_session_for_stream_hosts`, `core::driver_tests::clear_resume_and_branch_switch_sessions` | A new session id; the old conversation stays resumable, optionally named. Stream hosts get a new `system/init` |
 | `/compact [instructions]` | done | PR | `extend::commands_skills_styles_and_plugins`, engine compaction tests (C9) |  |
 | `/usage` (`/cost`, `/stats`) | done | PR | `cmds::info_commands_answer_locally`, `cmds::json_output_marks_local_results` | Cost, wall and API time, model calls, prompts, tool calls, tokens per model, context now. No plan limits: Forge has no subscription |
 | `/status` | done | PR | `cmds::info_commands_answer_locally` | Version, session and title, directories, model, effort, thinking, mode, output style, sandbox, API key source, settings files, memory, MCP, hooks. Immediate |
 | `/doctor` (`/checkup`) | done | PR | `cmds::info_commands_answer_locally` | `forge doctor`'s checks plus session warnings, MCP failures and model pricing |
 | `/release-notes` | done | PR | `cmds::info_commands_answer_locally` | `CHANGELOG.md`, embedded at build time |
 | `/hooks` | partial | PR | `cmds::info_commands_answer_locally` | Read-only list per event and matcher; the reference's editor dialog is T (M8) |
-| `/mcp` | partial | PR | `cmds::info_commands_answer_locally` | Status list. `reconnect`, `enable`, `disable` come with session switching (phase 3) |
+| `/mcp` | partial | PR | `cmds::info_commands_answer_locally` | Status list. `reconnect`, `enable`, `disable` are todo |
 | `/skills` | done | PR | `cmds::info_commands_answer_locally` | Source, who can invoke it, token estimate |
 | `/agents` | partial | PR | `cmds::info_commands_answer_locally` | List plus how to add one; the creation wizard is T (M8) |
 | `/plugin` | partial | PR | `cmds::bad_commands_fail_with_exit_1` | `list` only. Marketplaces are out (vendor service) |
@@ -250,7 +250,7 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 | `/permissions` (`/allowed-tools`) | done | PR | `core::driver_tests::permissions_add_list_and_remove` | Text list with each rule's layer; `add`/`remove` arguments instead of the dialog |
 | `/add-dir <path>` | done | PR | `core::driver_tests::add_dir_widens_access_and_tells_the_model` | `--save` stands in for the reference's "remember" choice |
 | `/sandbox [on\|off\|mode]` | done | PR | `core::driver_tests::autocompact_and_sandbox` | Changes the live policy, sub-agents included |
-| `/reload-skills`, `/reload-plugins` | todo | PRT |  | Phase 3 (session switching) |
+| `/reload-skills`, `/reload-plugins` | done | PR | `core::driver_tests::cd_and_reload_rebuild_the_session` | Rebuilds the session in place (same id and conversation) and reports counts added and removed. Plugin MCP servers start with a new session |
 | `/rename [name]` | done | PR | `core::driver_tests::rename_export_context_and_diff` | Without a name, the small model suggests one |
 | `/export [file]` | done | PR | `core::driver_tests::rename_export_context_and_diff` | No argument prints it (no clipboard dialog) |
 | `/diff` | done | PR | `core::driver_tests::rename_export_context_and_diff` | Text output; the interactive viewer is T (M8) |
@@ -260,10 +260,10 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 | `/btw [question]` | done | PR | `core::driver_tests::btw_answers_without_touching_the_conversation` | Same system prompt and tools with `tool_choice: none`; the 20 newest exchanges ride along; cost counts. Not yet runnable while a turn is busy (needs immediate commands) |
 | `/recap` | done | PR | `core::driver_tests::recap_plan_and_shell_mode` | One line from the small model |
 | `!command` shell mode | done | PR | `core::driver_tests::recap_plan_and_shell_mode`, `core::driver_tests::shell_mode_can_skip_the_model` | Runs as the user (no prompt, no sandbox), 2-minute limit; the model answers unless `respondToBashCommands` is false |
-| `/rewind` (`/checkpoint`, `/undo`) | todo | PRT |  | Phase 3 |
-| `/branch [name]` | todo | PRT |  | Phase 3 |
-| `/resume` (`/continue`) | todo | RT |  | Phase 3; in `-p` use `--resume` |
-| `/cd <path>` | todo | PRT |  | Phase 3 |
+| `/rewind` (`/checkpoint`, `/undo`) | done | PR | `core::driver_tests::rewind_restores_code_and_conversation`, `core::driver_tests::rewind_summarizes_part_of_the_conversation` | Argument form of the picker: `/rewind <n> both\|conversation\|code\|summarize-from\|summarize-to [instructions]`. The restored prompt is shown, not put back in an input box (T will) |
+| `/branch [name]` | done | PR | `core::driver_tests::clear_resume_and_branch_switch_sessions` | Copies the conversation from memory, so it works without session persistence |
+| `/resume [session]` (`/continue`) | done | R | `core::driver_tests::clear_resume_and_branch_switch_sessions` | Numbered list, then a number, id prefix or name. In `-p` it explains `--resume` |
+| `/cd <path>` | done | PR | `core::driver_tests::cd_and_reload_rebuild_the_session` | Continues the conversation as a new session in the new directory; its commands, skills and settings load; MCP connections stay |
 | `/loop [interval] [prompt]`, `CronCreate`, `CronList`, `CronDelete`, `ScheduleWakeup` | todo | PRT |  | Phase 4 |
 | Bundled skills: `/init`, `/code-review` (`/review`), `/security-review`, `/simplify`, `/verify`, `/run`, `/run-skill-generator`, `/batch`, `/fewer-permission-prompts`, `/update-config` | todo | PRT |  | Phase 5; Forge-written prompts |
 | `/subtask`, `/advisor`, `/import`, `/feedback` (`/bug`, `/share`) | todo | PRT |  | Phase 6; `/feedback` writes a local bundle, nothing is uploaded |

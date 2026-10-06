@@ -19,7 +19,7 @@ pub struct Entry {
     pub is_meta: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoadedSession {
     pub session_id: String,
     pub cwd: PathBuf,
@@ -165,6 +165,21 @@ impl Transcript {
         let mut fields = json!({"subtype": subtype});
         merge(&mut fields, data);
         self.chained("system", fields)
+    }
+
+    /// Write a message again, under its original uuid, after the current leaf
+    /// (a partial summary keeps the messages around it). The loader takes the
+    /// newest entry for a uuid, so the chain follows the copy.
+    pub fn rewrite(&self, uuid: &str, msg: &Message, is_meta: bool) {
+        let kind = if msg.role == forge_types::Role::Assistant { "assistant" } else { "user" };
+        let parent = self.last_uuid.lock().unwrap().clone();
+        let mut v = self.base(kind, uuid, parent);
+        merge(&mut v, json!({"message": msg}));
+        if is_meta {
+            v["isMeta"] = json!(true);
+        }
+        self.write_line(&v);
+        *self.last_uuid.lock().unwrap() = Some(uuid.to_string());
     }
 
     /// Start a new chain after compaction; earlier messages are not loaded on resume.

@@ -270,6 +270,20 @@ pub struct Engine {
     reattach_context: bool,
     /// Notes for the model, attached to the next prompt (`/add-dir`, ...).
     reminders: Vec<String>,
+    /// SessionStart's `source`: startup, resume or clear.
+    start_source: String,
+}
+
+/// A person's prompt in the conversation: a point `/rewind` can go back to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromptPoint {
+    /// Index in `TurnState::messages`.
+    pub index: usize,
+    /// Transcript uuid (the file-history turn id).
+    pub uuid: String,
+    pub text: String,
+    /// Files changed at or after this prompt.
+    pub changed_files: Vec<std::path::PathBuf>,
 }
 
 /// What a compaction did.
@@ -346,6 +360,7 @@ impl Engine {
             output_cap: None,
             reattach_context: false,
             reminders: vec![],
+            start_source: "startup".into(),
         })
     }
 
@@ -366,6 +381,11 @@ impl Engine {
     /// (`!command` output when the model shouldn't answer it).
     pub fn add_user_note(&mut self, text: impl Into<String>) {
         self.push_user(Message::user_text(text.into()), false, None, true);
+    }
+
+    /// What SessionStart hooks see as the `source` (`startup`, `resume`, `clear`).
+    pub fn set_start_source(&mut self, source: &str) {
+        self.start_source = source.to_string();
     }
 
     /// Tell the model something with the next prompt (a system reminder).
@@ -774,6 +794,131 @@ impl Engine {
         Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
 
+    /// The person's prompts, oldest first: user messages with text that are
+    /// neither tool results nor only system reminders.
+    pub fn prompt_points(&self) -> Vec<PromptPoint> {
+        let mut out = vec![];
+        for (i, m) in self.state.messages.iter().enumerate() {
+            if m.role != forge_types::Role::User
+                || m.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            {
+                continue;
+            }
+            let Some(text) =
+                m.content.iter().filter_map(|b| b.as_text()).find(|t| !t.trim_start().starts_with("<system-reminder>"))
+            else {
+                continue;
+            };
+            let uuid = self.state.uuids.get(i).cloned().unwrap_or_default();
+            out.push(PromptPoint {
+                index: i,
+                changed_files: self.shared.history.changed_since(&uuid),
+                uuid,
+                text: text.trim().to_string(),
+            });
+        }
+        out
+    }
+
+    /// `/rewind`: drop the conversation from the message at `index` on (a
+    /// prompt point). The transcript branches from the message before it.
+    pub fn rewind_conversation(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.state.messages.len() {
+            return Err("no such message".into());
+        }
+        let to = self.state.uuids.get(index).cloned();
+        self.state.messages.truncate(index);
+        self.state.uuids.truncate(index);
+        self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.shared.tool_ctx.files.forget_all_views();
+        self.shared.transcript.set_leaf(self.state.uuids.last().cloned());
+        self.shared.transcript.append_system("rewind", json!({"to": to}));
+        Ok(())
+    }
+
+    /// `/rewind` with code: restore files to how they were before the prompt at `index`.
+    pub fn rewind_code(&self, index: usize) -> Result<forge_session::RewindPlan, String> {
+        let uuid = self.state.uuids.get(index).ok_or("no such message")?;
+        self.shared.history.rewind(uuid, false)
+    }
+
+    /// `/rewind` summarize: replace messages `from..to` (prompt boundaries, or
+    /// the end) with a summary, keeping the messages around them.
+    pub async fn summarize_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        instructions: Option<&str>,
+    ) -> Result<CompactInfo, String> {
+        let len = self.state.messages.len();
+        if from >= to || to > len {
+            return Err("nothing to summarize there".into());
+        }
+        let model = self.handle.model();
+        let cancel = self.new_turn_token();
+        let mut req = self.build_request(&model);
+        let mut slice = normalize(&self.state.messages[from..to], &self.state.microcompacted);
+        let ask = ContentBlock::text(forge_compact::summary_instruction(instructions.filter(|i| !i.trim().is_empty())));
+        match slice.last_mut() {
+            Some(last) if last.role == forge_types::Role::User => last.content.push(ask),
+            _ => slice.push(Message::user(vec![ask])),
+        }
+        apply_cache_breakpoints(&mut slice);
+        req.messages = slice;
+        req.tool_choice = Some(json!({"type": "none"}));
+        req.output_config = req.output_config.map(|mut oc| {
+            if let Some(o) = oc.as_object_mut() {
+                o.remove("format");
+            }
+            oc
+        });
+        req.max_tokens = req.max_tokens.min(20_000);
+        let msg = match self.stream_inner(req, &cancel, false).await {
+            StreamOutcome::Done(m) => m,
+            StreamOutcome::Interrupted(_) => return Err("interrupted".into()),
+            StreamOutcome::Failed(e) => return Err(e.to_string()),
+        };
+        self.record_usage(&model, &msg.usage.clone(), &mut TurnAcc::default());
+        let summary = forge_compact::extract_summary(&msg.to_message().text());
+        if summary.is_empty() {
+            return Err("the model returned an empty summary".into());
+        }
+        let pre_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        let which = if to == len { "from this point on" } else { "before this point" };
+        let note = Message::user_text(format!(
+            "<system-reminder>\nThe conversation {which} was summarized at the user's request.\n</system-reminder>\n\n{summary}"
+        ));
+        let before: Vec<(String, Message)> =
+            self.state.uuids[..from].iter().cloned().zip(self.state.messages[..from].iter().cloned()).collect();
+        let after: Vec<(String, Message)> =
+            self.state.uuids[to..].iter().cloned().zip(self.state.messages[to..].iter().cloned()).collect();
+        let t = &self.shared.transcript;
+        if to == len {
+            // Branch from the last kept message: nothing to copy.
+            t.set_leaf(before.last().map(|(u, _)| u.clone()));
+        } else {
+            t.append_compact_boundary(json!({"trigger": "partial", "preTokens": pre_tokens}));
+            for (u, m) in &before {
+                t.rewrite(u, m, false);
+            }
+        }
+        let note_uuid = t.append_user(&note, true, json!({}));
+        for (u, m) in &after {
+            t.rewrite(u, m, false);
+        }
+        let (mut uuids, mut messages): (Vec<String>, Vec<Message>) = before.into_iter().unzip();
+        uuids.push(note_uuid);
+        messages.push(note);
+        let (au, am): (Vec<String>, Vec<Message>) = after.into_iter().unzip();
+        uuids.extend(au);
+        messages.extend(am);
+        self.state.uuids = uuids;
+        self.state.messages = messages;
+        self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.shared.tool_ctx.files.forget_all_views();
+        Ok(CompactInfo { trigger: "partial".into(), pre_tokens, summary })
+    }
+
     /// `/clear`: forget the conversation (the transcript keeps it before a boundary), the task
     /// list and what was read. Memory files come back with the next prompt.
     pub fn clear(&mut self) {
@@ -899,7 +1044,13 @@ impl Engine {
             let o = self
                 .shared
                 .hooks
-                .run(HookEvent::SessionStart, Some("startup"), self.mode_str(), json!({"source": "startup"}), &cancel)
+                .run(
+                    HookEvent::SessionStart,
+                    Some(&self.start_source),
+                    self.mode_str(),
+                    json!({"source": self.start_source}),
+                    &cancel,
+                )
                 .await;
             for m in &o.user_messages {
                 self.notice(NoticeLevel::Warning, m.clone());

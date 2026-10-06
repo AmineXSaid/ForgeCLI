@@ -254,7 +254,7 @@ them all. The built-ins so far:
 | `/status` | Version, session, directories, model, permission mode, sandbox, API key source, settings files, MCP and hooks |
 | `/usage` (`/cost`, `/stats`) | Cost, time, model calls, tool calls, tokens per model, and context now |
 | `/compact [what to keep]` | Summarizes the conversation now |
-| `/clear` (`/reset`, `/new`) | Starts the conversation over (the transcript keeps the old part) |
+| `/clear [name]` (`/reset`, `/new`) | Starts a new conversation (a new session id); the old one stays resumable, under `name` if given |
 | `/doctor` (`/checkup`) | `forge doctor` plus this session's MCP, model and warnings |
 | `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin`, `/mcp` | What is loaded, and from where |
 | `/tasks [stop <id>]` (`/bashes`) | Background shells; `stop` ends one |
@@ -271,6 +271,11 @@ them all. The built-ins so far:
 | `/export [file]` | The conversation as plain text, to a file or stdout |
 | `/diff` | Uncommitted changes (`git diff HEAD` and untracked files), or outside git the files Forge changed; then the files each prompt changed |
 | `/context [all]` | Estimated tokens for the system prompt, tools, skills, memory and messages against the window, with suggestions |
+| `/rewind [<n> <action> [instructions]]` (`/checkpoint`, `/undo`) | Lists your prompts; then goes back to before prompt `n`. Actions: `both` (code and conversation, the default), `conversation`, `code`, `summarize-from`, `summarize-to` |
+| `/branch [name]` | Continues in a copy of the conversation under a new id; the original stays as it was |
+| `/resume [n\|id\|name]` (`/continue`) | Interactive only: lists this directory's conversations, or switches to one |
+| `/cd <directory>` | Moves the conversation to another directory (a new session there) |
+| `/reload-skills`, `/reload-plugins` | Re-reads skills, commands, agents, output styles, plugins and settings without leaving the conversation |
 | `/goal [condition\|clear]` | Sets a goal and keeps working until a check finds it met (see below) |
 | `/plan [description]` | Plan mode; with a description, starts planning it |
 | `/btw [question]` | A side question, answered from the conversation without tools; it doesn't enter the conversation |

@@ -16,6 +16,7 @@
 mod run;
 mod session;
 mod settings;
+mod switching;
 
 pub use run::{execute, Exec};
 pub(crate) use session::side_request;
@@ -66,7 +67,9 @@ pub enum Builtin {
     AddDir,
     Agents,
     Autocompact,
+    Branch,
     Btw,
+    Cd,
     Clear,
     Compact,
     Config,
@@ -90,7 +93,11 @@ pub enum Builtin {
     Plugin,
     Recap,
     ReleaseNotes,
+    ReloadPlugins,
+    ReloadSkills,
     Rename,
+    Resume,
+    Rewind,
     Sandbox,
     Skills,
     Status,
@@ -139,6 +146,7 @@ pub static BUILTINS: &[CommandSpec] = &[
         "[on|off|auto|<tokens>]",
         "Show or set when the conversation is compacted automatically"
     ),
+    cmd!(Branch, "branch", [], "[name]", "Branch the conversation into a new session; the original stays as it was"),
     cmd!(
         Btw,
         "btw",
@@ -148,7 +156,8 @@ pub static BUILTINS: &[CommandSpec] = &[
         Surfaces::ALL,
         true
     ),
-    cmd!(Clear, "clear", ["reset", "new"], "", "Start the conversation over with empty context"),
+    cmd!(Cd, "cd", [], "<directory>", "Move this conversation to another directory"),
+    cmd!(Clear, "clear", ["reset", "new"], "[name]", "Start a new conversation; the current one stays resumable"),
     cmd!(Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
     cmd!(Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
     cmd!(Context, "context", [], "[all]", "Show what fills the context window", Surfaces::ALL, true),
@@ -177,7 +186,17 @@ pub static BUILTINS: &[CommandSpec] = &[
     cmd!(Plugin, "plugin", [], "[list]", "List loaded plugins"),
     cmd!(Recap, "recap", [], "", "Summarize the session in one line"),
     cmd!(ReleaseNotes, "release-notes", [], "", "Show what changed in each version"),
+    cmd!(ReloadPlugins, "reload-plugins", [], "", "Reload plugins without restarting"),
+    cmd!(ReloadSkills, "reload-skills", [], "", "Reload skills, commands and agents without restarting"),
     cmd!(Rename, "rename", [], "[name]", "Rename this session (Forge suggests a name when you give none)"),
+    cmd!(Resume, "resume", ["continue"], "[session]", "Resume another conversation from this directory"),
+    cmd!(
+        Rewind,
+        "rewind",
+        ["checkpoint", "undo"],
+        "[<n> <both|conversation|code|summarize-from|summarize-to>]",
+        "Go back to an earlier prompt: restore code, conversation or both, or summarize"
+    ),
     cmd!(
         Sandbox,
         "sandbox",

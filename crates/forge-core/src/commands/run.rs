@@ -58,17 +58,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
     match id {
         Builtin::Help => ok(d.catalog.help(d.surface)),
         Builtin::Exit => Exec::Exit,
-        Builtin::Clear => {
-            d.engine.clear();
-            if d.goal.as_ref().is_some_and(|g| g.is_active()) {
-                if let Some(g) = d.goal.as_mut() {
-                    g.status = crate::goal::Status::Cleared;
-                }
-                d.goal_changed();
-            }
-            d.goal = None;
-            ok("Conversation cleared.")
-        }
+        Builtin::Clear => super::switching::clear(d, args).await,
         Builtin::Compact => match d.engine.compact(Some(args).filter(|a| !a.is_empty())).await {
             Ok(info) => ok(format!("Compacted the conversation (about {} tokens before).", info.pre_tokens)),
             Err(e) => err(format!("Could not compact: {e}")),
@@ -114,6 +104,17 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             _ => err("Usage: /recap"),
         },
         Builtin::Plan => super::session::plan(d, args),
+        Builtin::Rewind => super::switching::rewind(d, args).await,
+        Builtin::Resume => super::switching::resume(d, args).await,
+        Builtin::Branch => super::switching::branch(d, args).await,
+        Builtin::Cd => super::switching::cd(d, args).await,
+        Builtin::ReloadSkills | Builtin::ReloadPlugins => {
+            if !d.can_switch() {
+                return err("Reloading isn't available here.");
+            }
+            let what = if id == Builtin::ReloadPlugins { "plugins" } else { "skills" };
+            super::switching::reload(d, what).await
+        }
     }
 }
 
