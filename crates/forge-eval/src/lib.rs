@@ -115,6 +115,9 @@ pub struct RunRecord {
     pub wall_secs: f64,
     pub tool_calls: u64,
     pub tool_errors: u64,
+    /// Times the verification loop reminded the model to run checks.
+    #[serde(default)]
+    pub verify_reminders: u64,
     pub agent_error: bool,
     pub stop_reason: Option<String>,
     pub timed_out: bool,
@@ -258,6 +261,7 @@ pub struct StreamFacts {
     pub turns: u64,
     pub tool_calls: u64,
     pub tool_errors: u64,
+    pub verify_reminders: u64,
     pub api_error: bool,
     pub is_error: bool,
     pub stop_reason: Option<String>,
@@ -282,6 +286,7 @@ pub fn parse_stream(lines: &[Value]) -> StreamFacts {
                     }
                 }
             }
+            Some("system") if v["subtype"] == "verification" => f.verify_reminders += 1,
             Some("system") if v["subtype"] == "model_fallback" || v["subtype"] == "api_retry" => f.api_error = true,
             Some("result") => {
                 f.saw_result = true;
@@ -388,6 +393,7 @@ pub async fn run_task(task: &Task, run: u32, opts: &RunOptions) -> anyhow::Resul
         wall_secs,
         tool_calls: facts.tool_calls,
         tool_errors: facts.tool_errors,
+        verify_reminders: facts.verify_reminders,
         agent_error,
         stop_reason: facts.stop_reason,
         timed_out,
@@ -416,6 +422,7 @@ pub async fn run_suite(tasks: &[Task], opts: &RunOptions) -> Report {
                     wall_secs: 0.0,
                     tool_calls: 0,
                     tool_errors: 0,
+                    verify_reminders: 0,
                     agent_error: true,
                     stop_reason: None,
                     timed_out: false,
@@ -581,6 +588,7 @@ mod tests {
             wall_secs: 10.0,
             tool_calls: 10,
             tool_errors: if had_error { 2 } else { 0 },
+            verify_reminders: 0,
             agent_error: false,
             stop_reason: Some("end_turn".into()),
             timed_out: false,
@@ -613,9 +621,11 @@ mod tests {
             json!({"type": "system", "subtype": "init"}),
             json!({"type": "assistant", "message": {"content": [{"type": "tool_use"}, {"type": "tool_use"}]}}),
             json!({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": true}, {"type": "tool_result"}]}}),
+            json!({"type": "system", "subtype": "verification", "kind": "unchecked"}),
             json!({"type": "result", "subtype": "success", "is_error": false, "total_cost_usd": 0.05, "num_turns": 3, "stop_reason": "end_turn"}),
         ];
         let f = parse_stream(&lines);
+        assert_eq!(f.verify_reminders, 1);
         assert_eq!((f.tool_calls, f.tool_errors, f.turns), (2, 1, 3));
         assert!(f.saw_result && !f.is_error && !f.api_error);
         assert_eq!(f.cost_usd, 0.05);

@@ -110,6 +110,7 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
+| Verification loop (contract C12): detected checks, reminder before finishing on unchecked changes | done | `engine::verify_reminds_once_when_changes_are_unchecked`, `engine::verify_accepts_a_check_after_the_last_change`, `engine::verify_sees_shell_writes_through_git_and_failed_checks`, `verify::detects_checks_from_manifests`, `verify::recognizes_check_commands`, `eval::eval_measures_a_pass_and_a_false_finish` | Verification / false-finish rate. Eval task `invoice-rounding` |
 | OS sandbox for Bash (`--sandbox`, `FORGE_SANDBOX`, `sandbox.*` settings) | partial | `builtin::sandbox_confines_writes_and_network`, `sandbox::bwrap_arguments`, `sandbox::failure_hints`, `permissions::sandboxed_commands_need_no_prompt_but_rules_still_apply`, `e2e::sandbox_lets_headless_runs_build_without_prompts` | Tool design / safety. The Codex pattern. Linux bubblewrap done; the macOS Seatbelt profile is untested |
 
 ## Config, memory, hooks (M3)

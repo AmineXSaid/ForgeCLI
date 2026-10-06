@@ -31,11 +31,13 @@ pub(crate) struct CallResult {
     pub interrupt_turn: bool,
     /// A hook asked to stop the run (`continue: false`).
     pub stop: Option<String>,
+    /// File-history writes this turn once the call's batch finished (verification loop).
+    pub writes_after: usize,
 }
 
 impl CallResult {
     fn plain(id: &str, output: ToolOutput) -> Self {
-        CallResult { id: id.to_string(), output, denial: None, interrupt_turn: false, stop: None }
+        CallResult { id: id.to_string(), output, denial: None, interrupt_turn: false, stop: None, writes_after: 0 }
     }
 }
 
@@ -73,7 +75,10 @@ pub(crate) async fn run_tools(
             let (id, name, input) = &calls[i];
             async move { (i, run_one(shared, id, name, input.clone(), cancel, mode).await) }
         });
-        for (i, r) in futures::future::join_all(futs).await {
+        let done = futures::future::join_all(futs).await;
+        let writes = shared.history.writes_len();
+        for (i, mut r) in done {
+            r.writes_after = writes;
             slots[i] = Some(r);
         }
     }
@@ -155,6 +160,7 @@ async fn run_one(
                 denial: denial(name, id, &input),
                 interrupt_turn: false,
                 stop,
+                writes_after: 0,
             };
         }
         if let Some((d, reason)) = o.permission {
@@ -186,6 +192,7 @@ async fn run_one(
                 denial: denial(name, id, &input),
                 interrupt_turn: false,
                 stop,
+                writes_after: 0,
             };
         }
         Decision::Ask { reason, suggestions } => {
@@ -230,6 +237,7 @@ async fn run_one(
                         denial: denial(name, id, &input),
                         interrupt_turn: interrupt,
                         stop,
+                        writes_after: 0,
                     };
                 }
             }
@@ -243,7 +251,7 @@ async fn run_one(
         _ = call_cancel.cancelled() => ToolOutput::error(INTERRUPTED),
     };
     if call_cancel.is_cancelled() {
-        return CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop };
+        return CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop, writes_after: 0 };
     }
 
     // 5. PostToolUse / PostToolUseFailure.
@@ -276,7 +284,7 @@ async fn run_one(
             stop = o.stop;
         }
     }
-    CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop }
+    CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop, writes_after: 0 }
 }
 
 fn append_text(mut out: ToolOutput, text: &str) -> ToolOutput {

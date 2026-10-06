@@ -77,6 +77,24 @@ pub fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<(), String
     }
 }
 
+/// A fingerprint of the working tree's uncommitted state: status, the tracked
+/// diff, and the size and mtime of untracked files. Two equal fingerprints mean
+/// nothing changed in between, as far as git can see. `None` outside a repository.
+pub fn worktree_fingerprint(dir: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let root = repo_root(dir)?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    git(&root, &["status", "--porcelain=v1", "--untracked-files=all"])?.hash(&mut h);
+    git(&root, &["diff", "--no-ext-diff", "--no-color", "HEAD"]).unwrap_or_default().hash(&mut h);
+    let untracked = git(&root, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+    for f in untracked.lines().take(5000) {
+        if let Ok(m) = std::fs::metadata(root.join(f)) {
+            (f, m.len(), m.modified().ok()).hash(&mut h);
+        }
+    }
+    Some(h.finish())
+}
+
 /// Uncommitted changes in a working tree?
 pub fn is_dirty(dir: &Path) -> bool {
     git(dir, &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(false)
@@ -127,5 +145,20 @@ mod tests {
         assert!(!is_dirty(&wt));
         remove_worktree(&root, &wt).unwrap();
         assert!(status_snapshot(Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn fingerprint_moves_with_the_worktree() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(worktree_fingerprint(d.path()), None);
+        let root = d.path().canonicalize().unwrap();
+        init(&root);
+        let clean = worktree_fingerprint(&root).unwrap();
+        assert_eq!(worktree_fingerprint(&root), Some(clean), "stable when nothing changes");
+        std::fs::write(root.join("new.txt"), "a").unwrap();
+        let untracked = worktree_fingerprint(&root).unwrap();
+        assert_ne!(untracked, clean);
+        std::fs::write(root.join("new.txt"), "ab").unwrap();
+        assert_ne!(worktree_fingerprint(&root).unwrap(), untracked, "an edited untracked file counts");
     }
 }

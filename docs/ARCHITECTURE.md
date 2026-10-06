@@ -292,6 +292,48 @@ this). A timeout counts as a non-blocking error.
 Tests: `hooks::c11_exit2_semantics_per_event` and
 `hooks::c11_json_permission_decision`.
 
+### C12. Verification before finishing
+
+A main-agent turn that changed files doesn't end on the model's first
+"done" unless a check ran after the last change.
+
+**What counts as a change:**
+- a write by an edit tool (Write, Edit, MultiEdit, NotebookEdit), including
+  writes made by sub-agents, taken from the file history;
+- a shell command not classed as read-only, but only when the git worktree
+  fingerprint (status, tracked diff, untracked files' size and mtime) differs
+  from the one taken at the turn start or at the last check. Outside git,
+  shell writes aren't seen.
+
+**What counts as a check:** a Bash call whose command (after env assignments
+and wrappers like `timeout`, `uv run`) starts with:
+- a configured or detected check command;
+- a well-known build, test or lint tool;
+- or runs a `build*`/`test*`/`check*` script, a test file, or one of the files
+  changed this turn.
+
+A check that fails still counts as evidence.
+
+**The reminder:** when the model stops with unchecked changes, a meta user
+message names the changed files and the project's checks, asks for them to
+run, and asks the final answer to say what was and wasn't verified. When
+nothing changed after a failed check, a different reminder asks the model to
+fix it or say plainly that it fails. Each reminder:
+- is recorded and emitted as `system/verification` with
+  `{kind, files, shell}` or `{kind, command}`;
+- comes before the Stop hook;
+- is limited to `verification.maxReminders` per turn (default 1).
+
+**No reminder when:**
+- the stop reason is `refusal`;
+- the turn is in a sub-agent;
+- Bash isn't available;
+- rules deny the check command.
+
+Tests: `engine::verify_reminds_once_when_changes_are_unchecked`,
+`engine::verify_accepts_a_check_after_the_last_change`,
+`engine::verify_sees_shell_writes_through_git_and_failed_checks`.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

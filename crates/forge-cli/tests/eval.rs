@@ -49,13 +49,14 @@ async fn eval_measures_a_pass_and_a_false_finish() {
                 "new_string": "    if len(ordered) % 2 == 0:\n        return (ordered[mid - 1] + ordered[mid]) / 2",
             }),
         ),
-        MockTurn::text("Fixed the even-length median."),
+        MockTurn::tool("Bash", json!({"command": "python3 -m unittest -q test_stats"})),
+        MockTurn::text("Fixed the even-length median; `python3 -m unittest test_stats` passes."),
     ])
     .await;
     let rec = run_task(&task, 1, &options(&out, &root, &api)).await.unwrap();
     assert!(rec.passed, "check output: {}", rec.check_output);
     assert!(!rec.false_finish && !rec.agent_error);
-    assert_eq!((rec.turns, rec.tool_calls, rec.tool_errors), (3, 2, 0));
+    assert_eq!((rec.turns, rec.tool_calls, rec.tool_errors, rec.verify_reminders), (4, 3, 0, 0));
     assert!(rec.cost_usd > 0.0);
     assert!(out.join("fix-median-1/transcript.jsonl").exists());
 

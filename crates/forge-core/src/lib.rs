@@ -96,6 +96,25 @@ pub struct Session {
     pub resumed: Option<LoadedSession>,
 }
 
+/// The verification loop's settings: `verification.{enabled, commands,
+/// maxReminders}`, with commands detected from the project's manifests when
+/// none are set. `FORGE_VERIFY=0` turns it off (for A/B runs).
+fn verify_config(settings: &LoadedSettings, cwd: &Path) -> Option<forge_engine::VerifyConfig> {
+    let off = env_nonempty("FORGE_VERIFY").map(|v| matches!(v.as_str(), "0" | "false" | "off" | "no")).unwrap_or(false);
+    if off || settings.bool("/verification/enabled") == Some(false) {
+        return None;
+    }
+    let configured = settings.strings("/verification/commands");
+    Some(forge_engine::VerifyConfig {
+        commands: if configured.is_empty() { forge_engine::detect_checks(cwd) } else { configured },
+        max_reminders: settings
+            .get("/verification/maxReminders")
+            .and_then(Value::as_u64)
+            .map(|n| n as u32)
+            .unwrap_or(1),
+    })
+}
+
 fn env_nonempty(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.trim().is_empty())
 }
@@ -408,7 +427,11 @@ pub fn build_session(
     for (tool, text) in forge_engine::prompts::tool_description_overrides(&sp_opts) {
         tools.set_description(&tool, text);
     }
-    let env_info = EnvInfo::collect(&cwd, &add_dirs, &model);
+    let verify = verify_config(&settings, &cwd);
+    let mut env_info = EnvInfo::collect(&cwd, &add_dirs, &model);
+    if let Some(v) = &verify {
+        env_info.checks = v.commands.clone();
+    }
     let (system, deferred) = forge_engine::build_system(&sp_opts, &env_info);
     let mut initial = vec![];
     if let Some(d) = deferred {
@@ -470,6 +493,7 @@ pub fn build_session(
         },
         auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
         is_subagent: false,
+        verify,
     };
     let parts = EngineParts {
         provider: provider.clone(),

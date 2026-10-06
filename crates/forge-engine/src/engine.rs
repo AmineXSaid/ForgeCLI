@@ -71,6 +71,8 @@ pub struct EngineConfig {
     pub auto_compact: bool,
     /// Runs as a sub-agent: SubagentStop instead of Stop, no session hooks.
     pub is_subagent: bool,
+    /// The verification loop; `None` turns it off. Never runs in sub-agents.
+    pub verify: Option<crate::verify::VerifyConfig>,
 }
 
 impl Default for EngineConfig {
@@ -90,6 +92,7 @@ impl Default for EngineConfig {
             autocompact_window: None,
             auto_compact: true,
             is_subagent: false,
+            verify: None,
         }
     }
 }
@@ -223,6 +226,7 @@ pub struct Engine {
     session_started: bool,
     /// Memory and environment context, re-attached after compaction.
     session_context: Option<String>,
+    verify: crate::verify::Tracker,
 }
 
 /// What a compaction did.
@@ -293,6 +297,7 @@ impl Engine {
             system: parts.system,
             session_started: false,
             session_context,
+            verify: Default::default(),
         })
     }
 
@@ -747,6 +752,10 @@ impl Engine {
         if !self.cfg.is_subagent {
             self.shared.history.begin_turn(&user_uuid);
         }
+        self.verify = Default::default();
+        if self.verifying() {
+            self.verify.fingerprint = self.worktree_fingerprint().await;
+        }
 
         let mut model;
         // Set once a fallback took over; it then holds for the rest of the turn (contract C6).
@@ -901,6 +910,9 @@ impl Engine {
 
             if !tool_uses.is_empty() {
                 let results = crate::exec::run_tools(&self.shared, &tool_uses, &cancel, self.mode_str()).await;
+                if self.verifying() {
+                    self.track_verification(&tool_uses, &results).await;
+                }
                 let mut interrupted = cancel.is_cancelled();
                 for r in results {
                     if let Some(d) = r.denial {
@@ -952,6 +964,14 @@ impl Engine {
                 continue;
             }
 
+            // Verification loop (GOALS pillar 3): no finishing on unchecked changes.
+            if stop_reason != Some(StopReason::Refusal) {
+                if let Some(text) = self.verification_reminder().await {
+                    self.push_user(Message::user_text(text), true, None, true);
+                    continue;
+                }
+            }
+
             // Stop / SubagentStop hook (contract C11: exit 2 makes the model keep going).
             let stop_event = if self.cfg.is_subagent { HookEvent::SubagentStop } else { HookEvent::Stop };
             let o = self
@@ -981,6 +1001,87 @@ impl Engine {
             };
             return self.finish(started, turn, ResultSubtype::Success, last_text, Some(reason.into()), None);
         }
+    }
+
+    fn verifying(&self) -> bool {
+        self.cfg.verify.is_some() && !self.cfg.is_subagent
+    }
+
+    async fn worktree_fingerprint(&self) -> Option<u64> {
+        let dir = self.shared.tool_ctx.project_dir.clone();
+        tokio::task::spawn_blocking(move || forge_git::worktree_fingerprint(&dir)).await.ok().flatten()
+    }
+
+    /// Note checks and possible shell writes among the calls just run.
+    async fn track_verification(&mut self, calls: &[(String, String, Value)], results: &[crate::exec::CallResult]) {
+        let Some(vc) = self.cfg.verify.clone() else { return };
+        let mut refresh = false;
+        for ((_, name, input), r) in calls.iter().zip(results) {
+            if name != "Bash"
+                || r.denial.is_some()
+                || input.get("run_in_background").and_then(Value::as_bool) == Some(true)
+            {
+                continue;
+            }
+            let command = input.get("command").and_then(Value::as_str).unwrap_or_default();
+            let changed = self.shared.history.writes_since(0);
+            if crate::verify::is_check(command, &vc.commands, &changed) {
+                self.verify.write_mark = r.writes_after;
+                self.verify.shell_may_have_changed = false;
+                self.verify.last_check = Some((command.to_string(), r.output.is_error));
+                refresh = true;
+            } else if !self.shared.tools.get("Bash").map(|t| t.is_read_only(input)).unwrap_or(true) {
+                self.verify.shell_may_have_changed = true;
+            }
+        }
+        if refresh {
+            self.verify.fingerprint = self.worktree_fingerprint().await;
+        }
+    }
+
+    /// The reminder to send before the turn may end, if one is due.
+    async fn verification_reminder(&mut self) -> Option<String> {
+        let vc = self.cfg.verify.clone()?;
+        if self.cfg.is_subagent || self.verify.reminders >= vc.max_reminders {
+            return None;
+        }
+        let writes = self.shared.history.writes_len();
+        let changed_this_turn = writes > 0 || self.verify.shell_may_have_changed;
+        if !changed_this_turn || self.shared.tools.get("Bash").is_none() {
+            return None;
+        }
+        // Checks that can't run make a reminder a wasted call.
+        let probe = vc.commands.first().cloned().unwrap_or_else(|| "true".into());
+        let req = forge_permissions::Request::new("Bash", forge_permissions::Subject::Command(probe), false);
+        if matches!(self.shared.permissions.read().unwrap().decide(&req), forge_permissions::Decision::Deny { .. }) {
+            return None;
+        }
+        let root = &self.shared.tool_ctx.project_dir;
+        let files: Vec<String> = self
+            .shared
+            .history
+            .writes_since(self.verify.write_mark)
+            .iter()
+            .map(|p| p.strip_prefix(root).unwrap_or(p).display().to_string())
+            .collect();
+        let shell = files.is_empty()
+            && self.verify.shell_may_have_changed
+            && self.verify.fingerprint.is_some()
+            && self.worktree_fingerprint().await != self.verify.fingerprint;
+        let reminder = if !files.is_empty() || shell {
+            crate::verify::Reminder::Unchecked { files, shell }
+        } else {
+            match &self.verify.last_check {
+                Some((command, true)) if writes > 0 => {
+                    crate::verify::Reminder::LastCheckFailed { command: command.clone() }
+                }
+                _ => return None,
+            }
+        };
+        self.verify.reminders += 1;
+        self.system_event("verification", reminder.record());
+        self.notice(NoticeLevel::Info, "Changes not verified yet: asking the model to run the project's checks.");
+        Some(reminder.text(&vc.commands))
     }
 
     fn finish(

@@ -23,6 +23,8 @@ struct State {
     current: Option<String>,
     versions: HashMap<PathBuf, u32>,
     this_turn: HashSet<PathBuf>,
+    /// Every write this turn, in order (repeats included), for the verification loop.
+    writes: Vec<PathBuf>,
     records: Vec<Record>,
 }
 
@@ -75,6 +77,24 @@ impl FileHistory {
         }
         st.current = Some(turn.to_string());
         st.this_turn.clear();
+        st.writes.clear();
+    }
+
+    /// Number of file writes so far this turn.
+    pub fn writes_len(&self) -> usize {
+        self.state.lock().unwrap().writes.len()
+    }
+
+    /// Files written this turn after the first `mark` writes, first write first, without repeats.
+    pub fn writes_since(&self, mark: usize) -> Vec<PathBuf> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<PathBuf> = vec![];
+        for p in st.writes.iter().skip(mark) {
+            if !out.contains(p) {
+                out.push(p.clone());
+            }
+        }
+        out
     }
 
     fn snapshot_path(&self, path: &Path, version: u32) -> PathBuf {
@@ -85,6 +105,7 @@ impl FileHistory {
     pub fn snapshot(&self, path: &Path) {
         let mut st = self.state.lock().unwrap();
         let Some(turn) = st.current.clone() else { return };
+        st.writes.push(path.to_path_buf());
         if !st.this_turn.insert(path.to_path_buf()) {
             return;
         }

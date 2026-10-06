@@ -61,14 +61,21 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 
 ### 3. Verification
 
-- **To build:**
-  - find the project's check commands (test, typecheck, lint, build) from its
-    manifests, or let the user set them;
-  - before a turn ends after changing files, require evidence that those checks
-    ran, or else a reminder to run them. A built-in Stop check does this, and
-    the user can configure it;
-  - the final message must state what was verified and what was not.
-- **Measured by:** false-finish rate and pass rate.
+- **Done** (contract C12):
+  - check commands detected from manifests (Cargo, package.json scripts, Go,
+    Python, Make, scripts, Maven/Gradle and more) or set in
+    `verification.commands`, and listed in the environment prompt;
+  - a built-in check before a turn ends: with changes unchecked since the
+    last change, the model gets a reminder (once by default) naming the files
+    and the checks;
+  - the reminder asks the final message to state what was verified and what
+    was not.
+  - It is on by default; `FORGE_VERIFY=0` turns it off for A/B runs, and
+    `forge-eval` records `verify_reminders` per run.
+- **To build:** LSP diagnostics and formatter feedback after edits (the
+  OpenCode pattern).
+- **Measured by:** false-finish rate and pass rate (tasks `fix-median`,
+  `slugify-trap`, `invoice-rounding`).
 
 ### 4. Tool design
 
@@ -99,7 +106,7 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
    a real API key sets it.
 2. Sub-agents (the Task tool, built-in Explore and Plan agents), to isolate
    context.
-3. The verification loop.
+3. The verification loop. **Done**, without LSP feedback.
 4. Recovery: Edit match suggestions, stuck-loop detection, `max_tokens`
    recovery.
 5. Budgets on tool output, and no repeated reads.

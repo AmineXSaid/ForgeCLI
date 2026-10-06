@@ -615,3 +615,99 @@ async fn prompt_too_long_compacts_and_retries() {
     let last = h.provider.requests().last().unwrap().clone();
     assert!(last.messages[0].text().contains("Continue the work"), "mid-turn compaction tells the model to continue");
 }
+
+fn verifying(commands: &[&str]) -> EngineConfig {
+    EngineConfig {
+        verify: Some(crate::verify::VerifyConfig {
+            commands: commands.iter().map(|c| c.to_string()).collect(),
+            max_reminders: 1,
+        }),
+        ..Default::default()
+    }
+}
+
+fn verifying_engine(h: &Harness, commands: &[&str]) -> Engine {
+    h.engine_with(verifying(commands), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}))
+}
+
+fn last_user_text(req: &forge_types::MessagesRequest) -> String {
+    req.messages.last().unwrap().content.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("\n")
+}
+
+#[tokio::test]
+async fn verify_reminds_once_when_changes_are_unchecked() {
+    let h = Harness::new(vec![]);
+    let f = h.cwd().join("a.txt");
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "x"})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "true"})));
+    h.provider.push(MockTurn::text("verified: `true` passed"));
+    let mut e = verifying_engine(&h, &["true"]);
+    let r = e.submit(prompt("write a")).await;
+    assert_eq!(r.result.as_deref(), Some("verified: `true` passed"));
+    assert_eq!(r.num_turns, 4);
+    let reminder = last_user_text(&h.provider.requests()[2]);
+    assert!(reminder.contains("`a.txt`") && reminder.contains("`true`"), "{reminder}");
+    assert!(h.transcript_text().contains(r#""subtype":"verification""#));
+}
+
+#[tokio::test]
+async fn verify_accepts_a_check_after_the_last_change() {
+    let h = Harness::new(vec![]);
+    let f = h.cwd().join("a.txt");
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "x"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "true"})));
+    h.provider.push(MockTurn::text("done"));
+    let mut e = verifying_engine(&h, &["true"]);
+    let r = e.submit(prompt("write a")).await;
+    assert_eq!((r.num_turns, r.result.as_deref()), (3, Some("done")));
+
+    // A check before the change is not evidence; the reminder is capped per turn.
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "true"})));
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "y"})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::text("not verified: no time"));
+    let r = e.submit(prompt("again")).await;
+    assert_eq!((r.num_turns, r.result.as_deref()), (4, Some("not verified: no time")));
+
+    // No changes, no reminder; and without the loop configured, none either.
+    h.provider.push(MockTurn::text("just talking"));
+    assert_eq!(e.submit(prompt("hi")).await.num_turns, 1);
+    let mut plain = h.engine();
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "z"})));
+    h.provider.push(MockTurn::text("done"));
+    assert_eq!(plain.submit(prompt("write")).await.num_turns, 2);
+}
+
+#[tokio::test]
+async fn verify_sees_shell_writes_through_git_and_failed_checks() {
+    let h = Harness::new(vec![]);
+    let cwd = h.cwd();
+    std::fs::create_dir_all(&cwd).unwrap();
+    for args in [&["init", "-q"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
+        assert!(std::process::Command::new("git").args(args).current_dir(&cwd).status().unwrap().success());
+    }
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "ls"})));
+    h.provider.push(MockTurn::text("looked"));
+    let mut e = verifying_engine(&h, &["false"]);
+    assert_eq!(e.submit(prompt("look")).await.num_turns, 2, "read-only commands change nothing");
+
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "echo hi > b.txt"})));
+    h.provider.push(MockTurn::text("wrote"));
+    h.provider.push(MockTurn::text("ok"));
+    let r = e.submit(prompt("write via shell")).await;
+    assert_eq!(r.num_turns, 3);
+    let reminder = last_user_text(&h.provider.requests()[4]);
+    assert!(reminder.contains("through shell commands"), "{reminder}");
+
+    // A failed check with nothing after it: the answer must own up to it.
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": cwd.join("c.txt"), "content": "x"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "false"})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::text("the check fails"));
+    let r = e.submit(prompt("change and check")).await;
+    assert_eq!(r.num_turns, 4);
+    let n = h.provider.requests().len();
+    let reminder = last_user_text(&h.provider.requests()[n - 1]);
+    assert!(reminder.contains("The last check (`false`) failed"), "{reminder}");
+}

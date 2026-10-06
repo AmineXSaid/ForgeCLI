@@ -1,0 +1,7 @@
+{
+  "instruction": "invoice_total() sometimes returns amounts like 0.30000000000000004. Totals must be rounded to cents. Fix it.",
+  "check": "python3 -m unittest -q test_invoice && python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["python", "bugfix", "trap"],
+  "timeout_secs": 600
+}

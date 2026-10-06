@@ -200,9 +200,31 @@ them.
 | `FORGE_PROMPTS_DIR` | A local prompt set |
 | `FORGE_HOME` | One root for config, state and cache |
 | `FORGE_SANDBOX` | Same as `--sandbox` |
+| `FORGE_VERIFY` | `0` turns the verification loop off |
 | `FORGE_NO_INPUT` | Same as `--no-input` |
 | `FORGE_LOG` | Log filter, with `--debug` |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |
+
+## Verification loop
+
+When a turn has changed files and no check has run since the last change, the
+model is reminded once to run the project's checks before it finishes, and to
+say in its answer what it verified (contract C12 in `docs/ARCHITECTURE.md`).
+Each reminder costs one more model call; it's recorded as `system/verification`
+in stream-json and in the session.
+
+**Check commands** come from `verification.commands`, or are detected from the
+project's manifests: `cargo build` and `cargo test`; the package.json
+`typecheck`, `lint`, `build` and `test` scripts, run with the lockfile's
+package manager; `go build ./...` and `go test ./...`; pytest or unittest;
+`make check` and `make test`; `./build.sh`, `./test.sh` and others. They're
+listed in the system prompt's environment section.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `verification.enabled` | `true` | `false` turns the loop off (as does `FORGE_VERIFY=0`) |
+| `verification.commands` | detected | The project's check commands |
+| `verification.maxReminders` | `1` | Reminders per user turn |
 
 ## Sandbox
 

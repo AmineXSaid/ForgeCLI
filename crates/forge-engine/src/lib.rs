@@ -11,6 +11,7 @@ mod events;
 mod exec;
 pub mod prompts;
 pub mod request;
+pub mod verify;
 
 pub use engine::{
     CompactInfo, Engine, EngineConfig, EngineError, EngineHandle, EngineParts, Pricing, TurnResult, TurnState,
@@ -20,6 +21,7 @@ pub use events::{
     PermissionPrompter, SerializedPrompter, VecSink,
 };
 pub use prompts::{build_system, EnvInfo, SystemPromptOptions};
+pub use verify::{detect_checks, VerifyConfig};
 
 /// Synthetic user text recorded when a turn is interrupted (contract C3).
 pub const INTERRUPT_MARKER: &str = "[Request interrupted by user]";

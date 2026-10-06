@@ -27,6 +27,7 @@ and stderr.
 | Task | Pillar | What it tests |
 | --- | --- | --- |
 | fix-median | verification | Fix a bug so the visible tests pass; hidden cases catch partial fixes |
+| invoice-rounding | verification | Round totals to cents; rounding in the shared helper breaks another test, which only running the suite reveals |
 | slugify-trap | verification | Optimize without changing behaviour; hidden edge cases punish skipped tests (false finish) |
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |

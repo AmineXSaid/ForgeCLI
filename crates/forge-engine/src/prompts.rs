@@ -35,6 +35,8 @@ pub struct EnvInfo {
     pub model_name: String,
     pub date: String,
     pub git_status: Option<String>,
+    /// The project's check commands (verification loop), shown to the model.
+    pub checks: Vec<String>,
 }
 
 impl EnvInfo {
@@ -49,6 +51,7 @@ impl EnvInfo {
             model_name,
             date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             git_status: forge_git::status_snapshot(cwd),
+            checks: vec![],
         }
     }
 
@@ -63,6 +66,10 @@ impl EnvInfo {
         if !self.additional_dirs.is_empty() {
             let dirs: Vec<String> = self.additional_dirs.iter().map(|d| d.display().to_string()).collect();
             s.push_str(&format!("Additional working directories: {}\n", dirs.join(", ")));
+        }
+        if !self.checks.is_empty() {
+            let checks: Vec<String> = self.checks.iter().map(|c| format!("`{c}`")).collect();
+            s.push_str(&format!("Project checks (run them after changing code): {}\n", checks.join(", ")));
         }
         s.push_str(&format!("</env>\nYou are powered by the model {}.\n", self.model_name));
         if let Some(g) = &self.git_status {
@@ -147,6 +154,7 @@ mod tests {
             model_name: "Opus 5.5".into(),
             date: "2026-10-06".into(),
             git_status: None,
+            checks: vec![],
         }
     }
 
