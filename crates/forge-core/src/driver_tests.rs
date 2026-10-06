@@ -732,3 +732,113 @@ async fn cd_and_reload_rebuild_the_session() {
     assert_eq!((t.d.info.session_id.clone(), t.d.engine.state.messages.len()), (id, n));
     assert!(local(&mut t.d, "/skills").await.contains("lint - Lint it"));
 }
+
+/// Run the scheduler `scale` times faster than real time.
+fn fast_clock(d: &Driver, scale: f64) {
+    d.scheduler.as_ref().unwrap().lock().unwrap().clock = crate::schedule::Clock::scaled(chrono::Local::now(), scale);
+}
+
+async fn fire_next(d: &mut Driver) -> Vec<TurnResult> {
+    let wait = d.next_wait().expect("a task is pending");
+    assert!(wait < std::time::Duration::from_secs(5), "{wait:?}");
+    tokio::time::sleep(wait).await;
+    let mut out = vec![];
+    let mut report = |r: &TurnResult| out.push(r.clone());
+    assert!(d.run_due(&mut report).await);
+    out
+}
+
+#[tokio::test]
+async fn loop_with_an_interval_schedules_and_runs_now() {
+    let mut t = driver();
+    fast_clock(&t.d, 3000.0);
+    t.p.push(MockTurn::text("deploy is green"));
+    let r = run(&mut t.d, "/loop 5m check the deploy").await;
+    assert_eq!(r.result.as_deref(), Some("deploy is green"), "it runs at once");
+    let tasks = local(&mut t.d, "/tasks").await;
+    assert!(
+        tasks.contains("[scheduled, every 5 minutes (*/5 * * * *)]") && tasks.contains("check the deploy"),
+        "{tasks}"
+    );
+    assert!(t.d.has_pending());
+
+    t.p.push(MockTurn::text("still green"));
+    let fired = fire_next(&mut t.d).await;
+    assert_eq!(fired[0].result.as_deref(), Some("still green"));
+    assert!(last_user_text(t.p.requests().last().unwrap()).contains("check the deploy"));
+    assert!(t.d.has_pending(), "recurring");
+
+    let id = t.d.scheduler.as_ref().unwrap().lock().unwrap().tasks[0].id.clone();
+    assert!(local(&mut t.d, &format!("/tasks stop {id}")).await.starts_with(&format!("Deleted scheduled task {id}")));
+    assert!(!t.d.has_pending());
+    // Recorded in the transcript.
+    let path = t.d.engine.transcript().path().unwrap().to_path_buf();
+    let loaded = forge_session::LoadedSession::load(&path, None).unwrap();
+    assert_eq!(loaded.schedule, Some(serde_json::json!([])));
+    assert!(fails(&mut t.d, "/loop 0m x").await.contains("Usage: /loop"));
+}
+
+#[tokio::test]
+async fn self_paced_loops_reschedule_fall_back_and_stop() {
+    let mut t = driver();
+    fast_clock(&t.d, 30_000.0);
+    // Iteration 1: the model schedules the next one.
+    t.p.push(MockTurn::tool(
+        "ScheduleWakeup",
+        serde_json::json!({"delaySeconds": 120, "reason": "CI takes a few minutes", "prompt": "/loop watch CI"}),
+    ));
+    t.p.push(MockTurn::text("CI running"));
+    run(&mut t.d, "/loop watch CI").await;
+    let first = last_user_text(&t.p.requests()[0]);
+    assert!(
+        first.contains("self-paced loop") && first.contains("/loop watch CI") && first.contains("watch CI"),
+        "{first}"
+    );
+    assert!(t.d.has_pending());
+
+    // Iteration 2: neither reschedules nor stops: one fallback check is queued.
+    t.p.push(MockTurn::text("still running"));
+    fire_next(&mut t.d).await;
+    let pending = t.d.scheduler.as_ref().unwrap().lock().unwrap().tasks.clone();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].describe().contains("fallback check"), "{:?}", pending[0]);
+
+    // Iteration 3 (the fallback) misses again: the loop ends.
+    t.p.push(MockTurn::text("hmm"));
+    fire_next(&mut t.d).await;
+    assert!(!t.d.has_pending());
+
+    // A model that says stop ends it at once.
+    t.p.push(MockTurn::tool("ScheduleWakeup", serde_json::json!({"stop": true})));
+    t.p.push(MockTurn::text("all done"));
+    run(&mut t.d, "/loop babysit the PR").await;
+    assert!(!t.d.has_pending());
+    assert!(t.d.scheduler.as_ref().unwrap().lock().unwrap().stopped);
+}
+
+#[tokio::test]
+async fn loop_md_and_scheduled_commands() {
+    let mut t = driver_with(|dir, _| {
+        std::fs::write(dir.join("proj/.forge/loop.md"), "Tidy one thing.").unwrap();
+    });
+    fast_clock(&t.d, 3000.0);
+    t.p.push(MockTurn::text("tidied"));
+    run(&mut t.d, "/loop 10m").await;
+    assert!(last_user_text(t.p.requests().last().unwrap()).contains("Tidy one thing."));
+    let id = t.d.scheduler.as_ref().unwrap().lock().unwrap().tasks[0].id.clone();
+    local(&mut t.d, &format!("/tasks stop {id}")).await;
+
+    // A built-in command in a scheduled prompt reaches the model as text.
+    t.p.push(MockTurn::tool(
+        "CronCreate",
+        serde_json::json!({"cron": "* * * * *", "prompt": "/help", "recurring": false}),
+    ));
+    t.p.push(MockTurn::text("scheduled"));
+    run(&mut t.d, "remind me").await;
+    let created = serde_json::to_string(&t.p.requests().last().unwrap().messages).unwrap();
+    assert!(created.contains("Scheduled ") && created.contains("CronDelete"), "{created}");
+    t.p.push(MockTurn::text("I can't run /help for you"));
+    fire_next(&mut t.d).await;
+    assert!(last_user_text(t.p.requests().last().unwrap()).contains("\"/help\""));
+    assert!(!t.d.has_pending(), "a one-shot is gone after it fires");
+}

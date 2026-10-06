@@ -110,6 +110,23 @@ pub struct Driver {
     pub side_questions: Vec<(String, String)>,
     live: Live,
     rebuild: Option<Rebuild>,
+    /// Scheduled prompts (`None` when FORGE_DISABLE_CRON is set).
+    pub scheduler: Option<crate::schedule_tools::SharedScheduler>,
+    /// The self-paced `/loop` iteration in progress, if any.
+    pub(crate) self_paced: Option<SelfPaced>,
+    /// The pending wakeup is a fallback check.
+    pub(crate) fallback_pending: bool,
+}
+
+/// Book-keeping for a self-paced loop: did the iteration reschedule or stop?
+#[derive(Debug, Clone)]
+pub(crate) struct SelfPaced {
+    /// The `/loop` input, for the fallback wakeup.
+    pub input: String,
+    /// The scheduler's wakeup counter when the iteration started.
+    pub mark: u64,
+    /// This iteration is the fallback check: if it doesn't reschedule, the loop ends.
+    pub fallback: bool,
 }
 
 /// What to do after an input.
@@ -161,6 +178,9 @@ impl Driver {
             side_questions: vec![],
             live,
             rebuild: None,
+            scheduler: s.scheduler,
+            self_paced: None,
+            fallback_pending: false,
         }
     }
 
@@ -214,6 +234,7 @@ impl Driver {
             worktree: None,
             todos: Some(self.engine.tool_ctx().todos.lock().unwrap().clone()).filter(|t| !t.is_empty()),
             goal: self.goal.as_ref().map(Goal::record),
+            schedule: self.scheduler.as_ref().map(|s| s.lock().unwrap().record()),
         }
     }
 
@@ -318,9 +339,95 @@ impl Driver {
                 g.paused = None;
                 g.idle = 0;
             }
+            let interrupted = result.stop_reason.as_deref() == Some("interrupted");
             self.pursue_goal(result, report).await;
+            self.after_loop_iteration(interrupted);
         }
         Flow::Continue
+    }
+
+    /// Real time until the next scheduled task is due.
+    pub fn next_wait(&self) -> Option<Duration> {
+        self.scheduler.as_ref().and_then(|s| s.lock().unwrap().next_wait())
+    }
+
+    /// Are scheduled tasks waiting? (`-p` keeps running while they are.)
+    pub fn has_pending(&self) -> bool {
+        self.scheduler.as_ref().is_some_and(|s| !s.lock().unwrap().tasks.is_empty())
+    }
+
+    pub(crate) fn save_schedule(&self) {
+        if let Some(s) = &self.scheduler {
+            self.engine.transcript().set_schedule(s.lock().unwrap().record());
+        }
+    }
+
+    /// Run the next due scheduled task, if any, as a turn. Call it only while idle.
+    pub async fn run_due(&mut self, report: &mut Report<'_>) -> bool {
+        let Some(task) = self.scheduler.as_ref().and_then(|s| s.lock().unwrap().take_due()) else { return false };
+        self.save_schedule();
+        self.engine.announce(
+            "scheduled_task",
+            serde_json::json!({"id": task.id, "prompt": task.prompt, "schedule": task.describe()}),
+        );
+        self.notice(NoticeLevel::Info, format!("Running scheduled task {}: {}", task.id, task.prompt));
+        let result = if task.prompt.trim_start().starts_with("/loop") {
+            match commands::execute(self, task.prompt.trim()).await {
+                commands::Exec::Submit(p) => self.engine.submit(p).await,
+                commands::Exec::Local { text, is_error } => self.engine.local_result(text, is_error),
+                commands::Exec::Exit => return true,
+            }
+        } else {
+            let prompt = commands::scheduled_prompt(self, &task.prompt).await;
+            self.engine.submit(prompt).await
+        };
+        self.record(&result, false);
+        report(&result);
+        if result.num_turns > 0 {
+            let interrupted = result.stop_reason.as_deref() == Some("interrupted");
+            self.pursue_goal(result, report).await;
+            self.after_loop_iteration(interrupted);
+        }
+        true
+    }
+
+    /// After a self-paced iteration: it continues if the model called
+    /// ScheduleWakeup. If it did neither that nor stop, one fallback check
+    /// comes 20 minutes later; a second miss ends the loop.
+    fn after_loop_iteration(&mut self, interrupted: bool) {
+        let (Some(it), Some(sched)) = (self.self_paced.take(), self.scheduler.clone()) else { return };
+        let mut s = sched.lock().unwrap();
+        // Ctrl-C ends a self-paced loop.
+        if interrupted {
+            s.stop_wakeups();
+            drop(s);
+            self.save_schedule();
+            self.notice(NoticeLevel::Info, "The loop is stopped.");
+            return;
+        }
+        if s.wakeups != it.mark {
+            if s.stopped {
+                drop(s);
+                self.notice(NoticeLevel::Info, "The loop is finished.");
+            }
+            return;
+        }
+        if it.fallback {
+            drop(s);
+            self.notice(
+                NoticeLevel::Warning,
+                "The loop ended: two iterations in a row neither rescheduled nor stopped.",
+            );
+            return;
+        }
+        let secs = crate::schedule::FALLBACK_WAKEUP.as_secs();
+        let input = format!("/loop {}", it.input);
+        let fallback = s.wakeup(secs, &input, "fallback check: the last iteration didn't reschedule").is_ok();
+        drop(s);
+        if fallback {
+            self.save_schedule();
+            self.fallback_pending = true;
+        }
     }
 
     fn record(&mut self, r: &TurnResult, prompt: bool) {

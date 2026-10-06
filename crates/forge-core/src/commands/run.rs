@@ -104,6 +104,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             _ => err("Usage: /recap"),
         },
         Builtin::Plan => super::session::plan(d, args),
+        Builtin::Loop => super::looping::run(d, args).await,
         Builtin::Rewind => super::switching::rewind(d, args).await,
         Builtin::Resume => super::switching::resume(d, args).await,
         Builtin::Branch => super::switching::branch(d, args).await,
@@ -398,6 +399,9 @@ fn mcp(d: &Driver) -> String {
 fn tasks(d: &Driver, args: &str) -> Exec {
     let shells = &d.engine.tool_ctx().shells;
     if let Some(id) = args.strip_prefix("stop").map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(msg) = super::looping::stop(d, id) {
+            return ok(msg);
+        }
         return match shells.get(id) {
             Some(sh) => {
                 sh.kill();
@@ -410,7 +414,8 @@ fn tasks(d: &Driver, args: &str) -> Exec {
         return err("Usage: /tasks [stop <id>]");
     }
     let list = shells.list();
-    if list.is_empty() {
+    let scheduled = super::looping::listing(d);
+    if list.is_empty() && scheduled.is_empty() {
         return ok("No background tasks.");
     }
     let mut s = String::from("Background tasks:\n");
@@ -423,6 +428,9 @@ fn tasks(d: &Driver, args: &str) -> Exec {
             duration(sh.started.elapsed()),
             sh.command.chars().take(100).collect::<String>()
         );
+    }
+    for line in scheduled {
+        let _ = writeln!(s, "{line}");
     }
     ok(s.trim_end())
 }

@@ -324,3 +324,52 @@ async fn clear_starts_a_new_session_for_stream_hosts() {
     let reqs = api.requests();
     assert_eq!(reqs[1]["messages"].as_array().unwrap().len(), 1);
 }
+
+async fn forge_env(e: &Env, api: &str, args: &[&str], vars: &[(&str, &str)]) -> (i32, String, String) {
+    let mut c = command(&forge_bin(), &e.cwd, &e.home, api, args);
+    for (k, v) in vars {
+        c.env(k, v);
+    }
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = tokio::time::timeout(Duration::from_secs(60), c.output()).await.unwrap().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_mode_keeps_running_for_scheduled_tasks() {
+    let e = env();
+    // A minute of schedule time is a tenth of a second here.
+    let fast = [("FORGE_TEST_TIME_SCALE", "600")];
+    let api = MockApi::start(vec![MockTurn::text("hi 1"), MockTurn::text("hi 2"), MockTurn::text("hi 3")]).await;
+    let started = std::time::Instant::now();
+    let (code, out, err) = forge_env(&e, &api.url, &["-p", "/loop 1m say hi", "--max-turns", "3"], &fast).await;
+    assert_eq!((code, out.as_str()), (0, "hi 1\nhi 2\nhi 3\n"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(30));
+    let reqs = api.requests();
+    assert_eq!(reqs.len(), 3, "it stops at --max-turns");
+    assert!(reqs.iter().all(|r| r.to_string().contains("say hi")));
+
+    // stream-json reports each run, with a system event naming the task.
+    let api = MockApi::start(vec![MockTurn::text("a"), MockTurn::text("b")]).await;
+    let (code, out, _) = forge_env(
+        &e,
+        &api.url,
+        &["-p", "/loop 2m ping", "--max-turns", "2", "--output-format", "stream-json", "--verbose"],
+        &fast,
+    )
+    .await;
+    assert_eq!(code, 0);
+    let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.iter().filter(|l| l["type"] == "result").count(), 2);
+    assert!(lines.iter().any(|l| l["subtype"] == "scheduled" && l["cron"] == "*/2 * * * *"), "{out}");
+    assert!(lines.iter().any(|l| l["subtype"] == "scheduled_task" && l["prompt"] == "ping"), "{out}");
+
+    // Scheduling can be turned off.
+    let (code, _, err) = forge_env(&e, &api.url, &["-p", "/loop 5m x"], &[("FORGE_DISABLE_CRON", "1")]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("Scheduling is off"), "{err}");
+}

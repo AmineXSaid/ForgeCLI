@@ -229,6 +229,19 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
             h2.handle().interrupt();
         }
     });
+    let mut report = |r: &forge_engine::TurnResult| {
+        if let Some(b) = &r.prompt_blocked {
+            eprintln!("{b}");
+        } else if r.num_turns == 0 && r.stop_reason.is_none() {
+            // Answered locally (a slash command): show it, since nothing streamed.
+            let text = r.result.clone().unwrap_or_default();
+            if r.is_error {
+                eprintln!("{}", crate::term::red(&text));
+            } else {
+                outln!("{text}");
+            }
+        }
+    };
     let mut next = prompt;
     loop {
         let text = match next.take() {
@@ -236,9 +249,21 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
             None => {
                 eprint!("\n> ");
                 let _ = std::io::stderr().flush();
-                match lines.lock().await.recv().await {
-                    Some(l) => l,
-                    None => break,
+                // Scheduled tasks (/loop, CronCreate) run while the prompt waits.
+                let wait = driver.next_wait();
+                let far = std::time::Duration::from_secs(365 * 86_400);
+                let mut rx = lines.lock().await;
+                tokio::select! {
+                    l = rx.recv() => match l {
+                        Some(l) => l,
+                        None => break,
+                    },
+                    _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
+                        drop(rx);
+                        eprintln!();
+                        driver.run_due(&mut report).await;
+                        continue;
+                    }
                 }
             }
         };
@@ -246,19 +271,6 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         if t.is_empty() {
             continue;
         }
-        let mut report = |r: &forge_engine::TurnResult| {
-            if let Some(b) = &r.prompt_blocked {
-                eprintln!("{b}");
-            } else if r.num_turns == 0 && r.stop_reason.is_none() {
-                // Answered locally (a slash command): show it, since nothing streamed.
-                let text = r.result.clone().unwrap_or_default();
-                if r.is_error {
-                    eprintln!("{}", crate::term::red(&text));
-                } else {
-                    outln!("{text}");
-                }
-            }
-        };
         if driver.input(MessageContent::Text(t.to_string()), &mut report).await == forge_core::Flow::Exit {
             break;
         }

@@ -6,6 +6,8 @@ pub mod doctor;
 pub mod driver;
 pub mod goal;
 pub mod prompt;
+pub mod schedule;
+pub mod schedule_tools;
 pub mod web;
 
 pub use driver::{Driver, Flow, Report};
@@ -211,6 +213,8 @@ pub struct Session {
     pub init: InitInfo,
     /// What the system prompt is built from, for rebuilding it later.
     pub prompt: PromptSpec,
+    /// Scheduled prompts (`None` when FORGE_DISABLE_CRON is set).
+    pub scheduler: Option<schedule_tools::SharedScheduler>,
     /// Custom slash commands, skills, output styles and plugins (M5).
     pub commands: Vec<forge_agents::CommandDef>,
     pub skills: Vec<forge_agents::SkillDef>,
@@ -488,6 +492,19 @@ pub fn build_session(
     if skills.iter().any(|s| s.model_invocable) {
         tools.register(Arc::new(forge_agents::SkillTool { skills: skills.clone() }));
     }
+    // Scheduled prompts (C19), unless FORGE_DISABLE_CRON is set.
+    let scheduler = (!schedule::disabled()).then(|| {
+        let mut s = schedule::Scheduler::default();
+        if let Some(rec) = resumed.as_ref().and_then(|r| r.schedule.as_ref()) {
+            s.restore(rec);
+        }
+        Arc::new(std::sync::Mutex::new(s))
+    });
+    if let Some(s) = &scheduler {
+        for t in schedule_tools::tools(s, &transcript) {
+            tools.register(t);
+        }
+    }
     let agent_store =
         (!opts.no_session_persistence).then(|| SessionStore::new(store.root.join("agents").join(&session_id)));
     let agent_rt_slot: Arc<std::sync::OnceLock<Arc<forge_agents::AgentRuntime>>> = Arc::new(std::sync::OnceLock::new());
@@ -739,6 +756,7 @@ pub fn build_session(
         engine,
         init,
         prompt,
+        scheduler,
         commands,
         skills,
         styles,

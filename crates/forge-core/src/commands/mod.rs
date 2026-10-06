@@ -13,11 +13,13 @@
 //! `slash_commands` and the stream-json `initialize` `commands` are all
 //! generated from it.
 
+mod looping;
 mod run;
 mod session;
 mod settings;
 mod switching;
 
+pub(crate) use looping::scheduled_prompt;
 pub use run::{execute, Exec};
 pub(crate) use session::side_request;
 pub use session::{clean_title, render_conversation};
@@ -84,6 +86,7 @@ pub enum Builtin {
     Goal,
     Help,
     Hooks,
+    Loop,
     Mcp,
     Memory,
     Model,
@@ -171,6 +174,13 @@ pub static BUILTINS: &[CommandSpec] = &[
     cmd!(Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
     cmd!(Help, "help", [], "", "Show help and the available commands"),
     cmd!(Hooks, "hooks", [], "", "View the configured hooks"),
+    cmd!(
+        Loop,
+        "loop",
+        [],
+        "[interval] [prompt]",
+        "Run a prompt on a schedule, or let Forge pace it; /tasks lists them"
+    ),
     cmd!(Mcp, "mcp", [], "", "Show MCP server status", Surfaces::ALL, true),
     cmd!(Memory, "memory", [], "", "List the memory files in use (FORGE.md, AGENTS.md)"),
     cmd!(Model, "model", [], "[model]", "Show the models, or switch to one"),

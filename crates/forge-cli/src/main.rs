@@ -23,6 +23,7 @@ mod term;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use clap::{CommandFactory, Parser};
 use forge_core::{build_session, LaunchOptions, Resume};
@@ -357,77 +358,133 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         let _ = tx.send(Input::Eof);
     }
 
-    let mut code = exit::OK;
-    while let Some(input) = rx.recv().await {
-        match input {
-            Input::User(content) => {
-                // One input can run several turns (a goal): each result is reported as it
-                // finishes. JSON output is one object, so it carries the last result.
-                let mut last_json = None;
-                let format = o.output_format;
-                let mut report = |r: &forge_engine::TurnResult| {
-                    let c = exit::for_result(r);
-                    if code == exit::OK {
-                        code = c;
-                    }
-                    match format {
-                        OutputFormat::StreamJson => {
-                            out.line(&SdkMessage::Result(result_message(r, &live.session_id())))
-                        }
-                        OutputFormat::Json => {
-                            let mut v = serde_json::to_value(SdkMessage::Result(result_message(r, &live.session_id())))
-                                .unwrap_or_default();
-                            v["exit_code"] = json!(c);
-                            last_json = Some(v);
-                        }
-                        OutputFormat::Text => {
-                            if let Some(b) = &r.prompt_blocked {
-                                eprintln!("{} prompt blocked by a UserPromptSubmit hook: {b}", term::red("forge:"));
-                            } else if r.is_error {
-                                let msg = r
-                                    .result
-                                    .clone()
-                                    .or_else(|| r.errors.first().cloned())
-                                    .unwrap_or_else(|| "the run failed".into());
-                                eprintln!("{} {msg}", term::red("forge:"));
-                            } else if let Some(t) = &r.result {
-                                outln!("{t}");
-                            }
-                        }
-                    }
-                };
-                let flow = driver.input(content, &mut report).await;
-                // A command switched sessions (/clear, /resume, /branch, /cd): say so to stream hosts.
-                if driver.info.session_id != session_id {
-                    session_id = driver.info.session_id.clone();
-                    *sink_id.lock().unwrap() = session_id.clone();
-                    if stream_out {
-                        out.line(&SdkMessage::System(SystemMessage::init(&driver.info.init)));
-                    }
-                }
-                // A single prompt that set a goal fails when the goal ends unmet.
-                if !stream_in && code == exit::OK && driver.goal.as_ref().is_some_and(|g| g.ended_unmet()) {
-                    code = exit::FAILED;
-                    if let Some(v) = last_json.as_mut() {
-                        v["exit_code"] = json!(code);
-                    }
-                }
-                if let Some(v) = last_json {
-                    outln!("{v}");
-                }
-                if flow == forge_core::Flow::Exit {
-                    break;
-                }
+    let mut rep =
+        Reporter { format: o.output_format, out: out.clone(), live: live.clone(), code: exit::OK, last_json: None };
+    let mut closed = false;
+    loop {
+        // Scheduled tasks (C19) fire while idle. After the input ends, print mode keeps
+        // running while any are pending: until they finish, Ctrl-C, or a turn or budget limit.
+        let wait = driver.next_wait();
+        if closed {
+            let limited = rep.code == exit::LIMIT || o.max_turns.is_some_and(|m| driver.activity.turns >= m);
+            let Some(w) = wait.filter(|_| !limited) else { break };
+            if !sleep_unless(w, &interrupted).await {
+                break;
             }
-            Input::SystemPrompt { replace, append } => driver.set_system_prompt(replace, append),
-            Input::Eof => break,
+            driver.run_due(&mut |r| rep.report(r)).await;
+        } else {
+            let far = Duration::from_secs(365 * 86_400);
+            let input = tokio::select! {
+                i = rx.recv() => i,
+                _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
+                    driver.run_due(&mut |r| rep.report(r)).await;
+                    rep.flush();
+                    continue;
+                }
+            };
+            match input {
+                Some(Input::User(content)) => {
+                    let flow = driver.input(content, &mut |r| rep.report(r)).await;
+                    // A single prompt that set a goal fails when the goal ends unmet.
+                    if !stream_in && rep.code == exit::OK && driver.goal.as_ref().is_some_and(|g| g.ended_unmet()) {
+                        rep.fail(exit::FAILED);
+                    }
+                    if flow == forge_core::Flow::Exit {
+                        rep.flush();
+                        break;
+                    }
+                }
+                Some(Input::SystemPrompt { replace, append }) => driver.set_system_prompt(replace, append),
+                Some(Input::Eof) | None => closed = true,
+            }
+        }
+        rep.flush();
+        // A command switched sessions (/clear, /resume, /branch, /cd): say so to stream hosts.
+        if driver.info.session_id != session_id {
+            session_id = driver.info.session_id.clone();
+            *sink_id.lock().unwrap() = session_id.clone();
+            if stream_out {
+                out.line(&SdkMessage::System(SystemMessage::init(&driver.info.init)));
+            }
         }
     }
+    let code = rep.code;
     driver.shutdown("other").await;
     if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(exit::INTERRUPTED);
     }
     Ok(code)
+}
+
+/// Writes each turn's result in the output format and keeps the exit status.
+/// One input can run several turns (a goal, a scheduled task): stream-json gets
+/// every result as it finishes; JSON output is one object, the last result.
+struct Reporter {
+    format: OutputFormat,
+    out: Arc<Out>,
+    live: forge_core::driver::Live,
+    code: i32,
+    last_json: Option<Value>,
+}
+
+impl Reporter {
+    fn report(&mut self, r: &forge_engine::TurnResult) {
+        let c = exit::for_result(r);
+        if self.code == exit::OK {
+            self.code = c;
+        }
+        match self.format {
+            OutputFormat::StreamJson => self.out.line(&SdkMessage::Result(result_message(r, &self.live.session_id()))),
+            OutputFormat::Json => {
+                let mut v = serde_json::to_value(SdkMessage::Result(result_message(r, &self.live.session_id())))
+                    .unwrap_or_default();
+                v["exit_code"] = json!(c);
+                self.last_json = Some(v);
+            }
+            OutputFormat::Text => {
+                if let Some(b) = &r.prompt_blocked {
+                    eprintln!("{} prompt blocked by a UserPromptSubmit hook: {b}", term::red("forge:"));
+                } else if r.is_error {
+                    let msg = r
+                        .result
+                        .clone()
+                        .or_else(|| r.errors.first().cloned())
+                        .unwrap_or_else(|| "the run failed".into());
+                    eprintln!("{} {msg}", term::red("forge:"));
+                } else if let Some(t) = &r.result {
+                    outln!("{t}");
+                }
+            }
+        }
+    }
+
+    fn fail(&mut self, code: i32) {
+        self.code = code;
+        if let Some(v) = self.last_json.as_mut() {
+            v["exit_code"] = json!(code);
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(v) = self.last_json.take() {
+            outln!("{v}");
+        }
+    }
+}
+
+/// Sleep for `d`, waking early on Ctrl-C. False when interrupted.
+async fn sleep_unless(d: Duration, interrupted: &std::sync::atomic::AtomicBool) -> bool {
+    let end = std::time::Instant::now() + d;
+    loop {
+        if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        tokio::time::sleep(left.min(Duration::from_millis(200))).await;
+    }
 }
 
 fn run_doctor() -> Result<i32, Fail> {

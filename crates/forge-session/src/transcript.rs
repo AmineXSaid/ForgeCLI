@@ -36,6 +36,8 @@ pub struct LoadedSession {
     /// The last `/goal` record. Kept outside the message chain, like the
     /// title, so compaction doesn't drop it.
     pub goal: Option<Value>,
+    /// The last list of scheduled tasks (`CronCreate`, `/loop`), kept outside the chain.
+    pub schedule: Option<Value>,
 }
 
 /// Append-only writer for one session's JSONL file.
@@ -211,6 +213,11 @@ impl Transcript {
         self.write_line(&json!({"type": "goal", "goal": goal, "sessionId": self.session_id, "timestamp": now()}));
     }
 
+    /// Record the session's scheduled tasks.
+    pub fn set_schedule(&self, tasks: Value) {
+        self.write_line(&json!({"type": "schedule", "tasks": tasks, "sessionId": self.session_id, "timestamp": now()}));
+    }
+
     /// The session's name, if it has one (`--name`, `/rename`, or a resumed title).
     pub fn title(&self) -> Option<String> {
         self.title.lock().unwrap().clone()
@@ -288,6 +295,7 @@ pub fn load(path: &Path, leaf: Option<&str>) -> Result<LoadedSession, SessionErr
             }
             Some("title") => out.title = v.get("title").and_then(Value::as_str).map(str::to_string),
             Some("goal") => out.goal = v.get("goal").cloned(),
+            Some("schedule") => out.schedule = v.get("tasks").cloned(),
             Some(_) => {
                 if let Some(u) = v.get("uuid").and_then(Value::as_str) {
                     by_uuid.insert(u.to_string(), entries.len());

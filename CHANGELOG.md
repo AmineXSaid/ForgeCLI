@@ -20,6 +20,9 @@
   summarize part of the conversation), `/branch`, `/resume`, `/cd`,
   `/reload-skills`, `/reload-plugins`; `/clear` now starts a new session
   and keeps the old one resumable.
+- Scheduled prompts (C19): `/loop` with an interval or self-paced, and the
+  `CronCreate`, `CronList`, `CronDelete` and `ScheduleWakeup` tools. `-p`
+  keeps running while tasks are pending.
 - `/goal`: Forge keeps working until a small-model check finds the goal
   met, with guards against loops (C18). `/plan`, `/btw` side questions,
   `/recap`, and `!command` shell mode.

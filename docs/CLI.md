@@ -238,6 +238,7 @@ them.
 | `FORGE_HOME` | One root for config, state and cache |
 | `FORGE_SANDBOX` | Same as `--sandbox` |
 | `FORGE_VERIFY` | `0` turns the verification loop off |
+| `FORGE_DISABLE_CRON` | `1` turns scheduled prompts off (`/loop`, `CronCreate`, ...) |
 | `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT` | MCP connect and call timeouts, in milliseconds (30 s, 10 min) |
 | `FORGE_NO_INPUT` | Same as `--no-input` |
 | `FORGE_LOG` | Log filter, with `--debug` (`/debug` turns logging on partway through a session) |
@@ -276,6 +277,7 @@ them all. The built-ins so far:
 | `/resume [n\|id\|name]` (`/continue`) | Interactive only: lists this directory's conversations, or switches to one |
 | `/cd <directory>` | Moves the conversation to another directory (a new session there) |
 | `/reload-skills`, `/reload-plugins` | Re-reads skills, commands, agents, output styles, plugins and settings without leaving the conversation |
+| `/loop [interval] [prompt]` | Runs a prompt now and on a schedule (`5m`, `2h`, `every 20 minutes`), or self-paced when no interval is given (the model picks when to check again, or stops). No prompt: `.forge/loop.md`, else a maintenance pass. `/tasks` lists scheduled tasks; `/tasks stop <id>` ends one |
 | `/goal [condition\|clear]` | Sets a goal and keeps working until a check finds it met (see below) |
 | `/plan [description]` | Plan mode; with a description, starts planning it |
 | `/btw [question]` | A side question, answered from the conversation without tools; it doesn't enter the conversation |
@@ -290,6 +292,12 @@ them all. The built-ins so far:
 
 `docs/PARITY.md` ("Slash commands") tracks the rest of the reference's
 commands.
+
+**Scheduled prompts:** `/loop` and the `CronCreate` tool schedule prompts in
+the session. They run only between turns, recurring ones expire after
+seven days, and `-p` keeps running until they are done. It stops on Ctrl-C,
+at `--max-turns` (counted across the whole run) or when the budget is spent.
+Contract C19 has the details.
 
 **Goals:** `/goal <condition>` sends the condition as the prompt. After each
 turn a small model checks the conversation against it, and Forge keeps going

@@ -621,6 +621,58 @@ warnings on stderr; an achieved goal is reported only with `--verbose`.
 `/goal` is refused while `disableAllHooks` is set, as in the reference,
 where goals run as an end-of-turn check.
 
+### C19. Scheduled prompts
+
+A session can run prompts later: on a cron schedule (`CronCreate`, or
+`/loop` with an interval) or self-paced (`ScheduleWakeup`, or `/loop`
+without one). The scheduler is part of the session; `FORGE_DISABLE_CRON=1`
+turns it off.
+
+**Tasks:**
+- At most 50; each has an 8-character id.
+- Cron uses 5 fields in local time: `*`, values, ranges, steps, lists, and
+  month and weekday names. When both day of month and day of week are set,
+  either one matches.
+- Tasks fire only while the session is idle, between turns. A task that
+  came due during a turn fires once afterwards, with no catch-up.
+- **Jitter**, the same every time for a task id:
+  - recurring tasks run up to 30 minutes late (at most half their interval);
+  - one-shots set for :00 or :30 run up to 90 seconds early.
+- Recurring tasks expire seven days after creation: they fire one last time,
+  then are removed.
+- Every change writes a top-level `schedule` record. A resumed session gets
+  its recurring tasks back; one-shots and wakeups don't survive.
+
+**`/loop [interval] [prompt]`**, parsed in Rust, not by the model:
+- The interval is a leading `5m`, `2h`, `1d` or `30s`, or a trailing
+  `every 20m` / `every 5 minutes`. `check every PR` has no interval.
+- Seconds round up to minutes. An interval cron can't step evenly (`7m`,
+  `90m`, `5h`) is rounded to the nearest one that divides its unit, and the
+  confirmation says so.
+- **With an interval:** a recurring cron task, and the prompt also runs now.
+- **Without one:** the prompt runs now with a note asking the model to call
+  `ScheduleWakeup` (60-3600 s, with the `/loop` input as the prompt), or
+  `ScheduleWakeup {stop: true}` when the work is done. One wakeup is pending
+  at a time.
+  - If an iteration does neither, a fallback check comes 20 minutes later;
+    a second miss ends the loop.
+  - An interrupted iteration ends the loop.
+- **Without a prompt:** `.forge/loop.md`, else `<config>/loop.md` (up to
+  25 KB), else Forge's maintenance prompt.
+
+**Fired prompts:** a custom command, or skills the model may use, expand as
+usual. Built-in commands, user-only skills and MCP prompts reach the model as
+plain text. Each firing emits `system/scheduled_task`; `/loop` with an
+interval emits `system/scheduled`. `/tasks` lists scheduled tasks, and
+`/tasks stop <id>` deletes one.
+
+**Front ends.**
+- The REPL and stream-json fire due tasks while waiting for input.
+- `-p` keeps running after its prompt while tasks are pending. It stops
+  when none are left, on Ctrl-C, at `--max-turns` (counted across the run),
+  or when the budget is spent.
+- `FORGE_TEST_TIME_SCALE` speeds up the scheduler's clock, for tests only.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in
