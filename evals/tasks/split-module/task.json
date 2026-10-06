@@ -1,0 +1,7 @@
+{
+  "instruction": "geometry.py has grown too large. Turn it into a package `geometry/` with three modules: `shapes.py` (the classes), `metrics.py` (area and perimeter functions) and `io.py` (to_json/from_json). `from geometry import Circle, Rect, area, perimeter, to_json, from_json` must keep working, and so must the existing tests.",
+  "check": "[ ! -f geometry.py ] && [ -f geometry/shapes.py ] && [ -f geometry/metrics.py ] && [ -f geometry/io.py ] && python3 -m unittest -q test_geometry && python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "long-horizon",
+  "tags": ["python", "refactor"],
+  "timeout_secs": 900
+}

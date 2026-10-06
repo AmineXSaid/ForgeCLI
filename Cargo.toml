@@ -51,6 +51,7 @@ forge-agents = { path = "crates/forge-agents" }
 forge-core = { path = "crates/forge-core" }
 forge-cli = { path = "crates/forge-cli" }
 forge-test-host = { path = "crates/forge-test-host" }
+forge-eval = { path = "crates/forge-eval" }
 
 [profile.release]
 lto = "thin"

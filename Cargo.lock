@@ -398,6 +398,7 @@ dependencies = [
  "forge-config",
  "forge-core",
  "forge-engine",
+ "forge-eval",
  "forge-permissions",
  "forge-session",
  "forge-test-host",
@@ -473,6 +474,20 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "forge-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

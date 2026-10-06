@@ -1,0 +1,7 @@
+{
+  "instruction": "Run ./build.sh and get it to succeed. Fix whatever it complains about, but do not edit build.sh.",
+  "check": "git diff --quiet HEAD -- build.sh && ./build.sh && [ -f dist/app.txt ]",
+  "pillar": "recovery",
+  "tags": ["shell"],
+  "timeout_secs": 600
+}

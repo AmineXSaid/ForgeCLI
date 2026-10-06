@@ -1,0 +1,10 @@
+{
+  "instruction": "Rename the function `calc_total` to `compute_total` everywhere in this project, including every caller and import. Behaviour must not change and the tests must still pass.",
+  "check": "! grep -rn 'calc_total' --include='*.py' . && python3 -m unittest discover -q -s tests -t . && python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "long-horizon",
+  "tags": [
+    "python",
+    "refactor"
+  ],
+  "timeout_secs": 600
+}

@@ -1,0 +1,7 @@
+{
+  "instruction": "Write convert.py: it reads a CSV file given as its first argument and prints a JSON array of objects, one per row, keyed by the header. Numeric fields (integers or decimals) must become JSON numbers; empty fields must become null. Use only the standard library.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "tool-design",
+  "tags": ["python", "new-code"],
+  "timeout_secs": 600
+}

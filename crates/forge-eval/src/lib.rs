@@ -1,0 +1,640 @@
+//! `forge-eval`: measure the harness (docs/GOALS.md, "measure, don't assume").
+//!
+//! A task is a directory:
+//!
+//! ```text
+//! evals/tasks/<id>/
+//!   task.json   {"instruction": "...", "check": "python3 -m unittest -q", "pillar": "verification", ...}
+//!   repo/       files copied into a fresh workspace for every run
+//! ```
+//!
+//! Each run copies `repo/` into a new workspace, initialises git, runs the
+//! optional `setup` command, runs `forge -p <instruction>` in stream-json mode,
+//! then runs `check`. Exit code 0 means the task passed. The stream is parsed
+//! for cost, turns and tool errors.
+//!
+//! `setup` and `check` see `FORGE_EVAL_TASK_DIR`, so checks can use hidden
+//! files (e.g. `$FORGE_EVAL_TASK_DIR/hidden/`) the agent never sees.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Context};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::process::Command;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSpec {
+    #[serde(default)]
+    pub id: String,
+    pub instruction: String,
+    /// Shell command run in the workspace after the agent; exit 0 = pass.
+    pub check: String,
+    /// Shell command run before the agent (installing fixtures, breaking things).
+    #[serde(default)]
+    pub setup: Option<String>,
+    /// Which GOALS.md pillar the task exercises.
+    #[serde(default)]
+    pub pillar: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+    /// Extra `forge` arguments for this task.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+fn default_timeout() -> u64 {
+    900
+}
+
+#[derive(Debug, Clone)]
+pub struct Task {
+    pub spec: TaskSpec,
+    pub dir: PathBuf,
+}
+
+/// Load every task under `root` (directories containing `task.json`), sorted by id.
+pub fn load_tasks(root: &Path, filter: &[String]) -> anyhow::Result<Vec<Task>> {
+    let mut tasks = vec![];
+    let rd = std::fs::read_dir(root).with_context(|| format!("cannot read task directory {}", root.display()))?;
+    for e in rd.flatten() {
+        let f = e.path().join("task.json");
+        if !f.exists() {
+            continue;
+        }
+        let mut spec: TaskSpec =
+            serde_json::from_str(&std::fs::read_to_string(&f)?).with_context(|| format!("invalid {}", f.display()))?;
+        if spec.id.is_empty() {
+            spec.id = e.file_name().to_string_lossy().into_owned();
+        }
+        let keep = filter.is_empty()
+            || filter.iter().any(|f| spec.id.contains(f.as_str()) || spec.tags.contains(f) || &spec.pillar == f);
+        if keep {
+            tasks.push(Task { spec, dir: e.path() });
+        }
+    }
+    tasks.sort_by(|a, b| a.spec.id.cmp(&b.spec.id));
+    Ok(tasks)
+}
+
+#[derive(Debug, Clone)]
+pub struct RunOptions {
+    /// The `forge` binary under test.
+    pub forge: PathBuf,
+    /// Extra arguments for every run (the configuration being measured).
+    pub args: Vec<String>,
+    /// Extra environment (credentials and endpoints are inherited from the caller).
+    pub env: Vec<(String, String)>,
+    pub label: String,
+    pub out_dir: PathBuf,
+    /// Runs per task.
+    pub repeat: u32,
+    /// Tasks run in parallel.
+    pub jobs: usize,
+}
+
+/// One run of one task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunRecord {
+    pub task: String,
+    pub pillar: String,
+    pub run: u32,
+    pub passed: bool,
+    /// The agent finished without error but the checker failed.
+    pub false_finish: bool,
+    /// Some tool call or API request failed during the run.
+    pub had_error: bool,
+    pub cost_usd: f64,
+    pub turns: u64,
+    pub wall_secs: f64,
+    pub tool_calls: u64,
+    pub tool_errors: u64,
+    pub agent_error: bool,
+    pub stop_reason: Option<String>,
+    pub timed_out: bool,
+    pub check_output: String,
+    pub workspace: PathBuf,
+}
+
+/// Aggregates for one configuration (docs/GOALS.md metrics).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Summary {
+    pub runs: usize,
+    pub pass_rate: f64,
+    pub mean_cost_usd: f64,
+    pub cost_per_pass_usd: Option<f64>,
+    pub mean_turns: f64,
+    pub mean_wall_secs: f64,
+    /// Of runs that hit an error, the share that still passed.
+    pub recovery_rate: Option<f64>,
+    pub false_finish_rate: f64,
+    /// Tool errors per tool call.
+    pub invalid_call_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Report {
+    pub label: String,
+    pub created: String,
+    pub args: Vec<String>,
+    pub summary: Summary,
+    pub by_pillar: BTreeMap<String, Summary>,
+    pub runs: Vec<RunRecord>,
+}
+
+pub fn summarize(runs: &[RunRecord]) -> Summary {
+    if runs.is_empty() {
+        return Summary::default();
+    }
+    let n = runs.len() as f64;
+    let passed = runs.iter().filter(|r| r.passed).count();
+    let total_cost: f64 = runs.iter().map(|r| r.cost_usd).sum();
+    let errored: Vec<&RunRecord> = runs.iter().filter(|r| r.had_error).collect();
+    let calls: u64 = runs.iter().map(|r| r.tool_calls).sum();
+    let errors: u64 = runs.iter().map(|r| r.tool_errors).sum();
+    Summary {
+        runs: runs.len(),
+        pass_rate: passed as f64 / n,
+        mean_cost_usd: total_cost / n,
+        cost_per_pass_usd: (passed > 0).then(|| total_cost / passed as f64),
+        mean_turns: runs.iter().map(|r| r.turns as f64).sum::<f64>() / n,
+        mean_wall_secs: runs.iter().map(|r| r.wall_secs).sum::<f64>() / n,
+        recovery_rate: (!errored.is_empty())
+            .then(|| errored.iter().filter(|r| r.passed).count() as f64 / errored.len() as f64),
+        false_finish_rate: runs.iter().filter(|r| r.false_finish).count() as f64 / n,
+        invalid_call_rate: if calls == 0 { 0.0 } else { errors as f64 / calls as f64 },
+    }
+}
+
+pub fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let target = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir(&e.path(), &target)?;
+        } else {
+            std::fs::copy(e.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+async fn sh(cmd: &str, dir: &Path, task_dir: &Path, timeout: Duration) -> (bool, String) {
+    let child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(dir)
+        .env("FORGE_EVAL_TASK_DIR", task_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+    let Ok(child) = child else { return (false, format!("could not run {cmd}")) };
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(o)) => {
+            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&o.stderr));
+            let tail: String = text.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+            (o.status.success(), tail)
+        }
+        Ok(Err(e)) => (false, e.to_string()),
+        Err(_) => (false, format!("timed out after {timeout:?}")),
+    }
+}
+
+/// Check a task's quality: its check must fail on the starting files and pass
+/// after `solution.sh` (kept beside `task.json`, never shown to the agent).
+pub async fn validate_task(task: &Task, scratch: &Path) -> Result<(), String> {
+    let ws = scratch.join(&task.spec.id);
+    let _ = std::fs::remove_dir_all(&ws);
+    let repo = task.dir.join("repo");
+    if repo.exists() {
+        copy_dir(&repo, &ws).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
+    }
+    let task_dir = task.dir.canonicalize().map_err(|e| e.to_string())?;
+    let init = "git init -q && git add -A && git -c user.email=eval@forge -c user.name=forge-eval commit -q --allow-empty -m fixture";
+    sh(init, &ws, &task_dir, Duration::from_secs(60)).await;
+    if let Some(setup) = &task.spec.setup {
+        let (ok, out) = sh(setup, &ws, &task_dir, Duration::from_secs(300)).await;
+        if !ok {
+            return Err(format!("setup failed: {out}"));
+        }
+    }
+    let (before, _) = sh(&task.spec.check, &ws, &task_dir, Duration::from_secs(300)).await;
+    if before {
+        return Err("the check already passes on the starting files".into());
+    }
+    let solution = task_dir.join("solution.sh");
+    if !solution.exists() {
+        return Err("no solution.sh".into());
+    }
+    let (ok, out) = sh(&format!("sh '{}'", solution.display()), &ws, &task_dir, Duration::from_secs(300)).await;
+    if !ok {
+        return Err(format!("solution.sh failed: {out}"));
+    }
+    let (after, out) = sh(&task.spec.check, &ws, &task_dir, Duration::from_secs(300)).await;
+    if !after {
+        return Err(format!("the check fails after solution.sh: {out}"));
+    }
+    Ok(())
+}
+
+/// Facts parsed from a stream-json transcript.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct StreamFacts {
+    pub cost_usd: f64,
+    pub turns: u64,
+    pub tool_calls: u64,
+    pub tool_errors: u64,
+    pub api_error: bool,
+    pub is_error: bool,
+    pub stop_reason: Option<String>,
+    pub saw_result: bool,
+}
+
+pub fn parse_stream(lines: &[Value]) -> StreamFacts {
+    let mut f = StreamFacts::default();
+    for v in lines {
+        match v["type"].as_str() {
+            Some("assistant") => {
+                for b in v["message"]["content"].as_array().into_iter().flatten() {
+                    if b["type"] == "tool_use" {
+                        f.tool_calls += 1;
+                    }
+                }
+            }
+            Some("user") => {
+                for b in v["message"]["content"].as_array().into_iter().flatten() {
+                    if b["type"] == "tool_result" && b["is_error"] == true {
+                        f.tool_errors += 1;
+                    }
+                }
+            }
+            Some("system") if v["subtype"] == "model_fallback" || v["subtype"] == "api_retry" => f.api_error = true,
+            Some("result") => {
+                f.saw_result = true;
+                f.cost_usd = v["total_cost_usd"].as_f64().unwrap_or(0.0);
+                f.turns = v["num_turns"].as_u64().unwrap_or(0);
+                f.is_error = v["is_error"].as_bool().unwrap_or(true);
+                f.stop_reason = v["stop_reason"].as_str().map(str::to_string);
+                if v["subtype"] == "error_during_execution" {
+                    f.api_error = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    f
+}
+
+/// Run one task once.
+pub async fn run_task(task: &Task, run: u32, opts: &RunOptions) -> anyhow::Result<RunRecord> {
+    let run_dir = opts.out_dir.join(format!("{}-{run}", task.spec.id));
+    let ws = run_dir.join("workspace");
+    if run_dir.exists() {
+        std::fs::remove_dir_all(&run_dir)?;
+    }
+    let repo = task.dir.join("repo");
+    if repo.exists() {
+        copy_dir(&repo, &ws)?;
+    } else {
+        std::fs::create_dir_all(&ws)?;
+    }
+    let ws = ws.canonicalize()?;
+    let init = "git init -q && git add -A && git -c user.email=eval@forge -c user.name=forge-eval commit -q --allow-empty -m fixture";
+    let task_dir = task.dir.canonicalize()?;
+    sh(init, &ws, &task_dir, Duration::from_secs(60)).await;
+    if let Some(setup) = &task.spec.setup {
+        let (ok, out) = sh(setup, &ws, &task_dir, Duration::from_secs(300)).await;
+        if !ok {
+            bail!("setup failed for {}: {out}", task.spec.id);
+        }
+    }
+
+    let mut cmd = Command::new(&opts.forge);
+    cmd.arg("-p")
+        .arg(&task.spec.instruction)
+        .args(["--output-format", "stream-json", "--verbose"])
+        .args(&opts.args)
+        .args(&task.spec.args)
+        .current_dir(&ws)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for (k, v) in &opts.env {
+        cmd.env(k, v);
+    }
+    let started = Instant::now();
+    let mut child = cmd.spawn().with_context(|| format!("cannot start {}", opts.forge.display()))?;
+    let stdout = child.stdout.take().expect("piped");
+    let stderr = child.stderr.take().expect("piped");
+    let transcript_path = run_dir.join("transcript.jsonl");
+    let mut transcript = tokio::fs::File::create(&transcript_path).await?;
+    let collect = async {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut parsed = vec![];
+        while let Ok(Some(l)) = lines.next_line().await {
+            let _ = transcript.write_all(format!("{l}\n").as_bytes()).await;
+            if let Ok(v) = serde_json::from_str::<Value>(&l) {
+                parsed.push(v);
+            }
+        }
+        parsed
+    };
+    let err_task = tokio::spawn(async move {
+        let mut s = String::new();
+        let mut r = tokio::io::BufReader::new(stderr);
+        let _ = tokio::io::AsyncReadExt::read_to_string(&mut r, &mut s).await;
+        s
+    });
+    let timeout = Duration::from_secs(task.spec.timeout_secs);
+    let (parsed, timed_out) = match tokio::time::timeout(timeout, collect).await {
+        Ok(p) => (p, false),
+        Err(_) => {
+            let _ = child.kill().await;
+            (vec![], true)
+        }
+    };
+    let _ = child.wait().await;
+    let stderr_text = err_task.await.unwrap_or_default();
+    let _ = std::fs::write(run_dir.join("stderr.txt"), &stderr_text);
+    let wall_secs = started.elapsed().as_secs_f64();
+    let facts = parse_stream(&parsed);
+
+    let (passed, check_output) = sh(&task.spec.check, &ws, &task_dir, Duration::from_secs(300)).await;
+    let agent_error = timed_out || !facts.saw_result || facts.is_error;
+    Ok(RunRecord {
+        task: task.spec.id.clone(),
+        pillar: task.spec.pillar.clone(),
+        run,
+        passed,
+        false_finish: !passed && !agent_error,
+        had_error: facts.tool_errors > 0 || facts.api_error,
+        cost_usd: facts.cost_usd,
+        turns: facts.turns,
+        wall_secs,
+        tool_calls: facts.tool_calls,
+        tool_errors: facts.tool_errors,
+        agent_error,
+        stop_reason: facts.stop_reason,
+        timed_out,
+        check_output,
+        workspace: ws,
+    })
+}
+
+/// Run every task `repeat` times with up to `jobs` in parallel.
+pub async fn run_suite(tasks: &[Task], opts: &RunOptions) -> Report {
+    use futures::stream::{self, StreamExt};
+    let jobs: Vec<(usize, u32)> = (0..tasks.len()).flat_map(|t| (1..=opts.repeat).map(move |r| (t, r))).collect();
+    let mut runs: Vec<RunRecord> = stream::iter(jobs)
+        .map(|(t, r)| async move {
+            match run_task(&tasks[t], r, opts).await {
+                Ok(rec) => rec,
+                Err(e) => RunRecord {
+                    task: tasks[t].spec.id.clone(),
+                    pillar: tasks[t].spec.pillar.clone(),
+                    run: r,
+                    passed: false,
+                    false_finish: false,
+                    had_error: true,
+                    cost_usd: 0.0,
+                    turns: 0,
+                    wall_secs: 0.0,
+                    tool_calls: 0,
+                    tool_errors: 0,
+                    agent_error: true,
+                    stop_reason: None,
+                    timed_out: false,
+                    check_output: format!("harness error: {e:#}"),
+                    workspace: PathBuf::new(),
+                },
+            }
+        })
+        .buffer_unordered(opts.jobs.max(1))
+        .collect()
+        .await;
+    runs.sort_by(|a, b| a.task.cmp(&b.task).then(a.run.cmp(&b.run)));
+    let mut by_pillar: BTreeMap<String, Vec<RunRecord>> = BTreeMap::new();
+    for r in &runs {
+        by_pillar
+            .entry(if r.pillar.is_empty() { "other".into() } else { r.pillar.clone() })
+            .or_default()
+            .push(r.clone());
+    }
+    Report {
+        label: opts.label.clone(),
+        created: chrono::Utc::now().to_rfc3339(),
+        args: opts.args.clone(),
+        summary: summarize(&runs),
+        by_pillar: by_pillar.into_iter().map(|(k, v)| (k, summarize(&v))).collect(),
+        runs,
+    }
+}
+
+fn pct(x: f64) -> String {
+    format!("{:.0}%", x * 100.0)
+}
+
+fn opt_pct(x: Option<f64>) -> String {
+    x.map(pct).unwrap_or_else(|| "–".into())
+}
+
+/// Markdown report for one configuration.
+pub fn render_markdown(r: &Report) -> String {
+    let s = &r.summary;
+    let mut out = format!(
+        "# forge-eval: {}\n\n{} runs · args: `{}`\n\n| Metric | Value |\n| --- | --- |\n\
+         | Pass rate | {} |\n| Cost per task | ${:.4} |\n| Cost per passed task | {} |\n| Turns per task | {:.1} |\n\
+         | Wall time per task | {:.1}s |\n| Recovery rate | {} |\n| False-finish rate | {} |\n| Invalid-call rate | {} |\n\n",
+        r.label,
+        s.runs,
+        r.args.join(" "),
+        pct(s.pass_rate),
+        s.mean_cost_usd,
+        s.cost_per_pass_usd.map(|c| format!("${c:.4}")).unwrap_or_else(|| "–".into()),
+        s.mean_turns,
+        s.mean_wall_secs,
+        opt_pct(s.recovery_rate),
+        pct(s.false_finish_rate),
+        pct(s.invalid_call_rate),
+    );
+    out.push_str("## By pillar\n\n| Pillar | Runs | Pass | False finish | Turns |\n| --- | --- | --- | --- | --- |\n");
+    for (p, s) in &r.by_pillar {
+        out.push_str(&format!(
+            "| {p} | {} | {} | {} | {:.1} |\n",
+            s.runs,
+            pct(s.pass_rate),
+            pct(s.false_finish_rate),
+            s.mean_turns
+        ));
+    }
+    out.push_str("\n## Runs\n\n| Task | Run | Pass | False finish | Turns | Cost | Tool errors | Time |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    for x in &r.runs {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | ${:.4} | {}/{} | {:.1}s |\n",
+            x.task,
+            x.run,
+            if x.passed { "yes" } else { "no" },
+            if x.false_finish { "yes" } else { "" },
+            x.turns,
+            x.cost_usd,
+            x.tool_errors,
+            x.tool_calls,
+            x.wall_secs
+        ));
+    }
+    out
+}
+
+/// A/B comparison of two reports (B relative to A).
+pub fn render_compare(a: &Report, b: &Report) -> String {
+    let (x, y) = (&a.summary, &b.summary);
+    let row = |name: &str, va: String, vb: String, better: &str| format!("| {name} | {va} | {vb} | {better} |\n");
+    let delta = |da: f64, db: f64, higher_better: bool| {
+        let d = db - da;
+        if d.abs() < 1e-9 {
+            "=".to_string()
+        } else if (d > 0.0) == higher_better {
+            "B better".into()
+        } else {
+            "A better".into()
+        }
+    };
+    let mut out =
+        format!("# A/B: {} (A) vs {} (B)\n\n| Metric | A | B | |\n| --- | --- | --- | --- |\n", a.label, b.label);
+    out.push_str(&row("Pass rate", pct(x.pass_rate), pct(y.pass_rate), &delta(x.pass_rate, y.pass_rate, true)));
+    out.push_str(&row(
+        "Cost per task",
+        format!("${:.4}", x.mean_cost_usd),
+        format!("${:.4}", y.mean_cost_usd),
+        &delta(x.mean_cost_usd, y.mean_cost_usd, false),
+    ));
+    out.push_str(&row(
+        "Turns per task",
+        format!("{:.1}", x.mean_turns),
+        format!("{:.1}", y.mean_turns),
+        &delta(x.mean_turns, y.mean_turns, false),
+    ));
+    out.push_str(&row(
+        "Wall time",
+        format!("{:.1}s", x.mean_wall_secs),
+        format!("{:.1}s", y.mean_wall_secs),
+        &delta(x.mean_wall_secs, y.mean_wall_secs, false),
+    ));
+    out.push_str(&row(
+        "False-finish rate",
+        pct(x.false_finish_rate),
+        pct(y.false_finish_rate),
+        &delta(x.false_finish_rate, y.false_finish_rate, false),
+    ));
+    out.push_str(&row(
+        "Invalid-call rate",
+        pct(x.invalid_call_rate),
+        pct(y.invalid_call_rate),
+        &delta(x.invalid_call_rate, y.invalid_call_rate, false),
+    ));
+    out.push_str(&row(
+        "Recovery rate",
+        opt_pct(x.recovery_rate),
+        opt_pct(y.recovery_rate),
+        &match (x.recovery_rate, y.recovery_rate) {
+            (Some(p), Some(q)) => delta(p, q, true),
+            _ => "–".into(),
+        },
+    ));
+    out.push_str(&format!(
+        "\n{} runs (A) and {} runs (B). Differences within a few points are noise at small sample sizes; use `--repeat` to tighten them.\n",
+        x.runs, y.runs
+    ));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn rec(passed: bool, had_error: bool, false_finish: bool, cost: f64) -> RunRecord {
+        RunRecord {
+            task: "t".into(),
+            pillar: "verification".into(),
+            run: 1,
+            passed,
+            false_finish,
+            had_error,
+            cost_usd: cost,
+            turns: 4,
+            wall_secs: 10.0,
+            tool_calls: 10,
+            tool_errors: if had_error { 2 } else { 0 },
+            agent_error: false,
+            stop_reason: Some("end_turn".into()),
+            timed_out: false,
+            check_output: String::new(),
+            workspace: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn summary_metrics() {
+        let runs = vec![
+            rec(true, false, false, 0.1),
+            rec(true, true, false, 0.2),
+            rec(false, true, true, 0.3),
+            rec(false, false, true, 0.4),
+        ];
+        let s = summarize(&runs);
+        assert_eq!(s.runs, 4);
+        assert!((s.pass_rate - 0.5).abs() < 1e-9);
+        assert!((s.mean_cost_usd - 0.25).abs() < 1e-9);
+        assert!((s.cost_per_pass_usd.unwrap() - 0.5).abs() < 1e-9);
+        assert_eq!(s.recovery_rate, Some(0.5));
+        assert!((s.false_finish_rate - 0.5).abs() < 1e-9);
+        assert!((s.invalid_call_rate - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stream_parsing() {
+        let lines = vec![
+            json!({"type": "system", "subtype": "init"}),
+            json!({"type": "assistant", "message": {"content": [{"type": "tool_use"}, {"type": "tool_use"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": true}, {"type": "tool_result"}]}}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "total_cost_usd": 0.05, "num_turns": 3, "stop_reason": "end_turn"}),
+        ];
+        let f = parse_stream(&lines);
+        assert_eq!((f.tool_calls, f.tool_errors, f.turns), (2, 1, 3));
+        assert!(f.saw_result && !f.is_error && !f.api_error);
+        assert_eq!(f.cost_usd, 0.05);
+    }
+
+    #[test]
+    fn markdown_and_compare_render() {
+        let mk = |label: &str, runs: Vec<RunRecord>| Report {
+            label: label.into(),
+            created: String::new(),
+            args: vec![],
+            summary: summarize(&runs),
+            by_pillar: BTreeMap::from([("verification".into(), summarize(&runs))]),
+            runs,
+        };
+        let a = mk("base", vec![rec(false, false, true, 0.2)]);
+        let b = mk("verify-loop", vec![rec(true, false, false, 0.3)]);
+        let md = render_markdown(&b);
+        assert!(md.contains("| Pass rate | 100% |"));
+        let cmp = render_compare(&a, &b);
+        assert!(cmp.contains("| Pass rate | 0% | 100% | B better |"));
+        assert!(cmp.contains("| Cost per task | $0.2000 | $0.3000 | A better |"));
+    }
+}

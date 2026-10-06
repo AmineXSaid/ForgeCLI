@@ -93,7 +93,10 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 
 ## Priority order
 
-1. `forge-eval`: the task suite, the runner and A/B reports.
+1. `forge-eval`: the task suite, the runner and A/B reports. **Done.** There
+   are 8 validated tasks across the pillars, plus `validate`, `run` and
+   `compare`. No measured baseline exists yet: the first `forge-eval run` with
+   a real API key sets it.
 2. Sub-agents (the Task tool, built-in Explore and Plan agents), to isolate
    context.
 3. The verification loop.

@@ -1,5 +1,9 @@
 # Parity ledger
 
+Parity is the compatibility baseline, not the goal. `docs/GOALS.md` sets what
+ForgeCLI optimizes and the order work is done in. Read it before picking up a
+row here.
+
 The target is the reference CLI, version **2.1.290**.
 
 **Rule:** a row is `done` only when the **Test** column names a test that

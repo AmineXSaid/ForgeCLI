@@ -1,0 +1,10 @@
+{
+  "instruction": "In config.ini, change the timeout in the [network] section from 30 to 45. Keep everything else in the file exactly as it is.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "tool-design",
+  "tags": [
+    "edit",
+    "crlf"
+  ],
+  "timeout_secs": 300
+}

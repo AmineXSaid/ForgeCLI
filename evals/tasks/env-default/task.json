@@ -1,0 +1,7 @@
+{
+  "instruction": "Users report that the service crashes on startup when the PORT environment variable is not set. It should fall back to port 8080. Fix it.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "context",
+  "tags": ["python", "search"],
+  "timeout_secs": 600
+}

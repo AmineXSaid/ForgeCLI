@@ -1,0 +1,7 @@
+{
+  "instruction": "slugify() in text.py is slow because it rebuilds the regular expression on every call. Make it faster without changing its behaviour.",
+  "check": "python3 -m unittest -q test_text && python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["python", "performance"],
+  "timeout_secs": 600
+}

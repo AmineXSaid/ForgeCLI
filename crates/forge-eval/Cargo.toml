@@ -1,0 +1,22 @@
+[package]
+name = "forge-eval"
+description = "Evaluation harness: runs forge headless on a task suite and reports pass rate, cost, turns, time, recovery and false finishes (docs/GOALS.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "forge-eval"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

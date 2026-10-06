@@ -1,0 +1,7 @@
+{
+  "instruction": "The tests in test_stats.py are failing. Find and fix the bug in stats.py so they pass. Do not change the tests.",
+  "check": "python3 -m unittest -q test_stats && python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["python", "bugfix"],
+  "timeout_secs": 600
+}

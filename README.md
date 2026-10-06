@@ -7,6 +7,12 @@ protocol for IDE hosts, and a terminal UI.
 ForgeCLI is written from public interface documentation only, and it ships
 its own system prompt and tool descriptions.
 
+## Goal
+
+`docs/GOALS.md` defines what ForgeCLI optimizes: the best measured task success
+per model, cost and time. Every feature is built against it and measured with
+`forge-eval` (see `FORGE.md`).
+
 ## Status
 
 Under construction. `docs/PARITY.md` tracks every tool, flag, protocol message
