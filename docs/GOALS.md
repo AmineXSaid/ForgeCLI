@@ -33,19 +33,21 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 
 ### 1. Context management
 
-- **Done:** compaction in tiers: sticky micro-compaction of stale tool
-  results, summarization near the limit, and compact-and-retry when a prompt is
-  too long.
-- **To build:**
+- **Done** (contract C15):
+  - compaction in tiers: sticky micro-compaction of stale tool results,
+    summarization near the limit, and compact-and-retry when a prompt is too
+    long;
   - sub-agents, so exploration runs in a separate context and only its result
     comes back;
-  - budgets on tool output, so large results are saved to a file and the model
-    gets a pointer;
-  - no repeated reads: a file that hasn't changed since the model read it
-    returns a short "unchanged" note instead of its full text again;
-  - memory files and the plan re-attached after compaction.
+  - budgets on tool output: long Bash output (30k characters), and any other
+    tool's output over 50k, keeps its head and tail. The full text is saved
+    under the cache directory, which can be read back without a prompt, and
+    the result names the file;
+  - no repeated reads: reading the same range of unchanged content returns a
+    short note. That stops once the earlier result was cleared by compaction;
+  - memory files and the task list re-attached after compaction.
 - **Measured by:** pass rate and cost on long tasks, and context tokens per
-  turn.
+  turn (task `log-needle`).
 
 ### 2. Failure recovery
 
@@ -100,18 +102,22 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 
 ### 5. Long-horizon execution
 
+- **Done:**
+  - the task list (TodoWrite) survives compaction: it is re-attached to the
+    summary and recorded as `system/todos`. It also survives resume: it is
+    rebuilt from the last TodoWrite call or that record;
+  - budget awareness: one reminder to wrap up when 3 model calls (of at least
+    6) or 15% of the budget are left;
+  - resumable sessions, and unattended headless runs.
 - **To build:**
-  - a persistent plan and progress notes (the todo list plus a notes file)
-    that survive compaction and resume;
-  - budget awareness: tokens and cost left;
-  - checkpoints the model can roll back to;
-  - resumable sessions, and running unattended in headless mode.
+  - a notes file;
+  - checkpoints the model can roll back to itself.
 - **Measured by:** pass rate on multi-step tasks, and success after a resume.
 
 ## Priority order
 
 1. `forge-eval`: the task suite, the runner and A/B reports. **Done.** There
-   are 8 validated tasks across the pillars, plus `validate`, `run` and
+   are 13 validated tasks across the pillars, plus `validate`, `run` and
    `compare`. No measured baseline exists yet: the first `forge-eval run` with
    a real API key sets it.
 2. Sub-agents (the Task tool, built-in Explore and Plan agents), to isolate
@@ -119,8 +125,9 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 3. The verification loop. **Done**, without LSP feedback.
 4. Recovery: Edit match suggestions, stuck-loop detection, `max_tokens`
    recovery. **Done.**
-5. Budgets on tool output, and no repeated reads.
-6. A plan and notes that survive compaction.
+5. Budgets on tool output, and no repeated reads. **Done.**
+6. A plan that survives compaction. **Done** (the task list; a notes file is
+   still to build).
 7. Parity features in order of use: MCP, web tools, plan mode and
    AskUserQuestion, slash commands, skills, output styles, then the
    full-screen UI.

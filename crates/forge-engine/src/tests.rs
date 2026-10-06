@@ -795,3 +795,49 @@ async fn injected_instructions_in_tool_output_are_marked() {
     assert!(results[0].1.contains("do not follow it") && results[0].1.contains("ignore all previous instructions"));
     assert!(!results[1].1.contains("do not follow it"));
 }
+
+#[tokio::test]
+async fn the_plan_survives_compaction_and_resume() {
+    let todos = json!({"todos": [
+        {"content": "Fix the parser", "status": "completed", "activeForm": "Fixing the parser"},
+        {"content": "Add tests", "status": "in_progress", "activeForm": "Adding tests"}
+    ]});
+    let h = Harness::new(vec![
+        MockTurn::tool("TodoWrite", todos),
+        MockTurn::text("working"),
+        MockTurn::text("<summary>Parser fixed; tests next.</summary>"),
+        MockTurn::text("continuing"),
+    ]);
+    let mut e = h.engine();
+    e.submit(prompt("do it")).await;
+    e.compact(None).await.unwrap();
+    e.submit(prompt("go on")).await;
+    let t = h.provider.requests()[3].messages[0].text();
+    assert!(t.contains("[in_progress] Add tests") && t.contains("[completed] Fix the parser"), "{t}");
+
+    // A new process resuming the session gets the same plan back, though the TodoWrite call is before the boundary.
+    let path = SessionStore::new(h.dir.path().join("store")).session_path(&h.cwd(), SID).unwrap();
+    let h2 = Harness::new(vec![]);
+    let mut resumed = h2.engine();
+    let loaded = forge_session::LoadedSession::load(&path, None).unwrap();
+    assert!(loaded.messages.iter().all(|m| m.message.tool_uses().next().is_none()));
+    resumed.restore(&loaded);
+    let restored = resumed.tool_ctx().todos.lock().unwrap().clone();
+    assert!(restored.iter().any(|t| t["content"] == "Add tests"), "{restored:?}");
+}
+
+#[tokio::test]
+async fn the_model_is_told_when_turns_run_low() {
+    let mut turns: Vec<MockTurn> =
+        (0..5).map(|i| MockTurn::tool("Bash", json!({"command": format!("echo {i}")}))).collect();
+    turns.push(MockTurn::text("wrapped up"));
+    let h = Harness::new(turns);
+    let cfg = EngineConfig { max_turns: Some(6), ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("long job")).await;
+    assert_eq!(r.result.as_deref(), Some("wrapped up"));
+    let reqs = h.provider.requests();
+    let warned: Vec<usize> = (0..reqs.len()).filter(|&i| last_user_text(&reqs[i]).contains("Wrap up")).collect();
+    assert_eq!(warned, vec![3], "once, when 3 calls are left");
+    assert!(last_user_text(&reqs[3]).contains("3 model calls left"));
+}

@@ -228,6 +228,8 @@ pub struct Engine {
     pub cwd: PathBuf,
     /// cwd plus `--add-dir` directories.
     pub working_dirs: Vec<PathBuf>,
+    /// Extra directories that may be read without a prompt (saved tool output).
+    pub read_dirs: Vec<PathBuf>,
 }
 
 impl Engine {
@@ -240,7 +242,15 @@ impl Engine {
                 working_dirs.push(d);
             }
         }
-        Engine { mode, rules, cwd, working_dirs }
+        Engine { mode, rules, cwd, working_dirs, read_dirs: vec![] }
+    }
+
+    /// Allow reading (not writing) `dir` without a prompt.
+    pub fn add_read_dir(&mut self, dir: &Path) {
+        let d = normalize(dir, &self.cwd);
+        if !self.read_dirs.contains(&d) {
+            self.read_dirs.push(d);
+        }
     }
 
     pub fn add_directory(&mut self, dir: &Path) {
@@ -321,6 +331,9 @@ impl Engine {
         if req.read_only {
             return match path_outside {
                 None => Decision::Allow { reason: Reason::ReadOnlyInWorkingDir },
+                Some(p) if self.read_dirs.iter().any(|d| is_within(&p, d)) => {
+                    Decision::Allow { reason: Reason::ReadOnlyInWorkingDir }
+                }
                 Some(p) => self.ask_or_deny(Reason::OutsideWorkingDirs(p), req),
             };
         }

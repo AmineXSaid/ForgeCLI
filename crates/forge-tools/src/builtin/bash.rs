@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use super::str_arg;
 use crate::shells::{run_command, ShellStatus};
-use crate::{truncate_middle, Tool, ToolContext, ToolOutput, INTERRUPTED};
+use crate::{fit_output, truncate_middle, Tool, ToolContext, ToolOutput, INTERRUPTED};
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
@@ -145,8 +145,8 @@ impl Tool for Bash {
         }
 
         let max = ctx.max_output_chars;
-        let stdout = truncate_middle(res.stdout.trim_end(), max);
-        let stderr = truncate_middle(res.stderr.trim_end(), max);
+        let stdout = fit_output(ctx, res.stdout.trim_end(), max, "stdout");
+        let stderr = fit_output(ctx, res.stderr.trim_end(), max, "stderr");
         let mut text = stdout.clone();
         if !stderr.is_empty() {
             if !text.is_empty() {

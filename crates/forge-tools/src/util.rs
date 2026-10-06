@@ -23,6 +23,33 @@ pub fn truncate_middle(s: &str, max: usize) -> String {
     format!("{}\n\n... [{dropped} lines truncated] ...\n\n{}", &s[..head_end], &s[tail_start..])
 }
 
+/// Fit `text` into `max` characters (GOALS pillar 1: output budgets). Long
+/// output keeps its head and tail; the full text is saved in the session's
+/// spill directory and the result says where, so nothing is lost for good.
+pub fn fit_output(ctx: &crate::ToolContext, text: &str, max: usize, label: &str) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let saved = ctx.spill_dir.as_ref().and_then(|dir| {
+        std::fs::create_dir_all(dir).ok()?;
+        let id = if ctx.tool_use_id.is_empty() { "output" } else { ctx.tool_use_id.as_str() };
+        let path = dir.join(format!("{id}-{label}.txt"));
+        std::fs::write(&path, text).ok()?;
+        Some(path)
+    });
+    let body = truncate_middle(text, max);
+    match saved {
+        Some(p) => format!(
+            "{body}\n\n[The full {label} ({} lines, {} characters) is saved at {}. Grep it, or Read it with offset \
+             and limit, instead of running the command again.]",
+            text.lines().count(),
+            text.len(),
+            p.display()
+        ),
+        None => body,
+    }
+}
+
 /// `cat -n` style numbering used by Read and in edit snippets.
 pub fn number_lines(lines: &[&str], first: usize) -> String {
     let mut out = String::new();

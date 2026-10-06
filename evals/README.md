@@ -31,6 +31,7 @@ and stderr.
 | slugify-trap | verification | Optimize without changing behaviour; hidden edge cases punish skipped tests (false finish) |
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |
+| log-needle | context | A 330 KB log with one error line in the middle; the fix is one setting |
 | env-default | context | Find one bug among many files from a vague report |
 | trace-discount | context | Trace a symptom through 40 modules to a casing bug two calls away (exercises sub-agents) |
 | build-recovery | recovery | Iterate on a build script's successive errors without editing it |

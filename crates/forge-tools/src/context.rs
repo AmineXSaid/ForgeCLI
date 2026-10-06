@@ -35,6 +35,8 @@ pub struct ToolContext {
     pub max_output_chars: usize,
     /// OS sandbox for shell commands (`None` = commands run unconfined).
     pub sandbox: Option<Arc<crate::sandbox::SandboxPolicy>>,
+    /// Where output too long for a result is saved in full (`None` = not saved).
+    pub spill_dir: Option<PathBuf>,
 }
 
 impl ToolContext {
@@ -53,6 +55,7 @@ impl ToolContext {
             env: Arc::new(HashMap::new()),
             max_output_chars: 30_000,
             sandbox: None,
+            spill_dir: None,
         }
     }
 

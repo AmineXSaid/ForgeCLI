@@ -31,6 +31,8 @@ pub struct LoadedSession {
     pub permission_mode: Option<String>,
     pub model: Option<String>,
     pub worktree: Option<Value>,
+    /// The task list recorded at the last compaction (`system/todos`).
+    pub todos: Option<Vec<Value>>,
 }
 
 /// Append-only writer for one session's JSONL file.
@@ -196,6 +198,13 @@ impl Transcript {
             self.write_line(&v);
             parent = Some(e.uuid.clone());
         }
+        if let Some(todos) = &loaded.todos {
+            let mut v = self.base("system", &new_uuid(), parent.clone());
+            merge(&mut v, json!({"subtype": "todos", "todos": todos}));
+            let id = v["uuid"].as_str().unwrap_or_default().to_string();
+            self.write_line(&v);
+            parent = Some(id);
+        }
         if !loaded.microcompacted.is_empty() {
             let mut v = self.base("system", &new_uuid(), parent.clone());
             merge(&mut v, json!({"subtype": "microcompact", "toolUseIds": loaded.microcompacted}));
@@ -301,6 +310,7 @@ pub fn load(path: &Path, leaf: Option<&str>) -> Result<LoadedSession, SessionErr
                     }
                 }
                 Some("permission_mode") => out.permission_mode = e["mode"].as_str().map(str::to_string),
+                Some("todos") => out.todos = e["todos"].as_array().cloned(),
                 _ => {}
             },
             _ => {}

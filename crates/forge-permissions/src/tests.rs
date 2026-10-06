@@ -214,3 +214,12 @@ fn flagged_commands_are_never_approved_automatically() {
     let text = Reason::Threat { name: "x".into(), description: "downloads a script and runs it".into() }.to_string();
     assert_eq!(text, "flagged as dangerous: this command downloads a script and runs it");
 }
+
+#[test]
+fn read_dirs_are_readable_not_writable() {
+    let mut e = engine(PermissionMode::Default, &[], &[], &[]);
+    e.add_read_dir(Path::new("/cache/tool-output/s1"));
+    assert_eq!(e.decide(&read("/cache/tool-output/s1/toolu_1-stdout.txt")).behavior(), Behavior::Allow);
+    assert_eq!(e.decide(&edit("/cache/tool-output/s1/toolu_1-stdout.txt")).behavior(), Behavior::Ask);
+    assert_eq!(e.decide(&read("/cache/other.txt")).behavior(), Behavior::Ask);
+}

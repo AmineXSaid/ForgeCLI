@@ -117,6 +117,9 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | Dangerous-command patterns force a prompt (C14, the Goose scanner pattern) | done | `threat::flags_dangerous_commands`, `threat::leaves_ordinary_commands_alone`, `permissions::flagged_commands_are_never_approved_automatically` | Safety (OWASP agent risks) |
 | Injected instructions in tool output marked as data (C14) | done | `injection::spots_instructions_hidden_in_data`, `injection::ordinary_text_passes`, `engine::injected_instructions_in_tool_output_are_marked` | Safety (OWASP LLM01). Eval task `injected-docs` |
 | `AGENTS.md` memory; `.agents/<kind>/` resource directories | done | `config::agents_md_when_no_forge_md`, `agents::vendor_neutral_agents_dir_is_read_and_forge_wins` | Compatibility with other agent CLIs' repos |
+| Tool output budgets with full output saved and pointed to (C15) | done | `builtin::long_output_is_saved_in_full_and_pointed_to`, `permissions::read_dirs_are_readable_not_writable` | Context / tokens per turn. Eval task `log-needle` |
+| No repeated reads of unchanged content (C15) | done | `builtin::repeated_reads_of_unchanged_content_are_not_resent` | Context. Structured result `file_unchanged` is inferred |
+| Task list survives compaction and resume; budget reminder (C15) | done | `engine::the_plan_survives_compaction_and_resume`, `engine::the_model_is_told_when_turns_run_low` | Long-horizon |
 | OS sandbox for Bash (`--sandbox`, `FORGE_SANDBOX`, `sandbox.*` settings) | partial | `builtin::sandbox_confines_writes_and_network`, `sandbox::bwrap_arguments`, `sandbox::failure_hints`, `permissions::sandboxed_commands_need_no_prompt_but_rules_still_apply`, `e2e::sandbox_lets_headless_runs_build_without_prompts` | Tool design / safety. The Codex pattern. Linux bubblewrap done; the macOS Seatbelt profile is untested |
 
 ## Config, memory, hooks (M3)

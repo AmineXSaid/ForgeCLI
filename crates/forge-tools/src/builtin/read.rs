@@ -173,6 +173,26 @@ impl Tool for Read {
             return ToolOutput::error("This file appears to be binary and cannot be read as text.");
         }
         ctx.files.record_read(&path);
+        // No repeated reads (GOALS pillar 1): the same range of unchanged content is still in context.
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut h);
+            h.finish()
+        };
+        let key_offset = offset.unwrap_or(1);
+        if !ctx.tool_use_id.is_empty() {
+            if ctx.files.same_view(&path, key_offset, limit, hash).is_some() {
+                return ToolOutput::text(format!(
+                    "<system-reminder>{} is unchanged since you last read these lines in this conversation, so \
+                     they are not repeated here: that earlier result is still current. Read a different range if \
+                     you need more.</system-reminder>",
+                    path.display()
+                ))
+                .with_structured(json!({"type": "file_unchanged", "file": {"filePath": path}}));
+            }
+            ctx.files.record_view(&path, key_offset, limit, hash, &ctx.tool_use_id);
+        }
         let text = String::from_utf8_lossy(&bytes);
         if text.is_empty() {
             return ToolOutput::text(

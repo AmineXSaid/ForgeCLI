@@ -23,6 +23,9 @@ impl Checkpointer for HistoryCheckpointer {
     }
 }
 
+/// Characters of tool output kept in a result when the tool sets no limit of its own.
+const GENERIC_OUTPUT_BUDGET: usize = 50_000;
+
 pub(crate) struct CallResult {
     pub id: String,
     pub output: ToolOutput,
@@ -294,7 +297,21 @@ async fn run_one(
             stop = o.stop;
         }
     }
-    // 6. Output that carries instructions for an agent is marked as data (OWASP LLM01).
+    // 6. Output budget for tools without their own (GOALS pillar 1): long text is saved, not resent.
+    if !matches!(name, "Read" | "Bash") {
+        if let forge_types::ToolResultContent::Text(t) = &output.content {
+            if t.len() > GENERIC_OUTPUT_BUDGET {
+                let ctx = shared.tool_ctx.for_call(id, cancel.clone());
+                output.content = forge_types::ToolResultContent::Text(forge_tools::fit_output(
+                    &ctx,
+                    t,
+                    GENERIC_OUTPUT_BUDGET,
+                    "output",
+                ));
+            }
+        }
+    }
+    // 7. Output that carries instructions for an agent is marked as data (OWASP LLM01).
     if !output.is_error && !matches!(name, "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "TodoWrite") {
         if let Some(why) = forge_tools::injection::suspicious(&output.text_content()) {
             output = append_text(output, &forge_tools::injection::note(name, &why));

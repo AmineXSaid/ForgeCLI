@@ -322,7 +322,10 @@ pub fn build_session(
     );
     let (rules, rule_errors): (RuleSet, _) = RuleSet::from_strings(&allow, &ask, &deny);
     warnings.extend(rule_errors.iter().map(|e| e.to_string()));
-    let permissions = forge_permissions::Engine::new(mode, rules, &cwd, &add_dirs);
+    let mut permissions = forge_permissions::Engine::new(mode, rules, &cwd, &add_dirs);
+    // Output too long for a tool result is saved here, and may be read back without a prompt.
+    let spill_dir = forge_config::cache_dir().join("tool-output").join(&session_id);
+    permissions.add_read_dir(&spill_dir);
 
     // Tools.
     let mut tools = ToolRegistry::new();
@@ -341,6 +344,7 @@ pub fn build_session(
 
     let mut tool_ctx = ToolContext::new(&cwd);
     tool_ctx.session_id = session_id.clone();
+    tool_ctx.spill_dir = Some(spill_dir);
     {
         let mut wd = tool_ctx.working_dirs.write().unwrap();
         wd.extend(add_dirs.iter().cloned());

@@ -366,6 +366,37 @@ impl Engine {
         self.state.microcompacted = loaded.microcompacted.clone();
         self.session_started = !self.state.messages.is_empty();
         self.shared.transcript.continue_from(loaded);
+        // The plan survives a resume: the last TodoWrite list becomes the current one.
+        let last_todos = self.state.messages.iter().rev().flat_map(|m| m.tool_uses().collect::<Vec<_>>()).find_map(
+            |(_, name, input)| {
+                (name == "TodoWrite").then(|| input.get("todos").and_then(Value::as_array).cloned()).flatten()
+            },
+        );
+        if let Some(todos) = last_todos.or_else(|| loaded.todos.clone()) {
+            *self.shared.tool_ctx.todos.lock().unwrap() = todos;
+        }
+    }
+
+    /// The current task list, for re-attaching after compaction (GOALS pillar 5).
+    fn plan_context(&self) -> Option<String> {
+        let todos = self.shared.tool_ctx.todos.lock().unwrap().clone();
+        if todos.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = todos
+            .iter()
+            .map(|t| {
+                format!(
+                    "- [{}] {}",
+                    t.get("status").and_then(Value::as_str).unwrap_or("pending"),
+                    t.get("content").and_then(Value::as_str).unwrap_or_default()
+                )
+            })
+            .collect();
+        Some(format!(
+            "Your task list (TodoWrite) at the time of compaction. Keep it up to date as you continue:\n{}",
+            lines.join("\n")
+        ))
     }
 
     pub fn emit(&self, ev: EngineEvent) {
@@ -567,6 +598,7 @@ impl Engine {
             let ids = forge_compact::micro_candidates(&self.state.messages, &self.state.microcompacted);
             if !ids.is_empty() {
                 self.shared.transcript.append_system("microcompact", json!({"toolUseIds": ids}));
+                self.shared.tool_ctx.files.forget_views(&ids);
                 self.state.microcompacted.extend(ids);
             }
         }
@@ -657,9 +689,16 @@ impl Engine {
         self.state.messages.clear();
         self.state.uuids.clear();
         self.state.microcompacted.clear();
-        let first = forge_compact::summary_message(&summary, self.session_context.as_deref(), continue_work);
+        let context: Vec<String> = self.session_context.iter().cloned().chain(self.plan_context()).collect();
+        let context = (!context.is_empty()).then(|| context.join("\n\n"));
+        let first = forge_compact::summary_message(&summary, context.as_deref(), continue_work);
         self.push_user(first, true, None, false);
+        let todos = self.shared.tool_ctx.todos.lock().unwrap().clone();
+        if !todos.is_empty() {
+            self.shared.transcript.append_system("todos", json!({"todos": todos}));
+        }
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.shared.tool_ctx.files.forget_all_views();
         Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
 
@@ -789,6 +828,7 @@ impl Engine {
         let mut last_text: Option<String> = None;
         let mut continuations = 0;
         let mut continuing = false;
+        let mut budget_warned = false;
 
         loop {
             if cancel.is_cancelled() {
@@ -997,6 +1037,12 @@ impl Engine {
                     self.system_event("loop_guard", s.record());
                     self.push_user(Message::user_text(s.text()), true, None, true);
                 }
+                if !budget_warned && !interrupted {
+                    if let Some(text) = self.budget_warning(turn.api_calls) {
+                        budget_warned = true;
+                        self.push_user(Message::user_text(text), true, None, true);
+                    }
+                }
                 if interrupted {
                     cancel.cancel();
                     self.push_user(Message::user_text(INTERRUPT_MARKER_TOOLS), true, None, true);
@@ -1063,6 +1109,26 @@ impl Engine {
             };
             return self.finish(started, turn, ResultSubtype::Success, last_text, Some(reason.into()), None);
         }
+    }
+
+    /// A heads-up when this run's turn or spending limit is close (GOALS pillar 5), so the model
+    /// wraps up with a report instead of being cut off mid-change.
+    fn budget_warning(&self, calls: u32) -> Option<String> {
+        let turns_left = self.cfg.max_turns.filter(|m| *m >= 6).map(|m| m.saturating_sub(calls)).filter(|l| *l <= 3);
+        let money_left = self
+            .cfg
+            .max_budget_usd
+            .map(|b| b - self.state.total_cost_usd)
+            .filter(|left| self.cfg.max_budget_usd.map(|b| *left <= b * 0.15).unwrap_or(false));
+        let what = match (turns_left, money_left) {
+            (Some(t), _) => format!("{t} model call{} left in this run (--max-turns)", if t == 1 { "" } else { "s" }),
+            (None, Some(m)) => format!("${m:.2} of the run's budget left (--max-budget-usd)"),
+            (None, None) => return None,
+        };
+        Some(format!(
+            "<system-reminder>\nYou have {what}. Wrap up: finish the most important change, check it, and end with \
+             what is done, what was verified and what remains.\n</system-reminder>"
+        ))
     }
 
     fn verifying(&self) -> bool {

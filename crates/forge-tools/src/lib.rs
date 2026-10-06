@@ -17,7 +17,7 @@ mod util;
 pub use context::{Checkpointer, ToolContext};
 pub use files::FileState;
 pub use registry::ToolRegistry;
-pub use util::{expand_path, truncate_middle};
+pub use util::{expand_path, fit_output, truncate_middle};
 
 use forge_permissions::Subject;
 use forge_types::{ContentBlock, ToolResultContent};

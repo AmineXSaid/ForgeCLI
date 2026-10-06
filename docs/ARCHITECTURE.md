@@ -405,6 +405,42 @@ Tests:
 - `injection::*`;
 - `engine::injected_instructions_in_tool_output_are_marked`.
 
+### C15. Context budgets and the plan
+
+**Output budgets:**
+- Bash keeps 30,000 characters of stdout and of stderr (`max_output_chars`).
+- Any other tool except Read keeps 50,000 characters of text.
+- Longer output keeps its head and tail. The full text is written to
+  `<cache>/tool-output/<session>/<tool_use_id>-<label>.txt`, and the result
+  names that file.
+- The permission engine lists that directory in `read_dirs`, so Read and
+  Grep on it need no prompt (writing there still asks).
+
+**Repeated reads:**
+- `FileState` keeps, per `(path, offset, limit)`, the content hash and the
+  tool_use_id of the Read that showed it.
+- The same range of the same content returns a short "unchanged" note
+  (structured `{"type": "file_unchanged"}`).
+- Micro-compaction forgets the views whose results it cleared; full
+  compaction forgets all of them.
+- Sub-agents have their own `FileState`.
+
+**The plan:**
+- After compaction, the TodoWrite list is added to the summary message and
+  recorded as `system/todos`.
+- `restore` rebuilds the list from the last TodoWrite call after the
+  boundary, else from that record.
+
+**Budget reminder:** with `--max-turns` of at least 6, or `--max-budget-usd`,
+one reminder per turn when 3 calls (or 15% of the budget) are left.
+
+Tests:
+- `builtin::long_output_is_saved_in_full_and_pointed_to`;
+- `permissions::read_dirs_are_readable_not_writable`;
+- `builtin::repeated_reads_of_unchanged_content_are_not_resent`;
+- `engine::the_plan_survives_compaction_and_resume`;
+- `engine::the_model_is_told_when_turns_run_low`.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

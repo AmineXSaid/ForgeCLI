@@ -1,0 +1,7 @@
+{
+  "instruction": "./run.sh fails. Find out why from its output and fix the cause. Do not edit run.sh or job.py.",
+  "check": "git diff --quiet HEAD -- run.sh job.py && ./run.sh > /dev/null && python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "context",
+  "tags": ["shell", "long-output"],
+  "timeout_secs": 600
+}

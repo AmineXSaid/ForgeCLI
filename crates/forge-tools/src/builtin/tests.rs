@@ -341,3 +341,41 @@ async fn sandbox_confines_writes_and_network() {
     assert!(!Bash.call(esc, &c).await.is_error);
     assert!(outside.exists());
 }
+
+#[tokio::test]
+async fn repeated_reads_of_unchanged_content_are_not_resent() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let f = p(d.path(), "a.txt");
+    std::fs::write(&f, "one\ntwo\n").unwrap();
+    let call = |id: &str| c.for_call(id, c.cancel.clone());
+    let first = Read.call(json!({"file_path": f}), &call("r1")).await;
+    assert!(first.text_content().contains("one"));
+    let again = Read.call(json!({"file_path": f}), &call("r2")).await;
+    assert!(again.text_content().contains("unchanged since you last read") && !again.text_content().contains("two"));
+    assert_eq!(again.structured.unwrap()["type"], "file_unchanged");
+    assert!(Read.call(json!({"file_path": f, "offset": 2}), &call("r3")).await.text_content().contains("two"));
+    std::fs::write(&f, "one\nTWO\n").unwrap();
+    assert!(Read.call(json!({"file_path": f}), &call("r4")).await.text_content().contains("TWO"), "changed content");
+    c.files.forget_views(&["r4".to_string()]);
+    assert!(Read.call(json!({"file_path": f}), &call("r5")).await.text_content().contains("TWO"), "cleared result");
+    c.files.forget_all_views();
+    assert!(Read.call(json!({"file_path": f}), &call("r6")).await.text_content().contains("TWO"), "after compaction");
+}
+
+#[tokio::test]
+async fn long_output_is_saved_in_full_and_pointed_to() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ctx(d.path());
+    c.max_output_chars = 2_000;
+    c.spill_dir = Some(d.path().join("spill"));
+    let c = c.for_call("toolu_big", c.cancel.clone());
+    let out = Bash.call(json!({"command": "seq 1 5000"}), &c).await;
+    let text = out.text_content();
+    let saved = d.path().join("spill/toolu_big-stdout.txt");
+    assert!(text.contains("lines truncated") && text.contains(&saved.display().to_string()), "{text}");
+    assert!(text.len() < 3_000);
+    let full = std::fs::read_to_string(&saved).unwrap();
+    assert_eq!(full.lines().count(), 5000);
+    assert!(text.contains("5000 lines"));
+}
