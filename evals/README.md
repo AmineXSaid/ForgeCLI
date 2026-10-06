@@ -31,6 +31,7 @@ and stderr.
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |
 | env-default | context | Find one bug among many files from a vague report |
+| trace-discount | context | Trace a symptom through 40 modules to a casing bug two calls away (exercises sub-agents) |
 | build-recovery | recovery | Iterate on a build script's successive errors without editing it |
 | crlf-config | tool-design | Edit one CRLF line in a file with a duplicate key elsewhere |
 | csv-to-json | tool-design | Write new code to a precise spec checked on hidden input |

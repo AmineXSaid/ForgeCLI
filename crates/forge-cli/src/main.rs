@@ -91,6 +91,8 @@ fn launch_options(o: &Opts) -> anyhow::Result<LaunchOptions> {
         bare: o.bare || o.safe_mode,
         betas: o.betas.clone(),
         autocompact: o.autocompact.clone(),
+        agents_json: o.agents.clone(),
+        agent: o.agent.clone(),
         provider: None,
         store_root: None,
     })

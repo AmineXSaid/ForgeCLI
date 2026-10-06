@@ -16,8 +16,8 @@ pub use engine::{
     CompactInfo, Engine, EngineConfig, EngineError, EngineHandle, EngineParts, Pricing, TurnResult, TurnState,
 };
 pub use events::{
-    DenyPrompter, EngineEvent, EventSink, NoticeLevel, NullSink, PermissionAnswer, PermissionPrompt,
-    PermissionPrompter, VecSink,
+    DenyPrompter, EngineEvent, EventSink, ForwardSink, NoticeLevel, NullSink, PermissionAnswer, PermissionPrompt,
+    PermissionPrompter, SerializedPrompter, VecSink,
 };
 pub use prompts::{build_system, EnvInfo, SystemPromptOptions};
 

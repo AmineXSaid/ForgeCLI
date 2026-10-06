@@ -85,6 +85,31 @@ async fn skip_permissions_flag_beats_settings_mode() {
     assert_eq!(s.init.permission_mode, "bypassPermissions");
 }
 
+#[tokio::test]
+async fn sub_agents_are_offered_and_configurable() {
+    let (d, p) = setup();
+    std::fs::create_dir_all(d.path().join("proj/.forge/agents")).unwrap();
+    std::fs::write(
+        d.path().join("proj/.forge/agents/reviewer.md"),
+        "---\nname: reviewer\ndescription: Reviews changes\ntools: Read, Grep\n---\nYou review.",
+    )
+    .unwrap();
+    let s = build_session(opts(d.path(), p.clone()), Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
+    assert!(s.init.tools.contains(&"Task".to_string()));
+    for a in ["general-purpose", "Explore", "Plan", "reviewer"] {
+        assert!(s.init.agents.contains(&a.to_string()), "{a} missing from {:?}", s.init.agents);
+    }
+    let mut o = opts(d.path(), p.clone());
+    o.agent = Some("reviewer".into());
+    let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
+    assert_eq!(s.init.tools, vec!["Grep", "Read"], "the session gets the agent's tools");
+    assert!(s.engine.system()[0].text.contains("You review."));
+    let mut o = opts(d.path(), p);
+    o.tools = Some(vec!["Read".into()]);
+    let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
+    assert_eq!(s.init.tools, vec!["Read"], "--tools without Task leaves sub-agents out");
+}
+
 #[test]
 fn autocompact_values() {
     assert_eq!(parse_autocompact("auto").unwrap(), None);

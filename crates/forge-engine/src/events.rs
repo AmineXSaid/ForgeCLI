@@ -94,6 +94,51 @@ pub trait PermissionPrompter: Send + Sync {
     async fn ask(&self, prompt: PermissionPrompt) -> PermissionAnswer;
 }
 
+/// Wraps a prompter so that only one prompt is open at a time, across the
+/// main conversation and every sub-agent that shares it (contract C2).
+pub struct SerializedPrompter {
+    inner: std::sync::Arc<dyn PermissionPrompter>,
+    lock: tokio::sync::Mutex<()>,
+}
+
+impl SerializedPrompter {
+    pub fn new(inner: std::sync::Arc<dyn PermissionPrompter>) -> Self {
+        SerializedPrompter { inner, lock: tokio::sync::Mutex::new(()) }
+    }
+}
+
+#[async_trait::async_trait]
+impl PermissionPrompter for SerializedPrompter {
+    async fn ask(&self, prompt: PermissionPrompt) -> PermissionAnswer {
+        let _g = self.lock.lock().await;
+        self.inner.ask(prompt).await
+    }
+}
+
+/// Forwards a sub-agent's conversation to the parent's sink, tagged with the
+/// parent's `Task` tool-use id (stream-json `parent_tool_use_id`).
+pub struct ForwardSink {
+    pub parent: std::sync::Arc<dyn EventSink>,
+    pub parent_tool_use_id: String,
+}
+
+impl EventSink for ForwardSink {
+    fn emit(&self, event: EngineEvent) {
+        let tag = Some(self.parent_tool_use_id.clone());
+        match event {
+            EngineEvent::Assistant { message, uuid, .. } => {
+                self.parent.emit(EngineEvent::Assistant { message, uuid, parent_tool_use_id: tag })
+            }
+            EngineEvent::User { message, uuid, tool_use_result, is_meta, .. } => {
+                self.parent.emit(EngineEvent::User { message, uuid, tool_use_result, is_meta, parent_tool_use_id: tag })
+            }
+            EngineEvent::Notice { .. } => self.parent.emit(event),
+            // Partial chunks, prompts and system events of a sub-agent stay inside it.
+            _ => {}
+        }
+    }
+}
+
 /// Contract C1: with nobody to ask, prompts are denied with instructions.
 pub struct DenyPrompter;
 

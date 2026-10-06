@@ -1,0 +1,7 @@
+{
+  "instruction": "A customer was charged 19.99 for an order that should have cost 17.99 after their loyalty discount. Find out why loyalty discounts are not applied at checkout and fix it.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "context",
+  "tags": ["python", "search", "subagents"],
+  "timeout_secs": 900
+}

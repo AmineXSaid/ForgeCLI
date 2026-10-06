@@ -71,6 +71,10 @@ pub struct LaunchOptions {
     pub betas: Vec<String>,
     /// `--autocompact <auto|tokens>`: the window compaction thresholds use.
     pub autocompact: Option<String>,
+    /// `--agents <json>`: extra agent definitions.
+    pub agents_json: Option<String>,
+    /// `--agent <name>`: run the main session as this agent.
+    pub agent: Option<String>,
     /// Replace the provider (tests, embedding).
     pub provider: Option<Arc<dyn Provider>>,
     /// Where sessions live (default `~/.forge/projects`).
@@ -185,6 +189,38 @@ pub fn build_session(
     let settings = load_settings(&sopts);
     warnings.extend(settings.errors.iter().map(|e| format!("settings: {e}")));
 
+    let provider = match opts.provider.clone() {
+        Some(p) => p,
+        None => make_provider(&settings, &opts.betas)?,
+    };
+    let flag_agents = match &opts.agents_json {
+        Some(raw) => {
+            let raw = if raw.trim_start().starts_with('{') {
+                raw.clone()
+            } else {
+                std::fs::read_to_string(raw)
+                    .map_err(|e| CoreError::Config(format!("--agents: cannot read {raw}: {e}")))?
+            };
+            forge_agents::parse_agents_json(&raw).map_err(CoreError::Config)?
+        }
+        None => vec![],
+    };
+    let agents = if opts.bare {
+        forge_agents::builtin_agents()
+    } else {
+        forge_agents::load_agents(&cwd, &flag_agents, &mut warnings)
+    };
+    let main_agent = match &opts.agent {
+        Some(name) => Some(
+            agents
+                .iter()
+                .find(|a| &a.name == name)
+                .cloned()
+                .ok_or_else(|| CoreError::Config(format!("--agent: no agent named {name:?}")))?,
+        ),
+        None => None,
+    };
+
     // Session identity and history.
     let store =
         SessionStore::new(opts.store_root.clone().unwrap_or_else(|| forge_session::forge_home().join("projects")));
@@ -260,6 +296,9 @@ pub fn build_session(
     // Tools.
     let mut tools = ToolRegistry::new();
     forge_tools::builtin::register_core(&mut tools);
+    let agent_store =
+        (!opts.no_session_persistence).then(|| SessionStore::new(store.root.join("agents").join(&session_id)));
+    let agent_rt_slot: Arc<std::sync::OnceLock<Arc<forge_agents::AgentRuntime>>> = Arc::new(std::sync::OnceLock::new());
     if let Some(list) = &opts.tools {
         let names: Vec<String> = list.iter().flat_map(|s| forge_permissions::split_rule_list(s)).collect();
         if !(names.len() == 1 && names[0] == "default") {
@@ -292,6 +331,11 @@ pub fn build_session(
         },
     );
     hooks.disabled = opts.bare || settings.bool("/disableAllHooks") == Some(true);
+    if let Some(agent) = &main_agent {
+        if let Some(allowed) = &agent.tools {
+            tools.retain(|n| allowed.iter().any(|a| a == n));
+        }
+    }
 
     // Model and system prompt.
     let model = forge_api::resolve_model(
@@ -310,9 +354,14 @@ pub fn build_session(
         .filter(|s| !s.is_empty())
         .map(forge_api::resolve_model)
         .collect();
+    let append = match (&main_agent, &opts.append_system_prompt) {
+        (Some(a), Some(extra)) => Some(format!("{}\n\n{extra}", a.prompt)),
+        (Some(a), None) => Some(a.prompt.clone()),
+        (None, extra) => extra.clone(),
+    };
     let sp_opts = SystemPromptOptions {
         replace: opts.system_prompt.clone(),
-        append: opts.append_system_prompt.clone(),
+        append,
         prompts_dir: env_nonempty("FORGE_PROMPTS_DIR").map(PathBuf::from),
         exclude_dynamic: opts.exclude_dynamic_system_prompt_sections,
         output_style: None,
@@ -332,11 +381,37 @@ pub fn build_session(
         }
     }
 
+    // Sub-agents: the Task tool shares this session's provider, rules, hooks and budget.
+    let memory = if opts.bare { None } else { memory_context(&cwd) };
+    if tools.get("Task").is_none()
+        && opts.tools.as_ref().map(|t| t.iter().any(|x| x.contains("Task") || x == "default")).unwrap_or(true)
+        && main_agent.as_ref().and_then(|a| a.tools.as_ref()).map(|t| t.iter().any(|x| x == "Task")).unwrap_or(true)
+        && !removed.iter().any(|r| r == "Task")
+    {
+        let rt = Arc::new(forge_agents::AgentRuntime {
+            provider: provider.clone(),
+            agents: agents.clone(),
+            project_dir: cwd.clone(),
+            working_dirs: tool_ctx.working_dirs.clone(),
+            env: tool_ctx.env.clone(),
+            store: agent_store,
+            session_id: session_id.clone(),
+            hooks: hooks.clone(),
+            sink: sink.clone(),
+            base: EngineConfig {
+                max_output_tokens: env_nonempty("FORGE_MAX_OUTPUT_TOKENS")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(32_000),
+                pricing: pricing_from_settings(&settings),
+                ..Default::default()
+            },
+            memory_context: memory.clone(),
+            parent: std::sync::OnceLock::new(),
+        });
+        tools.register(Arc::new(forge_agents::TaskTool { rt: rt.clone() }));
+        let _ = agent_rt_slot.set(rt);
+    }
     let tool_names = tools.names();
-    let provider = match opts.provider.clone() {
-        Some(p) => p,
-        None => make_provider(&settings, &opts.betas)?,
-    };
     let cfg = EngineConfig {
         model: model.clone(),
         fallback_models,
@@ -354,6 +429,7 @@ pub fn build_session(
             None => settings.get("/autoCompactWindow").and_then(Value::as_u64),
         },
         auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
+        is_subagent: false,
     };
     let parts = EngineParts {
         provider: provider.clone(),
@@ -371,6 +447,13 @@ pub fn build_session(
         system,
     };
     let mut engine = Engine::new(cfg, parts)?;
+    if let Some(rt) = agent_rt_slot.get() {
+        let _ = rt.parent.set(forge_agents::ParentLink {
+            handle: engine.handle(),
+            prompter: engine.prompter(),
+            history: engine.history().clone(),
+        });
+    }
     if let Some(r) = resumed.as_mut() {
         engine.restore(r);
     }
@@ -390,7 +473,7 @@ pub fn build_session(
         api_key_source: if opts.provider.is_some() { "none".into() } else { key_source(&settings) },
         forge_version: VERSION.into(),
         output_style: "default".into(),
-        agents: vec![],
+        agents: agents.iter().map(|a| a.name.clone()).collect(),
         skills: vec![],
         plugins: vec![],
         uuid: uuid::Uuid::new_v4().to_string(),

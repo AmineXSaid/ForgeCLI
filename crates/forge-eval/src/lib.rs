@@ -192,6 +192,8 @@ async fn sh(cmd: &str, dir: &Path, task_dir: &Path, timeout: Duration) -> (bool,
         .arg(cmd)
         .current_dir(dir)
         .env("FORGE_EVAL_TASK_DIR", task_dir)
+        // Checks must see the files as they are now, never stale bytecode.
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

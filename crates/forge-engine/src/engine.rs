@@ -69,6 +69,8 @@ pub struct EngineConfig {
     pub autocompact_window: Option<u64>,
     /// Summarize automatically when the window is nearly full (contract C9).
     pub auto_compact: bool,
+    /// Runs as a sub-agent: SubagentStop instead of Stop, no session hooks.
+    pub is_subagent: bool,
 }
 
 impl Default for EngineConfig {
@@ -87,6 +89,7 @@ impl Default for EngineConfig {
             metadata_user_id: None,
             autocompact_window: None,
             auto_compact: true,
+            is_subagent: false,
         }
     }
 }
@@ -315,6 +318,11 @@ impl Engine {
 
     pub fn hooks(&self) -> &HookRunner {
         &self.shared.hooks
+    }
+
+    /// The prompter tools of this engine ask through (share it with sub-agents).
+    pub fn prompter(&self) -> Arc<dyn PermissionPrompter> {
+        self.shared.prompter.clone()
     }
 
     pub fn system(&self) -> &[SystemBlock] {
@@ -629,6 +637,32 @@ impl Engine {
         Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
 
+    /// Add a sub-agent's spend to this session (budgets include sub-agents).
+    fn record_subagent_usage(&mut self, sub: &Value) {
+        let cost = sub.get("costUsd").and_then(Value::as_f64).unwrap_or(0.0);
+        self.state.total_cost_usd += cost;
+        if let Some(usage) = sub.get("usage").and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok()) {
+            self.state.total_usage.add(&usage);
+        }
+        if let Some(Value::Object(per_model)) = sub.get("modelUsage") {
+            for (model, mu) in per_model {
+                let e = self.state.model_usage.entry(model.clone()).or_insert_with(|| json!({}));
+                for (k, v) in mu.as_object().into_iter().flatten() {
+                    let merged = match (e.get(k), v) {
+                        (Some(a), b) if a.is_u64() && b.is_u64() => {
+                            json!(a.as_u64().unwrap_or(0) + b.as_u64().unwrap_or(0))
+                        }
+                        (Some(a), b) if a.is_number() && b.is_number() => {
+                            json!(a.as_f64().unwrap_or(0.0) + b.as_f64().unwrap_or(0.0))
+                        }
+                        (_, b) => b.clone(),
+                    };
+                    e[k] = merged;
+                }
+            }
+        }
+    }
+
     /// A fresh cancellation token for this turn.
     fn new_turn_token(&self) -> CancellationToken {
         let t = CancellationToken::new();
@@ -644,6 +678,13 @@ impl Engine {
         let mut blocks = prompt.into_blocks();
         let prompt_text: String = blocks.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("\n");
 
+        // Sub-agents get their context but no session hooks.
+        if !self.session_started && self.cfg.is_subagent {
+            self.session_started = true;
+            if let Some(c) = self.cfg.initial_context.take() {
+                blocks.insert(0, ContentBlock::text(format!("<system-reminder>\n{c}\n</system-reminder>")));
+            }
+        }
         // SessionStart on the first turn of the process.
         if !self.session_started {
             self.session_started = true;
@@ -668,12 +709,15 @@ impl Engine {
             }
         }
 
-        // UserPromptSubmit (contract C11: exit 2 blocks and erases the prompt).
-        let o = self
-            .shared
-            .hooks
-            .run(HookEvent::UserPromptSubmit, None, self.mode_str(), json!({"prompt": prompt_text}), &cancel)
-            .await;
+        // UserPromptSubmit (contract C11: exit 2 blocks and erases the prompt). Not for sub-agents.
+        let o = if self.cfg.is_subagent {
+            forge_hooks::HookOutcome::default()
+        } else {
+            self.shared
+                .hooks
+                .run(HookEvent::UserPromptSubmit, None, self.mode_str(), json!({"prompt": prompt_text}), &cancel)
+                .await
+        };
         for m in &o.user_messages {
             self.notice(NoticeLevel::Warning, m.clone());
         }
@@ -699,7 +743,10 @@ impl Engine {
         let user_msg = Message::user(blocks);
         let user_uuid = self.push_user(user_msg.clone(), false, None, false);
         self.emit(EngineEvent::PromptAccepted { message: user_msg, uuid: user_uuid.clone() });
-        self.shared.history.begin_turn(&user_uuid);
+        // Sub-agents write into the caller's checkpoint turn, so rewinding the caller undoes them too.
+        if !self.cfg.is_subagent {
+            self.shared.history.begin_turn(&user_uuid);
+        }
 
         let mut model;
         // Set once a fallback took over; it then holds for the rest of the turn (contract C6).
@@ -865,6 +912,9 @@ impl Engine {
                     if let Some(s) = r.stop {
                         turn.stop = Some(s);
                     }
+                    if let Some(sub) = r.output.structured.as_ref().and_then(|s| s.get("subagentUsage")) {
+                        self.record_subagent_usage(sub);
+                    }
                     let block = ContentBlock::ToolResult {
                         tool_use_id: r.id.clone(),
                         content: r.output.content.clone(),
@@ -902,17 +952,18 @@ impl Engine {
                 continue;
             }
 
-            // Stop hook (contract C11: exit 2 makes the model keep going).
+            // Stop / SubagentStop hook (contract C11: exit 2 makes the model keep going).
+            let stop_event = if self.cfg.is_subagent { HookEvent::SubagentStop } else { HookEvent::Stop };
             let o = self
                 .shared
                 .hooks
-                .run(HookEvent::Stop, None, self.mode_str(), json!({"stop_hook_active": stop_hook_active}), &cancel)
+                .run(stop_event, None, self.mode_str(), json!({"stop_hook_active": stop_hook_active}), &cancel)
                 .await;
             for m in &o.user_messages {
                 self.notice(NoticeLevel::Warning, m.clone());
             }
             if let (Some(feedback), None) = (o.blocked.clone(), o.stop.clone()) {
-                if HookEvent::Stop.exit2_effect() == Exit2Effect::BlockToModel {
+                if stop_event.exit2_effect() == Exit2Effect::BlockToModel {
                     stop_hook_active = true;
                     self.push_user(Message::user_text(format!("Stop hook feedback:\n{feedback}")), true, None, true);
                     continue;

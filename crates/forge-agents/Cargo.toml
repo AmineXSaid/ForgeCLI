@@ -1,6 +1,6 @@
 [package]
-name = "forge-core"
-description = "Composition root: builds a session (engine, tools, permissions, hooks, transcript) from flags and settings."
+name = "forge-agents"
+description = "Sub-agents: agent definitions and the Task tool that runs them in their own context."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,14 +13,13 @@ forge-permissions.workspace = true
 forge-hooks.workspace = true
 forge-tools.workspace = true
 forge-session.workspace = true
-forge-git.workspace = true
 forge-engine.workspace = true
-forge-agents.workspace = true
+async-trait.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio.workspace = true

@@ -148,6 +148,12 @@ pub struct Opts {
     #[arg(short = 'n', long = "name")]
     pub name: Option<String>,
 
+    /// Agent definitions as JSON, or a file holding them (e.g. '{"reviewer": {"description": "...", "prompt": "..."}}')
+    #[arg(long)]
+    pub agents: Option<String>,
+    /// Run the session as this agent (its prompt and tools)
+    #[arg(long)]
+    pub agent: Option<String>,
     /// Auto-compact window size (auto, or 100k-1M tokens)
     #[arg(long)]
     pub autocompact: Option<String>,

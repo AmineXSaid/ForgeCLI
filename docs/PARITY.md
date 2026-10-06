@@ -65,7 +65,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | Grep | done | `builtin::glob_and_grep` |  |
 | LS | done | `builtin::ls_lists_tree` |  |
 | TodoWrite | done | `builtin::todo_write_validates_and_stores` |  |
-| Task / Agent | todo | | |
+| Task / Agent | done | `agents::explore_agent_reports_back_in_its_own_context`, `agents::parallel_agents_run_concurrently` | Named `Task` |
 | WebFetch | todo | | |
 | WebSearch | todo | | server tool `web_search_20260209` |
 | ExitPlanMode / EnterPlanMode | todo | | Contract C8 |
@@ -111,9 +111,9 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | Settings layers + `--setting-sources` | done | `config::layers_merge_in_order`, `config::sources_filter_layers` |  |
 | `--settings` file or JSON | done | `config::layers_merge_in_order` |  |
 | FORGE.md discovery + `@import` | done | `config::discovers_and_imports`, `config::import_cycles_stop` |  |
-| Hooks: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification | partial | `engine::hooks_in_the_loop`, `engine::user_prompt_hook_can_block` | All events run; SubagentStop waits for sub-agents (M5), Notification for the TUI (M8) |
-| Hook exit-code semantics per event | todo | `hooks::c11_exit2_semantics_per_event` | Contract C11 |
-| Hook JSON output (decision, reason, `updatedInput`, `additionalContext`) | todo | `hooks::c11_json_permission_decision` | Contract C11 |
+| Hooks: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification | partial | `engine::hooks_in_the_loop`, `engine::user_prompt_hook_can_block` | All events run except Notification, which waits for the TUI; SubagentStop: `agents::unknown_agent_is_rejected_and_subagent_stop_hook_runs` |
+| Hook exit-code semantics per event | done | `hooks::c11_exit2_semantics_per_event` | Contract C11 |
+| Hook JSON output (decision, reason, `updatedInput`, `additionalContext`) | done | `hooks::c11_json_permission_decision` | Contract C11 |
 
 ## Sessions (forge-session)
 
@@ -131,8 +131,8 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
-| Sub-agents (Task) with built-in types (general-purpose, Explore, Plan) | todo | | |
-| Custom agents `agents/*.md`, `--agents`, `--agent` | todo | | |
+| Sub-agents (Task) with built-in types (general-purpose, Explore, Plan) | done | `agents::explore_agent_reports_back_in_its_own_context`, `agents::child_edits_are_checkpointed_in_the_parent_turn` | Isolated context; shared rules, prompt lock, checkpoints and budget; no nesting |
+| Custom agents `agents/*.md`, `--agents`, `--agent` | done | `agents::markdown_agents`, `agents::json_agents_and_precedence`, `core::sub_agents_are_offered_and_configurable` |  |
 | Skills `skills/*/SKILL.md` | todo | | |
 | Custom slash commands `commands/*.md` | todo | | |
 | Output styles: Default, Explanatory, Learning + custom | todo | | |
