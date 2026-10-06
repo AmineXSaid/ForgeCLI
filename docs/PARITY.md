@@ -43,7 +43,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `control_request` `set_max_thinking_tokens` | done | inferred | `e2e::host_sets_thinking_tokens` |  |
 | `control_request` `mcp_status` | partial | inferred |  | Returns an empty list until MCP lands (M6) |
 | `control_request` `rewind_files` | done | inferred | `e2e::replay_uuid_drives_rewind_files` | Contract C4 |
-| `system/compact_boundary` | todo | inferred | | |
+| `system/compact_boundary` | done | inferred | `engine::c9_auto_triggers_at_threshold` | `compact_metadata: {trigger, pre_tokens}` |
 | `system/model_fallback` | done | inferred | `engine::c6_fallback_on_overload_for_this_turn_only` | Contract C6 |
 
 ## Tools
@@ -163,7 +163,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `--agents`, `--agent`, `--plugin-dir`, `--disable-slash-commands` | todo | | |
 | `--debug`, `--debug-file`, `--verbose`, `-v/--version` | done | `e2e::version_and_help` |  |
 | `-w/--worktree` | todo | `git::c10_worktree_session_listed_from_main_repo` | Contract C10 |
-| `--autocompact` | todo | | |
+| `--autocompact` | done | `core::autocompact_values` | Also `autoCompactWindow` and `autoCompactEnabled` in settings |
 | `--brief`, `--prompt-suggestions`, `--forward-subagent-text` | todo | | |
 | `--cloud`, `--teleport`, `--remote-control*`, `--desktop`, `--chrome`/`--no-chrome`, `--ide`, `--from-pr`, `--environment`, `--file`, `--bg`, `--tmux`, `--plugin-url`, `--ax-screen-reader`, `--system-prompt-snapshot` | out | | Need a vendor's cloud, desktop or IDE services, or hosted infrastructure that a personal CLI doesn't have |
 
