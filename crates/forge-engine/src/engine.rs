@@ -385,11 +385,15 @@ impl Engine {
         if let Some(last) = tools.last_mut() {
             last.cache_control = Some(forge_types::CacheControl::ephemeral());
         }
+        let mut system = self.system.clone();
+        if let Some(last) = system.last_mut() {
+            last.cache_control = Some(forge_types::CacheControl::ephemeral());
+        }
         MessagesRequest {
             model: model.to_string(),
             max_tokens,
             messages,
-            system: self.system.clone(),
+            system,
             tools,
             tool_choice: None,
             thinking,

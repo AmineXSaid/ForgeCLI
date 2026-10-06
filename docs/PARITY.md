@@ -40,7 +40,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `control_request` `interrupt` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` | Contract C3 |
 | `control_request` `set_permission_mode` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
 | `control_request` `set_model` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
-| `control_request` `set_max_thinking_tokens` | partial | inferred |  | Implemented, not yet tested end to end |
+| `control_request` `set_max_thinking_tokens` | done | inferred | `e2e::host_sets_thinking_tokens` |  |
 | `control_request` `mcp_status` | partial | inferred |  | Returns an empty list until MCP lands (M6) |
 | `control_request` `rewind_files` | done | inferred | `e2e::replay_uuid_drives_rewind_files` | Contract C4 |
 | `system/compact_boundary` | todo | inferred | | |
@@ -80,11 +80,11 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | Parallel batches of read-only tools | done | `engine::c2_result_order_survives_concurrency` | Contract C2 |
 | Serialized permission prompts | done | `engine::c2_prompts_are_serialized` | Contract C2 |
 | Interrupt | done | `engine::c3_interrupt_during_stream`, `engine::c3_interrupt_aborts_running_and_pending_tools` | Contract C3 |
-| Retries with backoff (429 / 5xx / 529) | partial |  | Implemented in the provider; no test drives the retry path yet |
+| Retries with backoff (429 / 5xx / 529) | done | `e2e::retries_transient_errors` |  |
 | Fallback model | done | `engine::c6_fallback_on_overload_for_this_turn_only`, `engine::non_overload_errors_fail_the_turn` | Contract C6 |
 | `--max-turns` / `--max-budget-usd` | done | `engine::c7_unknown_model_budget_fails_closed`, `engine::c7_budget_and_max_turns_stop_the_run`, `e2e::max_turns_and_continue` | Contract C7 |
 | Thinking / effort per model | done | `request::thinking_per_model` |  |
-| Prompt-cache breakpoints | partial |  | Set on system, last tool and last message; no test yet |
+| Prompt-cache breakpoints | done | `engine::cache_breakpoints_on_system_tools_and_last_message` | System, last tool and last message |
 | Micro-compaction | todo | `compact::c9_micro_clears_only_eligible_results`, `compact::c9_micro_is_sticky_across_requests` | Contract C9 |
 | Auto-compact / `/compact` | todo | `compact::c9_auto_triggers_at_threshold` | Contract C9 |
 
@@ -116,7 +116,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
 | JSONL transcript | done | `session::c5_key_collision_keeps_projects_apart`, `session::write_and_resume_round_trip` | Contract C5 |
-| `additionalDirectories` restored on resume | partial |  | Implemented; no test yet |
+| `additionalDirectories` restored on resume | done | `core::resume_restores_additional_directories` | Contract C5 |
 | System events in JSONL (fallback, compact, microcompact, mode) | partial | `engine::c6_fallback_on_overload_for_this_turn_only` | Fallback and mode done; compaction events come with M4 |
 | `--continue` / `--resume <id>` | done | `core::continue_and_fork`, `e2e::max_turns_and_continue` |  |
 | `--fork-session` / `--session-id` | done | `core::continue_and_fork`, `session::fork_copies_chain_under_new_id` |  |

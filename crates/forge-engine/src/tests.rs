@@ -483,3 +483,27 @@ async fn resumed_history_is_sent() {
     assert_eq!(req.messages[1].text(), "one");
     let _ = Path::new("/");
 }
+
+#[tokio::test]
+async fn cache_breakpoints_on_system_tools_and_last_message() {
+    let h = Harness::new(vec![MockTurn::tool("SafeA", json!({"tag": "x"})), MockTurn::text("done")]);
+    let mut e = h.engine();
+    e.submit(prompt("go")).await;
+    for req in h.provider.requests() {
+        let count_msgs = req
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| {
+                let v = serde_json::to_value(b).unwrap();
+                v.get("cache_control").is_some()
+            })
+            .count();
+        assert_eq!(count_msgs, 1, "exactly one message breakpoint");
+        let last_block = serde_json::to_value(req.messages.last().unwrap().content.last().unwrap()).unwrap();
+        assert!(last_block.get("cache_control").is_some(), "on the last block");
+        assert!(req.system[0].cache_control.is_some());
+        assert!(req.tools.last().unwrap().cache_control.is_some());
+        assert!(req.tools[..req.tools.len() - 1].iter().all(|t| t.cache_control.is_none()));
+    }
+}

@@ -104,3 +104,24 @@ fn permission_updates_persist_to_named_file() {
         serde_json::from_str(&std::fs::read_to_string(d.path().join(".forge/settings.json")).unwrap()).unwrap();
     assert_eq!(project["permissions"]["defaultMode"], "acceptEdits");
 }
+
+#[tokio::test]
+async fn resume_restores_additional_directories() {
+    let (d, p) = setup();
+    let extra = d.path().join("shared");
+    std::fs::create_dir_all(&extra).unwrap();
+    let mut o = opts(d.path(), p.clone());
+    o.add_dirs = vec![extra.clone()];
+    p.push(MockTurn::text("ok"));
+    let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
+    let mut e = s.engine;
+    e.submit(MessageContent::Text("hi".into())).await;
+
+    let mut o = opts(d.path(), p.clone());
+    o.resume = Resume::Latest;
+    let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
+    let canonical = extra.canonicalize().unwrap();
+    let perm = s.engine.handle().permissions.read().unwrap().clone();
+    assert!(perm.working_dirs.iter().any(|w| w == &canonical || w == &extra), "{:?}", perm.working_dirs);
+    assert!(s.engine.tool_ctx().in_working_dirs(&extra.join("file.txt")));
+}

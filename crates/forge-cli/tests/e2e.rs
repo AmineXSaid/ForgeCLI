@@ -339,3 +339,31 @@ async fn version_and_help() {
         assert!(h.contains(flag), "missing {flag}");
     }
 }
+
+#[tokio::test]
+async fn retries_transient_errors() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::http_error(529, "overloaded_error"), MockTurn::text("after retry")]).await;
+    let mut c = command(&forge_bin(), &e.cwd, &e.home, &api.url, &["-p", "hi"]);
+    c.env("FORGE_MAX_RETRIES", "1").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = tokio::time::timeout(Duration::from_secs(30), c.output()).await.unwrap().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "after retry");
+    assert_eq!(api.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn host_sets_thinking_tokens() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("one"), MockTurn::text("two")]).await;
+    let mut h = Host::spawn(command(&forge_bin(), &e.cwd, &e.home, &api.url, &stream_args(&["--model", "sonnet"])));
+    h.send_user("default thinking").await;
+    h.until_type("result").await;
+    h.send(json!({"type": "control_request", "request_id": "t0", "request": {"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0}})).await;
+    h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "t0").await;
+    h.send_user("no thinking").await;
+    h.until_type("result").await;
+    let reqs = api.requests();
+    assert_eq!(reqs[0]["thinking"]["type"], "adaptive");
+    assert_eq!(reqs[1]["thinking"]["type"], "between_tools");
+    h.wait().await;
+}
