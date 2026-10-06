@@ -232,7 +232,7 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 | `/doctor` (`/checkup`) | done | PR | `cmds::info_commands_answer_locally` | `forge doctor`'s checks plus session warnings, MCP failures and model pricing |
 | `/release-notes` | done | PR | `cmds::info_commands_answer_locally` | `CHANGELOG.md`, embedded at build time |
 | `/hooks` | partial | PR | `cmds::info_commands_answer_locally` | Read-only list per event and matcher; the reference's editor dialog is T (M8) |
-| `/mcp` | partial | PR | `cmds::info_commands_answer_locally` | Status list. `reconnect`, `enable`, `disable` are phase 1b |
+| `/mcp` | partial | PR | `cmds::info_commands_answer_locally` | Status list. `reconnect`, `enable`, `disable` come with session switching (phase 3) |
 | `/skills` | done | PR | `cmds::info_commands_answer_locally` | Source, who can invoke it, token estimate |
 | `/agents` | partial | PR | `cmds::info_commands_answer_locally` | List plus how to add one; the creation wizard is T (M8) |
 | `/plugin` | partial | PR | `cmds::bad_commands_fail_with_exit_1` | `list` only. Marketplaces are out (vendor service) |
@@ -240,21 +240,21 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 | `/tasks` (`/bashes`) | partial | PR | `cmds::info_commands_answer_locally`, `cmds::bad_commands_fail_with_exit_1` | Background shells and `stop <id>`; subagents join in phase 6 |
 | Unknown and out-of-scope names | done | PR | `cmds::bad_commands_fail_with_exit_1` | `Unknown command: /name`, exit 1; a path or `a/b` is a prompt |
 | Skill chaining `/a /b text` | done | PR | `core::commands::tests::parses_commands_skills_paths_and_unknowns` | Up to 6 skills; the text goes to each |
-| `/context [all]` | todo | PRT |  | Phase 1b |
-| `/model [model]` | todo | PRT |  | Phase 1b |
-| `/effort [level\|auto\|status]` | todo | PRT |  | Phase 1b |
-| `/fast [on\|off]` | todo | PRT |  | Phase 1b; only where the model supports fast mode |
-| `/config [key=value]` (`/settings`) | todo | PRT |  | Phase 1b |
-| `/output-style [style]` | todo | PRT |  | Phase 1b |
-| `/autocompact [auto\|tokens]` | todo | PRT |  | Phase 1b |
-| `/permissions` (`/allowed-tools`) | todo | PRT |  | Phase 1b |
-| `/add-dir <path>` | todo | PRT |  | Phase 1b |
-| `/sandbox [on\|off\|mode]` | todo | PRT |  | Phase 1b |
+| `/context [all]` | done | PR | `core::driver_tests::rename_export_context_and_diff` | Estimates (4 chars a token) per part against the window, the last measured request, suggestions. The colour grid is T (M8) |
+| `/model [model]` | done | PR | `core::driver_tests::model_effort_and_fast_reach_the_request`, `core::driver_tests::interactive_surfaces_save_defaults`, `cmds::settings_commands_persist_and_reach_the_api` | Text list instead of a picker; saves `model` in R, session-only in P. Warns when effort or fast mode stop applying |
+| `/effort [level\|auto\|status]` | done | PR | `core::driver_tests::model_effort_and_fast_reach_the_request` | Levels from the model table; `max` is session-only; `auto` clears it |
+| `/fast [on\|off]` | partial | PR | `core::driver_tests::model_effort_and_fast_reach_the_request`, `cmds::settings_commands_persist_and_reach_the_api` | Sends `speed: fast` and the beta flag only on models that offer it. Gap: fast-mode prices aren't modelled, so `/usage` under-reports its cost |
+| `/config [key=value]` (`/settings`) | done | PR | `core::driver_tests::config_validates_then_writes_and_applies`, `core::driver_tests::config_reports_a_layer_that_overrides_it`, `cmds::settings_commands_persist_and_reach_the_api` | Argument form of the reference's panel: a whitelist of ten keys, validated before any write, applied live, `--scope`; names an overriding layer |
+| `/output-style [style]` | done | PR | `core::driver_tests::output_style_survives_an_sdk_system_prompt` | Rebuilds the system prompt; saves `outputStyle` in local settings (R) |
+| `/autocompact [auto\|tokens]` | done | PR | `core::driver_tests::autocompact_and_sandbox` | Also `on`/`off` (`autoCompactEnabled`) |
+| `/permissions` (`/allowed-tools`) | done | PR | `core::driver_tests::permissions_add_list_and_remove` | Text list with each rule's layer; `add`/`remove` arguments instead of the dialog |
+| `/add-dir <path>` | done | PR | `core::driver_tests::add_dir_widens_access_and_tells_the_model` | `--save` stands in for the reference's "remember" choice |
+| `/sandbox [on\|off\|mode]` | done | PR | `core::driver_tests::autocompact_and_sandbox` | Changes the live policy, sub-agents included |
 | `/reload-skills`, `/reload-plugins` | todo | PRT |  | Phase 3 (session switching) |
-| `/rename [name]` | todo | PRT |  | Phase 1b |
-| `/export [file]` | todo | PRT |  | Phase 1b |
-| `/diff` | todo | PRT |  | Phase 1b |
-| `/debug [description]` | todo | PRT |  | Phase 1b |
+| `/rename [name]` | done | PR | `core::driver_tests::rename_export_context_and_diff` | Without a name, the small model suggests one |
+| `/export [file]` | done | PR | `core::driver_tests::rename_export_context_and_diff` | No argument prints it (no clipboard dialog) |
+| `/diff` | done | PR | `core::driver_tests::rename_export_context_and_diff` | Text output; the interactive viewer is T (M8) |
+| `/debug [description]` | done | PR | `cmds::debug_turns_on_a_session_log` | A reloadable logger that is off until `/debug`; requests, responses, tool calls, permission checks, hooks and compaction are logged |
 | `/plan [description]` | todo | PRT |  | Phase 2 |
 | `/goal [condition\|clear]` | todo | PRT |  | Phase 2 |
 | `/btw [question]` | todo | PRT |  | Phase 2 |

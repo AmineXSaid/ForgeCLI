@@ -290,8 +290,8 @@ fn edit_failures_point_at_the_nearest_text() {
 
 fn sandboxed_ctx(dir: &std::path::Path) -> Option<ToolContext> {
     crate::sandbox::backend()?;
-    let mut c = ctx(dir);
-    c.sandbox = Some(Arc::new(crate::sandbox::SandboxPolicy {
+    let c = ctx(dir);
+    c.set_sandbox(Some(crate::sandbox::SandboxPolicy {
         mode: crate::sandbox::SandboxMode::WorkspaceWrite,
         network: false,
         writable_roots: vec![],

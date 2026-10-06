@@ -8,6 +8,10 @@ use tokio_util::sync::CancellationToken;
 use crate::files::FileState;
 use crate::shells::ShellManager;
 
+/// The session's OS sandbox policy, shared with sub-agents and changeable
+/// while the session runs (`/sandbox`). `None` = commands run unconfined.
+pub type SandboxCell = Arc<RwLock<Option<Arc<crate::sandbox::SandboxPolicy>>>>;
+
 /// Saves a file's prior content before a tool writes it (contract C4).
 pub trait Checkpointer: Send + Sync {
     fn before_write(&self, path: &Path);
@@ -33,8 +37,8 @@ pub struct ToolContext {
     pub env: Arc<HashMap<String, String>>,
     /// Upper bound for Bash output kept in a result.
     pub max_output_chars: usize,
-    /// OS sandbox for shell commands (`None` = commands run unconfined).
-    pub sandbox: Option<Arc<crate::sandbox::SandboxPolicy>>,
+    /// OS sandbox for shell commands.
+    pub sandbox: SandboxCell,
     /// Where output too long for a result is saved in full (`None` = not saved).
     pub spill_dir: Option<PathBuf>,
 }
@@ -54,7 +58,7 @@ impl ToolContext {
             todos: Arc::new(Mutex::new(vec![])),
             env: Arc::new(HashMap::new()),
             max_output_chars: 30_000,
-            sandbox: None,
+            sandbox: Arc::new(RwLock::new(None)),
             spill_dir: None,
         }
     }
@@ -78,11 +82,20 @@ impl ToolContext {
 
     /// The sandbox policy for a command now, with the current working directories writable.
     pub fn sandbox_now(&self) -> Option<(crate::sandbox::Backend, crate::sandbox::SandboxPolicy)> {
-        let policy = self.sandbox.as_ref()?;
+        let policy = self.sandbox_policy()?;
         let backend = crate::sandbox::backend()?;
-        let mut p = (**policy).clone();
+        let mut p = (*policy).clone();
         p.writable_roots = self.working_dirs.read().unwrap().clone();
         Some((backend, p))
+    }
+
+    /// The configured sandbox policy, if any.
+    pub fn sandbox_policy(&self) -> Option<Arc<crate::sandbox::SandboxPolicy>> {
+        self.sandbox.read().unwrap().clone()
+    }
+
+    pub fn set_sandbox(&self, policy: Option<crate::sandbox::SandboxPolicy>) {
+        *self.sandbox.write().unwrap() = policy.map(Arc::new);
     }
 
     pub fn checkpoint(&self, path: &Path) {

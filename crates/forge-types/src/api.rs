@@ -359,8 +359,15 @@ pub struct MessagesRequest {
     pub metadata: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_config: Option<Value>,
+    /// `"fast"`: fast mode, on models that support it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
     #[serde(default)]
     pub stream: bool,
+    /// Beta flags this request needs beyond the provider's own. They go in a
+    /// header, not the body.
+    #[serde(skip)]
+    pub betas: Vec<String>,
 }
 
 /// Content-block delta inside `content_block_delta`.

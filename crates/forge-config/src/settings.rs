@@ -14,6 +14,17 @@ pub enum SettingSource {
 }
 
 impl SettingSource {
+    /// Precedence: a higher rank wins.
+    pub fn rank(&self) -> u8 {
+        match self {
+            SettingSource::User => 0,
+            SettingSource::Project => 1,
+            SettingSource::Local => 2,
+            SettingSource::Flag => 3,
+            SettingSource::Managed => 4,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             SettingSource::User => "userSettings",
@@ -203,12 +214,86 @@ impl LoadedSettings {
     }
 
     /// The managed layer, if any (its permission rules cannot be overridden).
+    /// The highest-precedence layer above `source` that sets `pointer`: the one
+    /// a value written at `source` would lose to.
+    pub fn overridden_by(&self, source: SettingSource, pointer: &str) -> Option<&SettingsLayer> {
+        self.layers
+            .iter()
+            .filter(|l| l.source.rank() > source.rank() && l.value.pointer(pointer).is_some_and(|v| !v.is_null()))
+            .max_by_key(|l| l.source.rank())
+    }
+
+    /// Mirror a write to `source`'s file in memory (`None` removes the key), so
+    /// later reads in this process see it.
+    pub fn apply(&mut self, source: SettingSource, path: &Path, keys: &[&str], value: Option<Value>) {
+        let pos = match self.layers.iter().position(|l| l.source == source) {
+            Some(i) => i,
+            None => {
+                let at = self.layers.iter().position(|l| l.source.rank() > source.rank()).unwrap_or(self.layers.len());
+                self.layers.insert(
+                    at,
+                    SettingsLayer { source, path: Some(path.to_path_buf()), value: Value::Object(Map::new()) },
+                );
+                at
+            }
+        };
+        set_path(&mut self.layers[pos].value, keys, value);
+        self.merged = Value::Object(Map::new());
+        for layer in &self.layers {
+            deep_merge(&mut self.merged, &layer.value);
+        }
+    }
+
     pub fn managed(&self) -> Option<&Value> {
         self.layers.iter().find(|l| l.source == SettingSource::Managed).map(|l| &l.value)
     }
 }
 
 /// Write `key = value` into a settings file (creating it), keeping other keys.
+/// Set (`Some`) or remove (`None`) the key at `keys` inside a JSON object.
+fn set_path(root: &mut Value, keys: &[&str], value: Option<Value>) {
+    if !root.is_object() {
+        *root = Value::Object(Map::new());
+    }
+    let Some((last, parents)) = keys.split_last() else { return };
+    let mut cur = root;
+    for key in parents {
+        if !cur.get(*key).map(Value::is_object).unwrap_or(false) {
+            if value.is_none() {
+                return;
+            }
+            cur[*key] = Value::Object(Map::new());
+        }
+        cur = cur.get_mut(*key).unwrap();
+    }
+    match value {
+        Some(v) => cur[*last] = v,
+        None => {
+            if let Some(o) = cur.as_object_mut() {
+                o.remove(*last);
+            }
+        }
+    }
+}
+
+/// Remove the key at `pointer` from a settings file. Returns whether it was there.
+pub fn remove_setting(path: &Path, pointer: &[&str]) -> std::io::Result<bool> {
+    let Some(mut root) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .filter(Value::is_object)
+    else {
+        return Ok(false);
+    };
+    let ptr = format!("/{}", pointer.join("/"));
+    if root.pointer(&ptr).is_none() {
+        return Ok(false);
+    }
+    set_path(&mut root, pointer, None);
+    std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
+    Ok(true)
+}
+
 pub fn write_setting(path: &Path, pointer: &[&str], value: Value) -> std::io::Result<()> {
     let mut root: Value = std::fs::read_to_string(path)
         .ok()
@@ -236,6 +321,38 @@ pub fn write_setting(path: &Path, pointer: &[&str], value: Value) -> std::io::Re
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn removes_and_finds_overrides() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("s.json");
+        write_setting(&f, &["permissions", "allow"], json!(["Read"])).unwrap();
+        write_setting(&f, &["model"], json!("opus")).unwrap();
+        assert!(remove_setting(&f, &["model"]).unwrap());
+        assert!(!remove_setting(&f, &["model"]).unwrap());
+        assert!(!remove_setting(&d.path().join("none.json"), &["model"]).unwrap());
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(v, json!({"permissions": {"allow": ["Read"]}}));
+
+        let mut s = LoadedSettings {
+            merged: json!({}),
+            layers: vec![
+                SettingsLayer { source: SettingSource::User, path: None, value: json!({"model": "a"}) },
+                SettingsLayer { source: SettingSource::Local, path: None, value: json!({"model": "b"}) },
+            ],
+            errors: vec![],
+        };
+        assert_eq!(s.overridden_by(SettingSource::User, "/model").map(|l| l.source), Some(SettingSource::Local));
+        assert!(s.overridden_by(SettingSource::Local, "/model").is_none());
+        s.apply(SettingSource::Project, Path::new("p.json"), &["effortLevel"], Some(json!("low")));
+        assert_eq!(
+            s.layers.iter().map(|l| l.source).collect::<Vec<_>>(),
+            [SettingSource::User, SettingSource::Project, SettingSource::Local]
+        );
+        assert_eq!((s.str("/effortLevel"), s.str("/model")), (Some("low"), Some("b")));
+        s.apply(SettingSource::Local, Path::new("l.json"), &["model"], None);
+        assert_eq!(s.str("/model"), Some("a"));
+    }
 
     #[test]
     fn layers_merge_in_order() {

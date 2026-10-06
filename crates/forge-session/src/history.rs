@@ -179,6 +179,39 @@ impl FileHistory {
         Ok(plan)
     }
 
+    /// The files each user turn changed, oldest turn first (`/diff`).
+    pub fn turns(&self) -> Vec<(String, Vec<PathBuf>)> {
+        let st = self.state.lock().unwrap();
+        st.turns
+            .iter()
+            .map(|t| {
+                let mut files: Vec<PathBuf> = vec![];
+                for r in st.records.iter().filter(|r| &r.turn == t) {
+                    if !files.contains(&r.path) {
+                        files.push(r.path.clone());
+                    }
+                }
+                (t.clone(), files)
+            })
+            .filter(|(_, f)| !f.is_empty())
+            .collect()
+    }
+
+    /// Each changed file's content before the session first changed it
+    /// (`None`: the file didn't exist), in the order they were first changed.
+    pub fn originals(&self) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        let st = self.state.lock().unwrap();
+        let mut out: Vec<(PathBuf, Option<Vec<u8>>)> = vec![];
+        for r in &st.records {
+            if out.iter().any(|(p, _)| p == &r.path) {
+                continue;
+            }
+            let before = r.version.and_then(|v| std::fs::read(self.snapshot_path(&r.path, v)).ok());
+            out.push((r.path.clone(), before));
+        }
+        out
+    }
+
     /// Files checkpointed at or after `turn` (for the rewind confirmation).
     pub fn changed_since(&self, turn: &str) -> Vec<PathBuf> {
         self.rewind(turn, true).map(|p| p.restore.into_iter().chain(p.delete).collect()).unwrap_or_default()
@@ -188,6 +221,27 @@ impl FileHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_turns_and_originals() {
+        let d = tempfile::tempdir().unwrap();
+        let h = FileHistory::new(d.path().join("hist"));
+        let (a, b) = (d.path().join("a.txt"), d.path().join("b.txt"));
+        std::fs::write(&a, "v0").unwrap();
+        h.begin_turn("t1");
+        h.snapshot(&a);
+        std::fs::write(&a, "v1").unwrap();
+        h.begin_turn("t2");
+        h.snapshot(&a);
+        h.snapshot(&b);
+        std::fs::write(&b, "new").unwrap();
+        h.begin_turn("t3");
+        assert_eq!(
+            h.turns(),
+            vec![("t1".to_string(), vec![a.clone()]), ("t2".to_string(), vec![a.clone(), b.clone()])]
+        );
+        assert_eq!(h.originals(), vec![(a, Some(b"v0".to_vec())), (b, None)]);
+    }
 
     #[test]
     fn rewind_restores_and_deletes() {

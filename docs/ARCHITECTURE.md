@@ -521,7 +521,28 @@ front end (print, stream-json, REPL, TUI) passes each input to
   its answer as arguments, so it works in `-p`; the TUI (M8) will draw a
   picker that fills those arguments in.
 
-**Immediate commands** (`/status`, `/usage`, `/tasks`, `/mcp`) only read
+**Changing the running session.** Settings commands change the live
+objects and never rebuild the session:
+- the engine handle's runtime (model, effort, thinking, fast mode, permission
+  mode);
+- the engine config (compaction);
+- the tool context's sandbox cell, which sub-agents share;
+- the permission engine's rules and directories;
+- the system prompt, rebuilt from `PromptSpec`.
+
+`PromptSpec` keeps every input of the system prompt: the replacement or
+appended text, the agent prompt, MCP instructions, the output style and the
+environment. That way `/output-style`, `/model` and an SDK host's
+`initialize` rebuild it without dropping a part. A note for the model (a new
+working directory) rides on the next prompt as a system reminder, so the
+cached prefix stays intact.
+
+**Saving.** On interactive surfaces, settings commands also write the
+default to the same layer the reference uses. In `-p` and stream-json they
+don't. A write is mirrored into the loaded layers, and the answer names any
+higher-precedence layer that overrides it.
+
+**Immediate commands** (`/status`, `/usage`, `/tasks`, `/mcp`, `/context`) only read
 state. They are marked in the registry so the TUI and stream-json hosts
 can run them while a turn is in progress; today every command still waits
 for the turn to finish.

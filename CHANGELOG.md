@@ -8,6 +8,15 @@
   `/plugin`, `/mcp`, `/tasks` (`/bashes`), `/release-notes`, `/clear`,
   `/compact` and `/exit`. Unknown commands report `Unknown command: /name`,
   and skills chain (`/a /b text`).
+- Settings commands that apply at once: `/model`, `/effort`, `/fast`,
+  `/config key=value` (`/settings`), `/output-style`, `/autocompact`,
+  `/sandbox`, `/permissions` (`/allowed-tools`) and `/add-dir`. In the REPL
+  they also save the default; in `-p` they change only that run, except
+  `/config`, which always saves and says which settings layer would override it.
+- Session commands: `/rename` (Forge suggests a name), `/export`, `/diff`,
+  `/context [all]` and `/debug`, which turns on a session debug log and
+  has Forge read it.
+- Fast mode on models that offer it (`fastMode` setting, `/fast`).
 - Custom commands, skills, output styles and plugins (`--plugin-dir`).
 
 ### Agent harness

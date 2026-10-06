@@ -13,7 +13,7 @@ use forge_types::sdk::InitInfo;
 use forge_types::MessageContent;
 
 use crate::commands::{self, Catalog, Surface};
-use crate::Session;
+use crate::{PromptSpec, Session};
 
 /// Facts about the session for `/status`, `/doctor` and friends.
 pub struct SessionInfo {
@@ -22,6 +22,8 @@ pub struct SessionInfo {
     pub settings: LoadedSettings,
     pub warnings: Vec<String>,
     pub cwd: PathBuf,
+    /// The user settings file commands save defaults to.
+    pub user_settings: PathBuf,
 }
 
 /// Activity totals across this process's inputs (for `/usage`).
@@ -36,6 +38,7 @@ pub struct Driver {
     pub engine: Engine,
     pub catalog: Catalog,
     pub info: SessionInfo,
+    pub prompt: PromptSpec,
     pub surface: Surface,
     pub started: Instant,
     pub activity: Activity,
@@ -69,7 +72,9 @@ impl Driver {
                 settings: s.settings,
                 warnings: s.warnings,
                 cwd,
+                user_settings: forge_config::forge_home().join("settings.json"),
             },
+            prompt: s.prompt,
             surface,
             started: Instant::now(),
             activity: Activity::default(),
@@ -96,6 +101,22 @@ impl Driver {
             self.activity.api_time += Duration::from_millis(result.duration_api_ms);
         }
         Outcome::Result(Box::new(result))
+    }
+
+    /// Rebuild the system prompt from [`Driver::prompt`] after changing it.
+    pub fn rebuild_system(&mut self) {
+        self.engine.set_system(self.prompt.build().0);
+    }
+
+    /// An SDK host's `initialize` `systemPrompt` / `appendSystemPrompt`.
+    pub fn set_system_prompt(&mut self, replace: Option<String>, append: Option<String>) {
+        if replace.is_some() {
+            self.prompt.replace = replace;
+        }
+        if append.is_some() {
+            self.prompt.append = append;
+        }
+        self.rebuild_system();
     }
 
     pub async fn shutdown(&self, reason: &str) {

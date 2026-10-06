@@ -145,18 +145,60 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
 }
 
 fn init_tracing(o: &Opts) {
-    if o.debug.is_none() && o.debug_file.is_none() && std::env::var_os("FORGE_LOG").is_none() {
-        return;
-    }
-    let filter = std::env::var("FORGE_LOG").unwrap_or_else(|_| "debug".into());
-    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false);
-    match &o.debug_file {
-        Some(path) => {
-            if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                builder.with_writer(Mutex::new(f)).init();
+    if o.debug.is_some() || o.debug_file.is_some() || std::env::var_os("FORGE_LOG").is_some() {
+        let filter = std::env::var("FORGE_LOG").unwrap_or_else(|_| "debug".into());
+        let builder = tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false);
+        match &o.debug_file {
+            Some(path) => {
+                if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    builder.with_writer(Mutex::new(f)).init();
+                    forge_core::debug::set_startup(path.display().to_string());
+                }
+            }
+            None => {
+                builder.with_writer(std::io::stderr).init();
+                forge_core::debug::set_startup("stderr");
             }
         }
-        None => builder.with_writer(std::io::stderr).init(),
+        return;
+    }
+    // Off until `/debug` turns it on, then to a file.
+    use tracing_subscriber::prelude::*;
+    let file: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(None));
+    let (filter, reload) = tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("off"));
+    let sink = file.clone();
+    let layer = tracing_subscriber::fmt::layer().with_ansi(false).with_writer(move || SwitchWriter(sink.clone()));
+    if tracing_subscriber::registry().with(filter).with(layer).try_init().is_err() {
+        return;
+    }
+    forge_core::debug::set_enabler(move |path| {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+        *file.lock().unwrap() = Some(f);
+        reload
+            .reload(tracing_subscriber::EnvFilter::new("debug,hyper=info,h2=info,rustls=info,reqwest=info"))
+            .map_err(|e| e.to_string())
+    });
+}
+
+/// The `/debug` log: discards everything until a file is set.
+struct SwitchWriter(Arc<Mutex<Option<std::fs::File>>>);
+
+impl std::io::Write for SwitchWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock().unwrap().as_mut() {
+            Some(f) => f.write(buf),
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.0.lock().unwrap().as_mut() {
+            Some(f) => f.flush(),
+            None => Ok(()),
+        }
     }
 }
 
@@ -349,12 +391,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     }
                 }
             }
-            Input::SystemPrompt { replace, append } => {
-                let engine = &mut driver.engine;
-                let env = forge_engine::EnvInfo::collect(&engine.tool_ctx().project_dir, &[], &engine.handle().model());
-                let opts = forge_engine::SystemPromptOptions { replace, append, ..Default::default() };
-                engine.set_system(forge_engine::build_system(&opts, &env).0);
-            }
+            Input::SystemPrompt { replace, append } => driver.set_system_prompt(replace, append),
             Input::Eof => break,
         }
     }

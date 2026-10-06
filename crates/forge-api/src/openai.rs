@@ -400,7 +400,9 @@ mod tests {
             temperature: None,
             metadata: None,
             output_config: None,
+            speed: None,
             stream: true,
+            betas: vec![],
         };
         let body = to_chat_request(&req);
         let msgs = body["messages"].as_array().unwrap();

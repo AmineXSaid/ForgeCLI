@@ -126,7 +126,7 @@ impl MessagesProvider {
         format!("{}{}", self.config.base_url.trim_end_matches('/'), path)
     }
 
-    fn headers(&self) -> Result<HeaderMap, ApiError> {
+    fn headers(&self, extra_betas: &[String]) -> Result<HeaderMap, ApiError> {
         let mut h = HeaderMap::new();
         h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         h.insert(VERSION_HEADER, HeaderValue::from_static(API_VERSION));
@@ -136,8 +136,10 @@ impl MessagesProvider {
         if let Some(t) = &self.config.auth_token {
             h.insert(reqwest::header::AUTHORIZATION, header_value(&format!("Bearer {t}"))?);
         }
-        if !self.config.betas.is_empty() {
-            h.insert(BETA_HEADER, header_value(&self.config.betas.join(","))?);
+        let mut betas = self.config.betas.clone();
+        betas.extend(extra_betas.iter().filter(|b| !self.config.betas.contains(b)).cloned());
+        if !betas.is_empty() {
+            h.insert(BETA_HEADER, header_value(&betas.join(","))?);
         }
         for (k, v) in &self.config.extra_headers {
             let name = HeaderName::from_bytes(k.as_bytes()).map_err(|e| ApiError::Parse(e.to_string()))?;
@@ -146,11 +148,11 @@ impl MessagesProvider {
         Ok(h)
     }
 
-    async fn send_once(&self, body: &Value) -> Result<reqwest::Response, ApiError> {
+    async fn send_once(&self, body: &Value, betas: &[String]) -> Result<reqwest::Response, ApiError> {
         let resp = self
             .http
             .post(self.endpoint("/v1/messages"))
-            .headers(self.headers()?)
+            .headers(self.headers(betas)?)
             .json(body)
             .send()
             .await
@@ -282,7 +284,7 @@ impl Provider for MessagesProvider {
         let resp = loop {
             let res = tokio::select! {
                 _ = cancel.cancelled() => return Err(ApiError::Cancelled),
-                r = self.send_once(&body) => r,
+                r = self.send_once(&body, &request.betas) => r,
             };
             match res {
                 Ok(r) => break r,
@@ -320,7 +322,7 @@ impl Provider for MessagesProvider {
         let resp = self
             .http
             .post(self.endpoint("/v1/messages/count_tokens"))
-            .headers(self.headers().ok()?)
+            .headers(self.headers(&request.betas).ok()?)
             .json(&body)
             .send()
             .await

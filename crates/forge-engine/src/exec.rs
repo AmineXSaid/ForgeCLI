@@ -147,6 +147,7 @@ async fn run_one(
         sandboxed: tool.sandboxed(&input, &ctx),
     };
     let mut decision = perm.decide(&req);
+    tracing::debug!(tool = name, decision = ?decision, mode = perm.mode.as_str(), "permission check");
     // Questions for the person always reach them (contract C8): only deny rules and
     // bypassPermissions (which approves plans) skip the prompt.
     if tool.needs_user() {
@@ -273,10 +274,12 @@ async fn run_one(
     }
 
     // 4. Execute (abort on interrupt even if the tool does not cooperate).
+    let t0 = std::time::Instant::now();
     let output = tokio::select! {
         o = tool.call(input.clone(), &ctx) => o,
         _ = call_cancel.cancelled() => ToolOutput::error(INTERRUPTED),
     };
+    tracing::debug!(tool = name, id, ms = t0.elapsed().as_millis() as u64, is_error = output.is_error, "tool call");
     if call_cancel.is_cancelled() {
         return CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop, writes_after: 0 };
     }

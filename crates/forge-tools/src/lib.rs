@@ -15,7 +15,7 @@ pub mod sandbox;
 pub mod shells;
 mod util;
 
-pub use context::{Checkpointer, ToolContext};
+pub use context::{Checkpointer, SandboxCell, ToolContext};
 pub use files::FileState;
 pub use registry::ToolRegistry;
 pub use util::{expand_path, fit_output, truncate_middle};

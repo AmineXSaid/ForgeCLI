@@ -37,7 +37,9 @@ fn request(model: &str, system: &str, user: String, tools: Vec<ToolSpec>, max_to
         temperature: None,
         metadata: None,
         output_config: None,
+        speed: None,
         stream: true,
+        betas: vec![],
     }
 }
 

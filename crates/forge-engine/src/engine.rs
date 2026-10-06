@@ -76,6 +76,8 @@ pub struct EngineConfig {
     /// After a `max_tokens` stop, raise the output cap to [`ESCALATED_OUTPUT_TOKENS`]
     /// for the rest of the turn (off when the user set the cap).
     pub escalate_output: bool,
+    /// Start in fast mode (`fastMode` setting).
+    pub fast: bool,
 }
 
 /// The output cap after a `max_tokens` stop (capped by the model).
@@ -105,6 +107,7 @@ impl Default for EngineConfig {
             is_subagent: false,
             verify: None,
             escalate_output: true,
+            fast: false,
         }
     }
 }
@@ -117,12 +120,17 @@ pub enum EngineError {
     UnknownPricing(String),
 }
 
+/// The beta flag fast mode needs.
+pub const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
+
 /// Settings a host may change while the engine runs.
 #[derive(Debug, Clone)]
 pub struct Runtime {
     pub model: String,
     pub max_thinking_tokens: Option<u32>,
     pub effort: Option<String>,
+    /// Fast mode (`/fast`): faster output at a higher price, where the model supports it.
+    pub fast: bool,
 }
 
 /// A cloneable handle for controlling a running engine (interrupt, mode, model).
@@ -155,6 +163,14 @@ impl EngineHandle {
 
     pub fn set_effort(&self, effort: Option<String>) {
         self.runtime.write().unwrap().effort = effort;
+    }
+
+    pub fn set_fast(&self, on: bool) {
+        self.runtime.write().unwrap().fast = on;
+    }
+
+    pub fn runtime(&self) -> Runtime {
+        self.runtime.read().unwrap().clone()
     }
 
     pub fn model(&self) -> String {
@@ -244,6 +260,8 @@ pub struct Engine {
     output_cap: Option<u32>,
     /// After `/clear`: attach the memory context to the next prompt again.
     reattach_context: bool,
+    /// Notes for the model, attached to the next prompt (`/add-dir`, ...).
+    reminders: Vec<String>,
 }
 
 /// What a compaction did.
@@ -284,6 +302,7 @@ impl Engine {
             model: cfg.model.clone(),
             max_thinking_tokens: cfg.max_thinking_tokens,
             effort: cfg.effort.clone(),
+            fast: cfg.fast,
         };
         let permissions = Arc::new(RwLock::new(parts.permissions));
         let handle = EngineHandle {
@@ -318,6 +337,7 @@ impl Engine {
             guard: Default::default(),
             output_cap: None,
             reattach_context: false,
+            reminders: vec![],
         })
     }
 
@@ -327,6 +347,26 @@ impl Engine {
 
     pub fn tools(&self) -> &ToolRegistry {
         &self.shared.tools
+    }
+
+    /// The model provider, for side requests (titles, summaries) outside the conversation.
+    pub fn provider(&self) -> Arc<dyn Provider> {
+        self.shared.provider.clone()
+    }
+
+    /// Tell the model something with the next prompt (a system reminder).
+    pub fn remind(&mut self, text: impl Into<String>) {
+        self.reminders.push(text.into());
+    }
+
+    /// The window compaction is measured against, for `model`.
+    pub fn context_window(&self, model: &str) -> u64 {
+        self.compact_window(model)
+    }
+
+    /// The context size at which automatic compaction runs, for `model`.
+    pub fn autocompact_at(&self, model: &str) -> u64 {
+        forge_compact::autocompact_threshold(self.compact_window(model), self.cfg.max_output_tokens)
     }
 
     /// The model provider's short name (`messages`, `openai`, `mock`).
@@ -477,6 +517,8 @@ impl Engine {
             let oc = output_config.get_or_insert_with(|| json!({}));
             oc["format"] = json!({"type": "json_schema", "schema": schema});
         }
+        // Fast mode only where the model offers it; elsewhere the flag is ignored.
+        let fast = rt.fast && info.supports_fast_mode && self.shared.provider.name() != "openai";
         let mut messages = normalize(&self.state.messages, &self.state.microcompacted);
         apply_cache_breakpoints(&mut messages);
         let mut tools = self.shared.tools.specs();
@@ -498,7 +540,9 @@ impl Engine {
             temperature: None,
             metadata: self.cfg.metadata_user_id.as_ref().map(|u| json!({"user_id": u})),
             output_config,
+            speed: fast.then(|| "fast".to_string()),
             stream: true,
+            betas: if fast { vec![FAST_MODE_BETA.to_string()] } else { vec![] },
         }
     }
 
@@ -640,6 +684,7 @@ impl Engine {
         if self.state.messages.is_empty() {
             return Err("nothing to compact yet".into());
         }
+        tracing::debug!(trigger, context_tokens = self.state.context_tokens, "compacting");
         let o = self
             .shared
             .hooks
@@ -745,20 +790,6 @@ impl Engine {
         }
     }
 
-    /// `/cost`: tokens and spend so far.
-    pub fn cost_report(&self) -> String {
-        let u = &self.state.total_usage;
-        format!(
-            "Total cost: ${:.4}\nTokens: {} input, {} output, {} cache read, {} cache write\nContext now: about {} tokens",
-            self.state.total_cost_usd,
-            u.input_tokens,
-            u.output_tokens,
-            u.cache_read_input_tokens,
-            u.cache_creation_input_tokens,
-            self.state.context_tokens
-        )
-    }
-
     /// Add a sub-agent's spend to this session (budgets include sub-agents).
     fn record_subagent_usage(&mut self, sub: &Value) {
         let cost = sub.get("costUsd").and_then(Value::as_f64).unwrap_or(0.0);
@@ -835,6 +866,10 @@ impl Engine {
             if let Some(c) = &self.session_context {
                 blocks.insert(0, ContentBlock::text(format!("<system-reminder>\n{c}\n</system-reminder>")));
             }
+        }
+        if !self.reminders.is_empty() && !self.cfg.is_subagent {
+            let notes = std::mem::take(&mut self.reminders).join("\n\n");
+            blocks.insert(0, ContentBlock::text(format!("<system-reminder>\n{notes}\n</system-reminder>")));
         }
 
         // UserPromptSubmit (contract C11: exit 2 blocks and erases the prompt). Not for sub-agents.
@@ -917,9 +952,32 @@ impl Engine {
                 self.maybe_compact(&model, true, &cancel, &mut turn).await;
             }
             let req = self.build_request(&model);
+            tracing::debug!(
+                model = %req.model,
+                messages = req.messages.len(),
+                tools = req.tools.len(),
+                max_tokens = req.max_tokens,
+                output_config = ?req.output_config,
+                speed = ?req.speed,
+                context_tokens = self.state.context_tokens,
+                "model request"
+            );
             let t0 = Instant::now();
             let outcome = self.stream_once(req, &cancel).await;
             turn.api_ms += t0.elapsed().as_millis() as u64;
+            match &outcome {
+                StreamOutcome::Done(m) => tracing::debug!(
+                    ms = t0.elapsed().as_millis() as u64,
+                    stop_reason = ?m.stop_reason,
+                    input_tokens = m.usage.input_tokens,
+                    output_tokens = m.usage.output_tokens,
+                    cache_read = m.usage.cache_read_input_tokens,
+                    tool_calls = m.content.iter().filter(|b| matches!(b, ContentBlock::ToolUse { .. })).count(),
+                    "model response"
+                ),
+                StreamOutcome::Interrupted(_) => tracing::debug!("model response interrupted"),
+                StreamOutcome::Failed(e) => tracing::debug!(error = %e, "model request failed"),
+            }
             let msg = match outcome {
                 StreamOutcome::Done(m) => m,
                 StreamOutcome::Interrupted(partial) => {

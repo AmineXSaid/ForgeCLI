@@ -8,8 +8,8 @@ pub use redact::{is_secret_key, redact};
 
 mod redact;
 pub use settings::{
-    deep_merge, load_settings, parse_sources, write_setting, LoadedSettings, SettingSource, SettingsLayer,
-    SettingsOptions,
+    deep_merge, load_settings, parse_sources, remove_setting, write_setting, LoadedSettings, SettingSource,
+    SettingsLayer, SettingsOptions,
 };
 
 use std::path::{Path, PathBuf};

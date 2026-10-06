@@ -30,7 +30,8 @@ pub struct AgentRuntime {
     pub working_dirs: Arc<RwLock<Vec<PathBuf>>>,
     pub env: Arc<std::collections::HashMap<String, String>>,
     /// The session's shell sandbox, inherited by sub-agents.
-    pub sandbox: Option<Arc<forge_tools::sandbox::SandboxPolicy>>,
+    /// The parent session's sandbox, shared so `/sandbox` reaches sub-agents too.
+    pub sandbox: forge_tools::SandboxCell,
     /// Tools beyond the built-ins (MCP servers' tools), offered to sub-agents too.
     pub extra_tools: Vec<Arc<dyn Tool>>,
     /// Where sub-agent transcripts go (`None` = not persisted).

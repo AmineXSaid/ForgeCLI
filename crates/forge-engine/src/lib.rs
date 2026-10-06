@@ -16,6 +16,7 @@ pub mod verify;
 
 pub use engine::{
     CompactInfo, Engine, EngineConfig, EngineError, EngineHandle, EngineParts, Pricing, TurnResult, TurnState,
+    FAST_MODE_BETA,
 };
 pub use events::{
     DenyPrompter, EngineEvent, EventSink, ForwardSink, NoticeLevel, NullSink, PermissionAnswer, PermissionPrompt,

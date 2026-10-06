@@ -22,6 +22,8 @@ pub struct MockApi {
     pub url: String,
     turns: Arc<Mutex<VecDeque<MockTurn>>>,
     requests: Arc<Mutex<Vec<Value>>>,
+    /// Each request's header block, lowercased.
+    heads: Arc<Mutex<Vec<String>>>,
 }
 
 impl MockApi {
@@ -30,11 +32,12 @@ impl MockApi {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let turns = Arc::new(Mutex::new(VecDeque::from(turns)));
         let requests = Arc::new(Mutex::new(vec![]));
-        let (t, r) = (turns.clone(), requests.clone());
+        let heads = Arc::new(Mutex::new(vec![]));
+        let (t, r, hs) = (turns.clone(), requests.clone(), heads.clone());
         tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else { return };
-                let (t, r) = (t.clone(), r.clone());
+                let (t, r, hs) = (t.clone(), r.clone(), hs.clone());
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
                     let mut tmp = [0u8; 8192];
@@ -63,6 +66,7 @@ impl MockApi {
                         buf.extend_from_slice(&tmp[..n]);
                     }
                     let body: Value = serde_json::from_slice(&buf[head_end..]).unwrap_or(Value::Null);
+                    hs.lock().unwrap().push(String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase());
                     r.lock().unwrap().push(body.clone());
                     let turn = t.lock().unwrap().pop_front().unwrap_or_else(|| MockTurn::text("(mock api exhausted)"));
                     let response = match turn {
@@ -103,11 +107,16 @@ impl MockApi {
                 });
             }
         });
-        MockApi { url, turns, requests }
+        MockApi { url, turns, requests, heads }
     }
 
     pub fn push(&self, turn: MockTurn) {
         self.turns.lock().unwrap().push_back(turn);
+    }
+
+    /// Each request's header block, lowercased, in order.
+    pub fn headers(&self) -> Vec<String> {
+        self.heads.lock().unwrap().clone()
     }
 
     pub fn requests(&self) -> Vec<Value> {

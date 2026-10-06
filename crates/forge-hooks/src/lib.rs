@@ -319,6 +319,7 @@ impl HookRunner {
         if commands.is_empty() {
             return out;
         }
+        tracing::debug!(event = event.as_str(), matcher = ?match_value, hooks = commands.len(), "running hooks");
         let mut input = json!({
             "session_id": self.base.session_id,
             "transcript_path": self.base.transcript_path,

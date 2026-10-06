@@ -19,11 +19,11 @@ pub enum Exec {
     Exit,
 }
 
-fn ok(text: impl Into<String>) -> Exec {
+pub(super) fn ok(text: impl Into<String>) -> Exec {
     Exec::Local { text: text.into(), is_error: false }
 }
 
-fn err(text: impl Into<String>) -> Exec {
+pub(super) fn err(text: impl Into<String>) -> Exec {
     Exec::Local { text: text.into(), is_error: true }
 }
 
@@ -83,10 +83,27 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             _ => err("Usage: /mcp"),
         },
         Builtin::Tasks => tasks(d, args),
+        Builtin::Model => super::settings::model(d, args),
+        Builtin::Effort => super::settings::effort(d, args),
+        Builtin::Fast => super::settings::fast(d, args),
+        Builtin::Config => super::settings::config(d, args),
+        Builtin::OutputStyle => super::settings::output_style(d, args),
+        Builtin::Autocompact => super::settings::autocompact(d, args),
+        Builtin::Sandbox => super::settings::sandbox(d, args),
+        Builtin::Rename => super::session::rename(d, args).await,
+        Builtin::Export => super::session::export(d, args),
+        Builtin::Diff => match args {
+            "" => super::session::diff(d),
+            _ => err("Usage: /diff"),
+        },
+        Builtin::Context => super::session::context(d, args),
+        Builtin::Debug => super::session::debug(d, args),
+        Builtin::Permissions => super::session::permissions(d, args),
+        Builtin::AddDir => super::session::add_dir(d, args),
     }
 }
 
-fn thousands(n: u64) -> String {
+pub(super) fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
@@ -172,7 +189,7 @@ fn status(d: &Driver) -> String {
     );
     let _ = writeln!(s, "Permissions:    {} mode", mode.as_str());
     let _ = writeln!(s, "Output style:   {}", info.init.output_style);
-    let sandbox = match d.engine.tool_ctx().sandbox.as_ref() {
+    let sandbox = match d.engine.tool_ctx().sandbox_policy() {
         Some(p) => format!("{} (network {})", p.mode.as_str(), if p.network { "on" } else { "off" }),
         None => "off".into(),
     };
@@ -211,7 +228,7 @@ fn status(d: &Driver) -> String {
     s
 }
 
-fn tokens_of(text: &str) -> usize {
+pub(super) fn tokens_of(text: &str) -> usize {
     text.len() / 4
 }
 

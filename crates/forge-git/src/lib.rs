@@ -61,6 +61,20 @@ pub fn status_snapshot(dir: &Path) -> Option<String> {
     ))
 }
 
+/// Uncommitted changes to tracked files (`git diff HEAD`), and untracked files.
+/// `None` outside a repository.
+pub fn uncommitted(dir: &Path) -> Option<(String, Vec<String>)> {
+    let root = repo_root(dir)?;
+    // A repository without commits has no HEAD: diff the index instead.
+    let diff = git(&root, &["diff", "HEAD", "--no-color", "--no-ext-diff"])
+        .or_else(|| git(&root, &["diff", "--cached", "--no-color", "--no-ext-diff"]))
+        .unwrap_or_default();
+    let untracked = git(&root, &["ls-files", "--others", "--exclude-standard"])
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    Some((diff, untracked))
+}
+
 /// Create a worktree at `path` on a new branch from HEAD.
 pub fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<(), String> {
     let out = Command::new("git")

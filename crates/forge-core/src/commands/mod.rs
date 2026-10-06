@@ -14,8 +14,12 @@
 //! generated from it.
 
 mod run;
+mod session;
+mod settings;
 
 pub use run::{execute, Exec};
+pub use session::{clean_title, render_conversation};
+pub use settings::Scope;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -58,17 +62,31 @@ impl Surfaces {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
+    AddDir,
     Agents,
+    Autocompact,
     Clear,
     Compact,
+    Config,
+    Context,
+    Debug,
+    Diff,
     Doctor,
+    Effort,
     Exit,
+    Export,
+    Fast,
     Help,
     Hooks,
     Mcp,
     Memory,
+    Model,
+    OutputStyle,
+    Permissions,
     Plugin,
     ReleaseNotes,
+    Rename,
+    Sandbox,
     Skills,
     Status,
     Tasks,
@@ -107,17 +125,49 @@ macro_rules! cmd {
 
 /// Every built-in command, alphabetically.
 pub static BUILTINS: &[CommandSpec] = &[
+    cmd!(AddDir, "add-dir", [], "<path> [--save]", "Add a working directory for this session"),
     cmd!(Agents, "agents", [], "", "List subagents, and how to add your own"),
+    cmd!(
+        Autocompact,
+        "autocompact",
+        [],
+        "[on|off|auto|<tokens>]",
+        "Show or set when the conversation is compacted automatically"
+    ),
     cmd!(Clear, "clear", ["reset", "new"], "", "Start the conversation over with empty context"),
     cmd!(Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
+    cmd!(Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
+    cmd!(Context, "context", [], "[all]", "Show what fills the context window", Surfaces::ALL, true),
+    cmd!(Debug, "debug", [], "[description]", "Turn on debug logging, and have Forge read the log to find a problem"),
+    cmd!(Diff, "diff", [], "", "Show uncommitted changes, and the files each prompt changed"),
     cmd!(Doctor, "doctor", ["checkup"], "", "Check the installation and this session's setup"),
+    cmd!(Effort, "effort", [], "[low|medium|high|xhigh|max|auto]", "Show or set the model's reasoning effort"),
     cmd!(Exit, "exit", ["quit"], "", "Exit Forge"),
+    cmd!(Export, "export", [], "[file]", "Export the conversation as plain text"),
+    cmd!(Fast, "fast", [], "[on|off]", "Turn fast mode on or off, where the model offers it"),
     cmd!(Help, "help", [], "", "Show help and the available commands"),
     cmd!(Hooks, "hooks", [], "", "View the configured hooks"),
     cmd!(Mcp, "mcp", [], "", "Show MCP server status", Surfaces::ALL, true),
     cmd!(Memory, "memory", [], "", "List the memory files in use (FORGE.md, AGENTS.md)"),
+    cmd!(Model, "model", [], "[model]", "Show the models, or switch to one"),
+    cmd!(OutputStyle, "output-style", [], "[style]", "Show the output styles, or switch to one"),
+    cmd!(
+        Permissions,
+        "permissions",
+        ["allowed-tools"],
+        "[add|remove ...]",
+        "Show the permission rules and working directories, or change the rules"
+    ),
     cmd!(Plugin, "plugin", [], "[list]", "List loaded plugins"),
     cmd!(ReleaseNotes, "release-notes", [], "", "Show what changed in each version"),
+    cmd!(Rename, "rename", [], "[name]", "Rename this session (Forge suggests a name when you give none)"),
+    cmd!(
+        Sandbox,
+        "sandbox",
+        [],
+        "[on|off|read-only|workspace-write]",
+        "Show or change the OS sandbox for shell commands"
+    ),
     cmd!(Skills, "skills", [], "", "List available skills"),
     cmd!(Status, "status", [], "", "Show version, model, session and setup status", Surfaces::ALL, true),
     cmd!(

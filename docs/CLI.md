@@ -240,7 +240,7 @@ them.
 | `FORGE_VERIFY` | `0` turns the verification loop off |
 | `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT` | MCP connect and call timeouts, in milliseconds (30 s, 10 min) |
 | `FORGE_NO_INPUT` | Same as `--no-input` |
-| `FORGE_LOG` | Log filter, with `--debug` |
+| `FORGE_LOG` | Log filter, with `--debug` (`/debug` turns logging on partway through a session) |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |
 
 ## Slash commands
@@ -258,6 +258,20 @@ them all. The built-ins so far:
 | `/doctor` (`/checkup`) | `forge doctor` plus this session's MCP, model and warnings |
 | `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin`, `/mcp` | What is loaded, and from where |
 | `/tasks [stop <id>]` (`/bashes`) | Background shells; `stop` ends one |
+| `/model [model]` | Lists the models, or switches (an alias such as `sonnet`, or an id) |
+| `/effort [low\|medium\|high\|xhigh\|max\|auto]` | Shows or sets reasoning effort; `max` lasts for the session only |
+| `/fast [on\|off]` | Fast mode, on models that offer it |
+| `/config [key=value ...] [--scope user\|project\|local]` (`/settings`) | Shows the settings Forge can change, or changes them; `key=` restores the default; `/config --help` lists the keys |
+| `/output-style [style]` | Lists the output styles, or switches |
+| `/autocompact [on\|off\|auto\|<tokens>]` | When the conversation is summarized automatically |
+| `/sandbox [on\|off\|read-only\|workspace-write]` | The OS sandbox for shell commands |
+| `/permissions` (`/allowed-tools`) | Lists rules (with the layer each comes from) and working directories; `add <allow\|ask\|deny> <rule> [--scope local\|project\|user\|session]`, `remove <rule>` |
+| `/add-dir <path> [--save]` | Adds a working directory; `--save` keeps it in local settings |
+| `/rename [name]` | Names the session; without a name, a small model suggests one |
+| `/export [file]` | The conversation as plain text, to a file or stdout |
+| `/diff` | Uncommitted changes (`git diff HEAD` and untracked files), or outside git the files Forge changed; then the files each prompt changed |
+| `/context [all]` | Estimated tokens for the system prompt, tools, skills, memory and messages against the window, with suggestions |
+| `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, Forge reads the log and diagnoses it |
 | `/release-notes` | The changelog |
 | `/exit` (`/quit`) | Ends the session |
 | `/<custom> [args]` | A custom command from `commands/*.md` |
@@ -266,6 +280,15 @@ them all. The built-ins so far:
 
 `docs/PARITY.md` ("Slash commands") tracks the rest of the reference's
 commands.
+
+**Saving defaults:** `/model`, `/effort`, `/fast`, `/output-style`,
+`/autocompact` and `/sandbox` apply at once. In the REPL (and later the
+TUI) they also save the choice as the default: `model`, `effortLevel`,
+`fastMode` and `autoCompact*` in user settings, `outputStyle` and
+`sandbox.mode` in local project settings. In `-p` and stream-json they last
+for that session only, so a script never changes your defaults. `/config`
+always saves, and says when a higher-precedence layer overrides the value it
+wrote.
 
 **Local commands** answer without calling the model: the result has
 `num_turns: 0`, and in text mode the answer goes to stdout. A failed or

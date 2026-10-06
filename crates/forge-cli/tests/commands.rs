@@ -167,3 +167,65 @@ async fn json_output_marks_local_results() {
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!((v["is_error"].as_bool(), v["exit_code"].as_i64()), (Some(true), Some(1)));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_commands_persist_and_reach_the_api() {
+    let e = env();
+    let api = MockApi::start(vec![]).await;
+    // /config saves to user settings; the next run starts with it.
+    let (code, out, err) =
+        forge(&e, &api.url, &["-p", "/config model=sonnet effortLevel=low autoCompactWindow=300k"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("model = \"sonnet\". Saved in user settings"), "{out}");
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(e.home.join(".forge/settings.json")).unwrap()).unwrap();
+    assert_eq!((saved["model"].as_str(), saved["autoCompactWindow"].as_u64()), (Some("sonnet"), Some(300_000)));
+    let (_, out, _) = forge(&e, &api.url, &["-p", "/status"]).await;
+    assert!(out.contains("Model:          claude-sonnet-5-5 · effort low"), "{out}");
+
+    // Over stream-json, /model lasts for the session only, and reaches the request.
+    let api = MockApi::start(vec![MockTurn::text("hi")]).await;
+    let mut c = command(
+        &forge_bin(),
+        &e.cwd,
+        &e.home,
+        &api.url,
+        &["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+    );
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().unwrap();
+        for text in ["/model opus", "/fast on", "hello"] {
+            let line = serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
+            stdin.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+        }
+    }
+    let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output()).await.unwrap().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Set model to Opus 5.5 (claude-opus-5-5). (This session only.)"), "{stdout}");
+    let reqs = api.requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!((reqs[0]["model"].as_str(), reqs[0]["speed"].as_str()), (Some("claude-opus-5-5"), Some("fast")));
+    assert!(api.headers()[0].contains("fast-mode-2026-02-01"), "fast mode sends its beta flag");
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(e.home.join(".forge/settings.json")).unwrap()).unwrap();
+    assert_eq!(saved["model"], "sonnet", "-p never changes the saved default");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn debug_turns_on_a_session_log() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("Looks like a timeout.")]).await;
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/debug"]).await;
+    assert_eq!(code, 0);
+    assert!(out.starts_with("Debug logging is on, writing to ") && out.contains("/debug/"), "{out}");
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/debug the request hangs"]).await;
+    assert_eq!((code, out.trim()), (0, "Looks like a timeout."));
+    let prompt = api.requests()[0].to_string();
+    assert!(prompt.contains("The user reports this problem") && prompt.contains("the request hangs"), "{prompt}");
+    let logs: Vec<_> = std::fs::read_dir(e.home.join(".forge/state/debug")).unwrap().flatten().collect();
+    assert_eq!(logs.len(), 2, "one log per session");
+    assert!(logs.iter().any(|f| std::fs::metadata(f.path()).unwrap().len() > 0), "the turn was logged");
+}

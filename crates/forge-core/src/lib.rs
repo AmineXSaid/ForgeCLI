@@ -1,11 +1,14 @@
 //! Builds a ready-to-run session from launch options and settings.
 
 pub mod commands;
+pub mod debug;
 pub mod doctor;
 pub mod driver;
+pub mod prompt;
 pub mod web;
 
 pub use driver::{Driver, Outcome};
+pub use prompt::PromptSpec;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,9 +16,7 @@ use std::sync::Arc;
 
 use forge_api::{MessagesConfig, MessagesProvider, OpenAiConfig, OpenAiProvider, Provider};
 use forge_config::{load_memory, load_settings, LoadedSettings, MemoryKind, SettingSource, SettingsOptions};
-use forge_engine::{
-    Engine, EngineConfig, EngineParts, EnvInfo, EventSink, PermissionPrompter, Pricing, SystemPromptOptions,
-};
+use forge_engine::{Engine, EngineConfig, EngineParts, EnvInfo, EventSink, PermissionPrompter, Pricing};
 use forge_hooks::{HookBase, HookRunner, HooksConfig};
 use forge_permissions::{PermissionMode, Rule, RuleSet};
 use forge_session::{FileHistory, LoadedSession, SessionStore, Transcript};
@@ -205,6 +206,8 @@ pub async fn connect_mcp(opts: &LaunchOptions) -> (Arc<forge_mcp::McpManager>, V
 pub struct Session {
     pub engine: Engine,
     pub init: InitInfo,
+    /// What the system prompt is built from, for rebuilding it later.
+    pub prompt: PromptSpec,
     /// Custom slash commands, skills, output styles and plugins (M5).
     pub commands: Vec<forge_agents::CommandDef>,
     pub skills: Vec<forge_agents::SkillDef>,
@@ -220,7 +223,7 @@ pub struct Session {
 /// The verification loop's settings: `verification.{enabled, commands,
 /// maxReminders}`, with commands detected from the project's manifests when
 /// none are set. `FORGE_VERIFY=0` turns it off (for A/B runs).
-fn verify_config(settings: &LoadedSettings, cwd: &Path) -> Option<forge_engine::VerifyConfig> {
+pub(crate) fn verify_config(settings: &LoadedSettings, cwd: &Path) -> Option<forge_engine::VerifyConfig> {
     let off = env_nonempty("FORGE_VERIFY").map(|v| matches!(v.as_str(), "0" | "false" | "off" | "no")).unwrap_or(false);
     if off || settings.bool("/verification/enabled") == Some(false) {
         return None;
@@ -524,7 +527,7 @@ pub fn build_session(
                     if cfg!(target_os = "linux") { "install bubblewrap (bwrap)" } else { "no sandbox-exec" }
                 ));
             } else {
-                tool_ctx.sandbox = Some(Arc::new(forge_tools::sandbox::SandboxPolicy {
+                tool_ctx.set_sandbox(Some(forge_tools::sandbox::SandboxPolicy {
                     mode,
                     network: settings.bool("/sandbox/network").unwrap_or(false),
                     writable_roots: vec![],
@@ -579,32 +582,26 @@ pub fn build_session(
         .filter(|s| !s.is_empty())
         .map(forge_api::resolve_model)
         .collect();
-    let append = match (&main_agent, &opts.append_system_prompt) {
-        (Some(a), Some(extra)) => Some(format!("{}\n\n{extra}", a.prompt)),
-        (Some(a), None) => Some(a.prompt.clone()),
-        (None, extra) => extra.clone(),
-    };
-    let mcp_instructions = opts.mcp.as_ref().and_then(|m| m.instructions());
-    let append = match (append, mcp_instructions) {
-        (Some(a), Some(m)) => Some(format!("{a}\n\n{m}")),
-        (a, m) => a.or(m),
-    };
-    let sp_opts = SystemPromptOptions {
-        replace: opts.system_prompt.clone(),
-        append,
-        prompts_dir: env_nonempty("FORGE_PROMPTS_DIR").map(PathBuf::from),
-        exclude_dynamic: opts.exclude_dynamic_system_prompt_sections,
-        output_style: Some(style.prompt.clone()).filter(|p| !p.is_empty()),
-    };
-    for (tool, text) in forge_engine::prompts::tool_description_overrides(&sp_opts) {
-        tools.set_description(&tool, text);
-    }
     let verify = verify_config(&settings, &cwd);
     let mut env_info = EnvInfo::collect(&cwd, &add_dirs, &model);
     if let Some(v) = &verify {
         env_info.checks = v.commands.clone();
     }
-    let (system, deferred) = forge_engine::build_system(&sp_opts, &env_info);
+    let prompt = PromptSpec {
+        replace: opts.system_prompt.clone(),
+        append: opts.append_system_prompt.clone(),
+        agent: main_agent.as_ref().map(|a| a.prompt.clone()),
+        mcp_instructions: opts.mcp.as_ref().and_then(|m| m.instructions()),
+        prompts_dir: env_nonempty("FORGE_PROMPTS_DIR").map(PathBuf::from),
+        exclude_dynamic: opts.exclude_dynamic_system_prompt_sections,
+        output_style: Some(style.prompt.clone()).filter(|p| !p.is_empty()),
+        env: env_info,
+    };
+    let sp_opts = prompt.options();
+    for (tool, text) in forge_engine::prompts::tool_description_overrides(&sp_opts) {
+        tools.set_description(&tool, text);
+    }
+    let (system, deferred) = prompt.build();
     let mut initial = vec![];
     if let Some(d) = deferred {
         initial.push(d);
@@ -657,7 +654,9 @@ pub fn build_session(
         fallback_models,
         max_output_tokens: env_nonempty("FORGE_MAX_OUTPUT_TOKENS").and_then(|v| v.parse().ok()).unwrap_or(32_000),
         effort: opts.effort.clone().or_else(|| settings.str("/effortLevel").map(str::to_string)),
-        max_thinking_tokens: env_nonempty("FORGE_MAX_THINKING_TOKENS").and_then(|v| v.parse().ok()),
+        max_thinking_tokens: env_nonempty("FORGE_MAX_THINKING_TOKENS")
+            .and_then(|v| v.parse().ok())
+            .or_else(|| (settings.bool("/alwaysThinkingEnabled") == Some(false)).then_some(0)),
         max_turns: opts.max_turns,
         max_budget_usd: opts.max_budget_usd,
         json_schema: opts.json_schema.clone(),
@@ -672,6 +671,7 @@ pub fn build_session(
         is_subagent: false,
         verify,
         escalate_output: env_nonempty("FORGE_MAX_OUTPUT_TOKENS").is_none(),
+        fast: settings.bool("/fastMode").unwrap_or(false),
     };
     let parts = EngineParts {
         provider: provider.clone(),
@@ -730,7 +730,20 @@ pub fn build_session(
         plugins: plugins.iter().map(|p| json!({"name": p.name, "path": p.dir})).collect(),
         uuid: uuid::Uuid::new_v4().to_string(),
     };
-    Ok(Session { engine, init, commands, skills, styles, plugins, agents, settings, warnings, session_id, resumed })
+    Ok(Session {
+        engine,
+        init,
+        prompt,
+        commands,
+        skills,
+        styles,
+        plugins,
+        agents,
+        settings,
+        warnings,
+        session_id,
+        resumed,
+    })
 }
 
 /// `auto` or a token count between 100k and 1M (`200000`, `200k`, `1m`).
@@ -817,3 +830,6 @@ pub fn persist_permission_update(cwd: &Path, upd: &Value) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod driver_tests;
