@@ -33,7 +33,15 @@ pub struct CommandResult {
     pub final_cwd: Option<PathBuf>,
 }
 
-fn build(command: &str, cwd: &Path, env: &HashMap<String, String>, cwd_file: Option<&Path>) -> Command {
+type Sandbox<'a> = Option<&'a (crate::sandbox::Backend, crate::sandbox::SandboxPolicy)>;
+
+fn build(
+    command: &str,
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    cwd_file: Option<&Path>,
+    sandbox: Sandbox,
+) -> Command {
     let script = match cwd_file {
         Some(f) => format!(
             "{command}\n__forge_ec=$?\npwd -P > '{}' 2>/dev/null\nexit $__forge_ec",
@@ -41,8 +49,20 @@ fn build(command: &str, cwd: &Path, env: &HashMap<String, String>, cwd_file: Opt
         ),
         None => command.to_string(),
     };
-    let mut c = Command::new(shell_program());
-    c.arg("-c").arg(script).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut c = match sandbox {
+        Some((backend, policy)) => {
+            let (prog, args) = policy.wrap(*backend, &shell_program(), &script, cwd);
+            let mut c = Command::new(prog);
+            c.args(args);
+            c
+        }
+        None => {
+            let mut c = Command::new(shell_program());
+            c.arg("-c").arg(script);
+            c
+        }
+    };
+    c.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     c.env("FORGECLI", "1");
     for (k, v) in env {
         c.env(k, v);
@@ -85,9 +105,10 @@ pub async fn run_command(
     env: &HashMap<String, String>,
     timeout: Duration,
     cancel: &CancellationToken,
+    sandbox: Sandbox<'_>,
 ) -> std::io::Result<CommandResult> {
     let cwd_file = std::env::temp_dir().join(format!("forge-cwd-{}", uuid::Uuid::new_v4()));
-    let mut child: Child = build(command, cwd, env, Some(&cwd_file)).spawn()?;
+    let mut child: Child = build(command, cwd, env, Some(&cwd_file), sandbox).spawn()?;
     let pid = child.id();
     let out = tokio::spawn(read_all(child.stdout.take().expect("piped")));
     let err = tokio::spawn(read_all(child.stderr.take().expect("piped")));
@@ -180,8 +201,9 @@ impl ShellManager {
         command: &str,
         cwd: &Path,
         env: &HashMap<String, String>,
+        sandbox: Sandbox<'_>,
     ) -> std::io::Result<Arc<BackgroundShell>> {
-        let mut child = build(command, cwd, env, None).kill_on_drop(false).spawn()?;
+        let mut child = build(command, cwd, env, None, sandbox).kill_on_drop(false).spawn()?;
         let id = format!("bash_{}", self.counter.fetch_add(1, Ordering::SeqCst) + 1);
         let shell = Arc::new(BackgroundShell {
             id: id.clone(),

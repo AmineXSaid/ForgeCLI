@@ -48,6 +48,7 @@ fn setup(responder: impl Fn(&MessagesRequest) -> MockTurn + Send + Sync + 'stati
         project_dir: cwd.clone(),
         working_dirs: tool_ctx.working_dirs.clone(),
         env: tool_ctx.env.clone(),
+        sandbox: None,
         store: Some(SessionStore::new(dir.path().join("agents"))),
         session_id: SID.into(),
         hooks: hooks.clone(),

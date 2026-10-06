@@ -104,6 +104,14 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `--add-dir` scoping | done | `permissions::read_only_inside_working_dirs_is_allowed` |  |
 | Headless auto-deny | done | `engine::c1_headless_denies_and_continues`, `e2e::headless_denies_and_reports` | Contract C1 |
 
+## Harness (beyond the baseline)
+
+These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`.
+
+| Item | Status | Test | Notes |
+| --- | --- | --- | --- |
+| OS sandbox for Bash (`--sandbox`, `FORGE_SANDBOX`, `sandbox.*` settings) | partial | `builtin::sandbox_confines_writes_and_network`, `sandbox::bwrap_arguments`, `sandbox::failure_hints`, `permissions::sandboxed_commands_need_no_prompt_but_rules_still_apply`, `e2e::sandbox_lets_headless_runs_build_without_prompts` | Tool design / safety. The Codex pattern. Linux bubblewrap done; the macOS Seatbelt profile is untested |
+
 ## Config, memory, hooks (M3)
 
 | Item | Status | Test | Notes |

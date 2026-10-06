@@ -68,7 +68,8 @@ a note in `CHANGELOG.md`.
 - **Permissions:** tool calls that need approval are denied, and the model is
   told how to allow them (contract C1). They are listed in
   `result.permission_denials`. To allow them, use `--allowedTools`,
-  `--permission-mode` or settings rules.
+  `--permission-mode` or settings rules, or run shell commands in the
+  sandbox (`--sandbox workspace-write`, below), where they need no approval.
 - **Limits:**
   - `--max-turns N` caps model calls;
   - `--max-budget-usd X` caps spend; it fails closed when the model's pricing
@@ -198,9 +199,53 @@ them.
 | `FORGE_MAX_RETRIES` | API retries (default 3) |
 | `FORGE_PROMPTS_DIR` | A local prompt set |
 | `FORGE_HOME` | One root for config, state and cache |
+| `FORGE_SANDBOX` | Same as `--sandbox` |
 | `FORGE_NO_INPUT` | Same as `--no-input` |
 | `FORGE_LOG` | Log filter, with `--debug` |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |
+
+## Sandbox
+
+`--sandbox <mode>`, `FORGE_SANDBOX` or the `sandbox.mode` setting (in that
+order) run each Bash command inside an OS sandbox. The sandbox is separate from
+permissions: a sandboxed command is allowed without a prompt, because the
+operating system, not a rule, limits what it can touch.
+
+| Mode | Writable | Network |
+| --- | --- | --- |
+| `off` (default) | everything the user can write | yes |
+| `read-only` | the temp directories only | `sandbox.network` (default off) |
+| `workspace-write` | the working directories (`--add-dir` included), the temp directories, and `sandbox.writableRoots` | `sandbox.network` (default off) |
+
+**What stays protected, in every mode:**
+- `.forge/` inside each writable root (settings, hooks and agents can't be
+  rewritten from a command);
+- `.git/hooks` and `.git/config`.
+
+**The rules still apply:**
+- deny rules still deny;
+- paths outside the working directories still ask.
+
+**Backends:**
+- Linux: bubblewrap (`bwrap`). Install it with your package manager.
+- macOS: `sandbox-exec` with a generated Seatbelt profile. This backend is
+  untested.
+
+`forge doctor` reports which backend was found.
+
+**When the backend is missing,** Forge warns once on stderr and commands go
+through normal approval. It never runs them unconfined silently.
+
+**When a command fails because of the sandbox,** the tool result says so. The
+model can retry it with `dangerouslyDisableSandbox: true`; that call runs
+unconfined and goes through normal approval (denied in `-p` unless a rule
+allows it).
+
+Settings example:
+
+```json
+{ "sandbox": { "mode": "workspace-write", "network": false, "writableRoots": ["/home/me/.cache/pip"] } }
+```
 
 ## Network behaviour
 

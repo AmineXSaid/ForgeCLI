@@ -118,6 +118,9 @@ pub struct Opts {
     /// Built-in tools to offer ("" = none, "default" = all)
     #[arg(long, num_args = 0..)]
     pub tools: Option<Vec<String>>,
+    /// Run shell commands in an OS sandbox: off, read-only, or workspace-write (writable working directories, no network)
+    #[arg(long)]
+    pub sandbox: Option<String>,
     /// Additional directories to allow tool access to
     #[arg(long = "add-dir", num_args = 1..)]
     pub add_dir: Vec<PathBuf>,

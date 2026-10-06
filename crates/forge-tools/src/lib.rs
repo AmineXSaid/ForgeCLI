@@ -9,6 +9,7 @@ pub mod builtin;
 mod context;
 mod files;
 mod registry;
+pub mod sandbox;
 pub mod shells;
 mod util;
 
@@ -73,6 +74,11 @@ pub trait Tool: Send + Sync {
     /// The call may run in parallel with other concurrency-safe calls.
     fn is_concurrency_safe(&self, input: &Value) -> bool {
         self.is_read_only(input)
+    }
+
+    /// Will this call run inside the OS sandbox? Sandboxed calls need no permission prompt.
+    fn sandboxed(&self, _input: &Value, _ctx: &ToolContext) -> bool {
+        false
     }
 
     /// What permission rules match against for this call.

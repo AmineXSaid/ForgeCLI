@@ -39,6 +39,14 @@ pub struct Request<'a> {
     pub subject: Subject,
     /// The call cannot change anything (Read, Grep, `git status`, ...).
     pub read_only: bool,
+    /// The call runs inside the OS sandbox, confined to the working directories.
+    pub sandboxed: bool,
+}
+
+impl<'a> Request<'a> {
+    pub fn new(tool: &'a str, subject: Subject, read_only: bool) -> Self {
+        Request { tool, subject, read_only, sandboxed: false }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -55,6 +63,7 @@ pub enum Reason {
     Rule { behavior: Behavior, rule: String },
     Mode(PermissionMode),
     ReadOnlyInWorkingDir,
+    Sandboxed,
     OutsideWorkingDirs(PathBuf),
     PlanMode,
     Default,
@@ -66,6 +75,7 @@ impl std::fmt::Display for Reason {
             Reason::Rule { behavior, rule } => write!(f, "matched {behavior:?} rule {rule}"),
             Reason::Mode(m) => write!(f, "permission mode {}", m.as_str()),
             Reason::ReadOnlyInWorkingDir => write!(f, "read-only access inside the working directories"),
+            Reason::Sandboxed => write!(f, "runs inside the sandbox"),
             Reason::OutsideWorkingDirs(p) => write!(f, "{} is outside the working directories", p.display()),
             Reason::PlanMode => write!(f, "plan mode allows only read-only tools"),
             Reason::Default => write!(f, "this tool requires permission"),
@@ -248,7 +258,12 @@ impl Engine {
             }
             let mut used: Vec<String> = vec![];
             for part in parts {
-                let sub = Request { tool: req.tool, subject: Subject::Command(part), read_only: req.read_only };
+                let sub = Request {
+                    tool: req.tool,
+                    subject: Subject::Command(part),
+                    read_only: req.read_only,
+                    sandboxed: req.sandboxed,
+                };
                 let r = self.rules.allow.iter().find(|r| r.matches(&sub, &self.cwd, MatchMode::All))?;
                 let name = r.to_string();
                 if !used.contains(&name) {
@@ -291,6 +306,10 @@ impl Engine {
         }
         if self.mode == PermissionMode::Plan {
             return Decision::Deny { reason: Reason::PlanMode };
+        }
+        // 6. The OS sandbox confines the call to the working directories: no prompt needed.
+        if req.sandboxed && path_outside.is_none() {
+            return Decision::Allow { reason: Reason::Sandboxed };
         }
         if self.mode == PermissionMode::AcceptEdits && path_outside.is_none() {
             let is_edit = matches!(req.subject, Subject::Path { write: true, .. }) || EDIT_TOOLS.contains(&req.tool);

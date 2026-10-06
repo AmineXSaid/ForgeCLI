@@ -434,6 +434,7 @@ dependencies = [
  "forge-permissions",
  "forge-session",
  "forge-test-host",
+ "forge-tools",
  "forge-types",
  "libc",
  "serde_json",

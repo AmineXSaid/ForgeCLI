@@ -29,6 +29,8 @@ pub struct AgentRuntime {
     pub project_dir: PathBuf,
     pub working_dirs: Arc<RwLock<Vec<PathBuf>>>,
     pub env: Arc<std::collections::HashMap<String, String>>,
+    /// The session's shell sandbox, inherited by sub-agents.
+    pub sandbox: Option<Arc<forge_tools::sandbox::SandboxPolicy>>,
     /// Where sub-agent transcripts go (`None` = not persisted).
     pub store: Option<SessionStore>,
     pub session_id: String,
@@ -161,6 +163,7 @@ impl Tool for TaskTool {
         let mut tool_ctx = ToolContext::new(&self.rt.project_dir);
         tool_ctx.working_dirs = self.rt.working_dirs.clone();
         tool_ctx.env = self.rt.env.clone();
+        tool_ctx.sandbox = self.rt.sandbox.clone();
         tool_ctx.session_id = self.rt.session_id.clone();
 
         let dirs: Vec<PathBuf> = self.rt.working_dirs.read().unwrap().iter().skip(1).cloned().collect();

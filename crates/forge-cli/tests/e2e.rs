@@ -372,3 +372,40 @@ async fn host_sets_thinking_tokens() {
     assert_eq!(reqs[1]["thinking"]["type"], "between_tools");
     h.wait().await;
 }
+
+#[tokio::test]
+async fn sandbox_lets_headless_runs_build_without_prompts() {
+    if forge_tools_sandbox_missing() {
+        eprintln!("skipped: no sandbox backend on this machine");
+        return;
+    }
+    let e = env();
+    let calls = || {
+        vec![
+            MockTurn::tool("Bash", json!({"command": "mkdir -p build && echo ok > build/out.txt"})),
+            MockTurn::text("built"),
+        ]
+    };
+    // Without the sandbox, print mode denies the command (contract C1).
+    let api = MockApi::start(calls()).await;
+    let (_, out, _) = run(&e, &api, &["-p", "--output-format", "json", "build it"], None).await;
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["permission_denials"][0]["tool_name"], "Bash");
+    assert!(!e.cwd.join("build/out.txt").exists());
+    // With it, the command runs confined, with no prompt.
+    let api = MockApi::start(calls()).await;
+    let (code, out, _) =
+        run(&e, &api, &["-p", "--output-format", "json", "--sandbox", "workspace-write", "build it"], None).await;
+    assert_eq!(code, 0);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["permission_denials"], json!([]));
+    assert!(e.cwd.join("build/out.txt").exists());
+}
+
+fn forge_tools_sandbox_missing() -> bool {
+    !std::process::Command::new("bwrap")
+        .args(["--ro-bind", "/", "/", "--dev", "/dev", "--unshare-net", "true"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}

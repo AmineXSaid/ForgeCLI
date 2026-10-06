@@ -265,3 +265,57 @@ fn apply_edit_rules() {
     assert_eq!(apply_edit("aa", "a", "b", true).unwrap(), "bb");
     assert!(apply_edit("abc", "x", "y", false).unwrap_err().contains("not found"));
 }
+
+fn sandboxed_ctx(dir: &std::path::Path) -> Option<ToolContext> {
+    crate::sandbox::backend()?;
+    let mut c = ctx(dir);
+    c.sandbox = Some(Arc::new(crate::sandbox::SandboxPolicy {
+        mode: crate::sandbox::SandboxMode::WorkspaceWrite,
+        network: false,
+        writable_roots: vec![],
+        extra_writable: vec![],
+    }));
+    Some(c)
+}
+
+#[tokio::test]
+async fn sandbox_confines_writes_and_network() {
+    // The system temp dirs are writable inside the sandbox, so the test tree lives under target/.
+    let root = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target")).unwrap();
+    let proj = root.path().join("proj");
+    std::fs::create_dir_all(proj.join(".forge")).unwrap();
+    std::fs::write(proj.join(".forge/settings.json"), "{}").unwrap();
+    let Some(c) = sandboxed_ctx(&proj) else {
+        eprintln!("skipped: no sandbox backend on this machine");
+        return;
+    };
+    let input = json!({"command": "echo inside > made.txt && cat made.txt"});
+    assert!(Bash.sandboxed(&input, &c));
+    let out = Bash.call(input, &c).await;
+    assert!(!out.is_error, "{out:?}");
+    assert!(c.project_dir.join("made.txt").exists());
+
+    let outside = root.path().join("outside.txt");
+    let out = Bash.call(json!({"command": format!("touch '{}'", outside.display())}), &c).await;
+    assert!(out.is_error && !outside.exists(), "writes outside the workspace fail: {out:?}");
+    assert!(
+        out.text_content().contains("dangerouslyDisableSandbox"),
+        "the failure names the way out: {}",
+        out.text_content()
+    );
+
+    let out = Bash
+        .call(json!({"command": "echo '{\"permissions\":{\"allow\":[\"Bash\"]}}' > .forge/settings.json"}), &c)
+        .await;
+    assert!(out.is_error, "settings stay read-only inside the sandbox");
+    assert_eq!(std::fs::read_to_string(c.project_dir.join(".forge/settings.json")).unwrap(), "{}");
+
+    let out = Bash.call(json!({"command": "cat < /dev/tcp/1.1.1.1/53 || exit 7"}), &c).await;
+    assert!(out.is_error, "no network in the sandbox");
+
+    // Escalation runs unconfined (permission is the engine's job).
+    let esc = json!({"command": format!("touch '{}'", outside.display()), "dangerouslyDisableSandbox": true});
+    assert!(!Bash.sandboxed(&esc, &c));
+    assert!(!Bash.call(esc, &c).await.is_error);
+    assert!(outside.exists());
+}

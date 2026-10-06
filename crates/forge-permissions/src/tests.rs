@@ -9,15 +9,25 @@ fn engine(mode: PermissionMode, allow: &[&str], ask: &[&str], deny: &[&str]) -> 
 }
 
 fn bash(cmd: &str) -> Request<'static> {
-    Request { tool: "Bash", subject: Subject::Command(cmd.into()), read_only: false }
+    Request { tool: "Bash", subject: Subject::Command(cmd.into()), read_only: false, sandboxed: false }
 }
 
 fn edit(path: &str) -> Request<'static> {
-    Request { tool: "Edit", subject: Subject::Path { path: path.into(), write: true }, read_only: false }
+    Request {
+        tool: "Edit",
+        subject: Subject::Path { path: path.into(), write: true },
+        read_only: false,
+        sandboxed: false,
+    }
 }
 
 fn read(path: &str) -> Request<'static> {
-    Request { tool: "Read", subject: Subject::Path { path: path.into(), write: false }, read_only: true }
+    Request {
+        tool: "Read",
+        subject: Subject::Path { path: path.into(), write: false },
+        read_only: true,
+        sandboxed: false,
+    }
 }
 
 #[test]
@@ -102,6 +112,7 @@ fn path_rules() {
         tool: "Write",
         subject: Subject::Path { path: "/work/app/src/new.rs".into(), write: true },
         read_only: false,
+        sandboxed: false,
     };
     assert_eq!(e.decide(&w).behavior(), Behavior::Allow);
 }
@@ -130,9 +141,10 @@ fn modes() {
 #[test]
 fn webfetch_domains_and_mcp() {
     let e = engine(PermissionMode::Default, &["WebFetch(domain:docs.rs)", "mcp__github"], &[], &[]);
-    let url = |u: &str| Request { tool: "WebFetch", subject: Subject::Url(u.into()), read_only: true };
+    let url =
+        |u: &str| Request { tool: "WebFetch", subject: Subject::Url(u.into()), read_only: true, sandboxed: false };
     assert_eq!(e.decide(&url("https://api.docs.rs/x")).behavior(), Behavior::Allow);
-    let mcp = |t: &'static str| Request { tool: t, subject: Subject::None, read_only: false };
+    let mcp = |t: &'static str| Request { tool: t, subject: Subject::None, read_only: false, sandboxed: false };
     assert_eq!(e.decide(&mcp("mcp__github__create_issue")).behavior(), Behavior::Allow);
     assert_eq!(e.decide(&mcp("mcp__gitlab__x")).behavior(), Behavior::Ask);
 }
@@ -162,4 +174,17 @@ fn mode_names_round_trip() {
         assert_eq!(PermissionMode::parse(m).unwrap().as_str(), m);
     }
     assert_eq!(PermissionMode::parse("manual"), Some(PermissionMode::Default));
+}
+
+#[test]
+fn sandboxed_commands_need_no_prompt_but_rules_still_apply() {
+    let e = engine(PermissionMode::Default, &[], &["Bash(git push *)"], &["Bash(rm *)"]);
+    let sb =
+        |cmd: &str| Request { tool: "Bash", subject: Subject::Command(cmd.into()), read_only: false, sandboxed: true };
+    assert!(matches!(e.decide(&sb("cargo test")), Decision::Allow { reason: Reason::Sandboxed }));
+    assert_eq!(e.decide(&sb("rm -rf target")).behavior(), Behavior::Deny, "deny rules still apply");
+    assert_eq!(e.decide(&sb("git push origin")).behavior(), Behavior::Ask, "ask rules still apply");
+    let plan = engine(PermissionMode::Plan, &[], &[], &[]);
+    assert_eq!(plan.decide(&sb("touch x")).behavior(), Behavior::Deny, "plan mode stays read-only");
+    assert_eq!(e.decide(&bash("cargo test")).behavior(), Behavior::Ask, "unsandboxed still asks");
 }

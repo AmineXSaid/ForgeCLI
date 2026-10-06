@@ -33,6 +33,8 @@ pub struct ToolContext {
     pub env: Arc<HashMap<String, String>>,
     /// Upper bound for Bash output kept in a result.
     pub max_output_chars: usize,
+    /// OS sandbox for shell commands (`None` = commands run unconfined).
+    pub sandbox: Option<Arc<crate::sandbox::SandboxPolicy>>,
 }
 
 impl ToolContext {
@@ -50,6 +52,7 @@ impl ToolContext {
             todos: Arc::new(Mutex::new(vec![])),
             env: Arc::new(HashMap::new()),
             max_output_chars: 30_000,
+            sandbox: None,
         }
     }
 
@@ -68,6 +71,15 @@ impl ToolContext {
     pub fn in_working_dirs(&self, p: &Path) -> bool {
         let p = forge_permissions::normalize(p, &self.project_dir);
         self.working_dirs.read().unwrap().iter().any(|d| p.starts_with(d))
+    }
+
+    /// The sandbox policy for a command now, with the current working directories writable.
+    pub fn sandbox_now(&self) -> Option<(crate::sandbox::Backend, crate::sandbox::SandboxPolicy)> {
+        let policy = self.sandbox.as_ref()?;
+        let backend = crate::sandbox::backend()?;
+        let mut p = (**policy).clone();
+        p.writable_roots = self.working_dirs.read().unwrap().clone();
+        Some((backend, p))
     }
 
     pub fn checkpoint(&self, path: &Path) {

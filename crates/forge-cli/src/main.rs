@@ -122,6 +122,7 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
         autocompact: o.autocompact.clone(),
         agents_json: o.agents.clone(),
         agent: o.agent.clone(),
+        sandbox: o.sandbox.clone(),
         provider: None,
         store_root: None,
     })
@@ -379,6 +380,15 @@ fn run_doctor() -> Result<i32, Fail> {
         which("git"),
         "git",
         if which("git") { "found".into() } else { "not found: git status and worktrees are unavailable".into() },
+    );
+    let sb = forge_tools::sandbox::backend();
+    line(
+        true,
+        "sandbox",
+        match sb {
+            Some(b) => format!("{b:?} available (use --sandbox workspace-write)"),
+            None => "unavailable: install bubblewrap (Linux) to confine shell commands".into(),
+        },
     );
     line(true, "config dir", forge_config::config_dir().display().to_string());
     line(true, "state dir", forge_config::state_dir().display().to_string());

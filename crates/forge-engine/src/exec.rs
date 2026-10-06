@@ -122,7 +122,12 @@ async fn run_one(
     // 1. Rules and mode.
     let perm = shared.permissions.read().unwrap().clone();
     let subject = tool.permission_subject(&input, &ctx);
-    let req = Request { tool: name, subject: subject.clone(), read_only: tool.is_read_only(&input) };
+    let req = Request {
+        tool: name,
+        subject: subject.clone(),
+        read_only: tool.is_read_only(&input),
+        sandboxed: tool.sandboxed(&input, &ctx),
+    };
     let mut decision = perm.decide(&req);
     let rule_denied = matches!(decision, Decision::Deny { .. });
 

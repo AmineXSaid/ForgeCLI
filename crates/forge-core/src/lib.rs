@@ -78,6 +78,8 @@ pub struct LaunchOptions {
     pub agents_json: Option<String>,
     /// `--agent <name>`: run the main session as this agent.
     pub agent: Option<String>,
+    /// `--sandbox <off|read-only|workspace-write>` for shell commands.
+    pub sandbox: Option<String>,
     /// Replace the provider (tests, embedding).
     pub provider: Option<Arc<dyn Provider>>,
     /// Where sessions live (default `~/.forge/projects`).
@@ -324,6 +326,33 @@ pub fn build_session(
         let mut wd = tool_ctx.working_dirs.write().unwrap();
         wd.extend(add_dirs.iter().cloned());
     }
+    // OS sandbox for shell commands: flag > FORGE_SANDBOX > settings.
+    let sandbox_mode = opts
+        .sandbox
+        .clone()
+        .or_else(|| env_nonempty("FORGE_SANDBOX"))
+        .or_else(|| settings.str("/sandbox/mode").map(str::to_string));
+    if let Some(m) = sandbox_mode {
+        let parsed = forge_tools::sandbox::SandboxMode::parse(&m).ok_or_else(|| {
+            CoreError::Config(format!("unknown sandbox mode {m:?}: expected off, read-only or workspace-write"))
+        })?;
+        if let Some(mode) = parsed {
+            if forge_tools::sandbox::backend().is_none() {
+                warnings.push(format!(
+                    "sandbox {} requested but unavailable ({}); shell commands will ask for approval instead",
+                    mode.as_str(),
+                    if cfg!(target_os = "linux") { "install bubblewrap (bwrap)" } else { "no sandbox-exec" }
+                ));
+            } else {
+                tool_ctx.sandbox = Some(Arc::new(forge_tools::sandbox::SandboxPolicy {
+                    mode,
+                    network: settings.bool("/sandbox/network").unwrap_or(false),
+                    writable_roots: vec![],
+                    extra_writable: settings.strings("/sandbox/writableRoots").into_iter().map(PathBuf::from).collect(),
+                }));
+            }
+        }
+    }
     let mut env: HashMap<String, String> = settings.env().into_iter().collect();
     env.insert("FORGE_SESSION_ID".into(), session_id.clone());
     tool_ctx.env = Arc::new(env);
@@ -404,6 +433,7 @@ pub fn build_session(
             project_dir: cwd.clone(),
             working_dirs: tool_ctx.working_dirs.clone(),
             env: tool_ctx.env.clone(),
+            sandbox: tool_ctx.sandbox.clone(),
             store: agent_store,
             session_id: session_id.clone(),
             hooks: hooks.clone(),

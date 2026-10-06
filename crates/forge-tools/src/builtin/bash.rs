@@ -85,7 +85,8 @@ impl Tool for Bash {
                 "command": {"type": "string", "description": "The command to execute"},
                 "timeout": {"type": "number", "description": "Optional timeout in milliseconds (max 600000)"},
                 "description": {"type": "string", "description": "A short (5-10 word) description of what the command does"},
-                "run_in_background": {"type": "boolean", "description": "Run the command in the background; read output with BashOutput"}
+                "run_in_background": {"type": "boolean", "description": "Run the command in the background; read output with BashOutput"},
+                "dangerouslyDisableSandbox": {"type": "boolean", "description": "Run outside the sandbox (only when a sandboxed run failed for lack of access); requires the user's approval"}
             },
             "required": ["command"],
             "additionalProperties": false
@@ -101,6 +102,10 @@ impl Tool for Bash {
         Subject::Command(str_arg(input, "command").to_string())
     }
 
+    fn sandboxed(&self, input: &Value, ctx: &ToolContext) -> bool {
+        !input.get("dangerouslyDisableSandbox").and_then(Value::as_bool).unwrap_or(false) && ctx.sandbox_now().is_some()
+    }
+
     async fn call(&self, input: Value, ctx: &ToolContext) -> ToolOutput {
         let command = str_arg(&input, "command").to_string();
         if command.trim().is_empty() {
@@ -108,9 +113,10 @@ impl Tool for Bash {
         }
         let cwd = ctx.shell_cwd();
         let cwd = if cwd.is_dir() { cwd } else { ctx.project_dir.clone() };
+        let sandbox = if self.sandboxed(&input, ctx) { ctx.sandbox_now() } else { None };
 
         if input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
-            return match ctx.shells.spawn(&command, &cwd, &ctx.env) {
+            return match ctx.shells.spawn(&command, &cwd, &ctx.env, sandbox.as_ref()) {
                 Ok(sh) => ToolOutput::text(format!(
                     "Command running in background with ID: {}. Use BashOutput to read its output.",
                     sh.id
@@ -121,7 +127,9 @@ impl Tool for Bash {
         }
 
         let ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS);
-        let res = match run_command(&command, &cwd, &ctx.env, Duration::from_millis(ms), &ctx.cancel).await {
+        let res = match run_command(&command, &cwd, &ctx.env, Duration::from_millis(ms), &ctx.cancel, sandbox.as_ref())
+            .await
+        {
             Ok(r) => r,
             Err(e) => return ToolOutput::error(format!("Failed to run command: {e}")),
         };
@@ -168,8 +176,11 @@ impl Tool for Bash {
             }
             code => {
                 let code = code.map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-                ToolOutput::error(format!("Exit code {code}\n{text}").trim_end().to_string())
-                    .with_structured(structured)
+                let mut msg = format!("Exit code {code}\n{text}").trim_end().to_string();
+                if let Some(hint) = sandbox.as_ref().and_then(|(_, p)| p.explain_failure(&text)) {
+                    msg.push_str(&format!("\n\n{hint}"));
+                }
+                ToolOutput::error(msg).with_structured(structured)
             }
         }
     }
