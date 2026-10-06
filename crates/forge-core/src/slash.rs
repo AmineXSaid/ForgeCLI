@@ -103,6 +103,40 @@ impl SlashContext<'_> {
     }
 }
 
+/// What slash commands can reach: custom commands, skills and MCP prompts.
+pub struct Commands {
+    pub commands: Vec<CommandDef>,
+    pub skills: Vec<SkillDef>,
+    pub mcp: Option<Arc<forge_mcp::McpManager>>,
+}
+
+/// One user input: a slash command handled here, or a turn for the model.
+pub async fn run_input(
+    engine: &mut forge_engine::Engine,
+    cmds: &Commands,
+    content: forge_types::MessageContent,
+) -> forge_engine::TurnResult {
+    let Some(text) = command_text(&content) else { return engine.submit(content).await };
+    let cwd = engine.tool_ctx().project_dir.clone();
+    let ctx = SlashContext { commands: &cmds.commands, skills: &cmds.skills, mcp: cmds.mcp.clone(), cwd: &cwd };
+    match ctx.dispatch(&text).await {
+        Slash::NotACommand => engine.submit(content).await,
+        Slash::Prompt(p) => engine.submit(forge_types::MessageContent::Text(p)).await,
+        Slash::Compact(instructions) => match engine.compact(instructions.as_deref()).await {
+            Ok(info) => engine
+                .local_result(format!("Compacted the conversation (about {} tokens before).", info.pre_tokens), false),
+            Err(e) => engine.local_result(format!("Could not compact: {e}"), true),
+        },
+        Slash::Clear => {
+            engine.clear();
+            engine.local_result("Conversation cleared.", false)
+        }
+        Slash::Cost => engine.local_result(engine.cost_report(), false),
+        Slash::Local(t) => engine.local_result(t, false),
+        Slash::Error(e) => engine.local_result(e, true),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

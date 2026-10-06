@@ -151,6 +151,20 @@ pub struct StdioTransport {
     child: Mutex<Option<Child>>,
     dispatch: Arc<Dispatch>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    /// Becomes `true` once the server's stderr has closed.
+    stderr_done: tokio::sync::watch::Receiver<bool>,
+}
+
+/// ": last | stderr | lines", once the server's stderr has closed (waiting at most 2 s), or "".
+async fn stderr_summary(tail: &Mutex<VecDeque<String>>, done: &tokio::sync::watch::Receiver<bool>) -> String {
+    let mut done = done.clone();
+    let _ = tokio::time::timeout(Duration::from_secs(2), done.wait_for(|d| *d)).await;
+    let last: Vec<String> = tail.lock().unwrap().iter().cloned().collect();
+    if last.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", last.join(" | "))
+    }
 }
 
 impl StdioTransport {
@@ -178,6 +192,7 @@ impl StdioTransport {
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
 
         let tail = stderr_tail.clone();
+        let (done_tx, stderr_done) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(l)) = lines.next_line().await {
@@ -187,8 +202,9 @@ impl StdioTransport {
                 }
                 t.push_back(l);
             }
+            let _ = done_tx.send(true);
         });
-        let (d, w, tail) = (dispatch.clone(), stdin.clone(), stderr_tail.clone());
+        let (d, w, tail, done) = (dispatch.clone(), stdin.clone(), stderr_tail.clone(), stderr_done.clone());
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -206,13 +222,10 @@ impl StdioTransport {
                     let _ = w.flush().await;
                 }
             }
-            // Give the stderr reader a moment to collect the last words.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let last: Vec<String> = tail.lock().unwrap().iter().cloned().collect();
-            let why = if last.is_empty() { String::new() } else { format!(": {}", last.join(" | ")) };
-            d.close(&why);
+            // The server's last words (why it exited) arrive on stderr; wait for them.
+            d.close(&stderr_summary(&tail, &done).await);
         });
-        Ok(StdioTransport { stdin, child: Mutex::new(Some(child)), dispatch, stderr_tail })
+        Ok(StdioTransport { stdin, child: Mutex::new(Some(child)), dispatch, stderr_tail, stderr_done })
     }
 
     async fn write(&self, v: &Value) -> Result<(), McpError> {
@@ -222,13 +235,12 @@ impl StdioTransport {
             w.flush().await
         }
         .await;
-        r.map_err(|e| {
-            let last: Vec<String> = self.stderr_tail.lock().unwrap().iter().cloned().collect();
-            McpError::Closed(format!(
-                " ({e}){}",
-                if last.is_empty() { String::new() } else { format!(": {}", last.join(" | ")) }
-            ))
-        })
+        match r {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                Err(McpError::Closed(format!(" ({e}){}", stderr_summary(&self.stderr_tail, &self.stderr_done).await)))
+            }
+        }
     }
 }
 
