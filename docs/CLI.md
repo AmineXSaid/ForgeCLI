@@ -37,7 +37,8 @@ a note in `CHANGELOG.md`.
 - **Purpose:** work with the agent in a project, in conversation.
 - **Example:** `forge "add a --dry-run flag to the export command"`
 - **Input:** the optional first prompt, then lines typed at the terminal.
-  `/compact [instructions]` and `/exit` are built in.
+  Slash commands work here and in `-p` (see "Slash commands" below); `/exit`
+  quits.
 - **Output:** the conversation, on stdout. Warnings go to stderr.
 - **Needs a terminal on stdin.** Without one, or with `--no-input`, Forge exits
   with status `2` and suggests `-p`.
@@ -242,6 +243,48 @@ them.
 | `FORGE_LOG` | Log filter, with `--debug` |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |
 
+## Slash commands
+
+A prompt that starts with `/name` (in any mode) is a command:
+
+| Command | Does |
+| --- | --- |
+| `/compact [what to keep]` | Summarizes the conversation now |
+| `/clear` | Starts the conversation over (the transcript keeps the old part) |
+| `/cost` | Tokens and cost so far |
+| `/help` | Lists every command |
+| `/<custom> [args]` | A custom command from `commands/*.md` |
+| `/<skill> [args]` | Loads a skill |
+| `/mcp__<server>__<prompt> [args]` | An MCP server's prompt |
+
+**Local commands:** `/compact`, `/clear`, `/cost` and `/help` answer without
+calling the model. An unknown command fails with exit status `1`. A word that
+looks like a path (`/usr/bin/env ...`) is sent as an ordinary prompt.
+
+**Custom commands** are Markdown files in `<config>/commands/`,
+`.agents/commands/` or `.forge/commands/` (later wins). A file in a
+subdirectory is named `dir:name`, and a plugin's command `plugin:name`.
+
+The optional frontmatter takes `description`, `argument-hint` and
+`allowed-tools`. In the body:
+- `$ARGUMENTS` and `$1`..`$9` are replaced by the arguments;
+- ``!`cmd` `` runs `cmd` and inserts its output, only when `allowed-tools`
+  permits it (e.g. `Bash(git status:*)`);
+- `@path` attaches a file.
+
+**Skills** are folders `skills/<name>/SKILL.md`, with frontmatter `name` and
+`description`. The model sees only names and descriptions, and loads a body
+with the `Skill` tool when the task matches. You can load one with
+`/<name>`.
+
+**Output styles:** set `outputStyle` to `default`, `explanatory`, `learning`,
+or a custom style from `output-styles/*.md`.
+
+**Plugins:** `--plugin-dir <dir>...` (or the `pluginDirs` setting) loads a
+plugin directory: `plugin.json` (or `.forge-plugin/plugin.json`) plus any of
+`commands/`, `agents/`, `skills/`, `output-styles/`, `hooks/hooks.json` and
+`.mcp.json`.
+
 ## Verification loop
 
 When a turn has changed files and no check has run since the last change, the
@@ -333,6 +376,13 @@ Settings example:
 ```json
 { "sandbox": { "mode": "workspace-write", "network": false, "writableRoots": ["/home/me/.cache/pip"] } }
 ```
+
+## Pipes
+
+- **A closed stdout** ends Forge quietly with status 0. That happens with
+  `forge ... | head`, or when a host exits.
+- **SIGPIPE stays ignored**, so a hook or MCP server that exits before
+  reading its input can't kill the process.
 
 ## Network behaviour
 

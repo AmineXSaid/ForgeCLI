@@ -2,6 +2,16 @@
 //! happens in forge-core (session assembly) and forge-engine (the loop).
 //! Results go to stdout, diagnostics to stderr; exit statuses are in exit.rs.
 
+/// `println!` that ends quietly when stdout's reader is gone (see `output::stdout_line`).
+macro_rules! outln {
+    () => {
+        $crate::output::stdout_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::output::stdout_line(format_args!($($arg)*))
+    };
+}
+
 mod args;
 mod exit;
 mod host;
@@ -9,6 +19,7 @@ mod mcp_cmd;
 mod output;
 mod repl;
 mod term;
+mod turn;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -125,6 +136,7 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
         agent: o.agent.clone(),
         sandbox: o.sandbox.clone(),
         worktree: o.worktree.clone(),
+        plugin_dirs: o.plugin_dir.clone(),
         mcp_configs: o.mcp_config.clone(),
         strict_mcp_config: o.strict_mcp_config,
         mcp: None,
@@ -170,7 +182,7 @@ fn machine_error(format: OutputFormat, f: &Fail) {
         "error": {"message": f.message, "hint": f.hint, "exit_code": f.code},
     });
     match format {
-        OutputFormat::Json | OutputFormat::StreamJson => println!("{doc}"),
+        OutputFormat::Json | OutputFormat::StreamJson => outln!("{doc}"),
         OutputFormat::Text => {}
     }
 }
@@ -253,6 +265,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         }
     }
     let session_id = session.session_id.clone();
+    let cmds = turn::Commands { commands: session.commands, skills: session.skills, mcp: Some(mcp.clone()) };
     let mut engine = session.engine;
     if stream_out {
         out.line(&SdkMessage::System(SystemMessage::init(&session.init)));
@@ -288,9 +301,19 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             history: engine.history().clone(),
             mcp: Some(mcp.clone()),
             init_response: json!({
-                "commands": [],
-                "output_style": "default",
-                "available_output_styles": ["default"],
+                "commands": forge_core::slash::BUILTIN
+                    .iter()
+                    .map(|(n, d)| json!({"name": n, "description": d, "argumentHint": ""}))
+                    .chain(cmds.commands.iter().map(|c| json!({
+                        "name": c.name, "description": c.description,
+                        "argumentHint": c.argument_hint.clone().unwrap_or_default()
+                    })))
+                    .chain(cmds.skills.iter().filter(|s| s.user_invocable).map(|s| json!({
+                        "name": s.name, "description": s.description, "argumentHint": ""
+                    })))
+                    .collect::<Vec<_>>(),
+                "output_style": session.init.output_style.clone(),
+                "available_output_styles": session.styles.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
                 "models": models,
                 "pid": std::process::id(),
             }),
@@ -305,7 +328,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     while let Some(input) = rx.recv().await {
         match input {
             Input::User(content) => {
-                let r = engine.submit(content).await;
+                let r = turn::run(&mut engine, &cmds, content).await;
                 let c = exit::for_result(&r);
                 if code == exit::OK {
                     code = c;
@@ -316,7 +339,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                         let mut v = serde_json::to_value(SdkMessage::Result(result_message(&r, &session_id)))
                             .unwrap_or_default();
                         v["exit_code"] = json!(c);
-                        println!("{v}");
+                        outln!("{v}");
                     }
                     OutputFormat::Text => {
                         if let Some(b) = &r.prompt_blocked {
@@ -329,7 +352,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                                 .unwrap_or_else(|| "the run failed".into());
                             eprintln!("{} {msg}", term::red("forge:"));
                         } else if let Some(t) = &r.result {
-                            println!("{t}");
+                            outln!("{t}");
                         }
                     }
                 }
@@ -358,9 +381,9 @@ fn run_doctor() -> Result<i32, Fail> {
             problems += 1;
         }
         let mark = if ok { term::paint("32", "ok  ") } else { term::red("FAIL") };
-        println!("{mark} {what:<12} {detail}");
+        outln!("{mark} {what:<12} {detail}");
     };
-    println!("ForgeCLI {}", forge_core::VERSION);
+    outln!("ForgeCLI {}", forge_core::VERSION);
     let settings = forge_config::load_settings(&forge_config::SettingsOptions::new(&cwd));
     line(
         settings.errors.is_empty(),
@@ -423,7 +446,7 @@ fn run_config(action: Option<ConfigAction>) -> Result<i32, Fail> {
     }
     let pretty = |v: &Value| serde_json::to_string_pretty(&forge_config::redact(v)).unwrap_or_default();
     match action {
-        None | Some(ConfigAction::List { origin: false }) => println!("{}", pretty(&settings.merged)),
+        None | Some(ConfigAction::List { origin: false }) => outln!("{}", pretty(&settings.merged)),
         Some(ConfigAction::List { origin: true }) => {
             let mut out = serde_json::Map::new();
             for (k, v) in settings.merged.as_object().into_iter().flatten() {
@@ -437,7 +460,7 @@ fn run_config(action: Option<ConfigAction>) -> Result<i32, Fail> {
                     }),
                 );
             }
-            println!("{}", serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default());
+            outln!("{}", serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default());
         }
         Some(ConfigAction::Get { key }) => {
             let ptr = if key.starts_with('/') { key.clone() } else { format!("/{}", key.replace('.', "/")) };
@@ -445,7 +468,7 @@ fn run_config(action: Option<ConfigAction>) -> Result<i32, Fail> {
                 Some(v) => {
                     let last = ptr.rsplit('/').next().unwrap_or("");
                     let shown = forge_config::redact(&json!({last: v}))[last].clone();
-                    println!(
+                    outln!(
                         "{}",
                         if shown.is_string() { shown.as_str().unwrap_or("").to_string() } else { pretty(&shown) }
                     );
@@ -457,12 +480,12 @@ fn run_config(action: Option<ConfigAction>) -> Result<i32, Fail> {
             }
         }
         Some(ConfigAction::Paths) => {
-            println!("config  {}", forge_config::config_dir().display());
-            println!("state   {}", forge_config::state_dir().display());
-            println!("cache   {}", forge_config::cache_dir().display());
+            outln!("config  {}", forge_config::config_dir().display());
+            outln!("state   {}", forge_config::state_dir().display());
+            outln!("cache   {}", forge_config::cache_dir().display());
             for l in &settings.layers {
                 if let Some(p) = &l.path {
-                    println!("{:<7} {}", l.source.as_str().trim_end_matches("Settings"), p.display());
+                    outln!("{:<7} {}", l.source.as_str().trim_end_matches("Settings"), p.display());
                 }
             }
         }
@@ -470,17 +493,7 @@ fn run_config(action: Option<ConfigAction>) -> Result<i32, Fail> {
     Ok(exit::OK)
 }
 
-/// Writing to a closed pipe (`forge ... | head`) ends the process quietly, as in other Unix tools.
-fn reset_sigpipe() {
-    #[cfg(unix)]
-    // SAFETY: restoring the default disposition of SIGPIPE at startup, before any threads exist.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-}
-
 fn main() {
-    reset_sigpipe();
     // clap prints help and version and exits (0) or reports usage errors (2) before anything else starts.
     let cli = Cli::parse();
     term::init(cli.opts.color);
@@ -497,7 +510,9 @@ fn main() {
             Some(Command::Doctor) => run_doctor(),
             Some(Command::Config { action }) => run_config(action),
             Some(Command::Completion { shell }) => {
-                clap_complete::generate(shell, &mut Cli::command(), "forge", &mut std::io::stdout());
+                let mut script = vec![];
+                clap_complete::generate(shell, &mut Cli::command(), "forge", &mut script);
+                outln!("{}", String::from_utf8_lossy(&script).trim_end());
                 Ok(exit::OK)
             }
             Some(Command::Mcp { action }) => mcp_cmd::run(action, &cli.opts).await,

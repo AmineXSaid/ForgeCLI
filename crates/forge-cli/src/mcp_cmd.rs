@@ -109,7 +109,7 @@ pub async fn run(action: McpAction, opts: &Opts) -> Result<i32, Fail> {
                 eprintln!("forge: no MCP server named {name} in {} scope", scopes.join(", "));
                 return Ok(exit::FAILED);
             }
-            println!("Removed MCP server {name} from {}", removed.join(" and "));
+            outln!("Removed MCP server {name} from {}", removed.join(" and "));
             Ok(exit::OK)
         }
         McpAction::List => list(&cwd, opts).await,
@@ -121,14 +121,14 @@ pub async fn run(action: McpAction, opts: &Opts) -> Result<i32, Fail> {
 fn add(cwd: &std::path::Path, scope: &str, name: &str, cfg: &ServerConfig) -> Result<i32, Fail> {
     let file = scope_file(scope, cwd)?;
     let replaced = config::write_server(&file, name, Some(cfg)).map_err(|e| Fail::config(e.to_string()))?;
-    println!(
+    outln!(
         "{} MCP server {name} ({}) in {scope} scope: {}",
         if replaced { "Updated" } else { "Added" },
         cfg.transport(),
         file.display()
     );
     if scope == "project" {
-        println!("It is shared through .mcp.json; each person trusts it with `forge mcp approve {name}`.");
+        outln!("It is shared through .mcp.json; each person trusts it with `forge mcp approve {name}`.");
         // The person adding it trusts it.
         approve(cwd, Some(name.to_string()), false)?;
     }
@@ -152,10 +152,10 @@ async fn list(cwd: &std::path::Path, opts: &Opts) -> Result<i32, Fail> {
         eprintln!("{} {w}", term::yellow("forge: warning:"));
     }
     if resolved.servers.is_empty() && resolved.skipped.is_empty() {
-        println!("No MCP servers configured. Add one with `forge mcp add`.");
+        outln!("No MCP servers configured. Add one with `forge mcp add`.");
         return Ok(exit::OK);
     }
-    println!("Checking MCP server health...\n");
+    outln!("Checking MCP server health...\n");
     let m = forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(cwd)).await;
     let mut failed = false;
     for s in &m.servers {
@@ -173,7 +173,7 @@ async fn list(cwd: &std::path::Path, opts: &Opts) -> Result<i32, Fail> {
             }
             forge_mcp::Status::Skipped(r) => term::yellow(r),
         };
-        println!("{}: {summary} - {status}", s.name);
+        outln!("{}: {summary} - {status}", s.name);
     }
     m.shutdown().await;
     Ok(if failed { exit::FAILED } else { exit::OK })
@@ -183,7 +183,7 @@ async fn get(cwd: &std::path::Path, opts: &Opts, name: &str) -> Result<i32, Fail
     let lo = launch(cwd, opts);
     let mut resolved = forge_core::resolve_mcp(&lo);
     if let Some(s) = resolved.skipped.iter().find(|s| s.name == name) {
-        println!("{name}:\n  Scope: project (.mcp.json)\n  Status: {}", s.reason);
+        outln!("{name}:\n  Scope: project (.mcp.json)\n  Status: {}", s.reason);
         return Ok(exit::OK);
     }
     let Some(server) = resolved.servers.iter().find(|s| s.name == name).cloned() else {
@@ -193,27 +193,27 @@ async fn get(cwd: &std::path::Path, opts: &Opts, name: &str) -> Result<i32, Fail
     resolved.servers.retain(|s| s.name == name);
     let m = forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(cwd)).await;
     let entry = &m.servers[0];
-    println!("{name}:");
-    println!("  Scope: {}", server.scope.as_str());
-    println!("  Config: {}", serde_json::to_string(&redacted(&server.config)).unwrap_or_default());
+    outln!("{name}:");
+    outln!("  Scope: {}", server.scope.as_str());
+    outln!("  Config: {}", serde_json::to_string(&redacted(&server.config)).unwrap_or_default());
     match &entry.status {
         forge_mcp::Status::Connected => {
-            println!("  Status: connected");
+            outln!("  Status: connected");
             if let Some(c) = &entry.client {
-                println!("  Server: {}", c.server_info);
-                println!("  Protocol: {}", c.protocol_version);
+                outln!("  Server: {}", c.server_info);
+                outln!("  Protocol: {}", c.protocol_version);
             }
-            println!("  Tools ({}):", entry.tools.len());
+            outln!("  Tools ({}):", entry.tools.len());
             for t in &entry.tools {
-                println!(
+                outln!(
                     "    {} - {}",
                     forge_mcp::tools::tool_name(name, &t.name),
                     t.description.lines().next().unwrap_or("")
                 );
             }
         }
-        forge_mcp::Status::Failed(e) => println!("  Status: failed: {e}"),
-        forge_mcp::Status::Skipped(r) => println!("  Status: {r}"),
+        forge_mcp::Status::Failed(e) => outln!("  Status: failed: {e}"),
+        forge_mcp::Status::Skipped(r) => outln!("  Status: {r}"),
     }
     m.shutdown().await;
     Ok(exit::OK)
@@ -225,7 +225,7 @@ fn approve(cwd: &std::path::Path, name: Option<String>, all: bool) -> Result<i32
         |ptr: &[&str], v: Value| forge_config::write_setting(&local, ptr, v).map_err(|e| Fail::config(e.to_string()));
     if all {
         write(&["enableAllProjectMcpServers"], json!(true))?;
-        println!("Trusting every server in this project's .mcp.json ({}).", local.display());
+        outln!("Trusting every server in this project's .mcp.json ({}).", local.display());
         return Ok(exit::OK);
     }
     let Some(name) = name else {
@@ -245,7 +245,7 @@ fn approve(cwd: &std::path::Path, name: Option<String>, all: bool) -> Result<i32
         .unwrap_or_default();
     write(&["enabledMcpjsonServers"], json!(list))?;
     write(&["disabledMcpjsonServers"], json!(disabled))?;
-    println!("Trusting {name} from this project's .mcp.json ({}).", local.display());
+    outln!("Trusting {name} from this project's .mcp.json ({}).", local.display());
     Ok(exit::OK)
 }
 

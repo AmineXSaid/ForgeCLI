@@ -211,6 +211,7 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
     for w in session.warnings.iter().chain(&mcp_warnings) {
         eprintln!("forge: {w}");
     }
+    let cmds = crate::turn::Commands { commands: session.commands, skills: session.skills, mcp: Some(mcp.clone()) };
     let mut engine = session.engine;
     let handle = engine.handle();
     eprintln!(
@@ -246,16 +247,17 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         if t == "/exit" || t == "/quit" {
             break;
         }
-        if let Some(rest) = t.strip_prefix("/compact") {
-            match engine.compact(Some(rest.trim()).filter(|r| !r.is_empty())).await {
-                Ok(info) => eprintln!("Compacted ({} tokens summarized).", info.pre_tokens),
-                Err(e) => eprintln!("Could not compact: {e}"),
-            }
-            continue;
-        }
-        let r = engine.submit(MessageContent::Text(t.to_string())).await;
+        let r = crate::turn::run(&mut engine, &cmds, MessageContent::Text(t.to_string())).await;
         if let Some(b) = r.prompt_blocked {
             eprintln!("{b}");
+        } else if r.num_turns == 0 && r.stop_reason.is_none() {
+            // Answered locally (a slash command): show it, since nothing streamed.
+            let text = r.result.unwrap_or_default();
+            if r.is_error {
+                eprintln!("{}", crate::term::red(&text));
+            } else {
+                outln!("{text}");
+            }
         }
     }
     engine.end_session("prompt_input_exit").await;

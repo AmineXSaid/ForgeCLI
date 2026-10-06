@@ -169,14 +169,26 @@ pub fn parse_agents_json(raw: &str) -> Result<Vec<AgentDef>, String> {
         .collect()
 }
 
-/// Built-ins, then user, project and flag agents; later definitions replace earlier ones by name.
-pub fn load_agents(project: &Path, flag: &[AgentDef], warnings: &mut Vec<String>) -> Vec<AgentDef> {
+/// Built-ins, then user, project, plugin and flag agents; later definitions replace earlier ones by name.
+pub fn load_agents(
+    project: &Path,
+    plugins: &[crate::plugins::Plugin],
+    flag: &[AgentDef],
+    warnings: &mut Vec<String>,
+) -> Vec<AgentDef> {
     let mut out = builtin_agents();
-    for (scope, dir) in forge_config::resource_dirs("agents", project) {
-        let source = match scope {
-            forge_config::Scope::User => AgentSource::User,
-            forge_config::Scope::Project => AgentSource::Project,
-        };
+    let mut dirs: Vec<(AgentSource, std::path::PathBuf)> = forge_config::resource_dirs("agents", project)
+        .into_iter()
+        .map(|(scope, d)| {
+            let source = match scope {
+                forge_config::Scope::User => AgentSource::User,
+                forge_config::Scope::Project => AgentSource::Project,
+            };
+            (source, d)
+        })
+        .collect();
+    dirs.extend(plugins.iter().map(|p| (AgentSource::Project, p.dir.join("agents"))));
+    for (source, dir) in dirs {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         let mut files: Vec<_> =
             rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).collect();
@@ -239,7 +251,7 @@ mod tests {
             parse_agents_json(r#"{"reviewer": {"description": "Reviews", "prompt": "Review it", "tools": ["Read"]}}"#)
                 .unwrap();
         let mut warnings = vec![];
-        let all = load_agents(d.path(), &flag, &mut warnings);
+        let all = load_agents(d.path(), &[], &flag, &mut warnings);
         assert_eq!(warnings.len(), 1);
         let explore = all.iter().find(|a| a.name == "Explore").unwrap();
         assert_eq!(explore.description, "custom explore");
@@ -265,7 +277,7 @@ mod tests {
         )
         .unwrap();
         let mut warnings = vec![];
-        let agents = load_agents(d.path(), &[], &mut warnings);
+        let agents = load_agents(d.path(), &[], &[], &mut warnings);
         assert!(warnings.is_empty(), "{warnings:?}");
         let find = |n: &str| agents.iter().find(|a| a.name == n).unwrap();
         assert_eq!(find("reviewer").description, "forge reviewer");

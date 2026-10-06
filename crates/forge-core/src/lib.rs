@@ -1,5 +1,6 @@
 //! Builds a ready-to-run session from launch options and settings.
 
+pub mod slash;
 pub mod web;
 
 use std::collections::HashMap;
@@ -82,6 +83,8 @@ pub struct LaunchOptions {
     pub agent: Option<String>,
     /// `--sandbox <off|read-only|workspace-write>` for shell commands.
     pub sandbox: Option<String>,
+    /// `--plugin-dir`: plugin directories (with the `pluginDirs` setting).
+    pub plugin_dirs: Vec<PathBuf>,
     /// `--worktree [name]`: run in a new git worktree (`Some("")` = a generated name).
     pub worktree: Option<String>,
     /// `--mcp-config`: server config files or JSON strings.
@@ -159,7 +162,29 @@ fn session_settings(opts: &LaunchOptions, cwd: &Path) -> LoadedSettings {
 pub fn resolve_mcp(opts: &LaunchOptions) -> forge_mcp::Resolved {
     let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
     let settings = session_settings(opts, &cwd);
-    forge_mcp::resolve(&settings, &cwd, &opts.mcp_configs, opts.strict_mcp_config || opts.bare)
+    // Plugin servers count as explicitly chosen, like --mcp-config.
+    let mut configs: Vec<String> = session_plugins(opts, &settings, &cwd, &mut vec![])
+        .iter()
+        .filter_map(|p| p.mcp_file())
+        .map(|f| f.display().to_string())
+        .collect();
+    configs.extend(opts.mcp_configs.iter().cloned());
+    forge_mcp::resolve(&settings, &cwd, &configs, opts.strict_mcp_config || opts.bare)
+}
+
+/// `--plugin-dir` plus the `pluginDirs` setting (relative to the project). None in `--bare`.
+fn session_plugins(
+    opts: &LaunchOptions,
+    settings: &LoadedSettings,
+    cwd: &Path,
+    warnings: &mut Vec<String>,
+) -> Vec<forge_agents::Plugin> {
+    if opts.bare {
+        return vec![];
+    }
+    let mut dirs = opts.plugin_dirs.clone();
+    dirs.extend(settings.strings("/pluginDirs").into_iter().map(|d| forge_permissions::normalize(Path::new(&d), cwd)));
+    forge_agents::load_plugins(&dirs, warnings)
 }
 
 /// Connect the session's MCP servers. Failures are reported in the manager, never fatal.
@@ -176,6 +201,11 @@ pub async fn connect_mcp(opts: &LaunchOptions) -> (Arc<forge_mcp::McpManager>, V
 pub struct Session {
     pub engine: Engine,
     pub init: InitInfo,
+    /// Custom slash commands, skills, output styles and plugins (M5).
+    pub commands: Vec<forge_agents::CommandDef>,
+    pub skills: Vec<forge_agents::SkillDef>,
+    pub styles: Vec<forge_agents::OutputStyle>,
+    pub plugins: Vec<forge_agents::Plugin>,
     pub settings: LoadedSettings,
     pub warnings: Vec<String>,
     pub session_id: String,
@@ -313,6 +343,20 @@ pub fn build_session(
         Some(p) => p,
         None => make_provider(&settings, &opts.betas)?,
     };
+
+    // Plugins, commands, skills and output styles (M5).
+    let plugins = session_plugins(&opts, &settings, &cwd, &mut warnings);
+    let commands = if opts.bare { vec![] } else { forge_agents::load_commands(&cwd, &plugins, &mut warnings) };
+    let skills = if opts.bare { vec![] } else { forge_agents::load_skills(&cwd, &plugins, &mut warnings) };
+    let styles = forge_agents::load_styles(&cwd, &plugins, &mut warnings);
+    let style_name = settings.str("/outputStyle").unwrap_or("default").to_string();
+    let style = match forge_agents::styles::find(&styles, &style_name) {
+        Some(s) => s.clone(),
+        None => {
+            warnings.push(format!("outputStyle {style_name:?} not found; using default"));
+            styles[0].clone()
+        }
+    };
     let flag_agents = match &opts.agents_json {
         Some(raw) => {
             let raw = if raw.trim_start().starts_with('{') {
@@ -328,7 +372,7 @@ pub fn build_session(
     let agents = if opts.bare {
         forge_agents::builtin_agents()
     } else {
-        forge_agents::load_agents(&cwd, &flag_agents, &mut warnings)
+        forge_agents::load_agents(&cwd, &plugins, &flag_agents, &mut warnings)
     };
     let main_agent = match &opts.agent {
         Some(name) => Some(
@@ -429,6 +473,9 @@ pub fn build_session(
     for t in &web_tools {
         tools.register(t.clone());
     }
+    if skills.iter().any(|s| s.model_invocable) {
+        tools.register(Arc::new(forge_agents::SkillTool { skills: skills.clone() }));
+    }
     let agent_store =
         (!opts.no_session_persistence).then(|| SessionStore::new(store.root.join("agents").join(&session_id)));
     let agent_rt_slot: Arc<std::sync::OnceLock<Arc<forge_agents::AgentRuntime>>> = Arc::new(std::sync::OnceLock::new());
@@ -486,7 +533,13 @@ pub fn build_session(
     tool_ctx.env = Arc::new(env);
 
     // Hooks.
-    let (hooks_cfg, hook_errors) = HooksConfig::from_settings(settings.get("/hooks"));
+    let mut hooks_value = settings.get("/hooks").cloned().unwrap_or_else(|| json!({}));
+    for p in &plugins {
+        if let Some(h) = p.hooks() {
+            forge_config::deep_merge(&mut hooks_value, &h);
+        }
+    }
+    let (hooks_cfg, hook_errors) = HooksConfig::from_settings(Some(&hooks_value));
     warnings.extend(hook_errors.into_iter().map(|e| format!("hooks: {e}")));
     let mut hooks = HookRunner::new(
         hooks_cfg,
@@ -536,7 +589,7 @@ pub fn build_session(
         append,
         prompts_dir: env_nonempty("FORGE_PROMPTS_DIR").map(PathBuf::from),
         exclude_dynamic: opts.exclude_dynamic_system_prompt_sections,
-        output_style: None,
+        output_style: Some(style.prompt.clone()).filter(|p| !p.is_empty()),
     };
     for (tool, text) in forge_engine::prompts::tool_description_overrides(&sp_opts) {
         tools.set_description(&tool, text);
@@ -657,16 +710,22 @@ pub fn build_session(
             .unwrap_or_default(),
         model,
         permission_mode: mode.as_str().into(),
-        slash_commands: vec![],
+        slash_commands: slash::BUILTIN
+            .iter()
+            .map(|(n, _)| n.to_string())
+            .chain(commands.iter().map(|c| c.name.clone()))
+            .chain(skills.iter().filter(|s| s.user_invocable).map(|s| s.name.clone()))
+            .chain(opts.mcp.as_ref().map(|m| m.prompt_names()).unwrap_or_default())
+            .collect(),
         api_key_source: if opts.provider.is_some() { "none".into() } else { key_source(&settings) },
         forge_version: VERSION.into(),
-        output_style: "default".into(),
+        output_style: style.name.clone(),
         agents: agents.iter().map(|a| a.name.clone()).collect(),
-        skills: vec![],
-        plugins: vec![],
+        skills: skills.iter().map(|s| s.name.clone()).collect(),
+        plugins: plugins.iter().map(|p| json!({"name": p.name, "path": p.dir})).collect(),
         uuid: uuid::Uuid::new_v4().to_string(),
     };
-    Ok(Session { engine, init, settings, warnings, session_id, resumed })
+    Ok(Session { engine, init, commands, skills, styles, plugins, settings, warnings, session_id, resumed })
 }
 
 /// `auto` or a token count between 100k and 1M (`200000`, `200k`, `1m`).

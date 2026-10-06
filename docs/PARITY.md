@@ -90,7 +90,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | Thinking / effort per model | done | `request::thinking_per_model` |  |
 | Prompt-cache breakpoints | done | `engine::cache_breakpoints_on_system_tools_and_last_message` | System, last tool and last message |
 | Micro-compaction | done | `compact::c9_micro_clears_only_eligible_results`, `engine::c9_micro_is_sticky_across_requests` | Contract C9 |
-| Auto-compact / `/compact` | done | `engine::c9_auto_triggers_at_threshold`, `engine::manual_compact_passes_instructions`, `engine::prompt_too_long_compacts_and_retries` | Contract C9. `/compact` works in the line REPL now and in every mode once slash commands land (M5) |
+| Auto-compact / `/compact` | done | `engine::c9_auto_triggers_at_threshold`, `engine::manual_compact_passes_instructions`, `engine::prompt_too_long_compacts_and_retries` | Contract C9. `/compact` works in every mode |
 
 ## Permissions
 
@@ -151,10 +151,11 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | --- | --- | --- | --- |
 | Sub-agents (Task) with built-in types (general-purpose, Explore, Plan) | done | `agents::explore_agent_reports_back_in_its_own_context`, `agents::child_edits_are_checkpointed_in_the_parent_turn` | Isolated context; shared rules, prompt lock, checkpoints and budget; no nesting |
 | Custom agents `agents/*.md`, `--agents`, `--agent` | done | `agents::markdown_agents`, `agents::json_agents_and_precedence`, `core::sub_agents_are_offered_and_configurable` |  |
-| Skills `skills/*/SKILL.md` | todo | | |
-| Custom slash commands `commands/*.md` | todo | | |
-| Output styles: Default, Explanatory, Learning + custom | todo | | |
-| Plugins (`--plugin-dir`, directory format) | todo | | |
+| Skills `skills/*/SKILL.md` (Skill tool, `/name`) | done | `skills::discovers_and_loads_skills_on_demand`, `extend::commands_skills_styles_and_plugins` | Names and descriptions up front, bodies on demand; `disable-model-invocation`, `user-invocable` |
+| Custom slash commands `commands/*.md` | done | `commands::expands_arguments_commands_and_files`, `commands::loads_namespaced_commands_with_precedence`, `slash::routes_commands_skills_and_paths`, `extend::commands_skills_styles_and_plugins` | `$ARGUMENTS`, `$1`..`$9`, ``!`cmd` `` gated by `allowed-tools`, `@file`, `dir:name` namespaces. `allowed-tools` does not yet grant tool permissions for the turn, and `model` is not applied |
+| Output styles: default, explanatory, learning + custom | done | `styles::builtins_and_custom_styles`, `extend::commands_skills_styles_and_plugins` | `outputStyle` setting; Forge's own style texts |
+| Plugins (`--plugin-dir`, `pluginDirs`) | done | `plugins::manifests_and_components`, `extend::commands_skills_styles_and_plugins` | Commands, agents, skills, output styles, hooks and `.mcp.json`. No marketplace (out of scope) |
+| Built-in `/compact`, `/clear`, `/cost`, `/help` in every mode | done | `slash::routes_commands_skills_and_paths`, `extend::commands_skills_styles_and_plugins` | Local commands answer without a model call |
 
 ## MCP (M6)
 
@@ -164,7 +165,7 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | Streamable HTTP client (JSON and SSE answers, `Mcp-Session-Id`, protocol header, DELETE on close) | done | `client::streamable_http_json_sse_and_sessions` | |
 | SSE client (2024-11-05 transport) | partial | | Built; no test against an SSE server yet |
 | Tools (`mcp__<server>__<tool>`), resources (`ListMcpResourcesTool`, `ReadMcpResourceTool`) | done | `client::stdio_server_tools_resources_and_server_requests`, `tools::converts_every_content_type`, `tools::names_are_clean_and_short` | |
-| Prompts as slash commands | todo | | Waits for slash commands (M5); `prompts/list` and `prompts/get` exist in the client |
+| Prompts as slash commands | done | `slash::routes_commands_skills_and_paths` (routing) | `/mcp__<server>__<prompt> args`; arguments fill the declared ones in order. No end-to-end test with a prompt server yet |
 | Server instructions in the system prompt | done | `client::stdio_server_tools_resources_and_server_requests` | |
 | `--mcp-config` / `--strict-mcp-config` / `.mcp.json` with approval (C16) | done | `config::project_servers_need_the_users_approval`, `config::precedence_and_strict_mode`, `mcp::project_servers_wait_for_approval` | |
 | `${VAR}` / `${VAR:-default}` expansion | done | `config::expands_environment_variables` | |
@@ -187,7 +188,8 @@ These rows go past the reference CLI. Each names its pillar from `docs/GOALS.md`
 | `--max-turns`, `--max-budget-usd`, `--json-schema` | partial | `e2e::max_turns_and_continue`, `engine::c7_budget_and_max_turns_stop_the_run` | `--json-schema` sends `output_config.format` and parses the result; no retry on invalid output yet |
 | `--mcp-config`, `--strict-mcp-config` | done | `mcp::session_uses_mcp_tools_and_reports_status`, `mcp::project_servers_wait_for_approval` | |
 | `--settings`, `--setting-sources`, `--bare`, `--safe-mode`, `--restricted` | partial | `config::layers_merge_in_order` | `--restricted` not implemented yet |
-| `--agents`, `--agent`, `--plugin-dir`, `--disable-slash-commands` | todo | | |
+| `--agents`, `--agent`, `--plugin-dir` | done | `agents::json_agents_and_precedence`, `core::sub_agents_are_offered_and_configurable`, `extend::commands_skills_styles_and_plugins` | |
+| `--disable-slash-commands` | todo | | |
 | `--debug`, `--debug-file`, `--verbose`, `-v/--version` | done | `e2e::version_and_help` |  |
 | `-w/--worktree` | done | `core::c10_worktree_flag_runs_the_session_in_a_new_worktree`, `git::c10_worktree_session_listed_from_main_repo` | Contract C10. The exit prompt to remove it waits for the TUI |
 | `--autocompact` | done | `core::autocompact_values` | Also `autoCompactWindow` and `autoCompactEnabled` in settings |

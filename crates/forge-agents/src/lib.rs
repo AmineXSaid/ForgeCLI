@@ -7,8 +7,17 @@
 //! permission rules, prompt lock, file checkpoints and budget, and cannot
 //! start sub-agents of their own.
 
+pub mod commands;
 mod definitions;
+pub mod frontmatter;
+pub mod plugins;
+pub mod skills;
+pub mod styles;
 mod task;
 
+pub use commands::{load_commands, CommandDef};
 pub use definitions::{builtin_agents, load_agents, parse_agent_markdown, parse_agents_json, AgentDef, AgentSource};
+pub use plugins::{load_plugins, Plugin};
+pub use skills::{load_skills, SkillDef, SkillTool};
+pub use styles::{load_styles, OutputStyle};
 pub use task::{AgentRuntime, ParentLink, TaskTool};

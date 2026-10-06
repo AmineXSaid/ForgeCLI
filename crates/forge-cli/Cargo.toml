@@ -36,5 +36,3 @@ tempfile.workspace = true
 forge-test-host.workspace = true
 forge-eval.workspace = true
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

@@ -242,6 +242,8 @@ pub struct Engine {
     guard: crate::stuck::LoopGuard,
     /// This turn's raised output cap, after a `max_tokens` stop.
     output_cap: Option<u32>,
+    /// After `/clear`: attach the memory context to the next prompt again.
+    reattach_context: bool,
 }
 
 /// What a compaction did.
@@ -315,6 +317,7 @@ impl Engine {
             verify: Default::default(),
             guard: Default::default(),
             output_cap: None,
+            reattach_context: false,
         })
     }
 
@@ -702,6 +705,55 @@ impl Engine {
         Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
 
+    /// `/clear`: forget the conversation (the transcript keeps it before a boundary), the task
+    /// list and what was read. Memory files come back with the next prompt.
+    pub fn clear(&mut self) {
+        self.shared
+            .transcript
+            .append_compact_boundary(json!({"trigger": "clear", "preTokens": self.state.context_tokens}));
+        self.state.messages.clear();
+        self.state.uuids.clear();
+        self.state.microcompacted.clear();
+        self.state.context_tokens = 0;
+        self.shared.tool_ctx.todos.lock().unwrap().clear();
+        self.shared.tool_ctx.files.forget_all_views();
+        self.reattach_context = self.session_context.is_some();
+    }
+
+    /// A result for something answered without the model (a local slash command).
+    pub fn local_result(&self, text: impl Into<String>, is_error: bool) -> TurnResult {
+        TurnResult {
+            subtype: if is_error { ResultSubtype::ErrorDuringExecution } else { ResultSubtype::Success },
+            is_error,
+            result: Some(text.into()),
+            stop_reason: None,
+            num_turns: 0,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            usage: Usage::default(),
+            total_cost_usd: self.state.total_cost_usd,
+            model_usage: self.state.model_usage.clone(),
+            permission_denials: vec![],
+            errors: vec![],
+            structured_output: None,
+            prompt_blocked: None,
+        }
+    }
+
+    /// `/cost`: tokens and spend so far.
+    pub fn cost_report(&self) -> String {
+        let u = &self.state.total_usage;
+        format!(
+            "Total cost: ${:.4}\nTokens: {} input, {} output, {} cache read, {} cache write\nContext now: about {} tokens",
+            self.state.total_cost_usd,
+            u.input_tokens,
+            u.output_tokens,
+            u.cache_read_input_tokens,
+            u.cache_creation_input_tokens,
+            self.state.context_tokens
+        )
+    }
+
     /// Add a sub-agent's spend to this session (budgets include sub-agents).
     fn record_subagent_usage(&mut self, sub: &Value) {
         let cost = sub.get("costUsd").and_then(Value::as_f64).unwrap_or(0.0);
@@ -771,6 +823,12 @@ impl Engine {
                     0,
                     ContentBlock::text(format!("<system-reminder>\n{}\n</system-reminder>", context.join("\n\n"))),
                 );
+            }
+        }
+
+        if std::mem::take(&mut self.reattach_context) {
+            if let Some(c) = &self.session_context {
+                blocks.insert(0, ContentBlock::text(format!("<system-reminder>\n{c}\n</system-reminder>")));
             }
         }
 

@@ -35,6 +35,8 @@ pub struct ServerEntry {
     pub status: Status,
     pub client: Option<Arc<McpClient>>,
     pub tools: Vec<ToolInfo>,
+    /// `prompts/list` entries; they become `/mcp__<server>__<prompt>` commands.
+    pub prompts: Vec<Value>,
 }
 
 #[derive(Default)]
@@ -56,6 +58,7 @@ impl McpManager {
                     status: Status::Connected,
                     client: None,
                     tools: vec![],
+                    prompts: vec![],
                 };
                 let config = match s.config.expanded(&env) {
                     Ok(c) => c,
@@ -68,6 +71,7 @@ impl McpManager {
                     Ok(c) => match c.list_tools().await {
                         Ok(tools) => {
                             entry.tools = tools;
+                            entry.prompts = c.list_prompts().await.unwrap_or_default();
                             entry.client = Some(Arc::new(c));
                         }
                         Err(e) => {
@@ -89,6 +93,7 @@ impl McpManager {
                 status: Status::Skipped(s.reason.clone()),
                 client: None,
                 tools: vec![],
+                prompts: vec![],
             });
         }
         McpManager { servers }
@@ -114,6 +119,69 @@ impl McpManager {
             out.push(Arc::new(ReadResource { clients: with_resources }));
         }
         out
+    }
+
+    /// Slash-command names of every server prompt: `mcp__<server>__<prompt>`.
+    pub fn prompt_names(&self) -> Vec<String> {
+        self.servers
+            .iter()
+            .flat_map(|s| {
+                s.prompts
+                    .iter()
+                    .filter_map(|p| p.get("name").and_then(Value::as_str))
+                    .map(|p| crate::tools::tool_name(&s.name, p))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Run `/mcp__<server>__<prompt> args`: the prompt's messages as one text. Arguments
+    /// fill the prompt's declared arguments in order; the last one takes the rest.
+    pub async fn get_prompt(&self, command: &str, args: &str) -> Option<Result<String, String>> {
+        for s in &self.servers {
+            let Some(c) = &s.client else { continue };
+            for p in &s.prompts {
+                let Some(name) = p.get("name").and_then(Value::as_str) else { continue };
+                if crate::tools::tool_name(&s.name, name) != command {
+                    continue;
+                }
+                let declared: Vec<String> = p
+                    .get("arguments")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter().filter_map(|x| x.get("name").and_then(Value::as_str).map(str::to_string)).collect()
+                    })
+                    .unwrap_or_default();
+                let words: Vec<&str> = args.split_whitespace().collect();
+                let mut map = serde_json::Map::new();
+                for (i, d) in declared.iter().enumerate() {
+                    let v = if i + 1 == declared.len() {
+                        words.get(i..).map(|w| w.join(" "))
+                    } else {
+                        words.get(i).map(|w| w.to_string())
+                    };
+                    if let Some(v) = v.filter(|v| !v.is_empty()) {
+                        map.insert(d.clone(), json!(v));
+                    }
+                }
+                let r = c.get_prompt(name, Value::Object(map)).await.map_err(|e| e.to_string()).map(|v| {
+                    v.get("messages")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(|m| {
+                            crate::tools::convert_content(
+                                &json!({"content": [m.get("content").cloned().unwrap_or(Value::Null)]}),
+                            )
+                            .text_content()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                });
+                return Some(r);
+            }
+        }
+        None
     }
 
     /// `[{name, status}]` for `system/init` and `mcp_status`.

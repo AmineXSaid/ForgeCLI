@@ -260,3 +260,41 @@ fn doctor_reports_missing_credentials_with_status_3() {
     assert_eq!(code, 0);
     let _ = Path::new("/");
 }
+
+/// A hook that exits without reading its stdin must not kill forge (SIGPIPE), even when
+/// the event is larger than a pipe buffer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hook_that_ignores_stdin_cannot_kill_forge() {
+    let e = env();
+    std::fs::create_dir_all(e.cwd.join(".forge")).unwrap();
+    std::fs::write(
+        e.cwd.join(".forge/settings.json"),
+        r#"{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "true"}]}]}}"#,
+    )
+    .unwrap();
+    let api = MockApi::start(vec![MockTurn::text("fine"), MockTurn::text("fine"), MockTurn::text("fine")]).await;
+    let big = "x".repeat(100_000); // more than a pipe buffer, less than an argument limit
+    for _ in 0..3 {
+        let (code, out, err) = run(with_api(forge(&e, &["-p", &big]), &api));
+        assert_eq!((code, out.as_str()), (0, "fine\n"), "{err}");
+    }
+}
+
+/// A reader that goes away (`forge ... | head -c 1`) ends forge quietly: no panic text.
+#[test]
+fn closed_stdout_ends_quietly() {
+    let e = env();
+    let script = format!("set -o pipefail; '{}' completion zsh | head -c 1 >/dev/null", forge_bin().display());
+    let o = Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", &e.home)
+        .current_dir(&e.cwd)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "status {:?}: {err}", o.status);
+    assert!(!err.contains("panicked") && !err.contains("Broken pipe"), "{err}");
+}

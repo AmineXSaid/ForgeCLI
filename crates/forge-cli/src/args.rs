@@ -124,6 +124,9 @@ pub struct Opts {
     /// Additional directories to allow tool access to
     #[arg(long = "add-dir", num_args = 1..)]
     pub add_dir: Vec<PathBuf>,
+    /// Load plugins from these directories (commands, agents, skills, hooks, MCP servers)
+    #[arg(long = "plugin-dir", num_args = 1.., value_name = "DIRS")]
+    pub plugin_dir: Vec<PathBuf>,
     /// Load MCP servers from JSON files or strings (space separated)
     #[arg(long = "mcp-config", num_args = 1.., value_name = "CONFIGS")]
     pub mcp_config: Vec<String>,

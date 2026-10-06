@@ -1,0 +1,265 @@
+//! Custom slash commands: Markdown prompts in `commands/` (user, the
+//! project's `.agents/` and `.forge/`, and plugins).
+//!
+//! `/name args` expands the file's body:
+//! - `$ARGUMENTS` becomes the whole argument string, and `$1`..`$9` the
+//!   shell-split arguments. Without either, the arguments are appended.
+//! - ``!`command` `` runs the command and puts its output in place. It runs
+//!   only when the command's `allowed-tools` frontmatter allows that Bash
+//!   command.
+//! - `@path` attaches the file's contents.
+//!
+//! A file in a subdirectory is named `dir:name`. A plugin's commands are
+//! named `plugin:name`.
+
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::Duration;
+
+use forge_permissions::{MatchMode, Request, Rule, Subject};
+use regex::Regex;
+
+use crate::frontmatter;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandDef {
+    pub name: String,
+    pub description: String,
+    pub argument_hint: Option<String>,
+    /// `allowed-tools`: here, which ``!`command` `` expansions may run.
+    pub allowed_tools: Vec<String>,
+    pub model: Option<String>,
+    pub body: String,
+    pub path: PathBuf,
+    /// `user`, `project`, or the plugin's name.
+    pub source: String,
+}
+
+fn md_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for p in entries {
+        if p.is_dir() {
+            md_files(&p, out);
+        } else if p.extension().is_some_and(|x| x == "md") {
+            out.push(p);
+        }
+    }
+}
+
+fn first_line(body: &str) -> String {
+    body.lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty())
+        .map(|l| l.chars().take(100).collect())
+        .unwrap_or_default()
+}
+
+pub fn parse_command(name: &str, text: &str, path: &Path, source: &str) -> CommandDef {
+    let (fm, body) = frontmatter::parse(text);
+    CommandDef {
+        name: name.to_string(),
+        description: fm.text("description").map(str::to_string).unwrap_or_else(|| first_line(&body)),
+        argument_hint: fm.text("argument-hint").map(str::to_string),
+        allowed_tools: fm.list("allowed-tools").unwrap_or_default(),
+        model: fm.text("model").map(str::to_string).filter(|m| !m.is_empty()),
+        body,
+        path: path.to_path_buf(),
+        source: source.to_string(),
+    }
+}
+
+/// Every command, later sources replacing earlier ones by name: user, project
+/// (`.agents/`, then `.forge/`), then plugins.
+pub fn load_commands(
+    project: &Path,
+    plugins: &[crate::plugins::Plugin],
+    warnings: &mut Vec<String>,
+) -> Vec<CommandDef> {
+    let mut dirs: Vec<(PathBuf, String, Option<String>)> = forge_config::resource_dirs("commands", project)
+        .into_iter()
+        .map(|(scope, d)| {
+            let s = match scope {
+                forge_config::Scope::User => "user",
+                forge_config::Scope::Project => "project",
+            };
+            (d, s.to_string(), None)
+        })
+        .collect();
+    for p in plugins {
+        dirs.push((p.dir.join("commands"), p.name.clone(), Some(p.name.clone())));
+    }
+    let mut out: Vec<CommandDef> = vec![];
+    for (dir, source, prefix) in dirs {
+        let mut files = vec![];
+        md_files(&dir, &mut files);
+        for f in files {
+            let rel = f.strip_prefix(&dir).unwrap_or(&f).with_extension("");
+            let local =
+                rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join(":");
+            let name = match &prefix {
+                Some(p) => format!("{p}:{local}"),
+                None => local,
+            };
+            match std::fs::read_to_string(&f) {
+                Ok(text) => {
+                    out.retain(|c| c.name != name);
+                    out.push(parse_command(&name, &text, &f, &source));
+                }
+                Err(e) => warnings.push(format!("command {}: {e}", f.display())),
+            }
+        }
+    }
+    out
+}
+
+static BANG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!`([^`\n]+)`").expect("regex"));
+static AT_FILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)(?:^|\s)@([A-Za-z0-9_./~-][A-Za-z0-9_./~-]*)").expect("regex"));
+static POSITIONAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$([1-9])").expect("regex"));
+
+/// Does `allowed-tools` let a ``!`command` `` expansion run `cmd`?
+pub fn bang_allowed(allowed_tools: &[String], cmd: &str, cwd: &Path) -> bool {
+    let req = Request::new("Bash", Subject::Command(cmd.to_string()), false);
+    allowed_tools.iter().filter_map(|r| Rule::parse(r).ok()).any(|rule| rule.matches(&req, cwd, MatchMode::All))
+}
+
+/// The prompt `/name args` sends.
+pub async fn expand(cmd: &CommandDef, args: &str, cwd: &Path) -> Result<String, String> {
+    let args = args.trim();
+    let mut text = cmd.body.clone();
+    let positional = shlex::split(args).unwrap_or_else(|| args.split_whitespace().map(str::to_string).collect());
+    let uses_args = text.contains("$ARGUMENTS") || POSITIONAL.is_match(&text);
+    text = text.replace("$ARGUMENTS", args);
+    text = POSITIONAL
+        .replace_all(&text, |c: &regex::Captures| {
+            let i: usize = c[1].parse().unwrap_or(1);
+            positional.get(i - 1).cloned().unwrap_or_default()
+        })
+        .into_owned();
+    if !uses_args && !args.is_empty() {
+        text.push_str(&format!("\n\nARGUMENTS: {args}"));
+    }
+
+    // !`command` expansions.
+    let mut out = String::new();
+    let mut last = 0;
+    for m in BANG.captures_iter(&text) {
+        let whole = m.get(0).expect("match");
+        let command = m[1].trim();
+        out.push_str(&text[last..whole.start()]);
+        last = whole.end();
+        if !bang_allowed(&cmd.allowed_tools, command, cwd) {
+            return Err(format!(
+                "/{} runs `{command}`, which its allowed-tools frontmatter does not permit (add e.g. \"Bash({})\").",
+                cmd.name,
+                command.split_whitespace().next().unwrap_or(command)
+            ));
+        }
+        let run = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        let output = match tokio::time::timeout(Duration::from_secs(60), run).await {
+            Ok(Ok(o)) => {
+                let mut s = String::from_utf8_lossy(&o.stdout).trim_end().to_string();
+                let err = String::from_utf8_lossy(&o.stderr);
+                if !err.trim().is_empty() {
+                    s.push_str(&format!("\n{}", err.trim_end()));
+                }
+                s
+            }
+            Ok(Err(e)) => format!("(could not run: {e})"),
+            Err(_) => "(timed out after 60s)".into(),
+        };
+        out.push_str(&forge_tools::truncate_middle(&output, 20_000));
+    }
+    out.push_str(&text[last..]);
+
+    // @file attachments.
+    let mut attached = vec![];
+    for m in AT_FILE.captures_iter(&out) {
+        let raw = m[1].trim_end_matches(['.', ',', ':', ';', ')']);
+        let path =
+            if let Some(rest) = raw.strip_prefix("~/") { forge_config::home().join(rest) } else { cwd.join(raw) };
+        if path.is_file() && !attached.iter().any(|(p, _)| p == &path) {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                attached.push((path, forge_tools::truncate_middle(&content, 50_000)));
+            }
+        }
+    }
+    for (path, content) in attached {
+        out.push_str(&format!("\n\n<file path=\"{}\">\n{}\n</file>", path.display(), content.trim_end()));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmd(body: &str, allowed: &[&str]) -> CommandDef {
+        CommandDef {
+            name: "t".into(),
+            description: String::new(),
+            argument_hint: None,
+            allowed_tools: allowed.iter().map(|s| s.to_string()).collect(),
+            model: None,
+            body: body.into(),
+            path: PathBuf::new(),
+            source: "project".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn expands_arguments_commands_and_files() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("notes.md"), "remember this").unwrap();
+        let c = cmd("Fix issue #$1 with priority $2. All: $ARGUMENTS", &[]);
+        assert_eq!(
+            expand(&c, "123 \"very high\"", d.path()).await.unwrap(),
+            "Fix issue #123 with priority very high. All: 123 \"very high\""
+        );
+        let c = cmd("Review the code.", &[]);
+        assert_eq!(expand(&c, "src/main.rs", d.path()).await.unwrap(), "Review the code.\n\nARGUMENTS: src/main.rs");
+        let c = cmd("Status:\n!`echo clean`\nDone", &["Bash(echo:*)"]);
+        assert_eq!(expand(&c, "", d.path()).await.unwrap(), "Status:\nclean\nDone");
+        let c = cmd("!`rm -rf x`", &["Bash(echo:*)"]);
+        assert!(expand(&c, "", d.path()).await.unwrap_err().contains("allowed-tools"));
+        let c = cmd("Summarize @notes.md please, not @missing.md", &[]);
+        let out = expand(&c, "", d.path()).await.unwrap();
+        assert!(
+            out.ends_with(&format!("<file path=\"{}\">\nremember this\n</file>", d.path().join("notes.md").display())),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn loads_namespaced_commands_with_precedence() {
+        let d = tempfile::tempdir().unwrap();
+        let proj = d.path();
+        for (dir, file, text) in [
+            (".agents/commands", "review.md", "---\ndescription: shared review\n---\nReview it."),
+            (
+                ".forge/commands",
+                "review.md",
+                "---\ndescription: forge review\nargument-hint: [file]\n---\nReview $ARGUMENTS.",
+            ),
+            (".forge/commands/frontend", "component.md", "# Make a component\nBuild $1."),
+        ] {
+            std::fs::create_dir_all(proj.join(dir)).unwrap();
+            std::fs::write(proj.join(dir).join(file), text).unwrap();
+        }
+        let mut w = vec![];
+        let cmds = load_commands(proj, &[], &mut w);
+        let review = cmds.iter().find(|c| c.name == "review").unwrap();
+        assert_eq!((review.description.as_str(), review.argument_hint.as_deref()), ("forge review", Some("[file]")));
+        let comp = cmds.iter().find(|c| c.name == "frontend:component").unwrap();
+        assert_eq!(comp.description, "Make a component");
+        assert!(w.is_empty());
+    }
+}

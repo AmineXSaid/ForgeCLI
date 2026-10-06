@@ -20,9 +20,21 @@ pub struct Out {
 impl Out {
     pub fn line(&self, msg: &SdkMessage) {
         let _g = self.lock.lock().unwrap();
-        let mut so = std::io::stdout().lock();
-        let _ = writeln!(so, "{}", msg.to_line());
-        let _ = so.flush();
+        stdout_line(format_args!("{}", msg.to_line()));
+    }
+}
+
+/// Write one line to stdout. If the reader is gone (`forge ... | head`, a host that
+/// exited), stop quietly: nobody is left to read the rest. SIGPIPE stays ignored (the
+/// Rust default) so that a child that exits before reading its stdin, such as a hook or
+/// an MCP server, cannot kill Forge.
+pub fn stdout_line(args: std::fmt::Arguments) {
+    let mut so = std::io::stdout().lock();
+    let r = so.write_fmt(args).and_then(|_| so.write_all(b"\n")).and_then(|_| so.flush());
+    if let Err(e) = r {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(crate::exit::OK);
+        }
     }
 }
 
