@@ -229,7 +229,6 @@ pub fn resolve_model(name: &str) -> String {
 
 /// Look up a model by id (or a dated / prefixed variant of one).
 pub fn model_info(id: &str) -> Option<&'static ModelInfo> {
-    let id = id.trim_start_matches("anthropic.");
     MODELS
         .iter()
         .find(|m| m.id == id)

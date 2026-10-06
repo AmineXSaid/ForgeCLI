@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use crate::api::{ApiMessage, MessageContent, Role, StreamEvent, Usage};
 
-/// Version of the Claude Code CLI whose protocol this implementation tracks.
+/// Version of the reference CLI whose protocol this implementation tracks.
 pub const PROTOCOL_COMPAT_VERSION: &str = "2.1.290";
 
 /// One line of the stream-json protocol.
@@ -60,7 +60,6 @@ pub struct InitInfo {
     pub slash_commands: Vec<String>,
     #[serde(rename = "apiKeySource")]
     pub api_key_source: String,
-    pub claude_code_version: String,
     pub forge_version: String,
     pub output_style: String,
     pub agents: Vec<String>,
@@ -344,8 +343,7 @@ mod tests {
             model: "m".into(),
             permission_mode: "default".into(),
             slash_commands: vec![],
-            api_key_source: "ANTHROPIC_API_KEY".into(),
-            claude_code_version: PROTOCOL_COMPAT_VERSION.into(),
+            api_key_source: "FORGE_API_KEY".into(),
             forge_version: "0.1.0".into(),
             output_style: "default".into(),
             agents: vec![],

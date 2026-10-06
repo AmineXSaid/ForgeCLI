@@ -1,22 +1,16 @@
 # ForgeCLI
 
-ForgeCLI is an agentic coding CLI written in Rust. It reimplements the
-behaviour of the Claude Code CLI (parity target **v2.1.290**): the agent loop,
-the tool system, permission modes, MCP, context compaction, hooks, the
-stream-json SDK protocol and a terminal UI.
+ForgeCLI is an agentic coding CLI written in Rust: an agent loop, a tool
+system, permission modes, MCP, context compaction, hooks, a stream-json
+protocol for IDE hosts, and a terminal UI.
 
-It is a clean-room build:
-- **Sources:** only public interfaces, namely the CLI's `--help` output, the
-  documented Agent SDK stream-json protocol and the Anthropic Messages API docs.
-  No Claude Code source code was used.
-- **Prompts:** ForgeCLI ships its own system prompt and tool descriptions.
-  Anthropic's prompt text is not included.
-- **Affiliation:** ForgeCLI is not affiliated with or endorsed by Anthropic.
+ForgeCLI is written from public interface documentation only, and it ships
+its own system prompt and tool descriptions.
 
 ## Status
 
 Under construction. `docs/PARITY.md` tracks every tool, flag, protocol message
-and command, with the test that proves each one. `docs/ARCHITECTURE.md` holds
+and command against the reference CLI, with the test that proves each one. `docs/ARCHITECTURE.md` holds
 the crate layout and the behavioural contracts (C1–C11).
 
 ## Build
@@ -30,9 +24,10 @@ cargo build --release
 
 | Variable | Used for |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | API key, sent as `x-api-key` |
-| `ANTHROPIC_AUTH_TOKEN` | Bearer token, for gateways and proxies |
-| `ANTHROPIC_BASE_URL` | A different API endpoint |
+| `FORGE_API_KEY` | API key, sent as `x-api-key` |
+| `FORGE_AUTH_TOKEN` | Bearer token, for gateways and proxies |
+| `FORGE_BASE_URL` | A different Messages API endpoint |
+| `FORGE_CUSTOM_HEADERS` | Extra request headers, one `Name: value` per line |
 | `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint |
 
 ## Optional external prompt set

@@ -1,6 +1,6 @@
 //! OpenAI-compatible `/v1/chat/completions` endpoints (custom gateways,
 //! local servers). Requests are translated from the Messages shape and the
-//! streamed chunks are translated back into Anthropic stream events, so the
+//! streamed chunks are translated back into Messages API stream events, so the
 //! engine never sees the difference.
 
 use std::time::Duration;
@@ -12,7 +12,7 @@ use forge_types::{
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::anthropic::{http_error, spawn_sse_pump};
+use crate::messages::{http_error, spawn_sse_pump};
 use crate::{backoff_delay, ApiError, EventStream, Provider};
 
 #[derive(Debug, Clone)]
@@ -131,7 +131,7 @@ fn push_message(out: &mut Vec<Value>, m: &Message) {
     }
 }
 
-/// Translates chat-completion chunks into Anthropic stream events.
+/// Translates chat-completion chunks into Messages API stream events.
 #[derive(Debug, Default)]
 pub struct ChunkTranslator {
     started: bool,

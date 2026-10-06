@@ -1,4 +1,4 @@
-//! Anthropic Messages API over HTTPS with SSE streaming.
+//! The Messages API over HTTPS with SSE streaming.
 
 use std::time::Duration;
 
@@ -13,8 +13,12 @@ use tokio_util::sync::CancellationToken;
 use crate::sse::SseDecoder;
 use crate::{backoff_delay, ApiError, EventStream, Provider};
 
+// Wire constants required by the Messages API: its default host, its version
+// header and value, and its beta header. They are protocol, not branding.
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub const API_VERSION: &str = "2023-06-01";
+const VERSION_HEADER: &str = "anthropic-version";
+const BETA_HEADER: &str = "anthropic-beta";
 
 const KNOWN_EVENTS: &[&str] = &[
     "message_start",
@@ -28,7 +32,7 @@ const KNOWN_EVENTS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone)]
-pub struct AnthropicConfig {
+pub struct MessagesConfig {
     pub base_url: String,
     /// Sent as `x-api-key`.
     pub api_key: Option<String>,
@@ -41,9 +45,9 @@ pub struct AnthropicConfig {
     pub user_agent: String,
 }
 
-impl Default for AnthropicConfig {
+impl Default for MessagesConfig {
     fn default() -> Self {
-        AnthropicConfig {
+        MessagesConfig {
             base_url: DEFAULT_BASE_URL.into(),
             api_key: None,
             auth_token: None,
@@ -56,19 +60,18 @@ impl Default for AnthropicConfig {
     }
 }
 
-impl AnthropicConfig {
-    /// Read `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-    /// `ANTHROPIC_CUSTOM_HEADERS` ("Name: value" per line) and
-    /// `FORGE_MAX_RETRIES`.
+impl MessagesConfig {
+    /// Read `FORGE_BASE_URL`, `FORGE_API_KEY`, `FORGE_AUTH_TOKEN`,
+    /// `FORGE_CUSTOM_HEADERS` ("Name: value" per line) and `FORGE_MAX_RETRIES`.
     pub fn from_env() -> Self {
-        let mut c = AnthropicConfig::default();
+        let mut c = MessagesConfig::default();
         let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        if let Some(u) = get("ANTHROPIC_BASE_URL") {
+        if let Some(u) = get("FORGE_BASE_URL") {
             c.base_url = u;
         }
-        c.api_key = get("ANTHROPIC_API_KEY");
-        c.auth_token = get("ANTHROPIC_AUTH_TOKEN");
-        if let Some(h) = get("ANTHROPIC_CUSTOM_HEADERS") {
+        c.api_key = get("FORGE_API_KEY");
+        c.auth_token = get("FORGE_AUTH_TOKEN");
+        if let Some(h) = get("FORGE_CUSTOM_HEADERS") {
             c.extra_headers = parse_header_lines(&h);
         }
         if let Some(n) = get("FORGE_MAX_RETRIES").and_then(|v| v.parse().ok()) {
@@ -84,9 +87,9 @@ impl AnthropicConfig {
     /// Where the credential came from, for `system/init.apiKeySource`.
     pub fn key_source(&self) -> &'static str {
         if self.api_key.is_some() {
-            "ANTHROPIC_API_KEY"
+            "FORGE_API_KEY"
         } else if self.auth_token.is_some() {
-            "ANTHROPIC_AUTH_TOKEN"
+            "FORGE_AUTH_TOKEN"
         } else {
             "none"
         }
@@ -101,20 +104,20 @@ pub fn parse_header_lines(raw: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-pub struct AnthropicProvider {
-    config: AnthropicConfig,
+pub struct MessagesProvider {
+    config: MessagesConfig,
     http: reqwest::Client,
 }
 
-impl AnthropicProvider {
-    pub fn new(config: AnthropicConfig) -> Result<Self, ApiError> {
+impl MessagesProvider {
+    pub fn new(config: MessagesConfig) -> Result<Self, ApiError> {
         let http = reqwest::Client::builder()
             .user_agent(config.user_agent.clone())
             .connect_timeout(Duration::from_secs(30))
             .timeout(config.timeout)
             .build()
             .map_err(|e| ApiError::Network(e.to_string()))?;
-        Ok(AnthropicProvider { config, http })
+        Ok(MessagesProvider { config, http })
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -124,7 +127,7 @@ impl AnthropicProvider {
     fn headers(&self) -> Result<HeaderMap, ApiError> {
         let mut h = HeaderMap::new();
         h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        h.insert("anthropic-version", HeaderValue::from_static(ANTHROPIC_VERSION));
+        h.insert(VERSION_HEADER, HeaderValue::from_static(API_VERSION));
         if let Some(k) = &self.config.api_key {
             h.insert("x-api-key", header_value(k)?);
         }
@@ -132,7 +135,7 @@ impl AnthropicProvider {
             h.insert(reqwest::header::AUTHORIZATION, header_value(&format!("Bearer {t}"))?);
         }
         if !self.config.betas.is_empty() {
-            h.insert("anthropic-beta", header_value(&self.config.betas.join(","))?);
+            h.insert(BETA_HEADER, header_value(&self.config.betas.join(","))?);
         }
         for (k, v) in &self.config.extra_headers {
             let name = HeaderName::from_bytes(k.as_bytes()).map_err(|e| ApiError::Parse(e.to_string()))?;
@@ -233,9 +236,9 @@ where
 }
 
 #[async_trait::async_trait]
-impl Provider for AnthropicProvider {
+impl Provider for MessagesProvider {
     fn name(&self) -> &str {
-        "anthropic"
+        "messages"
     }
 
     async fn stream(&self, mut request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {

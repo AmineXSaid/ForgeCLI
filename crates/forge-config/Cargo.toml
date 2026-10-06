@@ -1,6 +1,6 @@
 [package]
 name = "forge-config"
-description = "Settings layers, memory files (FORGE.md / CLAUDE.md) and resource search paths."
+description = "Settings layers, memory files (FORGE.md) and resource search paths."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

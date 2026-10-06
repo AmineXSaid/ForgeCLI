@@ -1,12 +1,12 @@
 # ForgeCLI architecture
 
-ForgeCLI is a clean-room Rust reimplementation of the Claude Code CLI's
-behaviour. The parity target is **Claude Code v2.1.290** (the 2026-10-06
-release). The only sources are public interfaces: `claude --help` (v2.1.291 was
-the binary on the build machine and its help output was used as the flag
-reference), the documented Agent SDK stream-json protocol, and the Anthropic
-Messages API docs. No Claude Code source, leaked or otherwise, is used, and
-Anthropic's prompt text is never committed (see "Prompts" below).
+ForgeCLI is a clean-room Rust agentic coding CLI. Its behaviour follows a
+reference CLI, version **2.1.290** (the 2026-10-06 release). The only sources
+are public interfaces: the reference CLI's `--help` output (2.1.291 was the
+binary on the build machine, used as the flag reference), the documented SDK
+stream-json protocol, and the Messages API documentation. No leaked or
+proprietary source is used, and no third-party prompt text is committed (see
+"Prompts" below).
 
 ## Crates
 
@@ -15,8 +15,8 @@ higher.
 
 ```
 forge-types                      wire types (Messages API + stream-json protocol)
-  ├─ forge-api                   Provider trait, Anthropic SSE client, OpenAI-compatible adapter, mock, model table + pricing
-  ├─ forge-config                settings layers, memory files (FORGE.md / CLAUDE.md), resource search paths
+  ├─ forge-api                   Provider trait, Messages API SSE client, OpenAI-compatible adapter, mock, model table + pricing
+  ├─ forge-config                settings layers, memory files (FORGE.md), resource search paths
   ├─ forge-permissions           modes, rule grammar, decision engine
   ├─ forge-hooks                 hook events, matchers, command runner
   ├─ forge-session               JSONL transcripts, resume / continue / fork, file checkpoints + rewind
@@ -122,7 +122,7 @@ both cancel it.
 - **Location:** `~/.forge/projects/<project-key>/<session-id>.jsonl`.
 - **Project key:** the canonical cwd with every non-alphanumeric character
   replaced by `-` (`/home/u/app` becomes `-home-u-app`). That's readable and
-  matches how Claude Code lays out `~/.claude/projects`. Keys longer than 200
+  matches the reference CLI's project layout. Keys longer than 200
   characters are cut to 180 and given a `-<sha256[..12]>` suffix.
 - **Index:** `~/.forge/projects/index.json` maps each key to its cwd, so
   `/resume` can show real paths.
@@ -303,25 +303,25 @@ text says.
 
 ## Configuration names
 
-- **Environment:** `FORGE_*` for ForgeCLI's own settings. `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and
-  `ANTHROPIC_CUSTOM_HEADERS` are honoured because they describe the API, not
-  the CLI. `CLAUDE_CODE_*` variables are **not** read.
+- **Environment:** only `FORGE_*` variables are read, the API ones included:
+  `FORGE_API_KEY`, `FORGE_AUTH_TOKEN`, `FORGE_BASE_URL`, `FORGE_MODEL`,
+  `FORGE_CUSTOM_HEADERS`. Other tools' variables are ignored.
 - **Settings files** (later wins):
 
   | Layer | Paths |
   | --- | --- |
-  | user | `~/.forge/settings.json`, then `~/.claude/settings.json` |
-  | project | `.claude/settings.json`, then `.forge/settings.json` |
-  | local | `.claude/settings.local.json`, then `.forge/settings.local.json` |
+  | user | `~/.forge/settings.json` |
+  | project | `.forge/settings.json` |
+  | local | `.forge/settings.local.json` |
   | flag | `--settings` |
   | managed | `/etc/forge/managed-settings.json` |
-
-  `.forge` beats `.claude` within each layer.
-- **Resources** (agents, commands, skills, output styles): project wins over
-  user. Within a level, `.forge/` beats `.claude/` when two names collide.
-- **`forge --version`** prints `<version> (ForgeCLI)`, the same shape as
-  `claude --version`.
+- **Resources** (agents, commands, skills, output styles) live in
+  `~/.forge/<kind>/` and `.forge/<kind>/`. Project wins over user when two
+  names collide.
+- **Memory files:** `~/.forge/FORGE.md`, then `FORGE.md` or `.forge/FORGE.md` in
+  each directory from the filesystem root down to the cwd, each followed by its
+  `FORGE.local.md`.
+- **`forge --version`** prints `<version> (ForgeCLI)`.
 
 ## Read limits
 

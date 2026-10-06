@@ -1,6 +1,6 @@
 //! Wire types shared by every ForgeCLI crate.
 //!
-//! * [`api`] mirrors the Anthropic Messages API: content blocks, messages,
+//! * [`api`] mirrors the Messages API: content blocks, messages,
 //!   usage and the server-sent stream events.
 //! * [`sdk`] is the newline-delimited JSON protocol spoken on stdout/stdin in
 //!   `--output-format stream-json` / `--input-format stream-json` mode,

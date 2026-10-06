@@ -64,7 +64,7 @@ impl EnvInfo {
             let dirs: Vec<String> = self.additional_dirs.iter().map(|d| d.display().to_string()).collect();
             s.push_str(&format!("Additional working directories: {}\n", dirs.join(", ")));
         }
-        s.push_str(&format!("</env>\nYou are powered by the model {} ({}).\n", self.model_name, self.model));
+        s.push_str(&format!("</env>\nYou are powered by the model {}.\n", self.model_name));
         if let Some(g) = &self.git_status {
             s.push_str(&format!("\ngitStatus: This is the git status at the start of the conversation. It is a snapshot and will not update.\n{g}\n"));
         }

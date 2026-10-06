@@ -143,7 +143,12 @@ fn suggestions() {
     match e.decide(&bash("git commit -m x && npm test")) {
         Decision::Ask { suggestions, .. } => match &suggestions[0] {
             Suggestion::AddRules { rules, .. } => {
-                assert_eq!(rules, &vec!["Bash(git commit *)".to_string(), "Bash(npm test *)".to_string()])
+                let r: Vec<String> = rules.iter().map(|r| r.to_rule_string()).collect();
+                assert_eq!(r, vec!["Bash(git commit *)", "Bash(npm test *)"]);
+                let v = serde_json::to_value(&suggestions[0]).unwrap();
+                assert_eq!(v["type"], "addRules");
+                assert_eq!(v["rules"][0]["toolName"], "Bash");
+                assert_eq!(v["rules"][0]["ruleContent"], "git commit *");
             }
             other => panic!("{other:?}"),
         },

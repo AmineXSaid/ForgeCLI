@@ -152,6 +152,9 @@ pub struct EngineParts {
     pub system: Vec<SystemBlock>,
 }
 
+/// Persists an accepted `PermissionUpdate` (SDK shape) to settings.
+pub type PermissionUpdateHandler = Box<dyn Fn(&Value) + Send + Sync>;
+
 /// State shared with concurrently running tool pipelines.
 pub(crate) struct Shared {
     pub provider: Arc<dyn Provider>,
@@ -166,7 +169,7 @@ pub(crate) struct Shared {
     pub transcript: Arc<Transcript>,
     pub history: Arc<FileHistory>,
     /// Persists accepted permission updates (`updatedPermissions`) to settings.
-    pub on_permission_update: Mutex<Option<Box<dyn Fn(&Value) + Send + Sync>>>,
+    pub on_permission_update: Mutex<Option<PermissionUpdateHandler>>,
 }
 
 /// Conversation state that persists across turns.
@@ -297,7 +300,7 @@ impl Engine {
         self.system = system;
     }
 
-    pub fn set_permission_update_handler(&self, f: Box<dyn Fn(&Value) + Send + Sync>) {
+    pub fn set_permission_update_handler(&self, f: PermissionUpdateHandler) {
         *self.shared.on_permission_update.lock().unwrap() = Some(f);
     }
 

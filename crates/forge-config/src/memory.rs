@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{claude_home, forge_home, home};
+use crate::{forge_home, home};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryKind {
@@ -64,23 +64,20 @@ fn push(files: &mut Vec<MemoryFile>, path: PathBuf, kind: MemoryKind) {
     files.push(MemoryFile { path, kind, content });
 }
 
-/// Memory for a session in `cwd`: user files, then project files from the
+/// Memory for a session in `cwd`: the user file, then project files from the
 /// filesystem root down to `cwd` (closer files later, so they read last and
-/// take precedence), then local files.
+/// take precedence), with each directory's local file after its project file.
 pub fn load_memory(cwd: &Path) -> Vec<MemoryFile> {
     let mut files = vec![];
-    push(&mut files, claude_home().join("CLAUDE.md"), MemoryKind::User);
     push(&mut files, forge_home().join("FORGE.md"), MemoryKind::User);
     let home = home();
     let mut chain: Vec<&Path> = cwd.ancestors().take_while(|a| *a != home && a.parent().is_some()).collect();
     chain.reverse();
     for dir in chain {
-        for name in ["CLAUDE.md", ".claude/CLAUDE.md", "FORGE.md", ".forge/FORGE.md"] {
+        for name in ["FORGE.md", ".forge/FORGE.md"] {
             push(&mut files, dir.join(name), MemoryKind::Project);
         }
-        for name in ["CLAUDE.local.md", "FORGE.local.md"] {
-            push(&mut files, dir.join(name), MemoryKind::Local);
-        }
+        push(&mut files, dir.join("FORGE.local.md"), MemoryKind::Local);
     }
     files
 }
@@ -95,10 +92,11 @@ mod tests {
         let root = d.path().canonicalize().unwrap();
         let sub = root.join("app/pkg");
         std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(root.join("app/CLAUDE.md"), "top rules\n@docs/extra.md\n```\n@not-imported\n```\n").unwrap();
+        std::fs::write(root.join("app/FORGE.md"), "top rules\n@docs/extra.md\n```\n@not-imported\n```\n").unwrap();
         std::fs::create_dir_all(root.join("app/docs")).unwrap();
         std::fs::write(root.join("app/docs/extra.md"), "imported text").unwrap();
-        std::fs::write(sub.join("FORGE.md"), "pkg rules").unwrap();
+        std::fs::create_dir_all(sub.join(".forge")).unwrap();
+        std::fs::write(sub.join(".forge/FORGE.md"), "pkg rules").unwrap();
         std::fs::write(sub.join("FORGE.local.md"), "mine").unwrap();
         let files = load_memory(&sub);
         let project: Vec<_> = files.iter().filter(|f| f.path.starts_with(&root)).collect();
@@ -113,8 +111,8 @@ mod tests {
     fn import_cycles_stop() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().canonicalize().unwrap();
-        std::fs::write(root.join("CLAUDE.md"), "@a.md").unwrap();
-        std::fs::write(root.join("a.md"), "A\n@CLAUDE.md").unwrap();
+        std::fs::write(root.join("FORGE.md"), "@a.md").unwrap();
+        std::fs::write(root.join("a.md"), "A\n@FORGE.md").unwrap();
         let f = load_memory(&root);
         let mine = f.iter().find(|f| f.path.starts_with(&root)).unwrap();
         assert!(mine.content.contains('A'));

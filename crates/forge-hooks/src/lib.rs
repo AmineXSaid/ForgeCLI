@@ -349,7 +349,6 @@ async fn run_one(
         .arg(&cmd.command)
         .current_dir(&base.cwd)
         .env("FORGE_PROJECT_DIR", &base.project_dir)
-        .env("CLAUDE_PROJECT_DIR", &base.project_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -1,12 +1,12 @@
 //! Model providers.
 //!
 //! Every backend implements [`Provider`]: given a [`MessagesRequest`] it
-//! yields the Anthropic stream-event sequence (`message_start`, block
-//! start/delta/stop, `message_delta`, `message_stop`). Non-Anthropic backends
+//! yields the Messages API stream-event sequence (`message_start`, block
+//! start/delta/stop, `message_delta`, `message_stop`). Other backends
 //! translate into that sequence, so the agent loop sees one protocol.
 
 pub mod accumulate;
-pub mod anthropic;
+pub mod messages;
 pub mod mock;
 pub mod models;
 pub mod openai;
@@ -20,7 +20,7 @@ use futures::Stream;
 use tokio_util::sync::CancellationToken;
 
 pub use accumulate::MessageAccumulator;
-pub use anthropic::{AnthropicConfig, AnthropicProvider};
+pub use messages::{MessagesConfig, MessagesProvider};
 pub use mock::{MockProvider, MockTurn};
 pub use models::{resolve_model, ModelInfo, ThinkingStyle};
 pub use openai::{OpenAiConfig, OpenAiProvider};
@@ -39,7 +39,7 @@ pub enum ApiError {
     Parse(String),
     #[error("request cancelled")]
     Cancelled,
-    #[error("no credentials: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN (or apiKeyHelper)")]
+    #[error("no credentials: set FORGE_API_KEY or FORGE_AUTH_TOKEN")]
     MissingCredentials,
 }
 
@@ -78,7 +78,7 @@ impl ApiError {
 /// A source of model turns.
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
-    /// Short identifier (`anthropic`, `openai`, `mock`).
+    /// Short identifier (`messages`, `openai`, `mock`).
     fn name(&self) -> &str;
 
     /// Start a streaming request. Implementations retry transient failures

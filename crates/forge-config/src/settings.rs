@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::{claude_home, forge_home};
+use crate::forge_home;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingSource {
@@ -118,7 +118,7 @@ fn read_json(path: &Path, errors: &mut Vec<String>) -> Option<Value> {
     }
 }
 
-/// Load and merge every layer (contract: later wins; `.forge` after `.claude`).
+/// Load and merge every layer (later wins).
 pub fn load_settings(opts: &SettingsOptions) -> LoadedSettings {
     let mut out = LoadedSettings { merged: Value::Object(Map::new()), ..Default::default() };
     let p = &opts.project_dir;
@@ -128,18 +128,9 @@ pub fn load_settings(opts: &SettingsOptions) -> LoadedSettings {
             continue;
         }
         match src {
-            SettingSource::User => {
-                files.push((src, claude_home().join("settings.json")));
-                files.push((src, forge_home().join("settings.json")));
-            }
-            SettingSource::Project => {
-                files.push((src, p.join(".claude/settings.json")));
-                files.push((src, p.join(".forge/settings.json")));
-            }
-            SettingSource::Local => {
-                files.push((src, p.join(".claude/settings.local.json")));
-                files.push((src, p.join(".forge/settings.local.json")));
-            }
+            SettingSource::User => files.push((src, forge_home().join("settings.json"))),
+            SettingSource::Project => files.push((src, p.join(".forge/settings.json"))),
+            SettingSource::Local => files.push((src, p.join(".forge/settings.local.json"))),
             _ => {}
         }
     }
@@ -250,15 +241,13 @@ mod tests {
     fn layers_merge_in_order() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("proj");
-        std::fs::create_dir_all(p.join(".claude")).unwrap();
         std::fs::create_dir_all(p.join(".forge")).unwrap();
-        std::fs::write(p.join(".claude/settings.json"), r#"{"model":"a","permissions":{"allow":["Read"]}}"#).unwrap();
-        std::fs::write(p.join(".forge/settings.json"), r#"{"model":"b","permissions":{"allow":["Bash(ls)"]}}"#)
-            .unwrap();
-        std::fs::write(p.join(".claude/settings.local.json"), "{not json").unwrap();
+        std::fs::write(p.join(".forge/settings.json"), r#"{"model":"a","permissions":{"allow":["Read"]}}"#).unwrap();
+        // The local layer is malformed: it is skipped and reported.
+        std::fs::write(p.join(".forge/settings.local.json"), "{not json").unwrap();
         let mut opts = SettingsOptions::new(&p);
         opts.sources = vec![SettingSource::Project, SettingSource::Local];
-        opts.flag = Some(r#"{"permissions":{"deny":["Bash(rm *)"]}}"#.into());
+        opts.flag = Some(r#"{"model":"b","permissions":{"allow":["Bash(ls)"],"deny":["Bash(rm *)"]}}"#.into());
         opts.managed_path = d.path().join("managed.json");
         std::fs::write(&opts.managed_path, r#"{"model":"managed"}"#).unwrap();
         let s = load_settings(&opts);
@@ -271,8 +260,8 @@ mod tests {
     #[test]
     fn sources_filter_layers() {
         let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(d.path().join(".claude")).unwrap();
-        std::fs::write(d.path().join(".claude/settings.json"), r#"{"model":"x"}"#).unwrap();
+        std::fs::create_dir_all(d.path().join(".forge")).unwrap();
+        std::fs::write(d.path().join(".forge/settings.json"), r#"{"model":"x"}"#).unwrap();
         let mut opts = SettingsOptions::new(d.path());
         opts.sources = vec![SettingSource::Local];
         opts.managed_path = d.path().join("none.json");

@@ -1,6 +1,6 @@
 [package]
 name = "forge-api"
-description = "Model providers: Anthropic Messages API (SSE streaming), OpenAI-compatible endpoints, and a scripted mock."
+description = "Model providers: the Messages API (SSE streaming), OpenAI-compatible endpoints, and a scripted mock."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

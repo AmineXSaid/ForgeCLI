@@ -1,6 +1,6 @@
 # Parity ledger
 
-The target is Claude Code CLI **v2.1.290**.
+The target is the reference CLI, version **2.1.290**.
 
 **Rule:** a row is `done` only when the **Test** column names a test that
 exists and passes. A milestone is done only when every row it claims is
@@ -104,7 +104,7 @@ exists and passes. A milestone is done only when every row it claims is
 | --- | --- | --- | --- |
 | Settings layers + `--setting-sources` | todo | | |
 | `--settings` file or JSON | todo | | |
-| FORGE.md / CLAUDE.md discovery + `@import` | todo | | |
+| FORGE.md discovery + `@import` | todo | | |
 | Hooks: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification | todo | | |
 | Hook exit-code semantics per event | todo | `hooks::c11_exit2_semantics_per_event` | Contract C11 |
 | Hook JSON output (decision, reason, `updatedInput`, `additionalContext`) | todo | `hooks::c11_json_permission_decision` | Contract C11 |
@@ -144,7 +144,7 @@ exists and passes. A milestone is done only when every row it claims is
 | `forge mcp add/remove/list/get` | todo | | |
 | `forge mcp serve` | todo | | |
 
-## CLI flags (from `claude --help`)
+## CLI flags (from the reference `--help`)
 
 | Flag | Status | Test | Notes |
 | --- | --- | --- | --- |
@@ -163,7 +163,7 @@ exists and passes. A milestone is done only when every row it claims is
 | `-w/--worktree` | todo | `git::c10_worktree_session_listed_from_main_repo` | Contract C10 |
 | `--autocompact` | todo | | |
 | `--brief`, `--prompt-suggestions`, `--forward-subagent-text` | todo | | |
-| `--cloud`, `--teleport`, `--remote-control*`, `--desktop`, `--chrome`/`--no-chrome`, `--ide`, `--from-pr`, `--environment`, `--file`, `--bg`, `--tmux`, `--plugin-url`, `--ax-screen-reader`, `--system-prompt-snapshot` | out | | Need Anthropic cloud, desktop or IDE services, or hosted infrastructure that a personal CLI doesn't have |
+| `--cloud`, `--teleport`, `--remote-control*`, `--desktop`, `--chrome`/`--no-chrome`, `--ide`, `--from-pr`, `--environment`, `--file`, `--bg`, `--tmux`, `--plugin-url`, `--ax-screen-reader`, `--system-prompt-snapshot` | out | | Need a vendor's cloud, desktop or IDE services, or hosted infrastructure that a personal CLI doesn't have |
 
 ## Subcommands
 
