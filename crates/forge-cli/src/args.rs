@@ -62,9 +62,18 @@ pub struct Opts {
     /// Include hook lifecycle events in the output stream
     #[arg(long = "include-hook-events")]
     pub include_hook_events: bool,
-    /// Override verbose mode
+    /// More diagnostics on stderr (never on stdout)
     #[arg(long)]
     pub verbose: bool,
+    /// Only errors on stderr; no warnings or progress
+    #[arg(short = 'q', long, conflicts_with = "verbose")]
+    pub quiet: bool,
+    /// Never ask for input: permission prompts are denied and interactive mode refuses to start
+    #[arg(long = "no-input", env = "FORGE_NO_INPUT", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true", default_value = "false")]
+    pub no_input: bool,
+    /// When to use color on stderr: auto (default; honours NO_COLOR and FORCE_COLOR), always, never
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: crate::term::ColorChoice,
     /// Enable debug logging, optionally filtered (e.g. "api,hooks")
     #[arg(short = 'd', long = "debug", num_args = 0..=1, default_missing_value = "")]
     pub debug: Option<String>,
@@ -185,17 +194,28 @@ pub struct Opts {
 pub enum Command {
     /// Check the health of the installation
     Doctor,
-    /// Show the effective settings
+    /// Inspect settings: merged values (secrets redacted), where they came from, and file locations
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
+    },
+    /// Print a shell completion script (bash, zsh, fish, elvish, powershell)
+    Completion {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigAction {
-    /// Print the merged settings
-    List,
-    /// Print one setting (JSON pointer, e.g. /permissions/defaultMode)
+    /// Print the merged settings as JSON (secrets redacted)
+    List {
+        /// Also show which file each top-level key came from
+        #[arg(long)]
+        origin: bool,
+    },
+    /// Print one setting: a dotted key (permissions.defaultMode) or a JSON pointer (/permissions/defaultMode)
     Get { key: String },
+    /// Print the configuration, state and cache directories and the settings files read
+    Paths,
 }

@@ -4,6 +4,9 @@ mod memory;
 mod settings;
 
 pub use memory::{load_memory, MemoryFile, MemoryKind};
+pub use redact::{is_secret_key, redact};
+
+mod redact;
 pub use settings::{
     deep_merge, load_settings, parse_sources, write_setting, LoadedSettings, SettingSource, SettingsLayer,
     SettingsOptions,
@@ -11,9 +14,44 @@ pub use settings::{
 
 use std::path::{Path, PathBuf};
 
-/// `$FORGE_HOME` or `~/.forge`.
+fn env_dir(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+/// User configuration: settings.json, FORGE.md, agents, commands, skills.
+///
+/// `$FORGE_HOME` if set; else `$XDG_CONFIG_HOME/forge`; else the platform's
+/// config directory (`~/.config/forge` on Linux,
+/// `~/Library/Application Support/forge` on macOS, `%APPDATA%\forge` on Windows).
+pub fn config_dir() -> PathBuf {
+    env_dir("FORGE_HOME")
+        .or_else(|| env_dir("XDG_CONFIG_HOME").map(|d| d.join("forge")))
+        .or_else(|| dirs::config_dir().map(|d| d.join("forge")))
+        .unwrap_or_else(|| home().join(".forge"))
+}
+
+/// Sessions, file history and other state: `$FORGE_HOME/state`, else
+/// `$XDG_STATE_HOME/forge`, else the platform's local data directory.
+pub fn state_dir() -> PathBuf {
+    env_dir("FORGE_HOME")
+        .map(|d| d.join("state"))
+        .or_else(|| env_dir("XDG_STATE_HOME").map(|d| d.join("forge")))
+        .or_else(|| dirs::state_dir().or_else(dirs::data_local_dir).map(|d| d.join("forge")))
+        .unwrap_or_else(|| home().join(".forge").join("state"))
+}
+
+/// Disposable caches: `$FORGE_HOME/cache`, else `$XDG_CACHE_HOME/forge`, else the platform cache directory.
+pub fn cache_dir() -> PathBuf {
+    env_dir("FORGE_HOME")
+        .map(|d| d.join("cache"))
+        .or_else(|| env_dir("XDG_CACHE_HOME").map(|d| d.join("forge")))
+        .or_else(|| dirs::cache_dir().map(|d| d.join("forge")))
+        .unwrap_or_else(|| home().join(".forge").join("cache"))
+}
+
+/// The user configuration directory (kept for callers that predate the XDG split).
 pub fn forge_home() -> PathBuf {
-    std::env::var_os("FORGE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".forge"))
+    config_dir()
 }
 
 pub fn home() -> PathBuf {

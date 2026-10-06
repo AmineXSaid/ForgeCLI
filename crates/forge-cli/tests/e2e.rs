@@ -88,18 +88,23 @@ async fn print_json_and_piped_stdin() {
 async fn print_errors() {
     let e = env();
     let api = MockApi::start(vec![]).await;
-    let (code, _, err) = run(&e, &api, &["-p"], Some("")).await;
-    assert_eq!(code, 1);
-    assert!(err.contains("Input must be provided"), "{err}");
+    let (code, out, err) = run(&e, &api, &["-p"], Some("")).await;
+    assert_eq!(code, 2, "usage error");
+    assert!(err.contains("no prompt") && err.contains("hint:"), "{err}");
+    assert!(out.is_empty(), "nothing on stdout in text mode");
     let (code, _, err) = run(&e, &api, &["-p", "--permission-mode", "yolo", "x"], None).await;
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert!(err.contains("invalid --permission-mode"), "{err}");
     let api = MockApi::start(vec![MockTurn::http_error(401, "authentication_error")]).await;
-    let (code, out, _) = run(&e, &api, &["-p", "--output-format", "json", "x"], None).await;
+    let (code, out, err) = run(&e, &api, &["-p", "--output-format", "json", "x"], None).await;
     assert_eq!(code, 1);
     let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["type"], "result");
     assert_eq!(v["subtype"], "error_during_execution");
-    assert!(v["errors"][0].as_str().unwrap().contains("401"));
+    assert_eq!(v["exit_code"], 1);
+    let msg = v["errors"][0].as_str().unwrap();
+    assert!(msg.contains("401") && msg.contains("FORGE_API_KEY"), "the error names the next step: {msg}");
+    assert!(!err.contains("{"), "stderr carries no JSON: {err}");
 }
 
 /// Replace values that change between runs.
@@ -306,7 +311,7 @@ async fn max_turns_and_continue() {
     ])
     .await;
     let (code, out, _) = run(&e, &api, &["-p", "--output-format", "json", "--max-turns", "1", "look"], None).await;
-    assert_eq!(code, 1);
+    assert_eq!(code, 4, "limits exit with 4");
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(v["subtype"], "error_max_turns");
 

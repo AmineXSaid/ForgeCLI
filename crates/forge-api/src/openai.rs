@@ -32,7 +32,7 @@ impl Default for OpenAiConfig {
             api_key: None,
             extra_headers: vec![],
             max_retries: 2,
-            timeout: Duration::from_secs(600),
+            timeout: Duration::from_secs(300),
         }
     }
 }
@@ -44,8 +44,11 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(config: OpenAiConfig) -> Result<Self, ApiError> {
-        let http =
-            reqwest::Client::builder().timeout(config.timeout).build().map_err(|e| ApiError::Network(e.to_string()))?;
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(config.timeout)
+            .build()
+            .map_err(|e| ApiError::Network(e.to_string()))?;
         Ok(OpenAiProvider { config, http })
     }
 }
@@ -310,7 +313,7 @@ impl Provider for OpenAiProvider {
             }
             let res = tokio::select! {
                 _ = cancel.cancelled() => return Err(ApiError::Cancelled),
-                r = rb.send() => r.map_err(|e| ApiError::Network(e.to_string())),
+                r = rb.send() => r.map_err(crate::messages::network_error),
             };
             let res = match res {
                 Ok(r) if r.status().is_success() => Ok(r),

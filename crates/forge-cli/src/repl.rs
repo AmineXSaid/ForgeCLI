@@ -85,7 +85,13 @@ impl EventSink for PrintSink {
             EngineEvent::Assistant { message, .. } => {
                 for b in &message.content {
                     if let ContentBlock::ToolUse { name, input, .. } = b {
-                        let _ = writeln!(so, "● {name}{}", summarize_input(name, input));
+                        let _ = writeln!(
+                            so,
+                            "{} {}{}",
+                            crate::term::dim("●"),
+                            crate::term::bold(name),
+                            summarize_input(name, input)
+                        );
                     }
                 }
             }
@@ -95,12 +101,11 @@ impl EventSink for PrintSink {
                         let text = content.to_text();
                         let first = text.lines().next().unwrap_or("").chars().take(160).collect::<String>();
                         let more = text.lines().count().saturating_sub(1);
-                        let mark = if is_error == &Some(true) { "  ⎿ ✗ " } else { "  ⎿ " };
-                        let _ = writeln!(
-                            so,
-                            "{mark}{first}{}",
-                            if more > 0 { format!(" (+{more} lines)") } else { String::new() }
-                        );
+                        let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
+                        let line = format!("  ⎿ {first}{more}");
+                        let styled =
+                            if is_error == &Some(true) { crate::term::red(&line) } else { crate::term::dim(&line) };
+                        let _ = writeln!(so, "{styled}");
                     }
                 }
             }
@@ -117,10 +122,11 @@ impl EventSink for PrintSink {
     }
 }
 
-pub async fn run(prompt: Option<String>, o: Opts) -> anyhow::Result<i32> {
+pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fail> {
     let lines = spawn_stdin();
     let lo = crate::launch_options(&o)?;
-    let session = forge_core::build_session(lo, Arc::new(PrintSink), Arc::new(LinePrompter { lines: lines.clone() }))?;
+    let session = forge_core::build_session(lo, Arc::new(PrintSink), Arc::new(LinePrompter { lines: lines.clone() }))
+        .map_err(crate::exit::Fail::from)?;
     for w in &session.warnings {
         eprintln!("forge: {w}");
     }

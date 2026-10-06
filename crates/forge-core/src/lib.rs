@@ -22,6 +22,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub enum CoreError {
     #[error("{0}")]
     Config(String),
+    /// No usable credentials or endpoint.
+    #[error("{0}")]
+    Auth(String),
     #[error(transparent)]
     Session(#[from] forge_session::SessionError),
     #[error(transparent)]
@@ -114,6 +117,13 @@ pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<
         if let Some(helper) = settings.str("/apiKeyHelper") {
             cfg.api_key = run_key_helper(helper);
         }
+    }
+    if !cfg.has_credentials() {
+        return Err(CoreError::Auth(
+            "no API credentials found. Set FORGE_API_KEY (or FORGE_AUTH_TOKEN for a gateway), or \
+             FORGE_OPENAI_BASE_URL for an OpenAI-compatible endpoint; `forge doctor` shows the current setup"
+                .into(),
+        ));
     }
     cfg.betas = betas.to_vec();
     Ok(Arc::new(MessagesProvider::new(cfg)?))

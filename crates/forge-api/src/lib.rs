@@ -63,6 +63,32 @@ impl ApiError {
         }
     }
 
+    /// The next useful action for a person reading this error.
+    pub fn hint(&self) -> Option<&'static str> {
+        Some(match self {
+            ApiError::Http { status: 401 | 403, .. } => {
+                "Check FORGE_API_KEY (or FORGE_AUTH_TOKEN for a gateway); `forge doctor` shows what is configured."
+            }
+            ApiError::Http { status: 404, .. } => "Check the model name (--model or FORGE_MODEL) and FORGE_BASE_URL.",
+            ApiError::Http { status: 413, .. } => "The request is too large: run /compact or start a new session.",
+            ApiError::Http { status: 429, .. } => "Rate limited: wait a moment and retry, or lower parallel runs.",
+            e if e.is_overloaded() => "The API is overloaded: retry later, or pass --fallback-model.",
+            e if e.is_prompt_too_long() => "The conversation is too long: run /compact or start a new session.",
+            ApiError::Http { status: 500..=599, .. } => "The API failed on its side: retry in a moment.",
+            ApiError::Network(_) => "Check FORGE_BASE_URL, your network connection and proxy settings.",
+            ApiError::MissingCredentials => "Run `forge doctor` to see what is configured.",
+            _ => return None,
+        })
+    }
+
+    /// One line for people: what failed, the cause, and what to do next.
+    pub fn describe(&self) -> String {
+        match self.hint() {
+            Some(h) => format!("{self}. {h}"),
+            None => self.to_string(),
+        }
+    }
+
     /// The prompt does not fit the context window.
     pub fn is_prompt_too_long(&self) -> bool {
         match self {

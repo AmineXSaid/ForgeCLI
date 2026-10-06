@@ -16,10 +16,12 @@ forge-config.workspace = true
 forge-permissions.workspace = true
 forge-session.workspace = true
 forge-engine.workspace = true
+forge-agents.workspace = true
 forge-core.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
+clap_complete = "4"
 serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -31,3 +33,6 @@ uuid.workspace = true
 tempfile.workspace = true
 forge-test-host.workspace = true
 forge-eval.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

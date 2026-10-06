@@ -41,6 +41,7 @@ pub struct MessagesConfig {
     pub betas: Vec<String>,
     pub extra_headers: Vec<(String, String)>,
     pub max_retries: u32,
+    /// Longest silence allowed between reads of a response.
     pub timeout: Duration,
     pub user_agent: String,
 }
@@ -54,7 +55,8 @@ impl Default for MessagesConfig {
             betas: vec![],
             extra_headers: vec![],
             max_retries: 3,
-            timeout: Duration::from_secs(600),
+            // No total deadline (long generations stream for many minutes); a stall of this long between reads fails the request.
+            timeout: Duration::from_secs(300),
             user_agent: format!("forgecli/{}", env!("CARGO_PKG_VERSION")),
         }
     }
@@ -114,7 +116,7 @@ impl MessagesProvider {
         let http = reqwest::Client::builder()
             .user_agent(config.user_agent.clone())
             .connect_timeout(Duration::from_secs(30))
-            .timeout(config.timeout)
+            .read_timeout(config.timeout)
             .build()
             .map_err(|e| ApiError::Network(e.to_string()))?;
         Ok(MessagesProvider { config, http })
@@ -152,12 +154,36 @@ impl MessagesProvider {
             .json(body)
             .send()
             .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(network_error)?;
         if resp.status().is_success() {
             return Ok(resp);
         }
         Err(http_error(resp).await)
     }
+}
+
+/// A transport failure with its root cause ("connection refused", "timed out", ...).
+pub(crate) fn network_error(e: reqwest::Error) -> ApiError {
+    let mut msg = if e.is_timeout() {
+        "request timed out".to_string()
+    } else if e.is_connect() {
+        "could not connect".to_string()
+    } else {
+        "request failed".to_string()
+    };
+    if let Some(url) = e.url() {
+        msg.push_str(&format!(" to {}", url.as_str().split('?').next().unwrap_or("")));
+    }
+    let mut source = std::error::Error::source(&e);
+    let mut last = None;
+    while let Some(s) = source {
+        last = Some(s.to_string());
+        source = s.source();
+    }
+    if let Some(cause) = last {
+        msg.push_str(&format!(": {cause}"));
+    }
+    ApiError::Network(msg)
 }
 
 fn header_value(v: &str) -> Result<HeaderValue, ApiError> {

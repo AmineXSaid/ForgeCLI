@@ -133,17 +133,23 @@ impl EventSink for StreamSink {
     }
 }
 
-/// Print mode (text / json): only notices, on stderr.
+/// Print mode (text / json): diagnostics only, on stderr. Errors are reported
+/// once, with the run's result, so error notices are not repeated here.
 pub struct QuietSink {
     pub verbose: bool,
+    pub quiet: bool,
 }
 
 impl EventSink for QuietSink {
     fn emit(&self, event: EngineEvent) {
-        if let EngineEvent::Notice { level, text } = event {
-            if self.verbose || level != NoticeLevel::Info {
-                eprintln!("{text}");
-            }
+        let EngineEvent::Notice { level, text } = event else { return };
+        let show = match level {
+            NoticeLevel::Error => false,
+            NoticeLevel::Warning => !self.quiet,
+            NoticeLevel::Info => self.verbose,
+        };
+        if show {
+            eprintln!("{} {text}", crate::term::yellow("forge:"));
         }
     }
 }

@@ -848,7 +848,7 @@ impl Engine {
                             continue;
                         }
                     }
-                    let text = format!("API Error: {e}");
+                    let text = format!("API Error: {}", e.describe());
                     self.notice(NoticeLevel::Error, text.clone());
                     turn.errors.push(text.clone());
                     return self.finish(

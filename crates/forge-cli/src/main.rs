@@ -1,14 +1,19 @@
+//! `forge`: argument parsing and dispatch. Handlers stay thin; the work
+//! happens in forge-core (session assembly) and forge-engine (the loop).
+//! Results go to stdout, diagnostics to stderr; exit statuses are in exit.rs.
+
 mod args;
+mod exit;
 mod host;
 mod output;
 mod repl;
+mod term;
 
-use std::io::{IsTerminal, Read};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use forge_core::{build_session, LaunchOptions, Resume};
 use forge_engine::{DenyPrompter, EventSink, PermissionPrompter};
 use forge_types::sdk::{SdkMessage, SystemMessage};
@@ -16,18 +21,20 @@ use forge_types::MessageContent;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use args::{Cli, Command, InputFormat, Opts, OutputFormat, PermissionPrompts};
+use args::{Cli, Command, ConfigAction, InputFormat, Opts, OutputFormat, PermissionPrompts};
+use exit::Fail;
 use host::{ControlContext, HostPrompter, Input};
 use output::{result_message, Out, QuietSink, StreamSink};
 
-fn read_file(p: &PathBuf, what: &str) -> anyhow::Result<String> {
-    std::fs::read_to_string(p).with_context(|| format!("cannot read {what} {}", p.display()))
+fn read_file(p: &PathBuf, what: &str) -> Result<String, Fail> {
+    std::fs::read_to_string(p).map_err(|e| Fail::usage(format!("cannot read {what} {}: {e}", p.display())))
 }
 
-fn launch_options(o: &Opts) -> anyhow::Result<LaunchOptions> {
-    let cwd = std::env::current_dir().context("cannot read the current directory")?;
+/// Validate flags and turn them into launch options (no I/O beyond reading named files).
+fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
+    let cwd = std::env::current_dir().map_err(|e| Fail::config(format!("cannot read the current directory: {e}")))?;
     let system_prompt = match (&o.system_prompt, &o.system_prompt_file) {
-        (Some(_), Some(_)) => bail!("use either --system-prompt or --system-prompt-file, not both"),
+        (Some(_), Some(_)) => return Err(Fail::usage("use either --system-prompt or --system-prompt-file, not both")),
         (Some(s), None) => Some(s.clone()),
         (None, Some(f)) => Some(read_file(f, "system prompt file")?),
         (None, None) => None,
@@ -39,7 +46,10 @@ fn launch_options(o: &Opts) -> anyhow::Result<LaunchOptions> {
         (None, None) => None,
     };
     let json_schema = match &o.json_schema {
-        Some(s) => Some(serde_json::from_str::<Value>(s).context("--json-schema is not valid JSON")?),
+        Some(s) => Some(
+            serde_json::from_str::<Value>(s)
+                .map_err(|e| Fail::usage(format!("--json-schema is not valid JSON: {e}")))?,
+        ),
         None => None,
     };
     let resume = match (&o.resume, o.continue_) {
@@ -48,20 +58,39 @@ fn launch_options(o: &Opts) -> anyhow::Result<LaunchOptions> {
         (None, false) => Resume::New,
     };
     if o.fork_session && resume == Resume::New {
-        bail!("--fork-session needs --resume or --continue");
+        return Err(Fail::usage("--fork-session needs --resume or --continue"));
     }
     let setting_sources = match &o.setting_sources {
-        Some(s) => Some(forge_config::parse_sources(s).map_err(anyhow::Error::msg)?),
+        Some(s) => Some(forge_config::parse_sources(s).map_err(Fail::usage)?),
         None => None,
     };
     if let Some(m) = &o.permission_mode {
         if forge_permissions::PermissionMode::parse(m).is_none() {
-            bail!("invalid --permission-mode {m:?} (acceptEdits, auto, bypassPermissions, manual, dontAsk, plan)");
+            return Err(Fail::usage(format!(
+                "invalid --permission-mode {m:?}: expected one of acceptEdits, auto, bypassPermissions, manual, dontAsk, plan"
+            )));
         }
     }
     if let Some(e) = &o.effort {
         if !["low", "medium", "high", "xhigh", "max"].contains(&e.as_str()) {
-            bail!("invalid --effort {e:?} (low, medium, high, xhigh, max)");
+            return Err(Fail::usage(format!("invalid --effort {e:?}: expected low, medium, high, xhigh or max")));
+        }
+    }
+    if let Some(b) = o.max_budget_usd {
+        if !(b > 0.0 && b.is_finite()) {
+            return Err(Fail::usage("--max-budget-usd must be a positive number"));
+        }
+    }
+    if o.max_turns == Some(0) {
+        return Err(Fail::usage("--max-turns must be at least 1"));
+    }
+    if let Some(id) = &o.session_id {
+        forge_session::validate_session_id(id)
+            .map_err(|_| Fail::usage(format!("--session-id {id:?} is not a UUID")))?;
+    }
+    for d in &o.add_dir {
+        if !d.is_dir() {
+            return Err(Fail::usage(format!("--add-dir {}: not a directory", d.display())));
         }
     }
     Ok(LaunchOptions {
@@ -115,47 +144,70 @@ fn init_tracing(o: &Opts) {
 }
 
 /// The prompt for print mode: the argument and/or piped stdin.
-fn print_prompt(arg: Option<String>, input: InputFormat) -> anyhow::Result<String> {
+fn print_prompt(arg: Option<String>) -> String {
     let mut piped = String::new();
-    if input == InputFormat::Text && !std::io::stdin().is_terminal() {
+    if !term::get().stdin_tty {
         std::io::stdin().read_to_string(&mut piped).ok();
     }
-    let prompt = match (arg, piped.trim().is_empty()) {
+    match (arg, piped.trim().is_empty()) {
         (Some(a), true) => a,
         (Some(a), false) => format!("{}\n\n{a}", piped.trim_end()),
         (None, false) => piped,
         (None, true) => String::new(),
-    };
-    Ok(prompt)
+    }
 }
 
-async fn run_print(cli_prompt: Option<String>, o: Opts) -> anyhow::Result<i32> {
+/// A failure before any run started, in the promised machine format.
+fn machine_error(format: OutputFormat, f: &Fail) {
+    let doc = json!({
+        "type": "error",
+        "error": {"message": f.message, "hint": f.hint, "exit_code": f.code},
+    });
+    match format {
+        OutputFormat::Json | OutputFormat::StreamJson => println!("{doc}"),
+        OutputFormat::Text => {}
+    }
+}
+
+async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let stream_out = o.output_format == OutputFormat::StreamJson;
     let stream_in = o.input_format == InputFormat::StreamJson;
     if stream_in && !stream_out {
-        bail!("--input-format=stream-json requires --output-format=stream-json");
+        return Err(Fail::usage("--input-format=stream-json requires --output-format=stream-json"));
     }
     if o.replay_user_messages && !(stream_in && stream_out) {
-        bail!("--replay-user-messages requires --input-format=stream-json and --output-format=stream-json");
+        return Err(Fail::usage(
+            "--replay-user-messages requires --input-format=stream-json and --output-format=stream-json",
+        ));
     }
     if o.include_partial_messages && !stream_out {
-        bail!("--include-partial-messages requires --output-format=stream-json");
+        return Err(Fail::usage("--include-partial-messages requires --output-format=stream-json"));
     }
-    let mut lo = launch_options(&o)?;
-    let first_prompt = if stream_in { None } else { Some(print_prompt(cli_prompt, o.input_format)?) };
-    if matches!(&first_prompt, Some(p) if p.trim().is_empty()) {
-        bail!("Input must be provided either through stdin or as a prompt argument when using --print");
-    }
+    let checked = launch_options(&o).and_then(|lo| {
+        let p = if stream_in { None } else { Some(print_prompt(cli_prompt.clone())) };
+        if matches!(&p, Some(p) if p.trim().is_empty()) {
+            return Err(Fail::usage("no prompt: pass it as an argument or on stdin")
+                .with_hint("forge -p \"explain this repo\"  or  git diff | forge -p \"review this\""));
+        }
+        Ok((lo, p))
+    });
+    let (mut lo, first_prompt) = match checked {
+        Ok(v) => v,
+        Err(f) => {
+            machine_error(o.output_format, &f);
+            return Err(f);
+        }
+    };
 
     let out = Arc::new(Out::default());
     let pending = Arc::new(Mutex::new(Default::default()));
     let host_prompts = stream_in
+        && !o.no_input
         && o.permission_prompts == PermissionPrompts::Host
         && o.permission_prompt_tool.as_deref().map(|t| t == "stdio").unwrap_or(true);
     let prompter: Arc<dyn PermissionPrompter> =
         if host_prompts { Arc::new(HostPrompter::new(out.clone(), pending.clone())) } else { Arc::new(DenyPrompter) };
 
-    // The session id is needed by the sink; resolve it first for new sessions.
     if lo.session_id.is_none() && lo.resume == Resume::New {
         lo.session_id = Some(uuid::Uuid::new_v4().to_string());
     }
@@ -169,29 +221,42 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> anyhow::Result<i32> {
             verbose: o.verbose,
         })
     } else {
-        Arc::new(QuietSink { verbose: o.verbose })
+        Arc::new(QuietSink { verbose: o.verbose, quiet: o.quiet })
     };
 
     let session = match build_session(lo, sink, prompter) {
         Ok(s) => s,
         Err(e) => {
-            if stream_out {
-                let r = json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "errors": [e.to_string()]});
-                println!("{r}");
-            }
-            return Err(e.into());
+            let f = Fail::from(e);
+            machine_error(o.output_format, &f);
+            return Err(f);
         }
     };
     *sink_id.lock().unwrap() = session.session_id.clone();
-    for w in &session.warnings {
-        eprintln!("forge: {w}");
+    if !o.quiet {
+        for w in &session.warnings {
+            eprintln!("{} {w}", term::yellow("forge: warning:"));
+        }
     }
     let session_id = session.session_id.clone();
     let mut engine = session.engine;
-
     if stream_out {
         out.line(&SdkMessage::System(SystemMessage::init(&session.init)));
     }
+
+    // Ctrl-C interrupts the current turn (the result is still written); a second one exits at once.
+    let handle = engine.handle();
+    let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = interrupted.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            handle.interrupt();
+            if tokio::signal::ctrl_c().await.is_ok() {
+                std::process::exit(exit::INTERRUPTED);
+            }
+        }
+    });
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Input>();
     if stream_in {
@@ -221,39 +286,33 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> anyhow::Result<i32> {
         let _ = tx.send(Input::Eof);
     }
 
-    let mut exit = 0;
+    let mut code = exit::OK;
     while let Some(input) = rx.recv().await {
         match input {
             Input::User(content) => {
                 let r = engine.submit(content).await;
-                if r.is_error {
-                    exit = 1;
+                let c = exit::for_result(&r);
+                if code == exit::OK {
+                    code = c;
                 }
                 match o.output_format {
                     OutputFormat::StreamJson => out.line(&SdkMessage::Result(result_message(&r, &session_id))),
-                    OutputFormat::Json => println!(
-                        "{}",
-                        serde_json::to_string(&json!({
-                            "type": "result",
-                            "subtype": r.subtype,
-                            "is_error": r.is_error,
-                            "duration_ms": r.duration_ms,
-                            "duration_api_ms": r.duration_api_ms,
-                            "num_turns": r.num_turns,
-                            "result": r.result.clone().or(r.prompt_blocked.clone()),
-                            "stop_reason": r.stop_reason,
-                            "session_id": session_id,
-                            "total_cost_usd": r.total_cost_usd,
-                            "usage": r.usage,
-                            "modelUsage": r.model_usage,
-                            "permission_denials": r.permission_denials,
-                            "structured_output": r.structured_output,
-                            "errors": r.errors,
-                        }))?
-                    ),
+                    OutputFormat::Json => {
+                        let mut v = serde_json::to_value(SdkMessage::Result(result_message(&r, &session_id)))
+                            .unwrap_or_default();
+                        v["exit_code"] = json!(c);
+                        println!("{v}");
+                    }
                     OutputFormat::Text => {
                         if let Some(b) = &r.prompt_blocked {
-                            eprintln!("{b}");
+                            eprintln!("{} prompt blocked by a UserPromptSubmit hook: {b}", term::red("forge:"));
+                        } else if r.is_error {
+                            let msg = r
+                                .result
+                                .clone()
+                                .or_else(|| r.errors.first().cloned())
+                                .unwrap_or_else(|| "the run failed".into());
+                            eprintln!("{} {msg}", term::red("forge:"));
                         } else if let Some(t) = &r.result {
                             println!("{t}");
                         }
@@ -269,70 +328,179 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> anyhow::Result<i32> {
         }
     }
     engine.end_session("other").await;
-    Ok(exit)
-}
-
-async fn run_doctor() -> anyhow::Result<i32> {
-    let cwd = std::env::current_dir()?;
-    println!("ForgeCLI {}", forge_core::VERSION);
-    println!("  home:        {}", forge_config::forge_home().display());
-    println!("  project:     {}", cwd.display());
-    let settings = forge_config::load_settings(&forge_config::SettingsOptions::new(&cwd));
-    println!("  settings:    {} layer(s) loaded", settings.layers.len());
-    for e in &settings.errors {
-        println!("    ! {e}");
+    if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(exit::INTERRUPTED);
     }
-    let key = std::env::var("FORGE_API_KEY").is_ok() || std::env::var("FORGE_AUTH_TOKEN").is_ok();
-    let openai = std::env::var("FORGE_OPENAI_BASE_URL").is_ok();
-    println!(
-        "  credentials: {}",
-        if openai {
-            "OpenAI-compatible endpoint"
-        } else if key {
-            "set"
-        } else {
-            "missing (set FORGE_API_KEY)"
+    Ok(code)
+}
+
+fn run_doctor() -> Result<i32, Fail> {
+    let cwd = std::env::current_dir().map_err(|e| Fail::config(e.to_string()))?;
+    let mut problems = 0;
+    let mut line = |ok: bool, what: &str, detail: String| {
+        if !ok {
+            problems += 1;
         }
-    );
-    println!("  git:         {}", if forge_git_present() { "found" } else { "not found" });
-    Ok(if key || openai { 0 } else { 1 })
-}
-
-fn forge_git_present() -> bool {
-    std::process::Command::new("git").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
-}
-
-fn run_config(action: Option<args::ConfigAction>) -> anyhow::Result<i32> {
-    let cwd = std::env::current_dir()?;
+        let mark = if ok { term::paint("32", "ok  ") } else { term::red("FAIL") };
+        println!("{mark} {what:<12} {detail}");
+    };
+    println!("ForgeCLI {}", forge_core::VERSION);
     let settings = forge_config::load_settings(&forge_config::SettingsOptions::new(&cwd));
+    line(
+        settings.errors.is_empty(),
+        "settings",
+        format!(
+            "{} layer(s) loaded{}",
+            settings.layers.len(),
+            if settings.errors.is_empty() {
+                String::new()
+            } else {
+                format!("; invalid: {}", settings.errors.join("; "))
+            }
+        ),
+    );
+    let has = |k: &str| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
+    let openai = has("FORGE_OPENAI_BASE_URL");
+    let creds = has("FORGE_API_KEY") || has("FORGE_AUTH_TOKEN") || settings.str("/apiKeyHelper").is_some();
+    line(
+        openai || creds,
+        "credentials",
+        if openai {
+            "OpenAI-compatible endpoint (FORGE_OPENAI_BASE_URL)".into()
+        } else if creds {
+            "found (FORGE_API_KEY, FORGE_AUTH_TOKEN or apiKeyHelper)".into()
+        } else {
+            "missing: set FORGE_API_KEY".into()
+        },
+    );
+    let endpoint = std::env::var("FORGE_BASE_URL").unwrap_or_else(|_| "default".into());
+    line(true, "endpoint", endpoint);
+    line(
+        which("git"),
+        "git",
+        if which("git") { "found".into() } else { "not found: git status and worktrees are unavailable".into() },
+    );
+    line(true, "config dir", forge_config::config_dir().display().to_string());
+    line(true, "state dir", forge_config::state_dir().display().to_string());
+    Ok(if problems == 0 { exit::OK } else { exit::CONFIG })
+}
+
+fn which(bin: &str) -> bool {
+    std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file())).unwrap_or(false)
+}
+
+fn run_config(action: Option<ConfigAction>) -> Result<i32, Fail> {
+    let cwd = std::env::current_dir().map_err(|e| Fail::config(e.to_string()))?;
+    let opts = forge_config::SettingsOptions::new(&cwd);
+    let settings = forge_config::load_settings(&opts);
+    for e in &settings.errors {
+        eprintln!("{} {e}", term::yellow("forge: warning: invalid settings file skipped:"));
+    }
+    let pretty = |v: &Value| serde_json::to_string_pretty(&forge_config::redact(v)).unwrap_or_default();
     match action {
-        None | Some(args::ConfigAction::List) => println!("{}", serde_json::to_string_pretty(&settings.merged)?),
-        Some(args::ConfigAction::Get { key }) => {
-            let ptr = if key.starts_with('/') { key } else { format!("/{}", key.replace('.', "/")) };
+        None | Some(ConfigAction::List { origin: false }) => println!("{}", pretty(&settings.merged)),
+        Some(ConfigAction::List { origin: true }) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in settings.merged.as_object().into_iter().flatten() {
+                let layer = settings.layers.iter().rev().find(|l| l.value.get(k).is_some());
+                out.insert(
+                    k.clone(),
+                    json!({
+                        "value": forge_config::redact(&json!({k.as_str(): v}))[k.as_str()].clone(),
+                        "source": layer.map(|l| l.source.as_str()),
+                        "file": layer.and_then(|l| l.path.as_ref()).map(|p| p.display().to_string()),
+                    }),
+                );
+            }
+            println!("{}", serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default());
+        }
+        Some(ConfigAction::Get { key }) => {
+            let ptr = if key.starts_with('/') { key.clone() } else { format!("/{}", key.replace('.', "/")) };
             match settings.get(&ptr) {
-                Some(v) => println!("{}", serde_json::to_string_pretty(v)?),
-                None => return Ok(1),
+                Some(v) => {
+                    let last = ptr.rsplit('/').next().unwrap_or("");
+                    let shown = forge_config::redact(&json!({last: v}))[last].clone();
+                    println!(
+                        "{}",
+                        if shown.is_string() { shown.as_str().unwrap_or("").to_string() } else { pretty(&shown) }
+                    );
+                }
+                None => {
+                    eprintln!("forge: {key} is not set");
+                    return Ok(exit::FAILED);
+                }
+            }
+        }
+        Some(ConfigAction::Paths) => {
+            println!("config  {}", forge_config::config_dir().display());
+            println!("state   {}", forge_config::state_dir().display());
+            println!("cache   {}", forge_config::cache_dir().display());
+            for l in &settings.layers {
+                if let Some(p) = &l.path {
+                    println!("{:<7} {}", l.source.as_str().trim_end_matches("Settings"), p.display());
+                }
             }
         }
     }
-    Ok(0)
+    Ok(exit::OK)
 }
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-    init_tracing(&cli.opts);
-    let result = match cli.command {
-        Some(Command::Doctor) => run_doctor().await,
-        Some(Command::Config { action }) => run_config(action),
-        None if cli.opts.print => run_print(cli.prompt, cli.opts).await,
-        None => repl::run(cli.prompt, cli.opts).await,
-    };
-    match result {
-        Ok(code) => std::process::exit(code),
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            std::process::exit(1);
-        }
+/// Writing to a closed pipe (`forge ... | head`) ends the process quietly, as in other Unix tools.
+fn reset_sigpipe() {
+    #[cfg(unix)]
+    // SAFETY: restoring the default disposition of SIGPIPE at startup, before any threads exist.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+}
+
+fn main() {
+    reset_sigpipe();
+    // clap prints help and version and exits (0) or reports usage errors (2) before anything else starts.
+    let cli = Cli::parse();
+    term::init(cli.opts.color);
+    init_tracing(&cli.opts);
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("forge: cannot start the async runtime: {e}");
+            std::process::exit(exit::FAILED);
+        }
+    };
+    let result = rt.block_on(async move {
+        match cli.command {
+            Some(Command::Doctor) => run_doctor(),
+            Some(Command::Config { action }) => run_config(action),
+            Some(Command::Completion { shell }) => {
+                clap_complete::generate(shell, &mut Cli::command(), "forge", &mut std::io::stdout());
+                Ok(exit::OK)
+            }
+            None if cli.opts.print => run_print(cli.prompt, cli.opts).await,
+            None => {
+                let t = term::get();
+                if cli.opts.no_input {
+                    Err(Fail::usage("interactive mode needs input, but --no-input is set")
+                        .with_hint("Use print mode: forge -p \"<prompt>\""))
+                } else if !t.stdin_tty {
+                    Err(Fail::usage("interactive mode needs a terminal on stdin").with_hint(
+                        "For scripts and pipes use print mode: forge -p \"<prompt>\", or: echo \"<prompt>\" | forge -p",
+                    ))
+                } else {
+                    repl::run(cli.prompt, cli.opts).await
+                }
+            }
+        }
+    });
+    let code = match result {
+        Ok(code) => code,
+        Err(f) => {
+            eprintln!("{} {}", term::red("forge:"), f.message);
+            if let Some(h) = &f.hint {
+                eprintln!("  {} {h}", term::dim("hint:"));
+            }
+            f.code
+        }
+    };
+    rt.shutdown_timeout(std::time::Duration::from_millis(200));
+    std::process::exit(code);
 }

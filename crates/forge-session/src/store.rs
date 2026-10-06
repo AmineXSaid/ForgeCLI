@@ -6,11 +6,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::{sha_hex, validate_session_id, SessionError};
 
-/// `$FORGE_HOME`, else `~/.forge`.
+/// Where sessions and file history live: `$FORGE_HOME/state`, else
+/// `$XDG_STATE_HOME/forge`, else the platform's state / local data directory.
+/// (Same rule as `forge_config::state_dir`.)
 pub fn forge_home() -> PathBuf {
-    std::env::var_os("FORGE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".forge"))
+    let env_dir =
+        |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute());
+    env_dir("FORGE_HOME")
+        .map(|d| d.join("state"))
+        .or_else(|| env_dir("XDG_STATE_HOME").map(|d| d.join("forge")))
+        .or_else(|| dirs::state_dir().or_else(dirs::data_local_dir).map(|d| d.join("forge")))
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".forge").join("state"))
 }
 
 /// Readable directory key for a project (contract C5).
