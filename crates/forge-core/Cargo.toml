@@ -1,0 +1,25 @@
+[package]
+name = "forge-core"
+description = "Composition root: builds a session (engine, tools, permissions, hooks, transcript) from flags and settings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+forge-types.workspace = true
+forge-api.workspace = true
+forge-config.workspace = true
+forge-permissions.workspace = true
+forge-hooks.workspace = true
+forge-tools.workspace = true
+forge-session.workspace = true
+forge-git.workspace = true
+forge-engine.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

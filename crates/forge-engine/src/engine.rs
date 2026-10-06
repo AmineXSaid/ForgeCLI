@@ -544,7 +544,9 @@ impl Engine {
             )));
         }
 
-        let user_uuid = self.push_user(Message::user(blocks), false, None, false);
+        let user_msg = Message::user(blocks);
+        let user_uuid = self.push_user(user_msg.clone(), false, None, false);
+        self.emit(EngineEvent::PromptAccepted { message: user_msg, uuid: user_uuid.clone() });
         self.shared.history.begin_turn(&user_uuid);
 
         let mut model;

@@ -1,0 +1,149 @@
+//! Writing stream-json lines and converting engine events.
+
+use std::io::Write;
+use std::sync::Mutex;
+
+use forge_engine::{EngineEvent, EventSink, NoticeLevel, TurnResult};
+use forge_types::sdk::{
+    AssistantMessage, ResultMessage, SdkMessage, StreamEventMessage, SystemMessage, ToolProgress, UserMessage,
+    UserPayload,
+};
+use forge_types::{new_uuid, MessageContent, Role};
+use serde_json::Value;
+
+/// Serialized line output on stdout.
+#[derive(Default)]
+pub struct Out {
+    lock: Mutex<()>,
+}
+
+impl Out {
+    pub fn line(&self, msg: &SdkMessage) {
+        let _g = self.lock.lock().unwrap();
+        let mut so = std::io::stdout().lock();
+        let _ = writeln!(so, "{}", msg.to_line());
+        let _ = so.flush();
+    }
+}
+
+pub fn result_message(r: &TurnResult, session_id: &str) -> ResultMessage {
+    ResultMessage {
+        subtype: r.subtype,
+        is_error: r.is_error,
+        duration_ms: r.duration_ms,
+        duration_api_ms: r.duration_api_ms,
+        num_turns: r.num_turns,
+        result: r.result.clone().or_else(|| r.prompt_blocked.clone()),
+        stop_reason: r.stop_reason.clone(),
+        session_id: session_id.to_string(),
+        total_cost_usd: r.total_cost_usd,
+        usage: r.usage.clone(),
+        model_usage: r.model_usage.clone(),
+        permission_denials: r.permission_denials.clone(),
+        structured_output: r.structured_output.clone(),
+        errors: r.errors.clone(),
+        uuid: new_uuid(),
+    }
+}
+
+/// Engine events as stream-json lines.
+pub struct StreamSink {
+    pub out: std::sync::Arc<Out>,
+    /// Set once the session is built (it is not known when the sink is created).
+    pub session_id: std::sync::Arc<Mutex<String>>,
+    pub include_partial: bool,
+    pub replay_user_messages: bool,
+    pub verbose: bool,
+}
+
+impl EventSink for StreamSink {
+    fn emit(&self, event: EngineEvent) {
+        let sid = self.session_id.lock().unwrap().clone();
+        let msg = match event {
+            EngineEvent::Stream { event, parent_tool_use_id } => {
+                if !self.include_partial {
+                    return;
+                }
+                SdkMessage::StreamEvent(StreamEventMessage {
+                    event,
+                    parent_tool_use_id,
+                    session_id: sid,
+                    uuid: new_uuid(),
+                })
+            }
+            EngineEvent::PromptAccepted { message, uuid } => {
+                if !self.replay_user_messages {
+                    return;
+                }
+                SdkMessage::User(UserMessage {
+                    message: UserPayload { role: Role::User, content: MessageContent::Blocks(message.content) },
+                    parent_tool_use_id: None,
+                    session_id: sid,
+                    uuid: Some(uuid),
+                    is_replay: Some(true),
+                    is_synthetic: None,
+                    tool_use_result: None,
+                    priority: None,
+                })
+            }
+            EngineEvent::Assistant { message, uuid, parent_tool_use_id } => SdkMessage::Assistant(AssistantMessage {
+                message,
+                parent_tool_use_id,
+                session_id: sid,
+                uuid,
+                error: None,
+            }),
+            EngineEvent::User { message, uuid, tool_use_result, is_meta, parent_tool_use_id } => {
+                SdkMessage::User(UserMessage {
+                    message: UserPayload { role: Role::User, content: MessageContent::Blocks(message.content) },
+                    parent_tool_use_id,
+                    session_id: sid,
+                    uuid: Some(uuid),
+                    is_replay: None,
+                    is_synthetic: is_meta.then_some(true),
+                    tool_use_result,
+                    priority: None,
+                })
+            }
+            EngineEvent::System { subtype, mut data } => {
+                if let Value::Object(m) = &mut data {
+                    m.insert("session_id".into(), Value::String(sid));
+                    m.insert("uuid".into(), Value::String(new_uuid()));
+                }
+                SdkMessage::System(SystemMessage::new(&subtype, data))
+            }
+            EngineEvent::ToolProgress { tool_use_id, tool_name, elapsed_secs } => {
+                SdkMessage::ToolProgress(ToolProgress {
+                    tool_use_id,
+                    tool_name,
+                    parent_tool_use_id: None,
+                    elapsed_time_seconds: elapsed_secs,
+                    session_id: sid,
+                    uuid: new_uuid(),
+                })
+            }
+            EngineEvent::Notice { level, text } => {
+                if self.verbose || level == NoticeLevel::Error {
+                    eprintln!("{text}");
+                }
+                return;
+            }
+        };
+        self.out.line(&msg);
+    }
+}
+
+/// Print mode (text / json): only notices, on stderr.
+pub struct QuietSink {
+    pub verbose: bool,
+}
+
+impl EventSink for QuietSink {
+    fn emit(&self, event: EngineEvent) {
+        if let EngineEvent::Notice { level, text } = event {
+            if self.verbose || level != NoticeLevel::Info {
+                eprintln!("{text}");
+            }
+        }
+    }
+}

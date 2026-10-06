@@ -9,6 +9,8 @@ use serde_json::Value;
 pub enum EngineEvent {
     /// A raw stream event (for `--include-partial-messages` and live rendering).
     Stream { event: StreamEvent, parent_tool_use_id: Option<String> },
+    /// The user's prompt was accepted and stored (for `--replay-user-messages`).
+    PromptAccepted { message: Message, uuid: String },
     /// A complete assistant message.
     Assistant { message: ApiMessage, uuid: String, parent_tool_use_id: Option<String> },
     /// A user-role message the engine added: a tool result or a synthetic note.

@@ -6,6 +6,8 @@ The target is the reference CLI, version **2.1.290**.
 exists and passes. A milestone is done only when every row it claims is
 `done` or `out`.
 
+Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.rs`.
+
 **Status values:**
 
 | Status | Meaning |
@@ -26,39 +28,39 @@ exists and passes. A milestone is done only when every row it claims is
 
 | Item | Status | Wire shape | Test | Notes |
 | --- | --- | --- | --- | --- |
-| `system/init` | todo | inferred | | |
-| `assistant` message | todo | inferred | | |
-| `user` message (tool results, `tool_use_result`) | todo | inferred | | |
-| `stream_event` (`--include-partial-messages`) | todo | inferred | | |
-| `result` success / `error_max_turns` / `error_max_budget_usd` / `error_during_execution` | todo | inferred | | |
-| `--input-format stream-json` user messages | todo | inferred | | |
-| `--replay-user-messages` (`isReplay`) | todo | inferred | | |
-| `control_request` `can_use_tool` (CLI → host) | todo | inferred | | Contract C1 |
-| `control_request` `initialize` | todo | inferred | | |
-| `control_request` `interrupt` | todo | inferred | | Contract C3 |
-| `control_request` `set_permission_mode` | todo | inferred | | |
-| `control_request` `set_model` | todo | inferred | | |
-| `control_request` `set_max_thinking_tokens` | todo | inferred | | |
-| `control_request` `mcp_status` | todo | inferred | | |
-| `control_request` `rewind_files` | todo | inferred | | Contract C4 |
+| `system/init` | done | inferred | `e2e::stream_json_golden_basic` |  |
+| `assistant` message | done | inferred | `e2e::stream_json_golden_basic` |  |
+| `user` message (tool results, `tool_use_result`) | done | inferred | `e2e::host_permission_prompt_allow_and_deny` |  |
+| `stream_event` (`--include-partial-messages`) | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
+| `result` success / `error_max_turns` / `error_max_budget_usd` / `error_during_execution` | done | inferred | `e2e::max_turns_and_continue`, `e2e::print_errors`, `engine::c7_budget_and_max_turns_stop_the_run` |  |
+| `--input-format stream-json` user messages | done | inferred | `e2e::host_permission_prompt_allow_and_deny` |  |
+| `--replay-user-messages` (`isReplay`) | done | inferred | `e2e::replay_uuid_drives_rewind_files` |  |
+| `control_request` `can_use_tool` (CLI → host) | done | inferred | `e2e::host_permission_prompt_allow_and_deny` | Contract C1 |
+| `control_request` `initialize` | partial | inferred | `e2e::host_permission_prompt_allow_and_deny` | `systemPrompt` / `appendSystemPrompt` are applied; SDK callback hooks and SDK MCP servers in `initialize` are not supported yet |
+| `control_request` `interrupt` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` | Contract C3 |
+| `control_request` `set_permission_mode` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
+| `control_request` `set_model` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
+| `control_request` `set_max_thinking_tokens` | partial | inferred |  | Implemented, not yet tested end to end |
+| `control_request` `mcp_status` | partial | inferred |  | Returns an empty list until MCP lands (M6) |
+| `control_request` `rewind_files` | done | inferred | `e2e::replay_uuid_drives_rewind_files` | Contract C4 |
 | `system/compact_boundary` | todo | inferred | | |
-| `system/model_fallback` | todo | inferred | | Contract C6 |
+| `system/model_fallback` | done | inferred | `engine::c6_fallback_on_overload_for_this_turn_only` | Contract C6 |
 
 ## Tools
 
 | Tool | Status | Test | Notes |
 | --- | --- | --- | --- |
-| Bash | todo | | persistent cwd, timeout, background |
-| BashOutput / KillShell (background shells) | todo | | |
-| Read | todo | | text, images, PDF, ipynb |
-| Write | todo | | |
-| Edit | todo | | |
-| MultiEdit | todo | | |
-| NotebookEdit | todo | | |
-| Glob | todo | | |
-| Grep | todo | | |
-| LS | todo | | |
-| TodoWrite | todo | | |
+| Bash | done | `builtin::bash_runs_and_keeps_cwd_inside_project`, `bash_timeout_kills_process_group`, `bash_interrupt_returns_interrupted` | persistent cwd, timeout, background |
+| BashOutput / KillShell (background shells) | done | `builtin::background_shell_output_and_kill` |  |
+| Read | partial | `builtin::read_numbers_lines_and_pages`, `notebook_edit_replace_insert_delete` | Text, images, notebooks done. PDFs are sent whole: `pages` is passed as a hint, not extracted |
+| Write | done | `builtin::write_creates_and_checkpoints` |  |
+| Edit | done | `builtin::edit_requires_read_and_unique_match`, `edit_preserves_crlf_and_multiedit_is_atomic` |  |
+| MultiEdit | done | `builtin::edit_preserves_crlf_and_multiedit_is_atomic` |  |
+| NotebookEdit | done | `builtin::notebook_edit_replace_insert_delete` |  |
+| Glob | done | `builtin::glob_and_grep` |  |
+| Grep | done | `builtin::glob_and_grep` |  |
+| LS | done | `builtin::ls_lists_tree` |  |
+| TodoWrite | done | `builtin::todo_write_validates_and_stores` |  |
 | Task / Agent | todo | | |
 | WebFetch | todo | | |
 | WebSearch | todo | | server tool `web_search_20260209` |
@@ -74,15 +76,15 @@ exists and passes. A milestone is done only when every row it claims is
 
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
-| Agent loop (tool use until `end_turn`) | todo | | |
-| Parallel batches of read-only tools | todo | `engine::c2_result_order_survives_concurrency` | Contract C2 |
-| Serialized permission prompts | todo | | Contract C2 |
-| Interrupt | todo | | Contract C3 |
-| Retries with backoff (429 / 5xx / 529) | todo | | |
-| Fallback model | todo | | Contract C6 |
-| `--max-turns` / `--max-budget-usd` | todo | `engine::c7_unknown_model_budget_fails_closed` | Contract C7 |
-| Thinking / effort per model | todo | | |
-| Prompt-cache breakpoints | todo | | |
+| Agent loop (tool use until `end_turn`) | done | `engine::tool_loop_reads_file`, `e2e::print_text_and_request_shape` |  |
+| Parallel batches of read-only tools | done | `engine::c2_result_order_survives_concurrency` | Contract C2 |
+| Serialized permission prompts | done | `engine::c2_prompts_are_serialized` | Contract C2 |
+| Interrupt | done | `engine::c3_interrupt_during_stream`, `engine::c3_interrupt_aborts_running_and_pending_tools` | Contract C3 |
+| Retries with backoff (429 / 5xx / 529) | partial |  | Implemented in the provider; no test drives the retry path yet |
+| Fallback model | done | `engine::c6_fallback_on_overload_for_this_turn_only`, `engine::non_overload_errors_fail_the_turn` | Contract C6 |
+| `--max-turns` / `--max-budget-usd` | done | `engine::c7_unknown_model_budget_fails_closed`, `engine::c7_budget_and_max_turns_stop_the_run`, `e2e::max_turns_and_continue` | Contract C7 |
+| Thinking / effort per model | done | `request::thinking_per_model` |  |
+| Prompt-cache breakpoints | partial |  | Set on system, last tool and last message; no test yet |
 | Micro-compaction | todo | `compact::c9_micro_clears_only_eligible_results`, `compact::c9_micro_is_sticky_across_requests` | Contract C9 |
 | Auto-compact / `/compact` | todo | `compact::c9_auto_triggers_at_threshold` | Contract C9 |
 
@@ -90,22 +92,22 @@ exists and passes. A milestone is done only when every row it claims is
 
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
-| Modes: default (manual), acceptEdits, plan, dontAsk, bypassPermissions | todo | | |
-| Mode: auto | todo | | Classifier-based upstream. ForgeCLI's version is a rule-based approximation |
-| Rule grammar: `Tool`, `Tool(spec)`, `Bash(prefix *)`, path globs, `WebFetch(domain:)`, `mcp__*` | todo | | |
-| Precedence deny > ask > allow | todo | | |
-| `--allowedTools` / `--disallowedTools` / `--tools` | todo | | |
-| `--add-dir` scoping | todo | | |
-| Headless auto-deny | todo | | Contract C1 |
+| Modes: default (manual), acceptEdits, plan, dontAsk, bypassPermissions | done | `permissions::modes` |  |
+| Mode: auto | partial | `permissions::modes` | Rule-based approximation, not a model classifier |
+| Rule grammar: `Tool`, `Tool(spec)`, `Bash(prefix *)`, path globs, `WebFetch(domain:)`, `mcp__*` | done | `permissions::rule_parsing`, `path_rules`, `webfetch_domains_and_mcp`, `prefix_rule_respects_word_boundary` |  |
+| Precedence deny > ask > allow | done | `permissions::deny_beats_everything_including_bypass`, `ask_rule_overrides_allow_rule`, `compound_deny_matches_any_part` |  |
+| `--allowedTools` / `--disallowedTools` / `--tools` | done | `core::builds_from_settings_and_flags`, `e2e::headless_denies_and_reports` |  |
+| `--add-dir` scoping | done | `permissions::read_only_inside_working_dirs_is_allowed` |  |
+| Headless auto-deny | done | `engine::c1_headless_denies_and_continues`, `e2e::headless_denies_and_reports` | Contract C1 |
 
 ## Config, memory, hooks (M3)
 
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
-| Settings layers + `--setting-sources` | todo | | |
-| `--settings` file or JSON | todo | | |
-| FORGE.md discovery + `@import` | todo | | |
-| Hooks: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification | todo | | |
+| Settings layers + `--setting-sources` | done | `config::layers_merge_in_order`, `config::sources_filter_layers` |  |
+| `--settings` file or JSON | done | `config::layers_merge_in_order` |  |
+| FORGE.md discovery + `@import` | done | `config::discovers_and_imports`, `config::import_cycles_stop` |  |
+| Hooks: PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification | partial | `engine::hooks_in_the_loop`, `engine::user_prompt_hook_can_block` | All events run; SubagentStop waits for sub-agents (M5), PreCompact for compaction (M4), Notification for the TUI (M8) |
 | Hook exit-code semantics per event | todo | `hooks::c11_exit2_semantics_per_event` | Contract C11 |
 | Hook JSON output (decision, reason, `updatedInput`, `additionalContext`) | todo | `hooks::c11_json_permission_decision` | Contract C11 |
 
@@ -113,13 +115,13 @@ exists and passes. A milestone is done only when every row it claims is
 
 | Item | Status | Test | Notes |
 | --- | --- | --- | --- |
-| JSONL transcript | todo | `session::c5_key_collision_keeps_projects_apart` | Contract C5 |
-| `additionalDirectories` restored on resume | todo | | Contract C5 |
-| System events in JSONL (fallback, compact, microcompact, mode) | todo | | Contracts C5 and C6 |
-| `--continue` / `--resume <id>` | todo | | |
-| `--fork-session` / `--session-id` | todo | | |
-| `--no-session-persistence` | todo | | |
-| File checkpoints + rewind | todo | | Contract C4 |
+| JSONL transcript | done | `session::c5_key_collision_keeps_projects_apart`, `session::write_and_resume_round_trip` | Contract C5 |
+| `additionalDirectories` restored on resume | partial |  | Implemented; no test yet |
+| System events in JSONL (fallback, compact, microcompact, mode) | partial | `engine::c6_fallback_on_overload_for_this_turn_only` | Fallback and mode done; compaction events come with M4 |
+| `--continue` / `--resume <id>` | done | `core::continue_and_fork`, `e2e::max_turns_and_continue` |  |
+| `--fork-session` / `--session-id` | done | `core::continue_and_fork`, `session::fork_copies_chain_under_new_id` |  |
+| `--no-session-persistence` | done | `session::no_persistence_writes_nothing` |  |
+| File checkpoints + rewind | done | `session::rewind_restores_and_deletes`, `engine::edits_are_checkpointed_for_rewind`, `e2e::replay_uuid_drives_rewind_files` | Contract C4 |
 
 ## Agents, skills, commands (M5)
 
@@ -148,18 +150,18 @@ exists and passes. A milestone is done only when every row it claims is
 
 | Flag | Status | Test | Notes |
 | --- | --- | --- | --- |
-| `-p/--print`, `--output-format`, `--input-format` | todo | | |
-| `--include-partial-messages`, `--replay-user-messages`, `--include-hook-events` | todo | | |
-| `--model`, `--fallback-model`, `--effort`, `--betas` | todo | | |
-| `--permission-mode`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-prompts`, `--permission-prompt-tool` | todo | | |
-| `--allowedTools`, `--disallowedTools`, `--tools`, `--add-dir` | todo | | |
-| `--system-prompt[-file]`, `--append-system-prompt[-file]`, `--exclude-dynamic-system-prompt-sections` | todo | | |
-| `-c/--continue`, `-r/--resume`, `--fork-session`, `--session-id`, `--no-session-persistence`, `-n/--name` | todo | | |
-| `--max-turns`, `--max-budget-usd`, `--json-schema` | todo | | |
+| `-p/--print`, `--output-format`, `--input-format` | done | `e2e::print_text_and_request_shape`, `e2e::print_json_and_piped_stdin`, `e2e::stream_json_golden_basic` |  |
+| `--include-partial-messages`, `--replay-user-messages`, `--include-hook-events` | partial | `e2e::host_controls_mode_model_and_interrupt`, `e2e::replay_uuid_drives_rewind_files` | `--include-hook-events` is accepted but emits nothing yet |
+| `--model`, `--fallback-model`, `--effort`, `--betas` | done | `core::builds_from_settings_and_flags`, `engine::c6_fallback_on_overload_for_this_turn_only` |  |
+| `--permission-mode`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-prompts`, `--permission-prompt-tool` | done | `core::skip_permissions_flag_beats_settings_mode`, `e2e::host_permission_prompt_allow_and_deny`, `e2e::print_errors` |  |
+| `--allowedTools`, `--disallowedTools`, `--tools`, `--add-dir` | done | `core::builds_from_settings_and_flags`, `e2e::headless_denies_and_reports` |  |
+| `--system-prompt[-file]`, `--append-system-prompt[-file]`, `--exclude-dynamic-system-prompt-sections` | done | `prompts::replace_append_and_exclude_dynamic` |  |
+| `-c/--continue`, `-r/--resume`, `--fork-session`, `--session-id`, `--no-session-persistence`, `-n/--name` | partial | `core::continue_and_fork`, `e2e::max_turns_and_continue` | `--name` is accepted but not shown anywhere until the TUI |
+| `--max-turns`, `--max-budget-usd`, `--json-schema` | partial | `e2e::max_turns_and_continue`, `engine::c7_budget_and_max_turns_stop_the_run` | `--json-schema` sends `output_config.format` and parses the result; no retry on invalid output yet |
 | `--mcp-config`, `--strict-mcp-config` | todo | | |
-| `--settings`, `--setting-sources`, `--bare`, `--safe-mode`, `--restricted` | todo | | |
+| `--settings`, `--setting-sources`, `--bare`, `--safe-mode`, `--restricted` | partial | `config::layers_merge_in_order` | `--restricted` not implemented yet |
 | `--agents`, `--agent`, `--plugin-dir`, `--disable-slash-commands` | todo | | |
-| `--debug`, `--debug-file`, `--verbose`, `-v/--version` | todo | | |
+| `--debug`, `--debug-file`, `--verbose`, `-v/--version` | done | `e2e::version_and_help` |  |
 | `-w/--worktree` | todo | `git::c10_worktree_session_listed_from_main_repo` | Contract C10 |
 | `--autocompact` | todo | | |
 | `--brief`, `--prompt-suggestions`, `--forward-subagent-text` | todo | | |
@@ -170,8 +172,8 @@ exists and passes. A milestone is done only when every row it claims is
 | Command | Status | Test | Notes |
 | --- | --- | --- | --- |
 | `mcp` | todo | | |
-| `doctor` | todo | | |
-| `config` (get/set/list/add/remove) | todo | | |
+| `doctor` | partial |  | Basic checks only |
+| `config` (get/set/list/add/remove) | partial |  | `list` and `get` only |
 | `agents` (list) | todo | | Background-session management is out |
 | `auth`, `setup-token`, `install`, `update`, `gateway`, `ultrareview`, `attach`, `logs`, `stop`, `rm`, `respawn`, `purge`, `import`, `auto-mode`, `plugin` marketplace | out | | Accounts, cloud, distribution or background-session services |
 
