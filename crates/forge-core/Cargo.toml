@@ -23,6 +23,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 similar.workspace = true
+shlex.workspace = true
 chrono.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true

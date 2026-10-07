@@ -16,6 +16,7 @@ terminals. `--no-tui` (or `FORGE_TUI=0`) keeps the line REPL
 | Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/forge-cli/src/tui/mod.rs` |
 | Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | done | `crates/forge-cli/src/main.rs`, `args.rs` |
 | Pickers, Ctrl+R search, `@file` completion | done, tested | `crates/forge-core/src/commands/picker.rs`, `tui/app.rs`, `tui/session.rs` |
+| Screens: the scrolling viewer and forms; `/diff`, `/context` (Phase 4) | done, tested | `forge-core` `commands/screens.rs`, `tui/app.rs` (`Viewer`, `Form`), `tui/render.rs` |
 | UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | done, tested | `forge-core` `commands/settings.rs` (`/theme`, `/statusline`), `tui/session.rs` (the others) |
 
 Dependencies are in `crates/forge-cli/Cargo.toml`:
@@ -314,6 +315,53 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
 | Plan approval (the plan goes to scrollback first) | 1. Yes, and accept edits without asking | `Allow` plus `setMode acceptEdits` (session) |
 | | 2. Yes, and ask before each edit | `Allow` |
 | | 3. No, keep planning (Esc) | `Deny { interrupt: true }` |
+
+## Screens
+
+A screen is what a command typed without arguments shows instead of its
+text answer: `/diff`, `/context`, `/hooks`, `/agents`. It stays an inline
+viewport: a screen is a dialog in the live region, at most the terminal
+height minus the status line, and long content scrolls inside it.
+
+- **Data** comes from forge-core (`commands::screens`), as pickers do:
+  a `Screen` is a title and rows of tagged text (`Tone`: plain, dim, bold,
+  accent, added, removed, or a context part). A row may have an action:
+  - `Jump(row)`: Enter moves there (a file in `/diff`); Esc comes back;
+  - `Run(text)`: Enter runs the command text, as if typed;
+  - `Confirm { question, command }`: a Yes/No picker first;
+  - `Form(form)`: opens a form.
+- **Forms** are fields (free text, one-of choice, any-of multi-select) and a
+  command template; `{0}`, `{1}`, ... are replaced by the values,
+  shell-quoted. Tab and Up/Down move between fields, Left/Right choose,
+  Space toggles, Enter runs, Esc cancels. The form shows the command it will
+  run.
+- **Everything a screen changes is command text** the person could type
+  (`/hooks remove PreToolUse 1`), so the text commands stay the answer on
+  every other surface (`-p`, stream-json, the line REPL) and their tests
+  don't change.
+- **The session task** answers a bare screen command with
+  `UiEvent::Screen(..)`, after pickers. `/context` is immediate, so it opens
+  mid-turn too, built from the `SessionView`.
+- **Keys:** Up/Down move the highlighted row; PageUp/PageDown (and Space) move
+  by the rows shown; Home/End; Enter (or Right) acts on the row; Esc (or
+  Left) goes back from a jump, else closes; `q` closes.
+- **Drawing** (`render::viewer`, `render::form`): rows are cut to the width,
+  never wrapped, so scrolling counts rows exactly. The footer shows the rows
+  shown ("12-30 of 200") and the keys. The highlighted row keeps its colours
+  and turns bold, with `❯` in front. Without colour, diffs keep their `+`
+  and `-` markers and the context grid uses a letter per part.
+
+The screens:
+- **`/diff`:** git's uncommitted changes (`git diff HEAD`), or outside git
+  the files Forge changed against how they were. First the files, each with
+  `+added -removed` (Enter jumps to its hunks), untracked files and the files
+  each prompt changed; then each file's hunks: additions green, deletions
+  red, hunk headers dim. Built from the same data as the text `/diff`.
+- **`/context`:** a 10×10 grid, each cell 1% of the window, coloured by the
+  part that fills it (system prompt, built-in tools, MCP tools, skills,
+  memory, messages, free; a used part shows at least one cell), then the
+  legend with the numbers of the text `/context` (same `ContextData`), the
+  auto-compact point and suggestions. `/context all` stays text.
 
 ## Testing
 

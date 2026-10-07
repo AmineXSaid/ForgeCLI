@@ -192,48 +192,47 @@ fn rel(p: &Path, cwd: &Path) -> String {
     p.strip_prefix(cwd).unwrap_or(p).display().to_string()
 }
 
-pub(super) fn diff(d: &Driver) -> Exec {
+/// What `/diff` shows, for the text and the screen alike.
+struct DiffData {
+    /// `Some(diff)` in a git repository (`git diff HEAD`); `None` outside git.
+    git: Option<String>,
+    untracked: Vec<String>,
+    /// Outside git: unified diffs of the files Forge changed, against how they were.
+    own: String,
+    /// "1. \"prompt\": a.rs, b.rs", one per prompt that changed files.
+    by_prompt: Vec<String>,
+}
+
+fn diff_data(d: &Driver) -> DiffData {
     let cwd = &d.info.cwd;
     let history = d.engine.history();
-    let mut out = String::new();
-    match forge_git::uncommitted(cwd) {
-        Some((diff, untracked)) => {
-            if diff.is_empty() && untracked.is_empty() {
-                out.push_str("No uncommitted changes.\n");
-            } else {
-                if !diff.is_empty() {
-                    let _ = writeln!(out, "Uncommitted changes (git diff HEAD):\n{diff}");
-                }
-                if !untracked.is_empty() {
-                    let _ = writeln!(out, "\nUntracked files: {}", untracked.join(", "));
-                }
+    let (git, untracked) = match forge_git::uncommitted(cwd) {
+        Some((diff, untracked)) => (Some(diff), untracked),
+        None => (None, vec![]),
+    };
+    let mut own = String::new();
+    if git.is_none() {
+        // No git: diff the files Forge changed against how they were before.
+        for (path, before) in history.originals() {
+            let before = before.map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            let after = std::fs::read_to_string(&path).unwrap_or_default();
+            if before == after {
+                continue;
             }
-        }
-        None => {
-            // No git: diff the files Forge changed against how they were before.
-            for (path, before) in history.originals() {
-                let before = before.map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-                let after = std::fs::read_to_string(&path).unwrap_or_default();
-                if before == after {
-                    continue;
-                }
-                let name = rel(&path, cwd);
-                let udiff = similar::TextDiff::from_lines(&before, &after)
-                    .unified_diff()
-                    .header(&format!("a/{name}"), &format!("b/{name}"))
-                    .to_string();
-                out.push_str(&udiff);
-            }
-            if out.is_empty() {
-                out.push_str("Not a git repository, and Forge hasn't changed any files in this session.\n");
-            }
+            let name = rel(&path, cwd);
+            let udiff = similar::TextDiff::from_lines(&before, &after)
+                .unified_diff()
+                .header(&format!("a/{name}"), &format!("b/{name}"))
+                .to_string();
+            own.push_str(&udiff);
         }
     }
-    let turns = history.turns();
-    if !turns.is_empty() {
-        out.push_str("\nFiles Forge changed, by prompt:\n");
-        let st = &d.engine.state;
-        for (i, (turn, files)) in turns.iter().enumerate() {
+    let st = &d.engine.state;
+    let by_prompt = history
+        .turns()
+        .iter()
+        .enumerate()
+        .map(|(i, (turn, files))| {
             let prompt = st
                 .uuids
                 .iter()
@@ -249,10 +248,55 @@ pub(super) fn diff(d: &Driver) -> Exec {
                 })
                 .unwrap_or_else(|| "(an earlier prompt)".into());
             let names: Vec<String> = files.iter().map(|f| rel(f, cwd)).collect();
-            let _ = writeln!(out, "  {}. \"{prompt}\": {}", i + 1, names.join(", "));
+            format!("{}. \"{prompt}\": {}", i + 1, names.join(", "))
+        })
+        .collect();
+    DiffData { git, untracked, own, by_prompt }
+}
+
+pub(super) fn diff(d: &Driver) -> Exec {
+    let data = diff_data(d);
+    let mut out = String::new();
+    match &data.git {
+        Some(diff) => {
+            if diff.is_empty() && data.untracked.is_empty() {
+                out.push_str("No uncommitted changes.\n");
+            } else {
+                if !diff.is_empty() {
+                    let _ = writeln!(out, "Uncommitted changes (git diff HEAD):\n{diff}");
+                }
+                if !data.untracked.is_empty() {
+                    let _ = writeln!(out, "\nUntracked files: {}", data.untracked.join(", "));
+                }
+            }
+        }
+        None => {
+            out.push_str(&data.own);
+            if out.is_empty() {
+                out.push_str("Not a git repository, and Forge hasn't changed any files in this session.\n");
+            }
+        }
+    }
+    if !data.by_prompt.is_empty() {
+        out.push_str("\nFiles Forge changed, by prompt:\n");
+        for line in &data.by_prompt {
+            let _ = writeln!(out, "  {line}");
         }
     }
     ok(out.trim_end())
+}
+
+/// `/diff` as a screen: the changed files, then each file's hunks.
+pub(super) fn diff_screen(d: &Driver) -> super::screens::Screen {
+    let data = diff_data(d);
+    let (title, unified) = match &data.git {
+        Some(diff) => ("Uncommitted changes (git diff HEAD)", diff.as_str()),
+        None => ("Files Forge changed (not a git repository)", data.own.as_str()),
+    };
+    super::screens::Screen {
+        title: title.into(),
+        rows: super::screens::diff_rows(unified, &data.untracked, &data.by_prompt),
+    }
 }
 
 const DEBUG_PROMPT: &str = "Debug logging is on for this session and writes to {log}. The user reports this \

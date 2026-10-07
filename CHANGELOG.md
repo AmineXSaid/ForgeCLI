@@ -76,6 +76,15 @@
 - TUI: completion quotes paths with spaces, and a dim `(attached: ...)` line
   follows the prompt.
 
+### TUI screens
+- Screens: a command typed without arguments can open a scrolling viewer in
+  the live region (still an inline viewport, no alternate screen). Up/Down,
+  PageUp/PageDown, Home/End scroll; Enter acts on a row; Esc goes back.
+- `/diff` lists the changed files with their +/- counts; Enter jumps to a
+  file's hunks, coloured by side.
+- `/context` is a 10×10 grid coloured by what fills the window, with the
+  same numbers as the text form; it opens mid-turn too.
+
 ### Immediate commands mid-turn
 - `/status`, `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp` and
   `/btw` answer at once while a turn runs, in the TUI and for stream-json

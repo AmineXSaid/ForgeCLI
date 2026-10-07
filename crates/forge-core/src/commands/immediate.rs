@@ -243,11 +243,111 @@ fn tasks(v: &SessionView, args: &str) -> Exec {
     ok(s.trim_end())
 }
 
-fn pct(n: u64, of: u64) -> String {
+pub(super) fn pct(n: u64, of: u64) -> String {
     if of == 0 {
         return "-".into();
     }
     format!("{:.1}%", n as f64 * 100.0 / of as f64)
+}
+
+/// What fills the context window: the numbers behind `/context` and its grid.
+pub(super) struct ContextData {
+    pub model: String,
+    pub window: u64,
+    pub system: u64,
+    pub builtin: u64,
+    pub mcp: u64,
+    pub skills: u64,
+    pub memory: u64,
+    /// The memory files haven't been sent yet (they ride in the first prompt).
+    pub memory_pending: bool,
+    pub messages: u64,
+    pub measured: u64,
+    pub autocompact_at: Option<u64>,
+    pub tips: Vec<String>,
+    /// Per tool, largest first.
+    pub tools: Vec<(String, u64)>,
+    pub memory_files: Vec<(String, u64)>,
+    pub skill_rows: Vec<(String, u64)>,
+}
+
+impl ContextData {
+    pub fn total(&self) -> u64 {
+        let pending = if self.memory_pending { self.memory } else { 0 };
+        self.system + self.builtin + self.mcp + self.skills + self.messages + pending
+    }
+
+    pub fn free(&self) -> u64 {
+        self.window.saturating_sub(self.total())
+    }
+
+    pub fn headline(&self) -> String {
+        let total = self.total();
+        let mut s = format!(
+            "Context: about {} of {} tokens ({}) for {}",
+            thousands(total),
+            thousands(self.window),
+            pct(total, self.window),
+            self.model
+        );
+        if self.measured > 0 {
+            let _ = write!(s, "; the last request measured {}", thousands(self.measured));
+        }
+        s
+    }
+}
+
+pub(super) fn context_data(v: &SessionView) -> ContextData {
+    let d = v.state();
+    let snap = v.engine();
+    let model = d.handle.model();
+    let window = snap.context_window(&model);
+    let est = |s: &str| tokens_of(s) as u64;
+    let system: u64 = snap.system.iter().map(|b| est(&b.text)).sum();
+    let size = |s: &forge_types::ToolSpec| est(&serde_json::to_string(s).unwrap_or_default());
+    let (mut builtin, mut mcp, mut skills) = (0u64, 0u64, 0u64);
+    for s in snap.tools.iter() {
+        match s.name.as_str() {
+            n if n.starts_with("mcp__") => mcp += size(s),
+            "Skill" => skills += size(s),
+            _ => builtin += size(s),
+        }
+    }
+    let memory: u64 = d.memory.iter().map(|f| est(&f.content)).sum();
+    let messages: u64 = snap.messages.iter().map(|m| est(&serde_json::to_string(m).unwrap_or_default())).sum();
+    let mut tools: Vec<(String, u64)> = snap.tools.iter().map(|t| (t.name.clone(), size(t))).collect();
+    tools.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let mut c = ContextData {
+        model: model.clone(),
+        window,
+        system,
+        builtin,
+        mcp,
+        skills,
+        memory,
+        memory_pending: snap.messages.is_empty(),
+        messages,
+        measured: snap.context_tokens,
+        autocompact_at: snap.auto_compact.then(|| snap.autocompact_at(&model)),
+        tips: vec![],
+        tools,
+        memory_files: d.memory.iter().map(|f| (f.path.display().to_string(), est(&f.content))).collect(),
+        skill_rows: d.skills.iter().map(|(n, desc)| (n.clone(), est(desc))).collect(),
+    };
+    let total = c.total();
+    if mcp * 5 > total && mcp > 10_000 {
+        c.tips.push("MCP tools take a large share; turn off servers you don't need for this task.".to_string());
+    }
+    if let Some(f) = d.memory.iter().find(|f| est(&f.content) > 5_000) {
+        c.tips.push(format!(
+            "{} is long (over 5k tokens); trimming it saves context on every request.",
+            f.path.display()
+        ));
+    }
+    if total * 10 > window * 6 {
+        c.tips.push("Over 60% full: /compact now keeps what matters before automatic compaction does.".to_string());
+    }
+    c
 }
 
 fn context(v: &SessionView, args: &str) -> Exec {
@@ -256,93 +356,48 @@ fn context(v: &SessionView, args: &str) -> Exec {
         "all" => true,
         _ => return err("Usage: /context [all]"),
     };
-    let d = v.state();
-    let snap = v.engine();
-    let model = d.handle.model();
-    let window = snap.context_window(&model);
-    let est = |s: &str| tokens_of(s) as u64;
-    let system: u64 = snap.system.iter().map(|b| est(&b.text)).sum();
-    let specs = &snap.tools;
-    let size = |s: &forge_types::ToolSpec| est(&serde_json::to_string(s).unwrap_or_default());
-    let (mut builtin, mut mcp, mut skills) = (0u64, 0u64, 0u64);
-    for s in specs.iter() {
-        match s.name.as_str() {
-            n if n.starts_with("mcp__") => mcp += size(s),
-            "Skill" => skills += size(s),
-            _ => builtin += size(s),
-        }
-    }
-    let memory_files = &d.memory;
-    let memory: u64 = memory_files.iter().map(|f| est(&f.content)).sum();
-    let messages: u64 = snap.messages.iter().map(|m| est(&serde_json::to_string(m).unwrap_or_default())).sum();
-    // Memory files ride in the first prompt: part of the messages once one is sent.
-    let pending_memory = if snap.messages.is_empty() { memory } else { 0 };
-    let total = system + builtin + mcp + skills + messages + pending_memory;
-    let measured = snap.context_tokens;
-
-    let mut s = format!(
-        "Context: about {} of {} tokens ({}) for {model}",
-        thousands(total),
-        thousands(window),
-        pct(total, window)
-    );
-    if measured > 0 {
-        let _ = write!(s, "; the last request measured {}", thousands(measured));
-    }
+    let c = context_data(v);
+    let window = c.window;
+    let mut s = c.headline();
     s.push_str("\n\n");
     let mut row = |name: &str, n: u64| {
         let _ = writeln!(s, "  {name:<20} {:>10}  {:>6}", thousands(n), pct(n, window));
     };
-    row("System prompt", system);
-    row("Built-in tools", builtin);
-    row("MCP tools", mcp);
-    row("Skills (listing)", skills);
-    if pending_memory > 0 {
-        row("Memory files", memory);
+    row("System prompt", c.system);
+    row("Built-in tools", c.builtin);
+    row("MCP tools", c.mcp);
+    row("Skills (listing)", c.skills);
+    if c.memory_pending && c.memory > 0 {
+        row("Memory files", c.memory);
     }
-    row("Messages", messages);
-    if memory > 0 && pending_memory == 0 {
-        row("  of which memory", memory);
+    row("Messages", c.messages);
+    if c.memory > 0 && !c.memory_pending {
+        row("  of which memory", c.memory);
     }
-    row("Free", window.saturating_sub(total));
-    if snap.auto_compact {
-        let _ = writeln!(s, "\nAuto-compact runs at about {} tokens.", thousands(snap.autocompact_at(&model)));
+    row("Free", c.free());
+    if let Some(at) = c.autocompact_at {
+        let _ = writeln!(s, "\nAuto-compact runs at about {} tokens.", thousands(at));
     }
     if all {
         s.push_str("\nTools:\n");
-        let mut sorted: Vec<_> = specs.iter().map(|t| (t.name.clone(), size(t))).collect();
-        sorted.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        for (name, n) in sorted {
-            let _ = writeln!(s, "  {name:<40} {:>8}", thousands(n));
+        for (name, n) in &c.tools {
+            let _ = writeln!(s, "  {name:<40} {:>8}", thousands(*n));
         }
-        if !memory_files.is_empty() {
+        if !c.memory_files.is_empty() {
             s.push_str("\nMemory files:\n");
-            for f in memory_files {
-                let _ = writeln!(s, "  {:<40} {:>8}", f.path.display(), thousands(est(&f.content)));
+            for (path, n) in &c.memory_files {
+                let _ = writeln!(s, "  {path:<40} {:>8}", thousands(*n));
             }
         }
-        if !d.skills.is_empty() {
+        if !c.skill_rows.is_empty() {
             s.push_str("\nSkills (only names and descriptions are loaded until one is used):\n");
-            for (name, description) in &d.skills {
-                let _ = writeln!(s, "  {:<40} {:>8}", name, thousands(est(description)));
+            for (name, n) in &c.skill_rows {
+                let _ = writeln!(s, "  {name:<40} {:>8}", thousands(*n));
             }
         }
     }
-    let mut tips = vec![];
-    if mcp * 5 > total && mcp > 10_000 {
-        tips.push("MCP tools take a large share; turn off servers you don't need for this task.".to_string());
-    }
-    if let Some(f) = memory_files.iter().find(|f| est(&f.content) > 5_000) {
-        tips.push(format!(
-            "{} is long (over 5k tokens); trimming it saves context on every request.",
-            f.path.display()
-        ));
-    }
-    if total * 10 > window * 6 {
-        tips.push("Over 60% full: /compact now keeps what matters before automatic compaction does.".to_string());
-    }
-    if !tips.is_empty() {
-        let _ = write!(s, "\nSuggestions:\n  - {}", tips.join("\n  - "));
+    if !c.tips.is_empty() {
+        let _ = write!(s, "\nSuggestions:\n  - {}", c.tips.join("\n  - "));
     }
     if !all {
         s.push_str("\n/context all lists each tool, memory file and skill.");

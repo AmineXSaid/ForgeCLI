@@ -246,6 +246,11 @@ async fn while_busy<F: Future>(
 
 /// Answer an immediate command from the view and send the reply.
 fn answer_immediate(view: SessionView, text: String, ui: mpsc::UnboundedSender<UiEvent>) {
+    // A bare `/context` is its grid, mid-turn too.
+    if let Some(screen) = forge_core::commands::screens::view_screen(&view, &text) {
+        let _ = ui.send(UiEvent::Screen(screen));
+        return;
+    }
     tokio::spawn(async move {
         let cancel = tokio_util::sync::CancellationToken::new();
         if let Some(Exec::Local { text, is_error }) =
@@ -335,9 +340,12 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
                 }
             },
             Some(ToSession::Input(text)) => {
-                // A command typed without its choice opens a picker instead.
+                // A command typed without its choice opens a picker instead, and one with a
+                // screen (/diff, /context, /hooks, /agents) opens that.
                 if let Some(p) = picker(&driver, &text) {
                     let _ = ui.send(UiEvent::Picker(p));
+                } else if let Some(screen) = forge_core::commands::screens::screen(&driver, &text) {
+                    let _ = ui.send(UiEvent::Screen(screen));
                 } else if let Some(events) = ui_command(&driver, &text) {
                     for e in events {
                         let _ = ui.send(e);
@@ -591,6 +599,33 @@ mod tests {
         assert_eq!(streamed_text(&evs), "a slow answer", "the plain prompt waited");
         let evs = until_idle(&mut t.ui).await;
         assert_eq!(streamed_text(&evs), "the next one");
+        t.to.send(ToSession::Exit).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), t.task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn bare_diff_and_context_open_screens() {
+        let mut t = start(|_| {});
+        until_idle(&mut t.ui).await;
+        let screen = |evs: &[UiEvent]| {
+            evs.iter().find_map(|e| match e {
+                UiEvent::Screen(s) => Some(s.clone()),
+                _ => None,
+            })
+        };
+        t.to.send(ToSession::Input("/diff".into())).unwrap();
+        let s = screen(&until_idle(&mut t.ui).await).expect("a /diff screen");
+        assert!(s.title.contains("not a git repository"), "{}", s.title);
+        t.to.send(ToSession::Input("/context".into())).unwrap();
+        let s = screen(&until_idle(&mut t.ui).await).expect("a /context screen");
+        let text = forge_core::commands::screens::plain(&s);
+        assert_eq!(s.rows.iter().take_while(|r| r.spans.len() == 10).count(), 10, "a 10x10 grid:\n{text}");
+        assert!(text.contains("Context: about") && text.contains("System prompt") && text.contains("Free"), "{text}");
+        // With an argument it is the text answer.
+        t.to.send(ToSession::Input("/context all".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(screen(&evs).is_none());
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Reply { text, .. } if text.contains("Tools:"))));
         t.to.send(ToSession::Exit).unwrap();
         tokio::time::timeout(Duration::from_secs(10), t.task).await.unwrap().unwrap();
     }

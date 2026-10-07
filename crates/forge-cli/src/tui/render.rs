@@ -117,7 +117,125 @@ fn boxed(title: Line<'static>, body: Vec<Line<'static>>, w: usize, border: Style
     out
 }
 
-fn dialog(app: &App, w: usize) -> Vec<Line<'static>> {
+/// A screen's spans, styled.
+fn screen_spans(app: &App, spans: &[forge_core::commands::screens::Span]) -> Vec<Span<'static>> {
+    use forge_core::commands::screens::{context_parts, Tone};
+    let t = app.theme;
+    spans
+        .iter()
+        .map(|s| {
+            let (text, st) = match s.tone {
+                Tone::Plain => (s.text.clone(), Style::default()),
+                Tone::Dim => (s.text.clone(), t.dim()),
+                Tone::Bold => (s.text.clone(), t.bold()),
+                Tone::Accent => (s.text.clone(), t.accent()),
+                Tone::Added => (s.text.clone(), t.success()),
+                Tone::Removed => (s.text.clone(), t.error()),
+                // Without colour, each part has its own letter.
+                Tone::Part(p) if !t.color => {
+                    let glyph = context_parts().get(p as usize).map(|x| x.1).unwrap_or('?');
+                    (s.text.replace(['⛁', '⛶'], &glyph.to_string()), Style::default())
+                }
+                Tone::Part(p) => (s.text.clone(), t.part(p)),
+            };
+            Span::styled(text, st)
+        })
+        .collect()
+}
+
+/// Rows a screen's box takes besides its rows: borders, title, blank, footer.
+const SCREEN_CHROME: usize = 5;
+
+/// A screen, at most `room` rows tall. Rows are cut to the width, never wrapped, so
+/// scrolling counts rows exactly.
+fn viewer(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
+    let t = app.theme;
+    let Some((screen, cursor, top)) = app.viewer() else { return vec![] };
+    let page = room.saturating_sub(SCREEN_CHROME).max(1);
+    app.viewer_page.set(page);
+    let inner = w.saturating_sub(6).max(1);
+    // The highlighted row stays in view even if the terminal shrank.
+    let top = top.min(cursor).max((cursor + 1).saturating_sub(page));
+    let mut body = vec![];
+    for (i, row) in screen.rows.iter().enumerate().skip(top).take(page) {
+        let mark = if i == cursor { "❯ " } else { "  " };
+        let mut spans = vec![Span::styled(mark, t.accent())];
+        let mut used = 0;
+        for sp in screen_spans(app, &row.spans) {
+            let room = inner.saturating_sub(used);
+            if room == 0 {
+                break;
+            }
+            let text = fit(&sp.content, room);
+            used += text_width(&text);
+            // The highlighted row keeps its colours (diff sides, context parts) and turns bold.
+            let st = if i == cursor { sp.style.add_modifier(ratatui::style::Modifier::BOLD) } else { sp.style };
+            spans.push(Span::styled(text, st));
+        }
+        body.push(Line::from(spans));
+    }
+    let n = screen.rows.len();
+    let shown = if n > page { format!("{}-{} of {n} · ", top + 1, (top + page).min(n)) } else { String::new() };
+    let hint = match screen.rows.get(cursor).and_then(|r| r.action.as_ref()) {
+        Some(forge_core::commands::screens::RowAction::Jump(_)) => "Enter open · ",
+        Some(_) => "Enter choose · ",
+        None => "",
+    };
+    body.push(Line::default());
+    body.push(Line::from(Span::styled(
+        fit(&format!("{shown}↑↓ PgUp PgDn · {hint}Esc back"), w.saturating_sub(4)),
+        t.dim(),
+    )));
+    boxed(Line::from(Span::styled(fit(&screen.title, w.saturating_sub(4)), t.bold())), body, w, t.accent())
+}
+
+/// A form: one row per field, the command it will run, the keys.
+fn form(app: &App, w: usize) -> Vec<Line<'static>> {
+    use forge_core::commands::screens::FieldKind;
+    let t = app.theme;
+    let Some((form, at)) = app.form() else { return vec![] };
+    let pad = form.fields.iter().map(|f| text_width(&f.label)).max().unwrap_or(0);
+    let mut body = vec![];
+    for (i, f) in form.fields.iter().enumerate() {
+        let here = i == at;
+        let mut spans = vec![
+            Span::styled(if here { "❯ " } else { "  " }, t.accent()),
+            Span::styled(format!("{:<pad$}  ", f.label), if here { t.bold() } else { Style::default() }),
+        ];
+        match &f.kind {
+            FieldKind::Text(v) => {
+                spans.push(Span::raw(v.clone()));
+                if here {
+                    spans.push(Span::styled("▏", t.accent()));
+                }
+            }
+            FieldKind::Choice { options, at: c } => {
+                let v = options.get(*c).cloned().unwrap_or_default();
+                spans.push(Span::styled(if here { format!("‹ {v} ›") } else { v }, Style::default()));
+            }
+            FieldKind::Multi { options, picked, at: c } => {
+                for (j, (o, p)) in options.iter().zip(picked).enumerate() {
+                    let st = if here && j == *c { t.selected() } else { Style::default() };
+                    spans.push(Span::styled(format!("[{}] {o}", if *p { "x" } else { " " }), st));
+                    spans.push(Span::raw(" "));
+                }
+            }
+        }
+        body.push(Line::from(spans));
+    }
+    body.push(Line::default());
+    body.push(Line::from(Span::styled(format!("Runs: {}", form.command()), t.dim())));
+    body.push(Line::from(Span::styled("Tab next field · ←→ choose · Space toggle · Enter run · Esc cancel", t.dim())));
+    boxed(Line::from(Span::styled(form.title.clone(), t.bold())), body, w, t.accent())
+}
+
+fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
+    if app.viewer().is_some() {
+        return viewer(app, w, room);
+    }
+    if app.form().is_some() {
+        return form(app, w);
+    }
     let t = app.theme;
     let (title, body) = app.dialog_text();
     let mut rows: Vec<Line<'static>> = body.into_iter().map(Line::from).collect();
@@ -256,7 +374,8 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         spinner.push(Line::from(Span::styled(fit(&text, w), t.accent())));
     }
     // 3. A dialog.
-    let dialog = if app.dialog.is_some() { dialog(app, w) } else { vec![] };
+    let room = (max_height as usize).max(1).saturating_sub(spinner.len() + 1);
+    let dialog = if app.dialog.is_some() { dialog(app, w, room) } else { vec![] };
     // 4. Queued messages.
     let mut queued: Vec<Line<'static>> = app
         .queued
@@ -560,6 +679,122 @@ mod tests {
         typed(&mut a, "look at @ma");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[3], "  + src/main.rs");
+    }
+
+    fn diff_screen() -> forge_core::commands::screens::Screen {
+        let mut unified = String::from("diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,30 @@\n-fn old() {}\n");
+        for i in 0..30 {
+            unified.push_str(&format!("+fn new_{i}() {{}}\n"));
+        }
+        unified.push_str("diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-Old title\n+New title\n");
+        forge_core::commands::screens::Screen {
+            title: "Uncommitted changes (git diff HEAD)".into(),
+            rows: forge_core::commands::screens::diff_rows(&unified, &[], &[]),
+        }
+    }
+
+    #[test]
+    fn screens_scroll_inside_a_box_that_fits_the_terminal() {
+        let mut a = app(false);
+        a.on_event(UiEvent::Screen(diff_screen()));
+        let n = a.viewer().unwrap().0.rows.len();
+        let (rows, _) = draw(&live_view(&a, 40, 15), 40);
+        assert!(rows.len() <= 15, "{rows:#?}");
+        assert_eq!(rows[0], format!("╭{}╮", "─".repeat(38)));
+        assert_eq!(rows[1], "│ Uncommitted changes (git diff HEAD)  │");
+        assert_eq!(rows[2], "│ ❯ src/lib.rs  +30 -1                 │");
+        assert_eq!(rows[3], "│   README.md  +1 -1                   │");
+        let page = a.viewer_page.get();
+        assert_eq!(page, 15 - 1 - 5, "the terminal minus the status line and the box");
+        assert_eq!(rows[page + 3], format!("│ 1-{page} of {n} · ↑↓ PgUp PgDn · Enter op… │"));
+        // Enter on a file jumps to its hunks; Esc goes back; scrolling keeps the cursor in view.
+        a.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let (rows, _) = draw(&live_view(&a, 40, 15), 40);
+        assert_eq!(rows[2], "│ ❯ README.md                          │");
+        assert_eq!(rows[3], "│   @@ -1 +1 @@                        │");
+        assert_eq!(rows[4], "│   -Old title                         │", "no colour: the marker shows the side");
+        a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(a.viewer().unwrap().1, 1, "back on the file list");
+        a.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        let (rows, _) = draw(&live_view(&a, 40, 15), 40);
+        assert_eq!(rows[page + 1], "│ ❯ +New title                         │");
+        assert!(rows[page + 3].contains(&format!("{}-{n} of {n}", n - page + 1)), "{}", rows[page + 3]);
+        a.on_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(a.viewer().unwrap().1, n - 1 - page);
+        a.on_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(a.viewer().unwrap().1, 0);
+        a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.dialog.is_none(), "Esc at the top closes it");
+
+        // A tiny terminal still shows the highlighted row.
+        a.on_event(UiEvent::Screen(diff_screen()));
+        let v = live_view(&a, 40, 4);
+        assert!(v.lines.len() <= 4);
+
+        // Colour at 100 columns: additions green, deletions red, hunk headers dim.
+        let mut a = app(true);
+        a.on_event(UiEvent::Screen(diff_screen()));
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let (rows, buf) = draw(&live_view(&a, 100, 40), 100);
+        let y = rows.iter().position(|r| r.contains("-fn old() {}")).unwrap() as u16;
+        assert_eq!(buf[(5, y)].fg, ratatui::style::Color::Red);
+        assert_eq!(buf[(5, y + 1)].fg, ratatui::style::Color::Green);
+        assert!(buf[(5, y - 1)].modifier.contains(ratatui::style::Modifier::DIM), "{}", rows[y as usize - 1]);
+        assert!(rows.iter().all(|r| r.chars().count() <= 100));
+    }
+
+    #[test]
+    fn forms_show_fields_and_the_command_they_run() {
+        use forge_core::commands::screens::{Field, Form, Row, RowAction, Screen, Tone};
+        let form = Form {
+            title: "Add a hook".into(),
+            fields: vec![Field::choice("Event", &["PreToolUse", "Stop"]), Field::text("Command", "")],
+            template: "/hooks add {0} {1}".into(),
+        };
+        let mut a = app(false);
+        a.on_event(UiEvent::Screen(Screen {
+            title: "Hooks".into(),
+            rows: vec![Row { action: Some(RowAction::Form(form)), ..Row::text("Add hook…", Tone::Plain) }],
+        }));
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        a.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        a.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        typed(&mut a, "echo hi");
+        let (rows, _) = draw(&live_view(&a, 60, 20), 60);
+        assert_eq!(rows[1], format!("│ {:<56} │", "Add a hook"));
+        assert_eq!(rows[2], format!("│ {:<56} │", "  Event    Stop"));
+        assert_eq!(rows[3], format!("│ {:<56} │", "❯ Command  echo hi▏"));
+        assert_eq!(rows[5], format!("│ {:<56} │", "Runs: /hooks add Stop 'echo hi'"));
+        assert_eq!(
+            a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            vec![crate::tui::app::Action::Send("/hooks add Stop 'echo hi'".into())]
+        );
+        assert!(a.dialog.is_none());
+    }
+
+    #[test]
+    fn context_parts_use_letters_without_colour() {
+        use forge_core::commands::screens::{Row, Screen, Span as S, Tone};
+        let row = Row {
+            spans: vec![
+                S { text: "⛁ ".into(), tone: Tone::Part(0) },
+                S { text: "⛁ ".into(), tone: Tone::Part(5) },
+                S { text: "⛶ ".into(), tone: Tone::Part(6) },
+            ],
+            action: None,
+        };
+        let screen = Screen { title: "Context".into(), rows: vec![row] };
+        let mut a = app(false);
+        a.on_event(UiEvent::Screen(screen.clone()));
+        let (rows, _) = draw(&live_view(&a, 40, 20), 40);
+        assert_eq!(rows[2], format!("│ {:<36} │", "❯ S G ·"));
+        let mut a = app(true);
+        a.on_event(UiEvent::Screen(screen));
+        let (rows, buf) = draw(&live_view(&a, 40, 20), 40);
+        assert_eq!(rows[2], format!("│ {:<36} │", "❯ ⛁ ⛁ ⛶"));
+        let glyphs: Vec<u16> = (0..40).filter(|&x| buf[(x, 2)].symbol() == "⛁").collect();
+        assert_eq!(buf[(glyphs[1], 2)].fg, ratatui::style::Color::Green, "messages");
     }
 
     #[test]

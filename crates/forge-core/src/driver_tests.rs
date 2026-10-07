@@ -1629,3 +1629,20 @@ async fn mcp_changes_mid_turn_refresh_the_session_after_the_turn() {
     assert_eq!(t.d.info.init.mcp_servers[0].status, "connected");
     m.shutdown().await;
 }
+
+// ---- screens (docs/TUI.md) ----
+
+#[tokio::test]
+async fn context_screen_and_text_share_their_numbers() {
+    let mut t = driver();
+    let text = local(&mut t.d, "/context").await;
+    let screen = crate::commands::screens::screen(&t.d, "/context").expect("a screen");
+    let rows: Vec<String> = screen.rows.iter().map(|r| r.plain()).collect();
+    let headline = text.lines().next().unwrap();
+    assert!(rows.iter().any(|r| r == headline), "{headline}\n{rows:#?}");
+    let system = text.lines().find(|l| l.trim_start().starts_with("System prompt")).unwrap();
+    let number = system.split_whitespace().nth(2).unwrap();
+    assert!(rows.iter().any(|r| r.contains("System prompt") && r.contains(number)), "{number}\n{rows:#?}");
+    assert!(crate::commands::screens::screen(&t.d, "/context all").is_none(), "with an argument: text");
+    assert!(crate::commands::screens::screen(&t.d, "/status").is_none());
+}

@@ -21,6 +21,7 @@ mod looping;
 mod mcp;
 pub mod picker;
 mod run;
+pub mod screens;
 mod session;
 mod settings;
 mod switching;

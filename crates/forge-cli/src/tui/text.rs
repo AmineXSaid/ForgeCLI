@@ -62,6 +62,23 @@ impl Theme {
         self.fg(Color::Green)
     }
 
+    /// The colour of part `i` of the context window (`/context` grid).
+    pub fn part(&self, i: u8) -> Style {
+        if !self.color {
+            return Style::default();
+        }
+        let c = match i {
+            0 => Color::Rgb(0x9b, 0x7b, 0xf0),
+            1 => Color::Cyan,
+            2 => Color::Magenta,
+            3 => Color::Yellow,
+            4 => Color::Blue,
+            5 => Color::Green,
+            _ => return self.dim(),
+        };
+        Style::default().fg(c)
+    }
+
     /// Inline `code`.
     pub fn code(&self) -> Style {
         if self.color {

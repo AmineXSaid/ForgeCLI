@@ -7,7 +7,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use forge_core::commands::picker::{Pick, Picker};
+use forge_core::commands::picker::{Choice, Pick, Picker};
+use forge_core::commands::screens::{FieldKind, Form, RowAction, Screen};
 use forge_engine::{EngineEvent, NoticeLevel, PermissionAnswer, PermissionPrompt};
 use forge_permissions::{PermissionMode, Suggestion};
 use forge_types::{ContentBlock, Delta, StreamEvent};
@@ -63,6 +64,8 @@ pub enum UiEvent {
     StatusLine(Option<String>),
     /// Choices for a command typed without its argument (`/model`, `/resume`, ...).
     Picker(Picker),
+    /// A screen for a command typed without arguments (`/diff`, `/context`, `/hooks`, `/agents`).
+    Screen(Screen),
     /// The session started work by itself (a scheduled task).
     Busy,
     /// The session is ready for the next input.
@@ -106,6 +109,22 @@ enum DialogKind {
     Picker {
         picker: Picker,
         filter: String,
+    },
+    /// A screen: scrolling rows, some with an action (docs/TUI.md, "Screens").
+    Viewer {
+        screen: Screen,
+        /// The highlighted row.
+        cursor: usize,
+        /// The first row shown.
+        top: usize,
+        /// Rows jumped from, for Esc.
+        back: Vec<usize>,
+    },
+    /// Inputs that fill in a command.
+    Form {
+        form: Form,
+        /// The field being edited.
+        at: usize,
     },
 }
 
@@ -216,6 +235,8 @@ pub struct App {
     pub clipboard: Option<String>,
     /// The `statusLine` command's output.
     pub status_text: Option<String>,
+    /// Rows a screen showed last time it was drawn (PageUp/PageDown move by this).
+    pub viewer_page: std::cell::Cell<usize>,
 }
 
 /// The main argument of a tool call, for one line.
@@ -285,6 +306,7 @@ impl App {
             color_ok: theme.color,
             clipboard: None,
             status_text: None,
+            viewer_page: std::cell::Cell::new(10),
         }
     }
 
@@ -383,17 +405,8 @@ impl App {
             UiEvent::Theme(name) => self.theme = Theme::named(&name, self.color_ok),
             UiEvent::Copy(text) => self.clipboard = Some(text),
             UiEvent::StatusLine(text) => self.status_text = text,
-            UiEvent::Picker(picker) => {
-                self.flush_live();
-                let selected = picker.choices.iter().position(|c| c.current).unwrap_or(0);
-                self.dialog = Some(Dialog {
-                    prompt: None,
-                    reply: None,
-                    kind: DialogKind::Picker { picker, filter: String::new() },
-                    selected,
-                    typing: None,
-                });
-            }
+            UiEvent::Picker(picker) => self.open_picker(picker),
+            UiEvent::Screen(screen) => self.open_screen(screen),
             UiEvent::Busy => {
                 if !self.busy {
                     self.busy = true;
@@ -621,6 +634,7 @@ impl App {
                 v.push(("Type an answer".into(), String::new()));
                 v
             }
+            DialogKind::Viewer { .. } | DialogKind::Form { .. } => vec![],
             DialogKind::Picker { .. } => self
                 .picker_rows()
                 .into_iter()
@@ -667,6 +681,8 @@ impl App {
                 (format!("Allow {}?", p.tool_name), body)
             }
             DialogKind::Plan => ("Go ahead with this plan?".into(), vec![]),
+            DialogKind::Viewer { screen, .. } => (screen.title.clone(), vec![]),
+            DialogKind::Form { form, .. } => (form.title.clone(), vec![]),
             DialogKind::Questions { questions, at, .. } => {
                 let q = &questions[*at];
                 let n = questions.len();
@@ -685,6 +701,12 @@ impl App {
     }
 
     fn dialog_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        if matches!(self.dialog.as_ref().map(|d| &d.kind), Some(DialogKind::Viewer { .. })) {
+            return self.viewer_key(key);
+        }
+        if matches!(self.dialog.as_ref().map(|d| &d.kind), Some(DialogKind::Form { .. })) {
+            return self.form_key(key);
+        }
         let n = self.dialog_options().len();
         let Some(d) = self.dialog.as_mut() else { return vec![] };
         if let DialogKind::Picker { filter, .. } = &mut d.kind {
@@ -777,6 +799,7 @@ impl App {
                     }
                 };
             }
+            DialogKind::Viewer { .. } | DialogKind::Form { .. } => {}
             DialogKind::Permission { always } => {
                 let always_row = always.is_some();
                 let suggestions = d.prompt.as_ref().map(|p| p.suggestions.clone()).unwrap_or_default();
@@ -833,6 +856,155 @@ impl App {
         let mut input = d.prompt.as_ref().map(|p| p.input.clone()).unwrap_or_default();
         input["answers"] = Value::Object(std::mem::take(answers));
         self.answer(PermissionAnswer::Allow { updated_input: Some(input), updated_permissions: vec![] });
+    }
+
+    fn open_picker(&mut self, picker: Picker) {
+        self.flush_live();
+        let selected = picker.choices.iter().position(|c| c.current).unwrap_or(0);
+        self.dialog = Some(Dialog {
+            prompt: None,
+            reply: None,
+            kind: DialogKind::Picker { picker, filter: String::new() },
+            selected,
+            typing: None,
+        });
+    }
+
+    // ---- screens ----
+
+    /// Show a screen (`/diff`, `/context`, `/hooks`, `/agents`).
+    pub fn open_screen(&mut self, screen: Screen) {
+        self.flush_live();
+        let kind = DialogKind::Viewer { screen, cursor: 0, top: 0, back: vec![] };
+        self.dialog = Some(Dialog { prompt: None, reply: None, kind, selected: 0, typing: None });
+    }
+
+    /// The open screen: its rows, the highlighted row and the first row shown.
+    pub fn viewer(&self) -> Option<(&Screen, usize, usize)> {
+        match &self.dialog.as_ref()?.kind {
+            DialogKind::Viewer { screen, cursor, top, .. } => Some((screen, *cursor, *top)),
+            _ => None,
+        }
+    }
+
+    /// The open form and the field being edited.
+    pub fn form(&self) -> Option<(&Form, usize)> {
+        match &self.dialog.as_ref()?.kind {
+            DialogKind::Form { form, at } => Some((form, *at)),
+            _ => None,
+        }
+    }
+
+    fn viewer_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let page = self.viewer_page.get().max(1);
+        let Some(Dialog { kind: DialogKind::Viewer { screen, cursor, top, back }, .. }) = self.dialog.as_mut() else {
+            return vec![];
+        };
+        let last = screen.rows.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up => *cursor = cursor.saturating_sub(1),
+            KeyCode::Down => *cursor = (*cursor + 1).min(last),
+            KeyCode::PageUp => *cursor = cursor.saturating_sub(page),
+            KeyCode::PageDown | KeyCode::Char(' ') => *cursor = (*cursor + page).min(last),
+            KeyCode::Home => *cursor = 0,
+            KeyCode::End => *cursor = last,
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('q') => match back.pop() {
+                Some(from) if key.code != KeyCode::Char('q') => *cursor = from,
+                _ => {
+                    self.dialog = None;
+                    return vec![];
+                }
+            },
+            KeyCode::Enter | KeyCode::Right => match screen.rows.get(*cursor).and_then(|r| r.action.clone()) {
+                Some(RowAction::Jump(to)) => {
+                    back.push(*cursor);
+                    *cursor = to.min(last);
+                    // The target goes to the top, so what follows it shows.
+                    *top = *cursor;
+                }
+                Some(RowAction::Run(text)) if key.code == KeyCode::Enter => {
+                    self.dialog = None;
+                    return self.submit(text);
+                }
+                Some(RowAction::Confirm { question, command }) if key.code == KeyCode::Enter => {
+                    let choices = vec![
+                        Choice {
+                            label: "Yes".into(),
+                            detail: command.clone(),
+                            pick: Pick::Run(command),
+                            current: false,
+                        },
+                        Choice {
+                            label: "No".into(),
+                            detail: String::new(),
+                            pick: Pick::Edit(String::new()),
+                            current: false,
+                        },
+                    ];
+                    self.dialog = None;
+                    self.open_picker(Picker { title: question, choices });
+                    return vec![];
+                }
+                Some(RowAction::Form(form)) if key.code == KeyCode::Enter => {
+                    self.dialog = Some(Dialog {
+                        prompt: None,
+                        reply: None,
+                        kind: DialogKind::Form { form, at: 0 },
+                        selected: 0,
+                        typing: None,
+                    });
+                    return vec![];
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        // Keep the highlighted row in view.
+        if *cursor < *top {
+            *top = *cursor;
+        } else if *cursor >= *top + page {
+            *top = *cursor + 1 - page;
+        }
+        vec![]
+    }
+
+    fn form_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(Dialog { kind: DialogKind::Form { form, at }, .. }) = self.dialog.as_mut() else { return vec![] };
+        let n = form.fields.len();
+        match key.code {
+            KeyCode::Esc => self.dialog = None,
+            KeyCode::Enter => {
+                let text = form.command();
+                self.dialog = None;
+                return self.submit(text);
+            }
+            KeyCode::Tab | KeyCode::Down => *at = (*at + 1) % n.max(1),
+            KeyCode::BackTab | KeyCode::Up => *at = at.checked_sub(1).unwrap_or(n.saturating_sub(1)),
+            code => match form.fields.get_mut(*at).map(|f| &mut f.kind) {
+                Some(FieldKind::Text(t)) => match code {
+                    KeyCode::Backspace => {
+                        t.pop();
+                    }
+                    KeyCode::Char('u') if ctrl => t.clear(),
+                    KeyCode::Char(c) if !ctrl => t.push(c),
+                    _ => {}
+                },
+                Some(FieldKind::Choice { options, at: i }) => match code {
+                    KeyCode::Left => *i = i.checked_sub(1).unwrap_or(options.len().saturating_sub(1)),
+                    KeyCode::Right | KeyCode::Char(' ') => *i = (*i + 1) % options.len().max(1),
+                    _ => {}
+                },
+                Some(FieldKind::Multi { options, picked, at: i }) => match code {
+                    KeyCode::Left => *i = i.checked_sub(1).unwrap_or(options.len().saturating_sub(1)),
+                    KeyCode::Right => *i = (*i + 1) % options.len().max(1),
+                    KeyCode::Char(' ') if *i < picked.len() => picked[*i] = !picked[*i],
+                    _ => {}
+                },
+                None => {}
+            },
+        }
+        vec![]
     }
 
     /// Esc on a dialog that the reply can't reach any more (the turn was interrupted).
