@@ -411,14 +411,16 @@ fn context(v: &SessionView, args: &str) -> Exec {
 /// and the exchange are left for the driver, which records them when it is next free.
 async fn btw(v: &SessionView, args: &str, cancel: &CancellationToken) -> Exec {
     let d = v.state();
+    // Earlier exchanges, including ones from this turn the driver hasn't recorded yet.
+    let earlier = v.side_questions();
     if args.is_empty() {
-        return match d.side_questions.last() {
+        return match earlier.last() {
             Some((q, a)) => ok(format!("/btw {q}\n\n{a}")),
             None => ok("No side questions yet. Ask one with /btw <question>: Forge answers from the conversation, without tools, and leaves the conversation as it was."),
         };
     }
     let rt = d.handle.runtime();
-    let req = forge_engine::side_question_request(&v.engine(), &rt, args, &d.side_questions);
+    let req = forge_engine::side_question_request(&v.engine(), &rt, args, &earlier);
     let msg = match forge_api::complete(d.provider.as_ref(), req, cancel).await {
         Ok(m) => m,
         Err(forge_api::ApiError::Cancelled) => return err("Could not answer: interrupted"),

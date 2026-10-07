@@ -1748,3 +1748,38 @@ async fn agents_create_writes_a_definition_and_reloads() {
     assert!(fails(&mut t.d, "/agents create x --description y --model gpt-9").await.contains("Unknown model"));
     assert!(fails(&mut t.d, "/agents frob").await.starts_with("Usage: /agents"));
 }
+
+#[tokio::test]
+async fn scheduled_prompts_attach_their_mentions() {
+    let mut t = driver();
+    fast_clock(&t.d, 3000.0);
+    std::fs::write(t.proj.join("status.txt"), "build 812 is red").unwrap();
+    t.p.push(MockTurn::text("red"));
+    run(&mut t.d, "/loop 5m summarize @status.txt").await;
+    assert!(last_user_text(t.p.requests().last().unwrap()).contains("build 812 is red"), "the first run");
+    std::fs::write(t.proj.join("status.txt"), "build 813 is green").unwrap();
+    t.p.push(MockTurn::text("green"));
+    fire_next(&mut t.d).await;
+    let sent = last_user_text(t.p.requests().last().unwrap());
+    assert!(sent.contains("build 813 is green") && sent.contains("summarize @status.txt"), "a scheduled run: {sent}");
+}
+
+#[tokio::test]
+async fn a_second_btw_in_the_same_turn_sees_the_first() {
+    let mut t = driver();
+    let view = t.d.view();
+    t.p.push(MockTurn::text("Main.").with_delay(std::time::Duration::from_millis(100)));
+    t.p.push(MockTurn::text("First side answer."));
+    t.p.push(MockTurn::text("Second side answer."));
+    let requests = t.p.request_log();
+    let during = async {
+        wait_for(|| requests.lock().unwrap().len() == 1).await;
+        assert_eq!(immediate(&view, "/btw first?").await.0, "First side answer.");
+        assert_eq!(immediate(&view, "/btw second?").await.0, "Second side answer.");
+        assert!(immediate(&view, "/btw").await.0.starts_with("/btw second?"), "the latest, not yet recorded");
+    };
+    tokio::join!(run(&mut t.d, "go"), during);
+    let second = serde_json::to_string(&t.p.requests()[2].messages).unwrap();
+    assert!(second.contains("first?") && second.contains("First side answer."), "{second}");
+    assert_eq!(t.d.side_questions.len(), 2);
+}

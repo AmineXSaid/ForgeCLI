@@ -130,8 +130,9 @@ is a read: it follows Read's permission rules without prompting, so a file
 outside the working directories or matched by an ask or deny rule isn't
 attached (the note says why). Attached files count as read, so the model can
 Edit them at once. `@name` with no such file, and emails, are left alone. In
-stream-json only a message that is a single text block is scanned. Slash
-commands, `!shell` lines and scheduled prompts aren't scanned (custom commands attach the
+stream-json only a message that is a single text block is scanned. A
+`/loop` prompt and each scheduled run of it are scanned too (each run reads
+the files as they are then). Other slash commands and `!shell` lines aren't scanned (custom commands attach the
 `@path`s in their own body).
 
 ### `forge -p [prompt]`: print mode, for scripts and CI

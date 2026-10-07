@@ -117,6 +117,18 @@ impl SessionView {
         self.0.recorded.notify_one();
     }
 
+    /// `/btw` exchanges so far: those the driver has, then those still waiting for it.
+    pub fn side_questions(&self) -> Vec<(String, String)> {
+        let mut out = self.state().side_questions.clone();
+        out.extend(self.0.effects.lock().unwrap().iter().filter_map(|e| match e {
+            Effect::SideQuestion { question, answer } => Some((question.clone(), answer.clone())),
+            _ => None,
+        }));
+        let extra = out.len().saturating_sub(crate::driver::MAX_SIDE_QUESTIONS);
+        out.drain(..extra);
+        out
+    }
+
     pub(crate) fn take_effects(&self) -> Vec<Effect> {
         std::mem::take(&mut *self.0.effects.lock().unwrap())
     }

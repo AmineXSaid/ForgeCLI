@@ -657,7 +657,8 @@ the turn, or at once when idle; front ends' idle loops wake on
   consistent state;
 - `SideUsage`: `/btw`'s cost, priced by the engine (`record_side_usage`);
 - `SideQuestion`: the `/btw` exchange, kept for the next side question.
-  A second `/btw` in the same turn doesn't see the first.
+  Until it is applied, `SessionView::side_questions` adds it to the
+  driver's, so a second `/btw` in the same turn sees the first.
 
 *`/btw` mid-turn* builds its request from the snapshot
 (`forge_engine::side_question_request`, shared with the engine's own

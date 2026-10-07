@@ -71,6 +71,8 @@
   as read, so the model can edit them at once.
 - One implementation (`forge_agents::attach`) serves prompts and custom
   commands. UserPromptSubmit hooks see the prompt without the attachments.
+- `/loop` and scheduled prompts attach their `@` mentions too, read afresh
+  on each run.
 - An attached file can't close its own wrapper, and text that looks like
   instructions to an agent is flagged as data, as for Read output.
 - TUI: completion quotes paths with spaces, and a dim `(attached: ...)` line
@@ -119,7 +121,8 @@
   tell them from the running turn's result.
 - `/btw` mid-turn answers from the conversation so far; its cost and
   exchange, and `/mcp`'s refresh of instructions and `system/init`, are
-  applied when the turn ends.
+  applied when the turn ends. A second `/btw` in the same turn sees the
+  first.
 
 ### Fixes from the front-end review
 - A prompt that starts with a file name (`/package.json has the wrong

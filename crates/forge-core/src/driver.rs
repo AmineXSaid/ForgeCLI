@@ -504,24 +504,12 @@ impl Driver {
             self.shell(&cmd).await
         } else {
             match commands::command_text(&content) {
-                None => {
-                    let (content, read) = self.attach_mentions(content);
-                    // The model sees these files: it may Edit them without a Read. Undone for
-                    // those not read before if a hook erases the prompt.
-                    let files = self.engine.tool_ctx().files.clone();
-                    let fresh: Vec<PathBuf> = read.into_iter().filter(|p| files.check_writable(p).is_err()).collect();
-                    for p in &fresh {
-                        files.record_read(p);
-                    }
-                    let result = self.submit(content).await;
-                    if result.prompt_blocked.is_some() {
-                        for p in &fresh {
-                            files.forget(p);
-                        }
-                    }
-                    (result, true)
-                }
+                None => (self.submit_attached(content).await, true),
                 Some(text) => match commands::execute(self, &text).await {
+                    // A loop's prompt attaches its @ mentions now, as each scheduled run will.
+                    commands::Exec::Submit(prompt) if text.trim_start().starts_with("/loop") => {
+                        (self.submit_attached(prompt).await, true)
+                    }
                     commands::Exec::Submit(prompt) => (self.submit(prompt).await, true),
                     commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
                     commands::Exec::Exit => return Flow::Exit,
@@ -540,6 +528,25 @@ impl Driver {
         self.after_turn(result, engine_turn, report).await;
         self.sync_view();
         Flow::Continue
+    }
+
+    /// Submit a prompt with its `@path` mentions attached. The model sees those files, so it may
+    /// Edit them without a Read; that is undone, for files not read before, if a hook erases
+    /// the prompt.
+    async fn submit_attached(&mut self, content: MessageContent) -> forge_engine::TurnResult {
+        let (content, read) = self.attach_mentions(content);
+        let files = self.engine.tool_ctx().files.clone();
+        let fresh: Vec<PathBuf> = read.into_iter().filter(|p| files.check_writable(p).is_err()).collect();
+        for p in &fresh {
+            files.record_read(p);
+        }
+        let result = self.submit(content).await;
+        if result.prompt_blocked.is_some() {
+            for p in &fresh {
+                files.forget(p);
+            }
+        }
+        result
     }
 
     /// A prompt's `@path` mentions, attached (docs/CLI.md, "`@` mentions"): the text stays as
@@ -627,7 +634,13 @@ impl Driver {
             }
         } else {
             let prompt = commands::scheduled_prompt(self, &task.prompt).await;
-            (self.submit(prompt).await, true)
+            // A plain scheduled prompt attaches its @ mentions, as typed prompts do; a custom
+            // command attached its own already.
+            if task.prompt.trim_start().starts_with('/') {
+                (self.submit(prompt).await, true)
+            } else {
+                (self.submit_attached(prompt).await, true)
+            }
         };
         if let Some(it) = self.self_paced.as_mut() {
             it.fallback = is_fallback;
