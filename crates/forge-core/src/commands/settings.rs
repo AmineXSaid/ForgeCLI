@@ -701,3 +701,62 @@ pub(super) fn advisor(d: &mut Driver, args: &str) -> Exec {
         }
     }
 }
+
+/// The colour themes of the terminal UI.
+pub const THEMES: [(&str, &str); 3] = [
+    ("dark", "For dark terminal backgrounds"),
+    ("light", "For light backgrounds"),
+    ("none", "No colours: bold, dim and reverse only"),
+];
+
+fn tui_only(d: &Driver, name: &str) -> Option<Exec> {
+    (d.surface != Surface::Tui).then(|| err(format!("/{name} works only in the terminal UI.")))
+}
+
+/// `/theme [dark|light|none]`: saved as `theme` in user settings; the UI applies it.
+pub(super) fn theme(d: &mut Driver, args: &str) -> Exec {
+    if let Some(e) = tui_only(d, "theme") {
+        return e;
+    }
+    let current = d.info.settings.str("/theme").unwrap_or("dark").to_string();
+    if args.is_empty() {
+        let mut s = format!("Theme: {current}\n");
+        for (name, what) in THEMES {
+            let _ = writeln!(s, "  {name:<6} {what}");
+        }
+        s.push_str("Choose one with /theme <name>.");
+        return ok(s);
+    }
+    let Some((name, _)) = THEMES.iter().find(|(n, _)| *n == args) else {
+        return err(format!("No theme {args:?}. Choose dark, light or none."));
+    };
+    let saved = save_default(d, Scope::User, &["theme"], Some(json!(name)));
+    ok(join(&[format!("Theme set to {name}."), saved]))
+}
+
+/// `/statusline [command|off]`: the `statusLine` setting. The UI runs the
+/// command with the session as JSON on stdin and shows its first line.
+pub(super) fn statusline(d: &mut Driver, args: &str) -> Exec {
+    if let Some(e) = tui_only(d, "statusline") {
+        return e;
+    }
+    match args {
+        "" => ok(match d.info.settings.str("/statusLine/command") {
+            Some(c) => format!(
+                "Status line command: {c}\nIt gets the session as JSON on stdin; its first output line is shown. \
+                 /statusline off removes it."
+            ),
+            None => "No status line command. Set one with /statusline <command>: it gets the session as JSON on \
+                     stdin (model, cwd, session_id, cost, context) and its first output line is shown."
+                .into(),
+        }),
+        "off" | "remove" | "clear" => {
+            let saved = save_default(d, Scope::User, &["statusLine"], None);
+            ok(join(&["Status line command removed.".to_string(), saved]))
+        }
+        cmd => {
+            let saved = save_default(d, Scope::User, &["statusLine"], Some(json!({"type": "command", "command": cmd})));
+            ok(join(&[format!("Status line command set to: {cmd}"), saved]))
+        }
+    }
+}

@@ -54,6 +54,12 @@ pub enum UiEvent {
     Commands(Vec<CommandInfo>),
     /// The project's files, for `@` completion.
     Files(Vec<String>),
+    /// The `theme` setting changed (`/theme`).
+    Theme(String),
+    /// Put this text on the clipboard (`/copy`).
+    Copy(String),
+    /// The `statusLine` command's output, or `None` when there is none.
+    StatusLine(Option<String>),
     /// Choices for a command typed without its argument (`/model`, `/resume`, ...).
     Picker(Picker),
     /// The session started work by itself (a scheduled task).
@@ -123,6 +129,34 @@ pub struct Search {
     draft: String,
 }
 
+/// The keyboard shortcuts (`?` on an empty prompt, `/keybindings`).
+pub const KEYS: &[(&str, &str)] = &[
+    ("Enter", "Send (queued while a turn runs)"),
+    ("Shift+Enter, Alt+Enter, Ctrl+J, \\ Enter", "New line"),
+    ("Esc", "Interrupt the turn; close a menu; cancel a dialog"),
+    ("Esc Esc", "On an empty prompt: rewind (/rewind)"),
+    ("Ctrl+C", "Clear the input; interrupt; twice on an empty prompt: exit"),
+    ("Ctrl+D", "Exit (empty prompt)"),
+    ("Shift+Tab", "Cycle the permission mode: default, accept edits, plan"),
+    ("Up / Down", "Move between lines; earlier prompts"),
+    ("Ctrl+R", "Search earlier prompts"),
+    ("Tab", "Complete a / command or an @ path"),
+    ("@", "Mention a file (a menu of project paths)"),
+    ("!", "At the start: run a shell command"),
+    ("/", "At the start: a command (the menu lists them)"),
+    ("Ctrl+A / Ctrl+E, Home / End", "Start / end of line"),
+    ("Ctrl+W, Alt+Backspace", "Delete the word before the cursor"),
+    ("Ctrl+U / Ctrl+K", "Delete to the start / end of the line"),
+    ("Alt+B / Alt+F, Ctrl+Left / Ctrl+Right", "Word left / right"),
+    ("Ctrl+L", "Redraw the screen"),
+];
+
+/// The shortcuts as text, one per line.
+pub fn keys_text() -> String {
+    let w = KEYS.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    KEYS.iter().map(|(k, what)| format!("{k:<w$}  {what}")).collect::<Vec<_>>().join("\n")
+}
+
 /// Rows the `@` menu offers at most.
 const FILE_MATCHES: usize = 50;
 
@@ -159,6 +193,12 @@ pub struct App {
     pub hint: Option<(String, Instant)>,
     pub exit: bool,
     pub dirty: bool,
+    /// Colour is allowed at all (not `NO_COLOR` or `--color never`).
+    color_ok: bool,
+    /// Text for the loop to put on the clipboard.
+    pub clipboard: Option<String>,
+    /// The `statusLine` command's output.
+    pub status_text: Option<String>,
 }
 
 /// The main argument of a tool call, for one line.
@@ -225,6 +265,9 @@ impl App {
             hint: None,
             exit: false,
             dirty: true,
+            color_ok: theme.color,
+            clipboard: None,
+            status_text: None,
         }
     }
 
@@ -320,6 +363,9 @@ impl App {
             UiEvent::Status(s) => self.status = s,
             UiEvent::Commands(c) => self.commands = c,
             UiEvent::Files(f) => self.files = f,
+            UiEvent::Theme(name) => self.theme = Theme::named(&name, self.color_ok),
+            UiEvent::Copy(text) => self.clipboard = Some(text),
+            UiEvent::StatusLine(text) => self.status_text = text,
             UiEvent::Picker(picker) => {
                 self.flush_live();
                 let selected = picker.choices.iter().position(|c| c.current).unwrap_or(0);
@@ -954,6 +1000,10 @@ impl App {
             self.status.mode = next.as_str().to_string();
             return vec![Action::SetMode(next)];
         }
+        if key.code == KeyCode::Char('?') && self.editor.is_empty() && !ctrl && !alt {
+            self.reply_lines(&keys_text(), false);
+            return vec![];
+        }
         let menu_len = self.menu().len();
         match key.code {
             KeyCode::Esc => {
@@ -1065,7 +1115,7 @@ mod tests {
     use forge_types::{ApiMessage, MessageContent, Role, StopReason, Usage};
 
     fn app() -> App {
-        let mut a = App::new(Theme { color: false }, vec![]);
+        let mut a = App::new(Theme { color: false, light: false }, vec![]);
         a.commands = vec![
             CommandInfo { name: "clear".into(), args: "[name]".into(), description: "Start a new conversation".into() },
             CommandInfo { name: "compact".into(), args: "[instructions]".into(), description: "Summarize".into() },
@@ -1345,8 +1395,10 @@ mod tests {
 
     #[test]
     fn ctrl_r_searches_history() {
-        let mut a =
-            App::new(Theme { color: false }, vec!["cargo test".into(), "git status".into(), "cargo build".into()]);
+        let mut a = App::new(
+            Theme { color: false, light: false },
+            vec!["cargo test".into(), "git status".into(), "cargo build".into()],
+        );
         typed(&mut a, "draft");
         a.on_key(ctrl('r'));
         typed(&mut a, "cargo");
@@ -1397,5 +1449,32 @@ mod tests {
             a.on_key(key(KeyCode::Enter)),
             vec![Action::Send("explain @docs/main-notes.md and @Cargo.toml @src".into())]
         );
+    }
+
+    #[test]
+    fn question_mark_themes_and_clipboard() {
+        let mut a = App::new(Theme { color: true, light: false }, vec![]);
+        a.on_key(key(KeyCode::Char('?')));
+        let shown = texts(&a.take_pending()).join("\n");
+        assert!(shown.contains("Shift+Tab") && shown.contains("Ctrl+R"), "{shown}");
+        assert!(a.editor.is_empty(), "? on an empty prompt isn't typed");
+        typed(&mut a, "why?");
+        assert_eq!(a.editor.text(), "why?");
+
+        a.on_event(UiEvent::Theme("light".into()));
+        assert_eq!(a.theme, Theme { color: true, light: true });
+        a.on_event(UiEvent::Theme("none".into()));
+        assert!(!a.theme.color);
+        a.on_event(UiEvent::Theme("dark".into()));
+        assert_eq!(a.theme, Theme { color: true, light: false });
+        // Without colour allowed, no theme brings it back.
+        let mut b = App::new(Theme { color: false, light: false }, vec![]);
+        b.on_event(UiEvent::Theme("light".into()));
+        assert!(!b.theme.color);
+
+        a.on_event(UiEvent::Copy("text".into()));
+        assert_eq!(a.clipboard.as_deref(), Some("text"));
+        a.on_event(UiEvent::StatusLine(Some("custom".into())));
+        assert_eq!(a.status_text.as_deref(), Some("custom"));
     }
 }

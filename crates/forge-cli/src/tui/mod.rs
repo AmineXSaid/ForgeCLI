@@ -128,6 +128,17 @@ impl<B: Backend> Screen<B> {
 
 static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The terminal turned on the keyboard protocol (Shift+Enter is its own key).
+pub fn keyboard_protocol() -> bool {
+    ENHANCED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Put `text` on the clipboard through the terminal (OSC 52).
+fn osc52(text: &str) -> String {
+    use base64::Engine as _;
+    format!("\x1b]52;c;{}\x07", base64::engine::general_purpose::STANDARD.encode(text))
+}
+
 /// Put the terminal back as it was: keyboard flags, paste, raw mode, cursor.
 fn restore() {
     let mut out = std::io::stdout();
@@ -246,7 +257,8 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let model = driver.handle().model();
     let persist = !o.no_session_persistence;
     let hist_path = history_path();
-    let theme = text::Theme { color: crate::term::get().color };
+    // The `theme` setting arrives from the session first thing.
+    let theme = text::Theme { color: crate::term::get().color, light: false };
     let mut app = App::new(theme, load_history(&hist_path, &cwd));
     app.pending.push(Line::from(vec![
         ratatui::text::Span::styled("✻ ", theme.accent()),
@@ -295,6 +307,11 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         if !app.pending.is_empty() {
             screen.commit(app.take_pending()).map_err(io_fail)?;
             app.dirty = true;
+        }
+        if let Some(text) = app.clipboard.take() {
+            let mut out = std::io::stdout();
+            let _ = out.write_all(osc52(&text).as_bytes());
+            let _ = out.flush();
         }
         if app.exit {
             break;
@@ -459,5 +476,10 @@ mod tests {
         let mut files = project_files(d.path());
         files.sort();
         assert_eq!(files, ["src/", "src/main.rs"]);
+    }
+
+    #[test]
+    fn osc52_carries_base64() {
+        assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
     }
 }

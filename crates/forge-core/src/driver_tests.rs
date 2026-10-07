@@ -1335,3 +1335,34 @@ async fn pickers_list_choices_that_are_command_text() {
     assert_eq!(r.choices.len(), 1);
     assert!(matches!(&r.choices[0].pick, Pick::Run(c) if c.starts_with("/resume ")));
 }
+
+#[tokio::test]
+async fn tui_only_commands_save_theme_and_status_line() {
+    let mut t = driver();
+    let user = t._dir.path().join("home/settings.json");
+    t.d.info.user_settings = user.clone();
+    // Elsewhere they say where they work, and /help leaves them out.
+    for c in ["/theme light", "/statusline", "/copy", "/keybindings", "/terminal-setup"] {
+        assert!(fails(&mut t.d, c).await.ends_with("works only in the terminal UI."), "{c}");
+    }
+    assert!(!t.d.catalog.help(Surface::Repl).contains("/theme"));
+    assert!(t.d.catalog.help(Surface::Tui).contains("/theme [dark|light|none]"));
+    assert!(!t.d.catalog.names(Surface::Stream).contains(&"copy".to_string()));
+
+    t.d.surface = Surface::Tui;
+    let d = &mut t.d;
+    assert!(local(d, "/theme").await.starts_with("Theme: dark"));
+    assert!(fails(d, "/theme neon").await.contains("Choose dark, light or none"));
+    assert!(local(d, "/theme light").await.starts_with("Theme set to light. Saved in user settings"));
+    assert_eq!(read_json(&user)["theme"], "light");
+    assert_eq!(d.info.settings.str("/theme"), Some("light"), "the loaded settings follow");
+    let p = crate::commands::picker::picker(d, "/theme").unwrap();
+    assert!(p.choices.iter().any(|c| c.current && c.label == "light"));
+
+    assert!(local(d, "/statusline").await.starts_with("No status line command"));
+    local(d, "/statusline echo hi").await;
+    assert_eq!(read_json(&user)["statusLine"], serde_json::json!({"type": "command", "command": "echo hi"}));
+    assert!(local(d, "/statusline").await.starts_with("Status line command: echo hi"));
+    local(d, "/statusline off").await;
+    assert!(read_json(&user).get("statusLine").is_none());
+}

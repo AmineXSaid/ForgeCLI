@@ -323,6 +323,11 @@ them all. The built-ins so far:
 | `/feedback [description]` (`/bug`, `/share`) | Saves a bug-report bundle in `<state>/feedback/` (report, doctor checks, this session's transcript and settings, with secrets masked). Nothing is uploaded |
 | `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, Forge reads the log and diagnoses it |
 | `/release-notes` | The changelog |
+| `/theme [dark\|light\|none]` | Terminal UI only: the colour theme, saved as `theme` in user settings; without an argument, a picker. `NO_COLOR` still wins |
+| `/copy [n]` | Terminal UI only: the latest answer (or the nth latest) to the clipboard through the terminal (OSC 52; inside tmux, `set -g set-clipboard on`) |
+| `/keybindings` | Terminal UI only: the keyboard shortcuts (also `?` on an empty prompt) |
+| `/statusline [command\|off]` | Terminal UI only: shows the first output line of `command` on the right of the status line. It runs after each turn (at most 3 s) with the session as JSON on stdin: `session_id`, `cwd`, `model.id`, `model.display_name`, `workspace.current_dir`, `cost.total_cost_usd`, `context.used_percentage`, `permission_mode`, `version`. Saved as `statusLine` in user settings; off while `disableAllHooks` is set |
+| `/terminal-setup` | Terminal UI only: whether Shift+Enter works here, and how to get it (or use Alt+Enter, Ctrl+J or `\` Enter) |
 | `/exit` (`/quit`) | Ends the session |
 | `/<custom> [args]` | A custom command from `commands/*.md` |
 | `/<skill> [args]` | Loads a skill; `/a /b text` chains up to six |

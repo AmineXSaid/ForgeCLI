@@ -16,7 +16,7 @@ terminals. `--no-tui` (or `FORGE_TUI=0`) keeps the line REPL
 | Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/forge-cli/src/tui/mod.rs` |
 | Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | done | `crates/forge-cli/src/main.rs`, `args.rs` |
 | Pickers, Ctrl+R search, `@file` completion | done, tested | `crates/forge-core/src/commands/picker.rs`, `tui/app.rs`, `tui/session.rs` |
-| UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | to do (phase 3) | |
+| UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | done, tested | `forge-core` `commands/settings.rs` (`/theme`, `/statusline`), `tui/session.rs` (the others) |
 
 Dependencies are in `crates/forge-cli/Cargo.toml`:
 - `ratatui` 0.29 (MIT);
@@ -375,7 +375,14 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
      the project (`.gitignore` respected, at most 20,000 paths, walked again
      after `/cd`), file-name matches first. Tab or Enter completes. The path
      reaches the model as text; it reads the file with its tools.
-3. **UI-only commands.**
+3. **UI-only commands** (done). `/theme` and `/statusline` are forge-core
+   commands (they save settings through the driver); the session task sends
+   `UiEvent::Theme` when the `theme` setting changes and runs the
+   `statusLine` command after each input (`UiEvent::StatusLine`). `/copy`,
+   `/keybindings` and `/terminal-setup` need the terminal, so the session task
+   answers them before the driver sees them; the driver answers "works only
+   in the terminal UI" on other surfaces. `?` on an empty prompt shows the
+   key table too.
    - `/theme`: dark, light, no colour; saved as `theme` in user settings.
    - `/copy [N]`: the Nth latest answer to the clipboard via OSC 52.
    - `/keybindings`: shows the key table.

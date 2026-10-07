@@ -6,14 +6,21 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-/// Colours and emphasis. Without colour (`NO_COLOR`, `--color never`) only
-/// bold, dim and reverse are used.
+/// Colours and emphasis. Without colour (`NO_COLOR`, `--color never`, the
+/// `none` theme) only bold, dim and reverse are used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub color: bool,
+    /// Colours for a light background.
+    pub light: bool,
 }
 
 impl Theme {
+    /// The theme named in settings (`dark`, `light`, `none`), when colour is allowed at all.
+    pub fn named(name: &str, color_ok: bool) -> Theme {
+        Theme { color: color_ok && name != "none", light: name == "light" }
+    }
+
     fn fg(&self, c: Color) -> Style {
         if self.color {
             Style::default().fg(c)
@@ -25,7 +32,7 @@ impl Theme {
     /// Forge's own colour: the prompt marker, the answer marker, selections.
     pub fn accent(&self) -> Style {
         if self.color {
-            Style::default().fg(Color::Rgb(0x9b, 0x7b, 0xf0))
+            Style::default().fg(if self.light { Color::Rgb(0x5b, 0x3c, 0xc4) } else { Color::Rgb(0x9b, 0x7b, 0xf0) })
         } else {
             Style::default().add_modifier(Modifier::BOLD)
         }
@@ -48,7 +55,7 @@ impl Theme {
     }
 
     pub fn warning(&self) -> Style {
-        self.fg(Color::Yellow)
+        self.fg(if self.light { Color::Rgb(0x9a, 0x6a, 0x00) } else { Color::Yellow })
     }
 
     pub fn success(&self) -> Style {
@@ -58,7 +65,7 @@ impl Theme {
     /// Inline `code`.
     pub fn code(&self) -> Style {
         if self.color {
-            self.fg(Color::Cyan)
+            self.fg(if self.light { Color::Blue } else { Color::Cyan })
         } else {
             Style::default()
         }
@@ -75,7 +82,9 @@ impl Theme {
 
     /// The person's own prompts in the transcript.
     pub fn user(&self) -> Style {
-        if self.color {
+        if self.color && self.light {
+            Style::default().bg(Color::Rgb(0xe6, 0xe6, 0xee)).fg(Color::Rgb(0x10, 0x10, 0x18))
+        } else if self.color {
             Style::default().bg(Color::Rgb(0x3a, 0x3a, 0x44)).fg(Color::Rgb(0xe8, 0xe8, 0xf0))
         } else {
             self.dim()
@@ -207,7 +216,7 @@ fn spans_of(cells: &[(char, Style)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// A line's text without styles (tests, copying).
+/// A line's text without styles (tests).
 #[cfg(test)]
 pub fn plain(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
@@ -217,7 +226,7 @@ pub fn plain(line: &Line) -> String {
 mod tests {
     use super::*;
 
-    const T: Theme = Theme { color: true };
+    const T: Theme = Theme { color: true, light: false };
 
     #[test]
     fn markdown_lines_keep_track_of_fences() {

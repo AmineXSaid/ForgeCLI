@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use forge_types::MessageContent;
 use serde_json::Value;
 
-use super::{parse, Builtin, Invocation};
+use super::{parse, Builtin, Invocation, BUILTINS};
 use crate::driver::Driver;
 
 /// What a command asks the driver to do next.
@@ -110,6 +110,13 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Builtin::Resume => super::switching::resume(d, args).await,
         Builtin::Branch => super::switching::branch(d, args).await,
         Builtin::Cd => super::switching::cd(d, args).await,
+        Builtin::Theme => super::settings::theme(d, args),
+        Builtin::Statusline => super::settings::statusline(d, args),
+        // The terminal UI answers these itself: they need the terminal.
+        Builtin::Copy | Builtin::Keybindings | Builtin::TerminalSetup => {
+            let name = BUILTINS.iter().find(|c| c.id == id).map(|c| c.name).unwrap_or("");
+            err(format!("/{name} works only in the terminal UI."))
+        }
         Builtin::ReloadSkills | Builtin::ReloadPlugins => {
             if !d.can_switch() {
                 return err("Reloading isn't available here.");

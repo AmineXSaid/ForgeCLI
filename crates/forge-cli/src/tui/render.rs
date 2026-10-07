@@ -84,6 +84,9 @@ fn status_left(app: &App, now: Instant) -> (String, Style) {
 }
 
 fn status_right(app: &App) -> String {
+    if let Some(t) = &app.status_text {
+        return t.clone();
+    }
     let s = &app.status;
     let mut parts = vec![];
     if !s.model.is_empty() {
@@ -333,7 +336,7 @@ mod tests {
     use serde_json::json;
 
     fn app(color: bool) -> App {
-        let mut a = App::new(Theme { color }, vec![]);
+        let mut a = App::new(Theme { color, light: false }, vec![]);
         a.on_event(UiEvent::Status(StatusView {
             model: "opus".into(),
             mode: "default".into(),
@@ -541,7 +544,7 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         // Ctrl+R shows the search and the match in the input box.
-        let mut a = App::new(Theme { color: false }, vec!["cargo test".into(), "git status".into()]);
+        let mut a = App::new(Theme { color: false, light: false }, vec!["cargo test".into(), "git status".into()]);
         a.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         typed(&mut a, "car");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
@@ -557,5 +560,13 @@ mod tests {
         typed(&mut a, "look at @ma");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[3], "  + src/main.rs");
+    }
+
+    #[test]
+    fn a_status_line_command_replaces_the_right_side() {
+        let mut a = app(false);
+        a.on_event(UiEvent::StatusLine(Some("main · 3 files".into())));
+        let (rows, _) = draw(&live_view(&a, 40, 10), 40);
+        assert_eq!(rows.last().unwrap(), "  ? for shortcuts         main · 3 files");
     }
 }

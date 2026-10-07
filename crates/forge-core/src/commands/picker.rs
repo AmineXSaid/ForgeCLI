@@ -1,5 +1,6 @@
 //! Choices for a picker: commands that take their choice as an argument
-//! (`/model`, `/resume`, `/rewind`, `/output-style`, `/permissions`) list
+//! (`/model`, `/resume`, `/rewind`, `/output-style`, `/permissions`,
+//! `/theme`) list
 //! what can be chosen, and each choice is the command text that makes it.
 //! A front end that draws pickers (the TUI) shows these instead of running
 //! the bare command; choosing a row runs exactly what a person could type.
@@ -60,6 +61,7 @@ pub fn picker(d: &Driver, text: &str) -> Option<Picker> {
         (Builtin::Rewind, n) if n.parse::<usize>().is_ok() => rewind_action(d, n),
         (Builtin::OutputStyle, "") => Some(styles(d)),
         (Builtin::Permissions, "") => Some(permissions(d)),
+        (Builtin::Theme, "") if d.surface == super::Surface::Tui => Some(themes(d)),
         _ => None,
     }
 }
@@ -161,6 +163,18 @@ fn styles(d: &Driver) -> Picker {
         })
         .collect();
     Picker { title: "Select an output style".into(), choices }
+}
+
+fn themes(d: &Driver) -> Picker {
+    let current = d.info.settings.str("/theme").unwrap_or("dark");
+    let choices = super::settings::THEMES
+        .iter()
+        .map(|(name, what)| Choice {
+            current: *name == current,
+            ..choice(*name, *what, Pick::Run(format!("/theme {name}")))
+        })
+        .collect();
+    Picker { title: "Choose a theme".into(), choices }
 }
 
 fn permissions(d: &Driver) -> Picker {

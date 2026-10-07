@@ -28,7 +28,7 @@ pub(crate) use run::duration;
 pub use run::{execute, Exec};
 pub(crate) use session::side_request_with;
 pub use session::{clean_title, render_conversation};
-pub use settings::Scope;
+pub use settings::{Scope, THEMES};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -138,6 +138,15 @@ builtins! {
     (Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
     (Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
     (Context, "context", [], "[all]", "Show what fills the context window", Surfaces::ALL, true),
+    (
+        Copy,
+        "copy",
+        [],
+        "[n]",
+        "Copy the latest answer (or the nth latest) to the clipboard",
+        Surfaces::TUI,
+        false
+    ),
     (Debug, "debug", [], "[description]", "Turn on debug logging, and have Forge read the log to find a problem"),
     (Diff, "diff", [], "", "Show uncommitted changes, and the files each prompt changed"),
     (Doctor, "doctor", ["checkup"], "", "Check the installation and this session's setup"),
@@ -162,6 +171,7 @@ builtins! {
         "[codex|gemini|cursor] [--yes]",
         "Bring MCP servers and instructions over from other coding agents"
     ),
+    (Keybindings, "keybindings", [], "", "Show the keyboard shortcuts", Surfaces::TUI, true),
     (
         Loop,
         "loop",
@@ -212,6 +222,15 @@ builtins! {
     ),
     (Skills, "skills", [], "", "List available skills"),
     (Status, "status", [], "", "Show version, model, session and setup status", Surfaces::ALL, true),
+    (
+        Statusline,
+        "statusline",
+        [],
+        "[command|off]",
+        "Show a command's output in the status line",
+        Surfaces::TUI,
+        false
+    ),
     (Subtask, "subtask", [], "<task>", "Hand a task to a background agent that starts from this conversation"),
     (
         Tasks,
@@ -222,6 +241,16 @@ builtins! {
         Surfaces::ALL,
         true
     ),
+    (
+        TerminalSetup,
+        "terminal-setup",
+        [],
+        "",
+        "How to get Shift+Enter for new lines in your terminal",
+        Surfaces::TUI,
+        true
+    ),
+    (Theme, "theme", [], "[dark|light|none]", "Choose the colour theme", Surfaces::TUI, false),
     (
         Usage,
         "usage",

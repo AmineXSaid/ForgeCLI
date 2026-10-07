@@ -14,6 +14,8 @@
   searches it.
 - Pickers for `/model`, `/resume`, `/rewind`, `/output-style` and
   `/permissions` typed without an argument; `@` completes project paths.
+- UI-only commands: `/theme` (dark, light, none), `/copy [n]` (OSC 52),
+  `/keybindings` (also `?`), `/statusline <command>` and `/terminal-setup`.
 - `--no-tui` or `FORGE_TUI=0` keeps the line REPL.
 
 ### Slash commands

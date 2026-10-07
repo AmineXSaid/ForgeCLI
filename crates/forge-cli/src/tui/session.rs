@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use forge_core::commands::picker::picker;
-use forge_core::commands::Surface;
+use forge_core::commands::{parse, Builtin, Invocation, Surface};
 use forge_core::{Driver, Flow};
 use forge_engine::{EngineEvent, EventSink, PermissionAnswer, PermissionPrompt, PermissionPrompter, TurnResult};
 use forge_types::MessageContent;
@@ -91,6 +91,143 @@ pub fn reply_for(r: &TurnResult) -> Option<UiEvent> {
     None
 }
 
+/// The `n`th latest answer's text (1 is the latest).
+pub fn answer_text(d: &Driver, n: usize) -> Option<String> {
+    d.engine
+        .state
+        .messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == forge_types::Role::Assistant)
+        .map(|m| m.content.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("\n"))
+        .filter(|t| !t.trim().is_empty())
+        .nth(n.checked_sub(1)?)
+}
+
+const TERMINAL_SETUP: &str = "Shift+Enter starts a new line when the terminal reports it as its own key. Forge asks \
+for this through the keyboard protocol that kitty, WezTerm, foot, Ghostty, Alacritty and iTerm2 (with \
+\"Report keys using CSI u\" on) support.\n\nWhere it isn't available, these always start a new line: Alt+Enter \
+(Option+Enter on macOS, with \"Use Option as Meta key\" on), Ctrl+J, or \\ then Enter.\n\nInside tmux, add \
+`set -s extended-keys on` and `set -as terminal-features 'xterm*:extkeys'` to ~/.tmux.conf.";
+
+/// Commands the UI answers itself, since they need the terminal: `/copy`,
+/// `/keybindings`, `/terminal-setup`. `None` for everything else.
+fn ui_command(d: &Driver, text: &str) -> Option<Vec<UiEvent>> {
+    let Invocation::Builtin { spec, args } = parse(text, &d.catalog) else { return None };
+    let reply = |text: String, is_error: bool| UiEvent::Reply { text, is_error };
+    Some(match spec.id {
+        Builtin::Keybindings => vec![reply(super::app::keys_text(), false)],
+        Builtin::TerminalSetup => {
+            let now = if super::keyboard_protocol() {
+                "This terminal has the keyboard protocol on: Shift+Enter works."
+            } else {
+                "This terminal didn't turn the keyboard protocol on, so Shift+Enter may arrive as Enter."
+            };
+            vec![reply(format!("{now}\n\n{TERMINAL_SETUP}"), false)]
+        }
+        Builtin::Copy => {
+            let n = if args.is_empty() { Some(1) } else { args.parse::<usize>().ok().filter(|n| *n > 0) };
+            let Some(n) = n else {
+                return Some(vec![reply("Usage: /copy [n]  (1 is the latest answer)".into(), true)]);
+            };
+            match answer_text(d, n) {
+                Some(t) => {
+                    let which = if n == 1 { "the latest answer".to_string() } else { format!("answer {n} back") };
+                    let note = format!(
+                        "Copied {which} ({} characters) to the clipboard. Terminals without clipboard \
+                         access (OSC 52) ignore it.",
+                        t.chars().count()
+                    );
+                    vec![UiEvent::Copy(t), reply(note, false)]
+                }
+                None => vec![reply(format!("There is no answer {n} back to copy."), true)],
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// The session as JSON for the `statusLine` command's stdin.
+pub fn status_json(d: &Driver) -> serde_json::Value {
+    let s = status(d);
+    let info = forge_api::models::model_info_or_default(&s.model);
+    serde_json::json!({
+        "session_id": d.info.session_id,
+        "cwd": s.cwd,
+        "model": {"id": s.model, "display_name": info.display_name},
+        "workspace": {"current_dir": s.cwd},
+        "cost": {"total_cost_usd": s.cost},
+        "context": {"used_percentage": s.context_pct},
+        "permission_mode": s.mode,
+        "version": forge_core::VERSION,
+    })
+}
+
+/// The `statusLine.command` setting, unless hooks are turned off.
+fn status_command(d: &Driver) -> Option<String> {
+    if d.info.settings.get("/disableAllHooks").and_then(serde_json::Value::as_bool) == Some(true) {
+        return None;
+    }
+    d.info.settings.str("/statusLine/command").map(str::to_string).filter(|c| !c.trim().is_empty())
+}
+
+/// Run the status line command (at most 3 s) and send its first output line.
+fn refresh_status_line(
+    cmd: String,
+    input: serde_json::Value,
+    cwd: std::path::PathBuf,
+    ui: mpsc::UnboundedSender<UiEvent>,
+) {
+    tokio::spawn(async move {
+        let line = run_status_command(&cmd, &input, &cwd).await;
+        let _ = ui.send(UiEvent::StatusLine(line));
+    });
+}
+
+pub async fn run_status_command(cmd: &str, input: &serde_json::Value, cwd: &std::path::Path) -> Option<String> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.to_string().as_bytes()).await;
+    }
+    let out = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output()).await.ok()?.ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let first = text.lines().next()?.trim_end();
+    // Control characters would break the screen; colours aren't kept.
+    let clean: String = strip_escapes(first).chars().filter(|c| !c.is_control()).collect();
+    Some(clean).filter(|s| !s.trim().is_empty())
+}
+
+/// `s` without ANSI escape sequences.
+fn strip_escapes(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Run the session until the UI says exit, `/exit` runs, or the UI is gone.
 pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>, ui: mpsc::UnboundedSender<UiEvent>) {
     let send = ui.clone();
@@ -100,6 +237,11 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         }
     };
     let _ = ui.send(UiEvent::Commands(commands(&driver)));
+    let mut theme = driver.info.settings.str("/theme").map(str::to_string);
+    if let Some(t) = &theme {
+        let _ = ui.send(UiEvent::Theme(t.clone()));
+    }
+    let mut had_status_command = false;
     let mut session_id = driver.info.session_id.clone();
     // Changes each time a subtask finishes (C20).
     let mut finished = driver.subtasks.watch();
@@ -112,6 +254,22 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
             // /clear, /resume, /branch, /cd and the reloads can change the commands.
             session_id = driver.info.session_id.clone();
             let _ = ui.send(UiEvent::Commands(commands(&driver)));
+        }
+        let now = driver.info.settings.str("/theme").map(str::to_string);
+        if now != theme {
+            theme = now;
+            let _ = ui.send(UiEvent::Theme(theme.clone().unwrap_or_else(|| "dark".into())));
+        }
+        match status_command(&driver) {
+            Some(cmd) => {
+                had_status_command = true;
+                refresh_status_line(cmd, status_json(&driver), driver.info.cwd.clone(), ui.clone());
+            }
+            None if had_status_command => {
+                had_status_command = false;
+                let _ = ui.send(UiEvent::StatusLine(None));
+            }
+            None => {}
         }
         let _ = ui.send(UiEvent::Status(status(&driver)));
         let _ = ui.send(UiEvent::Idle);
@@ -130,6 +288,10 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
                     // A command typed without its choice opens a picker instead.
                     if let Some(p) = picker(&driver, &text) {
                         let _ = ui.send(UiEvent::Picker(p));
+                    } else if let Some(events) = ui_command(&driver, &text) {
+                        for e in events {
+                            let _ = ui.send(e);
+                        }
                     } else if driver.input(MessageContent::Text(text), &mut report).await == Flow::Exit {
                         let _ = ui.send(UiEvent::Exit);
                         break;
@@ -218,6 +380,8 @@ mod tests {
         let prompter: Arc<dyn PermissionPrompter> = Arc::new(TuiPrompter(ui_tx.clone()));
         let s = forge_core::build_session(o.clone(), sink.clone(), prompter.clone()).unwrap();
         let mut d = Driver::new(s, Surface::Tui, None);
+        // Never write the real user settings from a test.
+        d.info.user_settings = dir.path().join("home/settings.json");
         d.set_rebuild(o, sink, prompter);
         let (to, rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(run(d, rx, ui_tx));
@@ -326,6 +490,40 @@ mod tests {
         t.to.send(ToSession::Picker("/rewind 1".into())).unwrap();
         let evs = until_idle(&mut t.ui).await;
         assert!(evs.iter().any(|e| matches!(e, UiEvent::Picker(p) if p.choices.len() >= 4)));
+
+        // The UI answers /copy and /keybindings itself.
+        t.to.send(ToSession::Input("/copy".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Copy(c) if c == "second answer")));
+        t.to.send(ToSession::Input("/copy 2".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Copy(c) if c == "done")));
+        t.to.send(ToSession::Input("/copy 99".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Reply { is_error: true, .. })));
+        t.to.send(ToSession::Input("/keybindings".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Reply { text, .. } if text.contains("Shift+Tab"))));
+
+        // /theme is saved and applied; a status line command shows its first line.
+        t.to.send(ToSession::Input("/theme light".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Theme(n) if n == "light")));
+        t.to.send(ToSession::Input(
+            "/statusline read x; echo \"$x\" | grep -o '\"total_cost_usd\":[0-9.]*'; echo more".into(),
+        ))
+        .unwrap();
+        until_idle(&mut t.ui).await;
+        let line = loop {
+            match tokio::time::timeout(Duration::from_secs(10), t.ui.recv()).await.unwrap().unwrap() {
+                UiEvent::StatusLine(l) => break l,
+                _ => continue,
+            }
+        };
+        assert!(line.unwrap_or_default().starts_with("\"total_cost_usd\":"));
+        t.to.send(ToSession::Input("/statusline off".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::StatusLine(None))));
 
         // /exit ends the session with Exit.
         t.to.send(ToSession::Input("/exit".into())).unwrap();
