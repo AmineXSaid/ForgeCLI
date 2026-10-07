@@ -83,6 +83,9 @@
   entries that share a key.
 - An advisor model priced through `modelPricing` counted as free against
   `--max-budget-usd`; its requests are now priced like the session's own.
+- A subtask's edits made while a later prompt ran were checkpointed under
+  that prompt: `/rewind <that prompt> code` undid them, and the verification
+  loop counted them as the prompt's own writes. They now keep their own turn.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

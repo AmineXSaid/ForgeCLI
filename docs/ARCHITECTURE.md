@@ -721,7 +721,10 @@ interval emits `system/scheduled`. `/tasks` lists scheduled tasks, and
   with a copy of the main conversation's rules and mode.
 - It shares the session's provider, hooks (SubagentStop at the end),
   sandbox, working directories and file checkpoints. Its edits get their own
-  checkpoint turn, so `/rewind` to an earlier prompt undoes them. Its
+  checkpoint turn, placed after the prompts made before it started, even
+  while a later prompt runs (`FileHistory::add_turn` / `snapshot_in`): a
+  `/rewind` to an earlier prompt undoes them, one to a later prompt doesn't,
+  and they never count as the running prompt's writes. Its
   transcript goes under the session's `agents/` directory, with a `forkOf`
   record.
 - With `--max-budget-usd` it may spend what was left when it started;

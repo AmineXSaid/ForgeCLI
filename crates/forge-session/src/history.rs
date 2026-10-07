@@ -25,6 +25,8 @@ struct State {
     current: Option<String>,
     versions: HashMap<PathBuf, u32>,
     this_turn: HashSet<PathBuf>,
+    /// Files already snapshotted in turns that run beside the current one (subtasks).
+    side_seen: HashMap<String, HashSet<PathBuf>>,
     /// Every write this turn, in order (repeats included), for the verification loop.
     writes: Vec<PathBuf>,
     records: Vec<Record>,
@@ -117,6 +119,16 @@ impl FileHistory {
         st.writes.clear();
     }
 
+    /// Add a turn that runs beside the user's turns (a background subtask), in
+    /// order, without making it the current one. Its writes go through
+    /// [`FileHistory::snapshot_in`].
+    pub fn add_turn(&self, turn: &str) {
+        let mut st = self.state.lock().unwrap();
+        if !st.turns.iter().any(|t| t == turn) {
+            st.turns.push(turn.to_string());
+        }
+    }
+
     /// Number of file writes so far this turn.
     pub fn writes_len(&self) -> usize {
         self.state.lock().unwrap().writes.len()
@@ -146,6 +158,20 @@ impl FileHistory {
         if !st.this_turn.insert(path.to_path_buf()) {
             return;
         }
+        self.record(&mut st, turn, path);
+    }
+
+    /// Snapshot `path` for `turn` (one from [`FileHistory::add_turn`]) if that
+    /// turn has not yet. The current user turn's state is left alone.
+    pub fn snapshot_in(&self, turn: &str, path: &Path) {
+        let mut st = self.state.lock().unwrap();
+        if !st.side_seen.entry(turn.to_string()).or_default().insert(path.to_path_buf()) {
+            return;
+        }
+        self.record(&mut st, turn.to_string(), path);
+    }
+
+    fn record(&self, st: &mut State, turn: String, path: &Path) {
         let _ = std::fs::create_dir_all(&self.dir);
         let version = if path.exists() {
             let v = st.versions.get(path).copied().unwrap_or(0) + 1;
@@ -355,5 +381,29 @@ mod tests {
         let f = FileHistory::new(forked);
         f.rewind("t1", false).unwrap();
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "v0");
+    }
+
+    #[test]
+    fn side_turns_keep_their_own_snapshots() {
+        let d = tempfile::tempdir().unwrap();
+        let h = FileHistory::new(d.path().join("h"));
+        let f = d.path().join("f.txt");
+        std::fs::write(&f, "v0").unwrap();
+        h.begin_turn("u1");
+        h.add_turn("side");
+        h.begin_turn("u2");
+        // The side turn writes during u2: u2's own writes and its first snapshot are untouched.
+        h.snapshot_in("side", &f);
+        std::fs::write(&f, "side").unwrap();
+        assert_eq!(h.writes_len(), 0);
+        h.snapshot(&f);
+        std::fs::write(&f, "u2").unwrap();
+        assert_eq!(h.writes_len(), 1);
+        // Rewinding u2 goes back to before u2 wrote (the side turn's version).
+        h.rewind("u2", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "side");
+        h.rewind("side", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "v0");
+        assert_eq!(h.turns().iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["side", "u2"]);
     }
 }

@@ -58,6 +58,22 @@ pub struct ChildSpec<'a> {
     pub sink: Arc<dyn EventSink>,
     /// A fork starts from this conversation; `None` starts it empty.
     pub seed: Option<&'a TurnState>,
+    /// Checkpoint its edits under this turn of the session's file history
+    /// (added with `FileHistory::add_turn`), not the user's current turn: a
+    /// background subtask's edits aren't part of whatever prompt runs meanwhile.
+    pub checkpoint_turn: Option<String>,
+}
+
+/// Snapshots files under one fixed turn of the session's file history.
+struct TurnCheckpointer {
+    history: Arc<FileHistory>,
+    turn: String,
+}
+
+impl forge_tools::Checkpointer for TurnCheckpointer {
+    fn before_write(&self, path: &std::path::Path) {
+        self.history.snapshot_in(&self.turn, path);
+    }
 }
 
 /// A child engine and its id (its transcript's session id).
@@ -109,6 +125,9 @@ impl AgentRuntime {
         tool_ctx.env = self.env.clone();
         tool_ctx.sandbox = self.sandbox.clone();
         tool_ctx.session_id = self.session_id.clone();
+        if let Some(turn) = spec.checkpoint_turn {
+            tool_ctx.checkpointer = Some(Arc::new(TurnCheckpointer { history: parent.history.clone(), turn }));
+        }
         let mut cfg = spec.cfg;
         cfg.is_subagent = true;
         let permissions = parent.handle.permissions.read().unwrap().clone();
@@ -326,6 +345,7 @@ impl Tool for TaskTool {
             prompter: parent.prompter.clone(),
             sink: Arc::new(ForwardSink { parent: self.rt.sink.clone(), parent_tool_use_id: ctx.tool_use_id.clone() }),
             seed: None,
+            checkpoint_turn: None,
         };
         let Child { id: child_id, engine: mut child } = match self.rt.child(spec) {
             Ok(c) => c,

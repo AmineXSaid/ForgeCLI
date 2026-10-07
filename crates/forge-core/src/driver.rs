@@ -559,13 +559,14 @@ impl Driver {
             prompter: Arc::new(SubtaskPrompter),
             sink: Arc::new(SubtaskSink::new(&id, self.agent_rt.sink.clone(), calls.clone())),
             seed: Some(&self.engine.state),
+            checkpoint_turn: Some(format!("{id}-{}", self.info.session_id)),
         })?;
         child.engine.transcript().append_meta(serde_json::json!({
             "forkOf": {"sessionId": self.info.session_id, "leafUuid": self.engine.transcript().last_uuid()},
         }));
-        // Its edits get a checkpoint turn of their own (sub-agents never begin one), so a rewind
-        // to an earlier prompt undoes them too.
-        self.engine.history().begin_turn(&format!("{id}-{}", child.id));
+        // Its edits get a checkpoint turn of their own, in order after the prompts so far: a
+        // rewind to an earlier prompt undoes them, one to a later prompt doesn't.
+        self.engine.history().add_turn(&format!("{id}-{}", self.info.session_id));
         self.subtasks.spawn(id.clone(), task, child.engine, subtask::prompt(task), calls);
         self.engine.remind(subtask::started_note(&id, task));
         self.engine.announce("subtask", serde_json::json!({"id": id, "status": "started", "task": task}));

@@ -1403,3 +1403,41 @@ async fn advisor_cost_uses_custom_pricing() {
     assert!(spent >= 10.0, "advisor spend counted: {spent}");
     assert!(t.d.engine.state.model_usage.contains_key("house-advisor"));
 }
+
+#[tokio::test]
+async fn subtask_edits_are_checkpointed_under_its_own_turn() {
+    use std::time::Duration;
+    let mut t = driver_with(|dir, o| {
+        accept_edits(dir, o);
+        let proj = dir.join("proj").canonicalize().unwrap();
+        let (a, b) = (proj.join("a.txt"), proj.join("b.txt"));
+        o.provider = Some(Arc::new(MockProvider::with_responder(move |req| {
+            let last = serde_json::to_string(req.messages.last().unwrap()).unwrap();
+            if last.contains("tool_result") {
+                // The main conversation's answer after its edit takes a while: the subtask edits meanwhile.
+                return MockTurn::text("done").with_delay(Duration::from_millis(150));
+            }
+            if last.contains("Task: write b") {
+                return write_turn(&b, "from the subtask").with_delay(Duration::from_millis(60));
+            }
+            if last.contains("create a") {
+                return write_turn(&a, "one");
+            }
+            write_turn(&a, "two")
+        })));
+    });
+    let (a, b) = (t.proj.join("a.txt"), t.proj.join("b.txt"));
+    run(&mut t.d, "create a").await;
+    local(&mut t.d, "/subtask write b").await;
+    run(&mut t.d, "change a").await;
+    subtasks_settle(&t.d).await;
+    t.d.deliver_subtasks();
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "from the subtask", "it wrote during prompt 2");
+    // Prompt 2's own changes go back; the subtask's edit isn't part of prompt 2.
+    local(&mut t.d, "/rewind 2 code").await;
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "one");
+    assert!(b.exists(), "the subtask's file stays");
+    // Before prompt 1 (and the subtask): everything goes.
+    local(&mut t.d, "/rewind 1 code").await;
+    assert!(!a.exists() && !b.exists());
+}
