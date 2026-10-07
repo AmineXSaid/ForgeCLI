@@ -9,7 +9,7 @@
 //! starting turns until it is met (contract C18). Every turn's result goes
 //! to the front end as it finishes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,7 @@ use forge_config::LoadedSettings;
 use forge_engine::{Engine, EngineHandle, EventSink, NoticeLevel, PermissionPrompter, TurnResult};
 use forge_session::{Entry, FileHistory, LoadedSession};
 use forge_types::sdk::{InitInfo, ResultSubtype};
-use forge_types::MessageContent;
+use forge_types::{ContentBlock, MessageContent};
 
 use crate::commands::{self, Catalog, Surface};
 use crate::goal::{self, Goal, Status, Verdict};
@@ -435,7 +435,23 @@ impl Driver {
             self.shell(&cmd).await
         } else {
             match commands::command_text(&content) {
-                None => (self.submit(content).await, true),
+                None => {
+                    let (content, read) = self.attach_mentions(content);
+                    // The model sees these files: it may Edit them without a Read. Undone for
+                    // those not read before if a hook erases the prompt.
+                    let files = self.engine.tool_ctx().files.clone();
+                    let fresh: Vec<PathBuf> = read.into_iter().filter(|p| files.check_writable(p).is_err()).collect();
+                    for p in &fresh {
+                        files.record_read(p);
+                    }
+                    let result = self.submit(content).await;
+                    if result.prompt_blocked.is_some() {
+                        for p in &fresh {
+                            files.forget(p);
+                        }
+                    }
+                    (result, true)
+                }
                 Some(text) => match commands::execute(self, &text).await {
                     commands::Exec::Submit(prompt) => (self.submit(prompt).await, true),
                     commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
@@ -454,6 +470,33 @@ impl Driver {
         }
         self.after_turn(result, engine_turn, report).await;
         Flow::Continue
+    }
+
+    /// A prompt's `@path` mentions, attached (docs/CLI.md, "`@` mentions"): the text stays as
+    /// typed, and the contents follow in a system reminder of their own. Only a message that is
+    /// a single piece of text is scanned. Also returns the files attached whole or in part.
+    fn attach_mentions(&self, content: MessageContent) -> (MessageContent, Vec<PathBuf>) {
+        use forge_agents::attach;
+        use forge_permissions::{Decision, Reason, Request, Subject};
+        let Some(text) = commands::command_text_any(&content) else { return (content, vec![]) };
+        // An attachment is a read: the Read tool's decision on the path, without prompting.
+        let perm = self.engine.handle().permissions.read().unwrap().clone();
+        let allowed = |path: &Path| -> Result<(), String> {
+            let req = Request::new("Read", Subject::Path { path: path.to_path_buf(), write: false }, true);
+            match perm.decide(&req) {
+                Decision::Allow { .. } => Ok(()),
+                Decision::Ask { reason: Reason::OutsideWorkingDirs(_), .. }
+                | Decision::Deny { reason: Reason::OutsideWorkingDirs(_) } => {
+                    Err("outside the working directories".into())
+                }
+                Decision::Deny { .. } => Err("blocked by a permission rule".into()),
+                Decision::Ask { .. } => Err("reading it needs permission".into()),
+            }
+        };
+        let atts = attach::at_mentions(&text, &self.info.cwd, &allowed);
+        let Some(note) = attach::reminder(&atts) else { return (content, vec![]) };
+        let read = atts.into_iter().filter(|a| a.kind == attach::Kind::File).map(|a| a.path).collect();
+        (MessageContent::Blocks(vec![ContentBlock::text(text), ContentBlock::text(note)]), read)
     }
 
     /// After a turn: check an active goal, then settle a self-paced loop iteration.

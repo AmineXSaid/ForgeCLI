@@ -801,3 +801,12 @@ text says.
 - **PDFs:** sent as `document` blocks, up to 32 MB. A PDF over 10 pages needs a
   `pages` range of at most 20 pages, given as a page count, not the raw file.
 - **Notebooks (`.ipynb`):** rendered cell by cell with their outputs.
+- **`@` mentions** (`forge_agents::attach`, attached by `Driver::input` to
+  plain prompts and by custom commands): 50,000 characters per file
+  (`truncate_middle`), at most 10 files and 200,000 characters per message,
+  directory listings of at most 200 entries; files over 10 MB, images, PDFs
+  and binaries (a NUL in the first 8 KB, or not UTF-8) get a one-line note to
+  use Read instead. The permission check is Read's decision on the path,
+  never a prompt: `ask` and `deny` both leave the file out. Attached files
+  are marked read (`FileState::record_read`) before the turn, and forgotten
+  again if a UserPromptSubmit hook blocks the prompt.

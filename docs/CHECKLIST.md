@@ -91,3 +91,13 @@ Run these in a real terminal emulator (not through a pipe).
 25. Leave with `/exit`, with Ctrl-D and with Ctrl-C twice. Each time the
     shell works normally afterwards: typed text echoes, and `stty -a` shows
     `icanon echo`.
+
+## `@` mentions
+
+26. In a fresh session, `explain @calc.py`.
+    - It answers from the file (it names the subtraction) without a Read call
+      (no `Read` line in the output; `/export` shows none).
+    - In the TUI a dim `(attached: calc.py)` line follows the prompt;
+      `/rewind` lists the prompt as typed.
+    - `forge -p --permission-mode acceptEdits "fix @calc.py"` edits the file
+      without reading it first.

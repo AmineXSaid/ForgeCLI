@@ -15,6 +15,7 @@ forge-tools.workspace = true
 forge-session.workspace = true
 forge-engine.workspace = true
 async-trait.workspace = true
+ignore.workspace = true
 regex.workspace = true
 shlex.workspace = true
 serde.workspace = true

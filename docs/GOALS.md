@@ -134,12 +134,13 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
    - **Mostly done:** slash commands, with one registry, goals (C18) and
      scheduled prompts (C19), and background subtasks (C20).
    - **Mostly done:** the terminal UI (docs/TUI.md): an inline viewport over
-     the terminal's scrollback, dialogs, pickers, Ctrl+R, `@` completion,
+     the terminal's scrollback, dialogs, pickers, Ctrl+R, `@` completion
+     and `@file` attachments in every mode,
      `/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`.
      Checked against mocks and in a pseudo-terminal; the real-terminal checks
      are in docs/CHECKLIST.md.
    - **Still to build:** driver commands that run while a turn is in progress
-     (immediate commands), `@file` contents attached to the prompt, key
+     (immediate commands), key
      rebinding, `/color`, `/focus`, `/tui`, `/scroll-speed`, and the
      editor-style dialogs (`/hooks`, `/agents` wizard, `/diff` viewer,
      `/context` grid).

@@ -7,6 +7,7 @@
 //! permission rules, prompt lock, file checkpoints and budget, and cannot
 //! start sub-agents of their own.
 
+pub mod attach;
 pub mod commands;
 mod definitions;
 pub mod frontmatter;

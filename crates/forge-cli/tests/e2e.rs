@@ -85,6 +85,20 @@ async fn print_json_and_piped_stdin() {
 }
 
 #[tokio::test]
+async fn print_attaches_at_mentions() {
+    let e = env();
+    std::fs::write(e.cwd.join("notes.md"), "Ship the parser on Friday.").unwrap();
+    let api = MockApi::start(vec![MockTurn::text("Friday.")]).await;
+    let (code, out, err) = run(&e, &api, &["-p", "summarize @notes.md"], None).await;
+    assert_eq!((code, out.trim()), (0, "Friday."), "stderr: {err}");
+    let content = api.requests()[0]["messages"][0]["content"].as_array().unwrap().clone();
+    let texts: Vec<&str> = content.iter().filter_map(|b| b["text"].as_str()).collect();
+    assert!(texts.contains(&"summarize @notes.md"), "{texts:?}");
+    let note = texts.last().unwrap();
+    assert!(note.starts_with("<system-reminder>") && note.contains("Ship the parser on Friday."), "{note}");
+}
+
+#[tokio::test]
 async fn print_errors() {
     let e = env();
     let api = MockApi::start(vec![]).await;

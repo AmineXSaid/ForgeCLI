@@ -1157,7 +1157,12 @@ impl Engine {
         let cancel = self.new_turn_token();
         let mut turn = TurnAcc::default();
         let mut blocks = prompt.into_blocks();
-        let prompt_text: String = blocks.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("\n");
+        // Hooks see the prompt as typed: reminders that ride along with it (`@path` attachments)
+        // are left out, unless they are all there is.
+        let texts: Vec<&str> = blocks.iter().filter_map(|b| b.as_text()).collect();
+        let typed: Vec<&str> =
+            texts.iter().copied().filter(|t| !t.trim_start().starts_with("<system-reminder>")).collect();
+        let prompt_text = if typed.is_empty() { texts.join("\n") } else { typed.join("\n") };
 
         // Sub-agents get their context but no session hooks.
         if !self.session_started && self.cfg.is_subagent {

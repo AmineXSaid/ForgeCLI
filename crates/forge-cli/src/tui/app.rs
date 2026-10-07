@@ -3,6 +3,7 @@
 //! session events change it; the screen is drawn from it.
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -501,6 +502,19 @@ impl App {
                     }
                 }
             }
+            EngineEvent::PromptAccepted { message, .. } => {
+                let names: Vec<String> = message
+                    .content
+                    .iter()
+                    .filter_map(ContentBlock::as_text)
+                    .flat_map(forge_agents::attach::attached_paths)
+                    .map(|p| Path::new(&p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p))
+                    .collect();
+                if !names.is_empty() {
+                    let line = format!("  (attached: {})", names.join(", "));
+                    self.pending.push(Line::from(Span::styled(line, self.theme.dim())));
+                }
+            }
             EngineEvent::Notice { level, text } => self.notice(level, &text),
             EngineEvent::System { subtype, data } => match subtype.as_str() {
                 "compact_boundary" => self.notice(NoticeLevel::Info, "Conversation compacted."),
@@ -871,7 +885,9 @@ impl App {
 
     fn complete_file(&mut self, path: &str) {
         let (_, word) = self.editor.word_before_cursor();
-        self.editor.replace_back(word.chars().count(), &format!("@{path} "));
+        // A path with spaces is quoted, the way `@` mentions read it.
+        let mention = if path.contains(char::is_whitespace) { format!("@\"{path}\" ") } else { format!("@{path} ") };
+        self.editor.replace_back(word.chars().count(), &mention);
     }
 
     // ---- history search (Ctrl+R) ----
@@ -1462,6 +1478,7 @@ mod tests {
             "src/main.rs".into(),
             "docs/main-notes.md".into(),
             "Cargo.toml".into(),
+            "my notes.txt".into(),
         ]));
         typed(&mut a, "explain @mai");
         assert_eq!(a.file_menu(), ["src/main.rs", "docs/main-notes.md"], "name matches, shorter first");
@@ -1479,6 +1496,29 @@ mod tests {
             a.on_key(key(KeyCode::Enter)),
             vec![Action::Send("explain @docs/main-notes.md and @Cargo.toml @src".into())]
         );
+        a.busy = false;
+        typed(&mut a, "@my");
+        a.on_key(key(KeyCode::Tab));
+        assert_eq!(a.editor.text(), "@\"my notes.txt\" ", "spaces are quoted");
+    }
+
+    #[test]
+    fn attached_files_show_under_the_prompt() {
+        let mut a = app();
+        let reminder = forge_agents::attach::reminder(&[forge_agents::attach::Attachment {
+            path: "/w/src/a.rs".into(),
+            kind: forge_agents::attach::Kind::File,
+            text: "fn a() {}".into(),
+        }])
+        .unwrap();
+        a.on_event(UiEvent::Engine(EngineEvent::PromptAccepted {
+            message: forge_types::Message::user(vec![
+                ContentBlock::text("explain @src/a.rs"),
+                ContentBlock::text(reminder),
+            ]),
+            uuid: "u".into(),
+        }));
+        assert_eq!(texts(&a.pending), ["  (attached: a.rs)"]);
     }
 
     #[test]

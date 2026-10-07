@@ -1444,3 +1444,58 @@ async fn subtask_edits_are_checkpointed_under_its_own_turn() {
     local(&mut t.d, "/rewind 1 code").await;
     assert!(!a.exists() && !b.exists());
 }
+
+#[tokio::test]
+async fn at_mentions_attach_files_to_plain_prompts() {
+    let mut t = driver_with(|dir, o| {
+        o.permission_mode = Some("acceptEdits".into());
+        let hook = format!("cat > {}", dir.join("hook-input.json").display());
+        let settings = serde_json::json!({
+            "verification": {"enabled": false},
+            "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": hook}]}]},
+        });
+        std::fs::write(dir.join("proj/.forge/settings.json"), settings.to_string()).unwrap();
+        std::fs::write(dir.join("outside.txt"), "far away").unwrap();
+    });
+    let notes = t.proj.join("notes.md");
+    std::fs::write(&notes, "the launch is on Tuesday").unwrap();
+    std::fs::write(t.proj.join("secret.txt"), "hunter2").unwrap();
+
+    // The request's last user message carries the file; the model edits it without a Read.
+    t.p.push(MockTurn::tool(
+        "Edit",
+        serde_json::json!({"file_path": notes, "old_string": "Tuesday", "new_string": "Wednesday"}),
+    ));
+    t.p.push(MockTurn::text("Moved it."));
+    let r = run(&mut t.d, "move @notes.md, and see @../outside.txt").await;
+    assert_eq!(r.result.as_deref(), Some("Moved it."));
+    let sent = last_user_text(&t.p.requests()[0]);
+    assert!(sent.contains("the launch is on Tuesday") && sent.contains("<system-reminder>"), "{sent}");
+    assert!(
+        sent.contains("outside.txt was not attached: outside the working directories; use Read")
+            && !sent.contains("far away"),
+        "{sent}"
+    );
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "the launch is on Wednesday", "Edit needed no Read");
+
+    // The prompt as typed: in the conversation's first text block, for hooks, and for /rewind.
+    let first = t.d.engine.state.messages.iter().find(|m| m.role == forge_types::Role::User).unwrap();
+    assert_eq!(first.content[0].as_text(), Some("move @notes.md, and see @../outside.txt"));
+    let hook: Value =
+        serde_json::from_str(&std::fs::read_to_string(t._dir.path().join("hook-input.json")).unwrap()).unwrap();
+    assert_eq!(hook["prompt"], "move @notes.md, and see @../outside.txt");
+
+    // A deny rule keeps a file out.
+    local(&mut t.d, "/permissions add deny Read(secret.txt) --scope session").await;
+    t.p.push(MockTurn::text("Can't see it."));
+    run(&mut t.d, "what is in @secret.txt?").await;
+    let sent = last_user_text(t.p.requests().last().unwrap());
+    assert!(!sent.contains("hunter2"), "{sent}");
+    assert!(sent.contains("secret.txt was not attached: blocked by a permission rule"), "{sent}");
+
+    let list = local(&mut t.d, "/rewind").await;
+    assert!(
+        list.contains("1. move @notes.md, and see @../outside.txt") && list.contains("2. what is in @secret.txt?"),
+        "{list}"
+    );
+}

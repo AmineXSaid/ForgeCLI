@@ -373,8 +373,10 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
      the match in the input box, Esc or Ctrl+G goes back to what was typed;
    - `@` file completion: a menu of paths from the `ignore` crate's walk of
      the project (`.gitignore` respected, at most 20,000 paths, walked again
-     after `/cd`), file-name matches first. Tab or Enter completes. The path
-     reaches the model as text; it reads the file with its tools.
+     after `/cd`), file-name matches first. Tab or Enter completes, quoting a
+     path with spaces (`@"my notes.md"`). Sending attaches the file (the
+     driver does it for every surface; docs/CLI.md, "`@` mentions"), and the
+     scrollback shows a dim `(attached: a.rs, b.rs)` under the prompt.
 3. **UI-only commands** (done). `/theme` and `/statusline` are forge-core
    commands (they save settings through the driver); the session task sends
    `UiEvent::Theme` when the `theme` setting changes and runs the

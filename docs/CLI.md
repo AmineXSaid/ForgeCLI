@@ -80,6 +80,24 @@ terminal) reads one line at a time and prints the conversation on stdout;
 warnings go to stderr. Ctrl-C interrupts the current turn without killing
 the process; `/exit` or end-of-file quits.
 
+**`@` mentions** (every mode: TUI, REPL, `-p`, stream-json). A prompt that
+names `@path` (at the start or after a space; `@"name with spaces.md"`
+quoted; `~/` for the home directory, other paths from the working directory)
+gets that file's contents attached, so the model needn't Read it. Your text
+is kept as typed (history, `/rewind` and hooks see it so); the contents
+follow in a separate system-reminder block, one `<file path="...">` each.
+A directory gets a listing (at most 200 entries, `.gitignore` respected).
+Images, PDFs and binary files aren't inlined: a note tells the model to use
+Read. Limits: 50,000 characters per file (the middle is cut), 10 files and
+200,000 characters per message; what doesn't fit gets a note. An attachment
+is a read: it follows Read's permission rules without prompting, so a file
+outside the working directories or matched by an ask or deny rule isn't
+attached (the note says why). Attached files count as read, so the model can
+Edit them at once. `@name` with no such file, and emails, are left alone. In
+stream-json only a message that is a single text block is scanned. Slash
+commands and `!shell` lines aren't scanned (custom commands attach the
+`@path`s in their own body).
+
 ### `forge -p [prompt]`: print mode, for scripts and CI
 
 - **Purpose:** run one task without supervision and print the result.
@@ -380,7 +398,8 @@ The optional frontmatter takes `description`, `argument-hint` and
 - `$ARGUMENTS` and `$1`..`$9` are replaced by the arguments;
 - ``!`cmd` `` runs `cmd` and inserts its output, only when `allowed-tools`
   permits it (e.g. `Bash(git status:*)`);
-- `@path` attaches a file.
+- `@path` attaches a file (same rules as `@` mentions in prompts, without the
+  permission check: the command's author chose the files).
 
 **Bundled skills** ship with Forge:
 - `/init` writes FORGE.md.

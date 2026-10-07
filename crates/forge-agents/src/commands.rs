@@ -7,7 +7,7 @@
 //! - ``!`command` `` runs the command and puts its output in place. It runs
 //!   only when the command's `allowed-tools` frontmatter allows that Bash
 //!   command.
-//! - `@path` attaches the file's contents.
+//! - `@path` attaches the file's contents (see [`crate::attach`]).
 //!
 //! A file in a subdirectory is named `dir:name`. A plugin's commands are
 //! named `plugin:name`.
@@ -115,8 +115,6 @@ pub fn load_commands(
 }
 
 static BANG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!`([^`\n]+)`").expect("regex"));
-static AT_FILE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)(?:^|\s)@([A-Za-z0-9_./~-][A-Za-z0-9_./~-]*)").expect("regex"));
 static POSITIONAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$([1-9])").expect("regex"));
 
 /// Does `allowed-tools` let a ``!`command` `` expansion run `cmd`?
@@ -181,19 +179,10 @@ pub async fn expand(cmd: &CommandDef, args: &str, cwd: &Path) -> Result<String, 
     out.push_str(&text[last..]);
 
     // @file attachments.
-    let mut attached = vec![];
-    for m in AT_FILE.captures_iter(&out) {
-        let raw = m[1].trim_end_matches(['.', ',', ':', ';', ')']);
-        let path =
-            if let Some(rest) = raw.strip_prefix("~/") { forge_config::home().join(rest) } else { cwd.join(raw) };
-        if path.is_file() && !attached.iter().any(|(p, _)| p == &path) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                attached.push((path, forge_tools::truncate_middle(&content, 50_000)));
-            }
-        }
-    }
-    for (path, content) in attached {
-        out.push_str(&format!("\n\n<file path=\"{}\">\n{}\n</file>", path.display(), content.trim_end()));
+    let attached = crate::attach::at_mentions(&out, cwd, &|_| Ok(()));
+    if !attached.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&crate::attach::render(&attached));
     }
     Ok(out)
 }

@@ -62,6 +62,18 @@
 - Fast mode on models that offer it (`fastMode` setting, `/fast`).
 - Custom commands, skills, output styles and plugins (`--plugin-dir`).
 
+### `@` mentions
+- `@path` in any prompt (TUI, REPL, `-p`, stream-json) attaches the file:
+  the prompt stays as typed, and the contents follow in a system reminder.
+  `@"quoted paths"`, `~/`, directory listings, and notes for images, PDFs,
+  binaries and files the permission rules keep out. Limits: 50,000 characters
+  per file, 10 files and 200,000 characters per message. Attached files count
+  as read, so the model can edit them at once.
+- One implementation (`forge_agents::attach`) serves prompts and custom
+  commands. UserPromptSubmit hooks see the prompt without the attachments.
+- TUI: completion quotes paths with spaces, and a dim `(attached: ...)` line
+  follows the prompt.
+
 ### Fixes from the front-end review
 - A prompt that starts with a file name (`/package.json has the wrong
   version`) is a prompt, not `Unknown command`.
