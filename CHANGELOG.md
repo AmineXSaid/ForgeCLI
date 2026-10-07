@@ -71,6 +71,9 @@
   session was launched in that mode or with
   `--allow-dangerously-skip-permissions`, and always when managed settings
   set `disableBypassPermissionsMode`.
+- The REPL said nothing when `--max-turns`, `--max-budget-usd` or a failed
+  compaction stopped a turn: these now arrive as error notices, like API
+  errors (print mode still reports them once, with the result).
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

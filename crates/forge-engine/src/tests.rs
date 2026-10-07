@@ -402,6 +402,9 @@ async fn c7_budget_and_max_turns_stop_the_run() {
     let r = e.submit(prompt("go")).await;
     assert_eq!(r.subtype, ResultSubtype::ErrorMaxBudgetUsd);
     assert!(h.log.lock().unwrap().is_empty(), "tools of the over-budget message are not run");
+    assert!(h.sink.take().iter().any(
+        |ev| matches!(ev, EngineEvent::Notice { level: NoticeLevel::Error, text } if text == "Reached maximum budget ($1)")
+    ));
 
     let h =
         Harness::new(vec![MockTurn::tool("SafeA", json!({"tag": "1"})), MockTurn::tool("SafeA", json!({"tag": "2"}))]);
@@ -410,6 +413,17 @@ async fn c7_budget_and_max_turns_stop_the_run() {
     let r = e.submit(prompt("go")).await;
     assert_eq!(r.subtype, ResultSubtype::ErrorMaxTurns);
     assert_eq!(r.num_turns, 1);
+    // Interactive front ends show why the turn stopped: each limit is an error notice.
+    let notices: Vec<String> = h
+        .sink
+        .take()
+        .into_iter()
+        .filter_map(|ev| match ev {
+            EngineEvent::Notice { level: NoticeLevel::Error, text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices, ["Reached maximum number of turns (1)"]);
 }
 
 #[tokio::test]

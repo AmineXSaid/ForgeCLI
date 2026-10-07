@@ -71,8 +71,9 @@ pub fn commands(d: &Driver) -> Vec<CommandInfo> {
         .collect()
 }
 
-/// What a finished turn shows. A model turn's text already streamed, so only
-/// local answers and failures are shown here.
+/// What a finished turn shows. A model turn's text and its errors already
+/// arrived as engine events, so only local answers, blocked prompts and
+/// interrupts are shown here.
 pub fn reply_for(r: &TurnResult) -> Option<UiEvent> {
     if let Some(b) = &r.prompt_blocked {
         return Some(UiEvent::Reply { text: format!("Prompt blocked by a hook: {b}"), is_error: true });
@@ -83,11 +84,7 @@ pub fn reply_for(r: &TurnResult) -> Option<UiEvent> {
     if r.stop_reason.as_deref() == Some("interrupted") {
         return Some(UiEvent::Reply { text: "Interrupted · What should Forge do instead?".into(), is_error: false });
     }
-    if r.is_error {
-        let text = if r.errors.is_empty() { r.result.clone().unwrap_or_default() } else { r.errors.join("\n") };
-        let text = if text.trim().is_empty() { "The turn failed.".to_string() } else { text };
-        return Some(UiEvent::Reply { text, is_error: true });
-    }
+    // A model turn's errors (API errors, limits) arrived as error notices already.
     None
 }
 
@@ -579,7 +576,7 @@ mod tests {
         let model = TurnResult { num_turns: 1, stop_reason: Some("end_turn".into()), ..base.clone() };
         assert!(reply_for(&model).is_none(), "streamed already");
         let failed = TurnResult { is_error: true, errors: vec!["overloaded".into()], ..model.clone() };
-        assert!(matches!(reply_for(&failed), Some(UiEvent::Reply { text, is_error: true }) if text == "overloaded"));
+        assert!(reply_for(&failed).is_none(), "shown once, as the engine's error notice");
         let stopped = TurnResult { is_error: true, stop_reason: Some("interrupted".into()), ..model.clone() };
         assert!(
             matches!(reply_for(&stopped), Some(UiEvent::Reply { text, is_error: false }) if text.starts_with("Interrupted"))

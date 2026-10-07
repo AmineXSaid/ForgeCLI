@@ -1270,7 +1270,9 @@ impl Engine {
             }
             if let Some(max) = self.cfg.max_turns {
                 if turn.api_calls >= max {
-                    turn.errors.push(format!("Reached maximum number of turns ({max})"));
+                    let text = format!("Reached maximum number of turns ({max})");
+                    self.notice(NoticeLevel::Error, text.clone());
+                    turn.errors.push(text);
                     return self.finish(
                         started,
                         turn,
@@ -1350,6 +1352,7 @@ impl Engine {
                         Ok(_) => continue,
                         Err(err) => {
                             let text = format!("API Error: {e} (compaction failed: {err})");
+                            self.notice(NoticeLevel::Error, text.clone());
                             turn.errors.push(text.clone());
                             let mut r = self.finish(
                                 started,
@@ -1425,7 +1428,9 @@ impl Engine {
                             false,
                         );
                     }
-                    turn.errors.push(format!("Reached maximum budget (${budget})"));
+                    let text = format!("Reached maximum budget (${budget})");
+                    self.notice(NoticeLevel::Error, text.clone());
+                    turn.errors.push(text);
                     return self.finish(
                         started,
                         turn,
