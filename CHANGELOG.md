@@ -90,6 +90,8 @@
   running ones: they were handed back before the list was made.
 - In the terminal UI, `/keybindings` and `/terminal-setup` answer at once
   while a turn runs instead of waiting in the queue.
+- Ctrl-D during a turn in the terminal UI interrupts it before leaving,
+  instead of leaving it running while Forge waits to exit.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

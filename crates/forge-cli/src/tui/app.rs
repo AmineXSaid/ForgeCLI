@@ -984,7 +984,8 @@ impl App {
             return vec![];
         }
         if ctrl && key.code == KeyCode::Char('d') && self.editor.is_empty() {
-            return vec![Action::Exit];
+            // A running turn stops first, so the session can end cleanly.
+            return if self.busy { vec![Action::Interrupt, Action::Exit] } else { vec![Action::Exit] };
         }
         let files = self.file_menu().len();
         if files > 0 {
@@ -1297,6 +1298,8 @@ mod tests {
         a.busy = false;
         a.on_key(key(KeyCode::Esc));
         assert_eq!(a.on_key(key(KeyCode::Esc)), vec![Action::Send("/rewind".into())]);
+        // Ctrl-D during a turn stops it before leaving.
+        assert_eq!(a.on_key(ctrl('d')), vec![Action::Interrupt, Action::Exit]);
     }
 
     fn prompt(tool: &str, input: Value) -> PermissionPrompt {
