@@ -1805,3 +1805,24 @@ async fn model_lists_only_what_the_endpoint_offers() {
     assert_eq!(m.choices.len(), 3, "the current model is in the list now");
     assert!(m.choices[0].current);
 }
+
+#[tokio::test]
+async fn unknown_models_show_unknown_cost_and_a_guessed_window() {
+    let mut t = driver();
+    assert!(local(&mut t.d, "/model test-unpriced-model").await.starts_with("Set model to test-unpriced-model."));
+    t.p.push(forge_api::MockTurn::text("hi"));
+    run(&mut t.d, "hello").await;
+    let u = local(&mut t.d, "/usage").await;
+    assert!(u.contains("Total cost:     unknown: Forge has no price for test-unpriced-model"), "{u}");
+    assert!(u.contains("(price unknown)") && u.contains("a guess: Forge doesn't know"), "{u}");
+}
+
+#[test]
+fn unknown_model_notice_says_how_to_set_limits() {
+    let n = crate::unknown_model_notice("deep-thinking", false);
+    assert!(
+        n.starts_with("Forge doesn't know the model deep-thinking: it assumes a 200,000-token context window"),
+        "{n}"
+    );
+    assert!(n.contains("\"modelLimits\"") && n.contains("modelPricing") && n.contains("FORGE_CONTEXT_WINDOW"), "{n}");
+}

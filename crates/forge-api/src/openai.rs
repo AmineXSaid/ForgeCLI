@@ -321,6 +321,42 @@ pub fn model_ids(body: &Value) -> Vec<String> {
     ids
 }
 
+/// The limits a model-list entry reports, under the names gateways use
+/// (OpenRouter `context_length`, vLLM `max_model_len`, LiteLLM `max_input_tokens`, ...).
+pub fn listed_limits(entry: &Value) -> crate::models::Limits {
+    let first = |paths: &[&str]| paths.iter().find_map(|p| entry.pointer(p).and_then(Value::as_u64)).filter(|n| *n > 0);
+    crate::models::Limits {
+        context_window: first(&[
+            "/context_length",
+            "/context_window",
+            "/max_model_len",
+            "/max_context_length",
+            "/max_input_tokens",
+            "/top_provider/context_length",
+            "/model_info/max_input_tokens",
+        ]),
+        max_output: first(&[
+            "/max_output_tokens",
+            "/max_completion_tokens",
+            "/top_provider/max_completion_tokens",
+            "/model_info/max_output_tokens",
+        ])
+        .map(|n| n.min(u64::from(u32::MAX)) as u32),
+    }
+}
+
+/// Record the limits each listed model reports, so compaction uses the real window.
+pub fn record_listed_limits(body: &Value) {
+    for m in body["data"].as_array().into_iter().flatten() {
+        if let Some(id) = m["id"].as_str() {
+            let l = listed_limits(m);
+            if l != crate::models::Limits::default() {
+                crate::models::listed_limits(id, l);
+            }
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAiProvider {
     fn name(&self) -> &str {
@@ -350,6 +386,7 @@ impl Provider for OpenAiProvider {
                 return Err(http_error(res).await);
             }
             let body: Value = res.json().await.map_err(|e| ApiError::Parse(e.to_string()))?;
+            record_listed_limits(&body);
             Ok(model_ids(&body))
         }
         .await;
@@ -398,6 +435,21 @@ impl Provider for OpenAiProvider {
 mod tests {
     use super::*;
     use crate::MessageAccumulator;
+
+    #[test]
+    fn reads_context_windows_from_a_models_listing() {
+        let body = json!({"data": [
+            {"id": "router-model", "context_length": 163_840, "top_provider": {"max_completion_tokens": 8192}},
+            {"id": "vllm-model", "max_model_len": 32_768},
+            {"id": "plain"}
+        ]});
+        let l = listed_limits(&body["data"][0]);
+        assert_eq!((l.context_window, l.max_output), (Some(163_840), Some(8192)));
+        assert_eq!(listed_limits(&body["data"][1]).context_window, Some(32_768));
+        assert_eq!(listed_limits(&body["data"][2]), crate::models::Limits::default());
+        record_listed_limits(&body);
+        assert_eq!(crate::models::model_info_or_default("vllm-model").context_window, 32_768);
+    }
 
     #[test]
     fn reads_model_ids_from_a_models_listing() {

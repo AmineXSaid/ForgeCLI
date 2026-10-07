@@ -366,6 +366,55 @@ fn removed_tools(disallowed: &[String]) -> Vec<String> {
     disallowed.iter().flat_map(|s| forge_permissions::split_rule_list(s)).filter(|r| !r.contains('(')).collect()
 }
 
+/// `modelLimits`: `{"<model id>": {"contextWindow": 131072, "maxOutputTokens": 8192}}`.
+/// Returns warnings for entries that can't be used.
+fn apply_model_limits(s: &LoadedSettings) -> Vec<String> {
+    let mut warnings = vec![];
+    let Some(m) = s.get("/modelLimits").and_then(Value::as_object) else { return warnings };
+    for (model, v) in m {
+        let n = |k: &str| v.get(k).and_then(Value::as_u64).filter(|n| *n > 0);
+        let l = forge_api::models::Limits {
+            context_window: n("contextWindow"),
+            max_output: n("maxOutputTokens").map(|n| n.min(u64::from(u32::MAX)) as u32),
+        };
+        if l == forge_api::models::Limits::default() {
+            warnings.push(format!(
+                "modelLimits.{model}: set \"contextWindow\" and/or \"maxOutputTokens\" to positive token counts"
+            ));
+            continue;
+        }
+        forge_api::models::configure_limits(&forge_api::resolve_model(model), l);
+    }
+    warnings
+}
+
+/// Shown once when the session's model is in no table and nothing set its limits.
+pub fn unknown_model_notice(model: &str, priced: bool) -> String {
+    let info = forge_api::models::model_info_or_default(model);
+    let price = if priced { "" } else { ", and can't price it, so costs show as unknown" };
+    format!(
+        "Forge doesn't know the model {model}: it assumes a {}-token context window and {} output tokens{price}. \
+         Set its real limits in settings, for example {{\"modelLimits\": {{\"{model}\": {{\"contextWindow\": \
+         131072, \"maxOutputTokens\": 8192}}}}}}{}, or FORGE_CONTEXT_WINDOW for every unknown model.",
+        group(info.context_window),
+        group(u64::from(info.max_output)),
+        if priced { "" } else { " (and its prices under \"modelPricing\")" }
+    )
+}
+
+/// 200000 -> "200,000".
+fn group(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn pricing_from_settings(s: &LoadedSettings) -> HashMap<String, Pricing> {
     let mut out = HashMap::new();
     if let Some(m) = s.get("/modelPricing").and_then(Value::as_object) {
@@ -700,6 +749,23 @@ pub fn build_session(
             .or_else(|| settings.str("/model").map(str::to_string))
             .unwrap_or_else(|| "default".into()),
     );
+    // Limits for models the built-in table doesn't know (C9 compaction needs the real window).
+    let pricing = pricing_from_settings(&settings);
+    let autocompact_window = match opts.autocompact.as_deref() {
+        Some(v) => parse_autocompact(v)?,
+        None => settings.get("/autoCompactWindow").and_then(Value::as_u64),
+    };
+    warnings.extend(apply_model_limits(&settings));
+    if forge_api::models::limits_source(&model) == forge_api::models::LimitsSource::Guessed && opts.provider.is_none() {
+        warnings.push(unknown_model_notice(&model, pricing.contains_key(&model)));
+        // An OpenAI-compatible endpoint may report the window in its model list.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let p = provider.clone();
+            rt.spawn(async move {
+                let _ = p.list_models().await;
+            });
+        }
+    }
     let fallback_models: Vec<String> = opts
         .fallback_models
         .iter()
@@ -760,7 +826,9 @@ pub fn build_session(
         sink: sink.clone(),
         base: EngineConfig {
             max_output_tokens: env_nonempty("FORGE_MAX_OUTPUT_TOKENS").and_then(|v| v.parse().ok()).unwrap_or(32_000),
-            pricing: pricing_from_settings(&settings),
+            pricing: pricing.clone(),
+            autocompact_window,
+            auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
             ..Default::default()
         },
         memory_context: memory.clone(),
@@ -785,13 +853,10 @@ pub fn build_session(
         max_turns: opts.max_turns,
         max_budget_usd: opts.max_budget_usd,
         json_schema: opts.json_schema.clone(),
-        pricing: pricing_from_settings(&settings),
+        pricing,
         initial_context: (!initial.is_empty()).then(|| initial.join("\n\n")),
         metadata_user_id: None,
-        autocompact_window: match opts.autocompact.as_deref() {
-            Some(v) => parse_autocompact(v)?,
-            None => settings.get("/autoCompactWindow").and_then(Value::as_u64),
-        },
+        autocompact_window,
         auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
         is_subagent: false,
         verify,

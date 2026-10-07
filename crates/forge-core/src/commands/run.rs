@@ -223,7 +223,7 @@ pub(super) fn doctor_checks(d: &Driver) -> Vec<crate::doctor::Check> {
         detail: if priced {
             format!("{model} (known pricing)")
         } else {
-            format!("{model}: unknown pricing; costs show as $0 and --max-budget-usd refuses it")
+            format!("{model}: unknown pricing; costs show as unknown and --max-budget-usd refuses it")
         },
     });
     checks

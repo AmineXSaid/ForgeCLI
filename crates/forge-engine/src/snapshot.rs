@@ -38,6 +38,8 @@ pub struct EngineSnapshot {
     pub total_usage: Usage,
     pub total_cost_usd: f64,
     pub model_usage: Map<String, Value>,
+    /// Models used without a known price: their cost isn't in `total_cost_usd`.
+    pub unpriced: Vec<String>,
     pub context_tokens: u64,
     /// `Some` while a turn runs.
     pub turn: Option<TurnProgress>,

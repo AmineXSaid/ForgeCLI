@@ -57,8 +57,16 @@ pub fn status(d: &Driver) -> StatusView {
     let model = d.handle().model();
     let mode = d.handle().permissions.read().unwrap().mode.as_str().to_string();
     let window = d.engine.context_window(&model);
-    let context_pct = (window > 0).then(|| ((d.engine.state.context_tokens * 100 / window).min(100)) as u8);
-    StatusView { model, mode, cwd: d.info.cwd.display().to_string(), cost: d.engine.state.total_cost_usd, context_pct }
+    let used = d.engine.projected_context_tokens();
+    let context_pct = (window > 0).then(|| ((used * 100 / window).min(100)) as u8);
+    StatusView {
+        model,
+        mode,
+        cwd: d.info.cwd.display().to_string(),
+        cost: d.engine.state.total_cost_usd,
+        cost_unknown: !d.engine.state.unpriced.is_empty(),
+        context_pct,
+    }
 }
 
 /// The `/` menu's rows: every command the TUI can run.

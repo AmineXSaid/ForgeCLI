@@ -235,8 +235,87 @@ pub fn model_info(id: &str) -> Option<&'static ModelInfo> {
         .or_else(|| MODELS.iter().filter(|m| id.starts_with(m.id)).max_by_key(|m| m.id.len()))
 }
 
-/// Info for a model, falling back to conservative defaults for unknown ids.
+/// Limits set for a model from outside the built-in table: the `modelLimits`
+/// setting, `FORGE_CONTEXT_WINDOW`, or what the endpoint's model list reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Limits {
+    pub context_window: Option<u64>,
+    pub max_output: Option<u32>,
+}
+
+/// Where a model's limits come from (shown by `/model`, `/context` and the startup notice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitsSource {
+    /// The built-in model table.
+    Known,
+    /// Set by the user (`modelLimits`, `FORGE_CONTEXT_WINDOW`).
+    Configured,
+    /// Reported by the endpoint's model list.
+    Listed,
+    /// Nothing known: Forge's guesses.
+    Guessed,
+}
+
+type LimitMap = std::collections::HashMap<String, (Limits, LimitsSource)>;
+
+fn limit_map() -> &'static std::sync::RwLock<LimitMap> {
+    static M: std::sync::OnceLock<std::sync::RwLock<LimitMap>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// The context window assumed for any model without a known one (`FORGE_CONTEXT_WINDOW`).
+fn default_window() -> Option<u64> {
+    std::env::var("FORGE_CONTEXT_WINDOW").ok().and_then(|v| v.trim().replace('_', "").parse().ok())
+}
+
+/// Set limits the user configured for `id` (they win over everything else).
+pub fn configure_limits(id: &str, l: Limits) {
+    limit_map().write().unwrap().insert(id.to_string(), (l, LimitsSource::Configured));
+}
+
+/// Record a context window the endpoint reports for `id`, unless the user set one.
+pub fn listed_limits(id: &str, l: Limits) {
+    let mut m = limit_map().write().unwrap();
+    if !matches!(m.get(id), Some((_, LimitsSource::Configured))) {
+        m.insert(id.to_string(), (l, LimitsSource::Listed));
+    }
+}
+
+/// Where `id`'s limits come from.
+pub fn limits_source(id: &str) -> LimitsSource {
+    if let Some((_, src)) = limit_map().read().unwrap().get(id) {
+        return *src;
+    }
+    if model_info(id).is_some() {
+        LimitsSource::Known
+    } else if default_window().is_some() {
+        LimitsSource::Configured
+    } else {
+        LimitsSource::Guessed
+    }
+}
+
+/// Info for a model, falling back to conservative defaults for unknown ids;
+/// configured or listed limits win over both.
 pub fn model_info_or_default(id: &str) -> ModelInfo {
+    let mut info = base_info(id);
+    if model_info(id).is_none() {
+        if let Some(w) = default_window() {
+            info.context_window = w;
+        }
+    }
+    if let Some((l, _)) = limit_map().read().unwrap().get(id) {
+        if let Some(w) = l.context_window {
+            info.context_window = w;
+        }
+        if let Some(o) = l.max_output {
+            info.max_output = o;
+        }
+    }
+    info
+}
+
+fn base_info(id: &str) -> ModelInfo {
     model_info(id).cloned().unwrap_or(ModelInfo {
         id: "unknown",
         display_name: "Custom model",
@@ -256,6 +335,20 @@ pub fn model_info_or_default(id: &str) -> ModelInfo {
 mod tests {
     use super::*;
     use forge_types::Usage;
+
+    #[test]
+    fn configured_limits_win_over_listed_and_defaults() {
+        let id = "test-unknown-model-limits";
+        assert_eq!(limits_source(id), LimitsSource::Guessed);
+        assert_eq!(model_info_or_default(id).context_window, 200_000);
+        listed_limits(id, Limits { context_window: Some(64_000), max_output: None });
+        assert_eq!((model_info_or_default(id).context_window, limits_source(id)), (64_000, LimitsSource::Listed));
+        configure_limits(id, Limits { context_window: Some(128_000), max_output: Some(8_192) });
+        listed_limits(id, Limits { context_window: Some(32_000), max_output: None });
+        let info = model_info_or_default(id);
+        assert_eq!((info.context_window, info.max_output), (128_000, 8_192));
+        assert_eq!(limits_source(id), LimitsSource::Configured);
+    }
 
     #[test]
     fn aliases_resolve() {

@@ -61,7 +61,25 @@ fn usage(v: &SessionView) -> String {
         prompts += 1;
     }
     let mut s = String::new();
-    let _ = writeln!(s, "Total cost:     ${:.4}", st.total_cost_usd);
+    let unpriced = st.unpriced.join(", ");
+    match (st.unpriced.is_empty(), st.total_cost_usd > 0.0) {
+        (true, _) => {
+            let _ = writeln!(s, "Total cost:     ${:.4}", st.total_cost_usd);
+        }
+        (false, false) => {
+            let _ = writeln!(
+                s,
+                "Total cost:     unknown: Forge has no price for {unpriced} (set it under \"modelPricing\")"
+            );
+        }
+        (false, true) => {
+            let _ = writeln!(
+                s,
+                "Total cost:     ${:.4}, plus {unpriced}, which Forge has no price for (set it under \"modelPricing\")",
+                st.total_cost_usd
+            );
+        }
+    }
     let _ = writeln!(
         s,
         "Duration:       {} wall, {} API · {} model calls for {} prompts · {} tool calls in this conversation",
@@ -77,20 +95,27 @@ fn usage(v: &SessionView) -> String {
         let _ = writeln!(s, "Usage by model:");
         for (model, u) in &st.model_usage {
             let n = |k: &str| thousands(u.get(k).and_then(Value::as_u64).unwrap_or(0));
+            let cost = if st.unpriced.iter().any(|m| m == model) {
+                "price unknown".to_string()
+            } else {
+                format!("${:.4}", u.get("costUSD").and_then(Value::as_f64).unwrap_or(0.0))
+            };
             let _ = writeln!(
                 s,
-                "  {model}: {} input, {} output, {} cache read, {} cache write (${:.4})",
+                "  {model}: {} input, {} output, {} cache read, {} cache write ({cost})",
                 n("inputTokens"),
                 n("outputTokens"),
                 n("cacheReadInputTokens"),
                 n("cacheCreationInputTokens"),
-                u.get("costUSD").and_then(Value::as_f64).unwrap_or(0.0)
             );
         }
     }
     let model = d.handle.model();
-    let window = forge_api::models::model_info_or_default(&model).context_window;
+    let window = st.context_window(&model);
     let _ = write!(s, "Context now:    about {} of {} tokens", thousands(st.context_tokens), thousands(window));
+    if forge_api::models::limits_source(&model) == forge_api::models::LimitsSource::Guessed {
+        let _ = write!(s, " (a guess: Forge doesn't know {model}'s window; set it under \"modelLimits\")");
+    }
     s
 }
 

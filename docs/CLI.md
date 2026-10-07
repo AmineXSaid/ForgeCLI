@@ -337,6 +337,18 @@ which file layers load.
 **Invalid files** are skipped with a warning on stderr; `forge doctor` reports
 them.
 
+**Models Forge doesn't know** (a gateway's or a local server's): Forge needs
+the context window to compact in time, and prices to show costs.
+- `modelLimits`: `{"<model id>": {"contextWindow": 131072, "maxOutputTokens": 8192}}`.
+  `FORGE_CONTEXT_WINDOW` sets the window for every model without one.
+- An OpenAI-compatible endpoint's model list is read for the window when it
+  reports one (`context_length`, `max_model_len`, `max_input_tokens`, ...).
+- `modelPricing`: `{"<model id>": {"input": 0.3, "output": 1.2}}`, USD per
+  million tokens.
+- Without these, Forge assumes 200,000 tokens of context and 32,000 of output,
+  says so once at startup, shows the cost as `cost ?` (or `$1.20+` when only
+  part of it is known) and marks `/usage`'s context figure as a guess.
+
 **Locations:**
 
 | Kind | Default | Override |
@@ -357,6 +369,7 @@ them.
 | `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint instead |
 | `FORGE_MODEL` | Default model |
 | `FORGE_MAX_OUTPUT_TOKENS` | Per-request output cap |
+| `FORGE_CONTEXT_WINDOW` | Context window, in tokens, for models Forge doesn't know (see `modelLimits`) |
 | `FORGE_MAX_THINKING_TOKENS` | Thinking budget |
 | `FORGE_MAX_RETRIES` | API retries (default 3) |
 | `FORGE_PROMPTS_DIR` | A local prompt set |

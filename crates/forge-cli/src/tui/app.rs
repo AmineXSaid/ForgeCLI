@@ -39,6 +39,8 @@ pub struct StatusView {
     pub mode: String,
     pub cwd: String,
     pub cost: f64,
+    /// Some usage came from a model without a known price: `cost` is a lower bound.
+    pub cost_unknown: bool,
     /// Context used, in percent of the model's window.
     pub context_pct: Option<u8>,
 }

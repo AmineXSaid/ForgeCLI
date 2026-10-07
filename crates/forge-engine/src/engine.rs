@@ -249,7 +249,12 @@ pub struct TurnState {
     pub total_usage: Usage,
     pub total_cost_usd: f64,
     pub model_usage: Map<String, Value>,
+    /// The context size the last response reported (0: the server reports none).
     pub context_tokens: u64,
+    /// How many of `messages` `context_tokens` covers; later ones are estimated.
+    pub counted: usize,
+    /// Models used without a known price (their cost counts as 0).
+    pub unpriced: std::collections::BTreeSet<String>,
 }
 
 /// Outcome of one [`Engine::submit`].
@@ -443,12 +448,31 @@ impl Engine {
         self.state.microcompacted = from.microcompacted.clone();
         // Automatic compaction measures this before the first request.
         self.state.context_tokens = from.context_tokens;
+        self.state.counted = from.counted;
         self.session_started = !self.state.messages.is_empty();
     }
 
     /// Tell the model something with the next prompt (a system reminder).
     pub fn remind(&mut self, text: impl Into<String>) {
         self.reminders.push(text.into());
+    }
+
+    /// The context the next request will carry: the last size the server reported plus an
+    /// estimate for messages added since. With no reported size (some servers send no usage),
+    /// an estimate of the whole request.
+    pub fn projected_context_tokens(&self) -> u64 {
+        let msgs = &self.state.messages;
+        if self.state.context_tokens == 0 {
+            if msgs.is_empty() {
+                return 0;
+            }
+            let system: usize = self.system.iter().map(|b| b.text.len()).sum();
+            let tools: usize =
+                self.shared.tools.specs().iter().map(|t| t.description.len() + t.input_schema.to_string().len()).sum();
+            return forge_compact::estimate_tokens(msgs) + ((system + tools) / 4) as u64;
+        }
+        let from = self.state.counted.min(msgs.len());
+        self.state.context_tokens + forge_compact::estimate_tokens(&msgs[from..])
     }
 
     /// The window compaction is measured against, for `model`.
@@ -646,7 +670,8 @@ impl Engine {
             total_usage: self.state.total_usage.clone(),
             total_cost_usd: self.state.total_cost_usd,
             model_usage: self.state.model_usage.clone(),
-            context_tokens: self.state.context_tokens,
+            unpriced: self.state.unpriced.iter().cloned().collect(),
+            context_tokens: self.projected_context_tokens(),
             turn,
             provider_name: self.shared.provider.name().to_string(),
             max_output_tokens: self.cfg.max_output_tokens,
@@ -736,13 +761,22 @@ impl Engine {
     fn record_usage(&mut self, model: &str, usage: &Usage, turn: &mut TurnAcc) {
         turn.usage.add(usage);
         self.state.total_usage.add(usage);
-        self.state.context_tokens = usage.context_tokens();
-        let mut cost = self.pricing_for(model).map(|p| p.cost(usage)).unwrap_or(0.0);
+        // A server that reports no input tokens reports no usable size: 0 makes
+        // `projected_context_tokens` estimate the whole request instead.
+        let input = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+        self.state.context_tokens = if input == 0 { 0 } else { usage.context_tokens() };
+        // The reply this usage belongs to is pushed right after.
+        self.state.counted = self.state.messages.len() + 1;
+        let pricing = self.pricing_for(model);
+        if pricing.is_none() && (usage.input_tokens > 0 || usage.output_tokens > 0) {
+            self.state.unpriced.insert(model.to_string());
+        }
+        let mut cost = pricing.map(|p| p.cost(usage)).unwrap_or(0.0);
         if self.sends_fast(model) {
             cost *= FAST_PRICE_MULTIPLIER;
         }
         self.state.total_cost_usd += cost;
-        let window = model_info(model).map(|m| m.context_window).unwrap_or(0);
+        let window = self.compact_window(model);
         let e = self.state.model_usage.entry(model.to_string()).or_insert_with(|| {
             json!({"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
                    "webSearchRequests": 0, "costUSD": 0.0, "contextWindow": window})
@@ -774,7 +808,9 @@ impl Engine {
     ) {
         let window = self.compact_window(model);
         let max_out = self.cfg.max_output_tokens;
-        let used = self.state.context_tokens;
+        // What the next request will hold: the last reported size plus everything added since
+        // (a batch of large tool results can push it over the window in one step).
+        let used = self.projected_context_tokens();
         if used > forge_compact::micro_threshold(window, max_out) {
             let ids = forge_compact::micro_candidates(&self.state.messages, &self.state.microcompacted);
             if !ids.is_empty() {
@@ -880,6 +916,7 @@ impl Engine {
             self.shared.transcript.append_system("todos", json!({"todos": todos}));
         }
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.counted = self.state.messages.len();
         self.shared.tool_ctx.files.forget_all_views();
         Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
@@ -926,6 +963,7 @@ impl Engine {
         self.state.messages.truncate(index);
         self.state.uuids.truncate(index);
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.counted = self.state.messages.len();
         self.shared.tool_ctx.files.forget_all_views();
         self.shared.transcript.set_leaf(self.state.uuids.last().cloned());
         self.shared.transcript.append_system("rewind", json!({"to": to}));
@@ -1054,6 +1092,7 @@ impl Engine {
         self.state.uuids = uuids;
         self.state.messages = messages;
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.counted = self.state.messages.len();
         self.shared.tool_ctx.files.forget_all_views();
         self.settle_after_rewrite();
         Ok(CompactInfo { trigger: "partial".into(), pre_tokens, summary })
@@ -1069,6 +1108,7 @@ impl Engine {
         self.state.uuids.clear();
         self.state.microcompacted.clear();
         self.state.context_tokens = 0;
+        self.state.counted = 0;
         self.shared.tool_ctx.todos.lock().unwrap().clear();
         self.shared.tool_ctx.files.forget_all_views();
         self.reattach_context = self.session_context.is_some();
@@ -1130,9 +1170,9 @@ impl Engine {
     /// Count a request made beside the conversation (a goal check, a title)
     /// toward the session's cost, without changing the context size.
     pub fn record_side_usage(&mut self, model: &str, usage: &Usage) {
-        let context = self.state.context_tokens;
+        let (context, counted) = (self.state.context_tokens, self.state.counted);
         self.record_usage(model, usage, &mut TurnAcc::default());
-        self.state.context_tokens = context;
+        (self.state.context_tokens, self.state.counted) = (context, counted);
     }
 
     /// ride along. The request keeps the conversation's system prompt and
@@ -1147,9 +1187,9 @@ impl Engine {
             ApiError::Cancelled => "interrupted".to_string(),
             e => e.describe(),
         })?;
-        let context = self.state.context_tokens;
+        let (context, counted) = (self.state.context_tokens, self.state.counted);
         self.record_usage(&model, &msg.usage, &mut TurnAcc::default());
-        self.state.context_tokens = context;
+        (self.state.context_tokens, self.state.counted) = (context, counted);
         let text = msg.to_message().text();
         if text.trim().is_empty() {
             return Err("the model gave no answer".into());

@@ -160,12 +160,30 @@ impl ApiError {
         }
     }
 
-    /// The prompt does not fit the context window.
+    /// The prompt does not fit the context window, in the words different
+    /// servers use (Messages API, OpenAI, vLLM, llama.cpp, LiteLLM, gateways).
     pub fn is_prompt_too_long(&self) -> bool {
+        const PHRASES: &[&str] = &[
+            "prompt is too long",
+            "context window",
+            "too many tokens",
+            "maximum context length",
+            "context length",
+            "context_length_exceeded",
+            "exceeds the context",
+            "exceed context",
+            "input is too long",
+            "reduce the length",
+            "too large for the model",
+        ];
         match self {
-            ApiError::Http { status: 400, message, .. } => {
+            ApiError::Http { status: 400 | 413 | 422, kind, message, .. } => {
                 let m = message.to_ascii_lowercase();
-                m.contains("prompt is too long") || m.contains("context window") || m.contains("too many tokens")
+                kind == "context_length_exceeded" || PHRASES.iter().any(|p| m.contains(p))
+            }
+            ApiError::Stream { message, .. } => {
+                let m = message.to_ascii_lowercase();
+                PHRASES.iter().any(|p| m.contains(p))
             }
             _ => false,
         }

@@ -96,7 +96,12 @@ fn status_right(app: &App) -> String {
     if let Some(p) = s.context_pct {
         parts.push(format!("{p}% context"));
     }
-    parts.push(format!("${:.2}", s.cost));
+    parts.push(match (s.cost_unknown, s.cost > 0.0) {
+        (false, _) => format!("${:.2}", s.cost),
+        // Part of the spend has no known price: show what is known as a lower bound.
+        (true, true) => format!("${:.2}+", s.cost),
+        (true, false) => "cost ?".into(),
+    });
     parts.join(" · ")
 }
 
@@ -455,6 +460,20 @@ mod tests {
     use ratatui::Terminal;
     use serde_json::json;
 
+    #[test]
+    fn unknown_cost_is_not_shown_as_zero() {
+        let mut a = app(false);
+        a.on_event(UiEvent::Status(StatusView {
+            model: "local".into(),
+            mode: "default".into(),
+            cwd: "/p".into(),
+            cost: 0.0,
+            cost_unknown: true,
+            context_pct: Some(3),
+        }));
+        assert_eq!(status_right(&a), "local · 3% context · cost ?");
+    }
+
     fn app(color: bool) -> App {
         let mut a = App::new(Theme { color, light: false, accent: None }, vec![]);
         a.on_event(UiEvent::Status(StatusView {
@@ -462,6 +481,7 @@ mod tests {
             mode: "default".into(),
             cwd: "/p".into(),
             cost: 0.25,
+            cost_unknown: false,
             context_pct: Some(12),
         }));
         a.on_event(UiEvent::Commands(vec![

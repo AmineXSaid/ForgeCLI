@@ -32,6 +32,19 @@
   stops startup with a clear message. `openai.apiKeyHelper` is new.
 - Project settings can no longer choose the endpoint or run a key helper.
 
+### Models and context
+- `modelLimits` (and `FORGE_CONTEXT_WINDOW`) set the context window and output
+  cap of models Forge doesn't know; an OpenAI-compatible endpoint's model list
+  is read for them too. Without either, Forge says once that it is guessing.
+- Compaction measures the request about to be sent, not the last response: a
+  batch of large tool results no longer pushes a turn, or a sub-agent, past
+  the window. Servers that report no usage get an estimate instead of 0.
+- Context-overflow errors are recognised in the wording OpenAI-compatible
+  servers use (`maximum context length`, `context_length_exceeded`, ...), so
+  the conversation is compacted and retried instead of failing.
+- Costs of models without a known price show as unknown (`cost ?`, `$1.20+`,
+  `price unknown` in `/usage`) instead of `$0.00`.
+
 ### Terminal UI
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom

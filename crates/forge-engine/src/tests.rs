@@ -557,8 +557,9 @@ async fn c9_micro_is_sticky_across_requests() {
     let big = h.cwd().join("big.txt");
     std::fs::write(&big, "line of text\n".repeat(1500)).unwrap();
     let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
-    // Turn 1 reads the big file; later turns are plain. Usage stays between micro and auto thresholds.
-    h.provider.push(MockTurn::tool("Read", json!({"file_path": big})).with_usage(usage(9_000)));
+    // Turn 1 reads the big file; later turns are plain. Usage stays between micro and auto thresholds
+    // (the first request is small: the projected size of the next one adds the ~7.5k-token result).
+    h.provider.push(MockTurn::tool("Read", json!({"file_path": big})).with_usage(usage(2_000)));
     h.provider.push(MockTurn::text("read it").with_usage(usage(9_000)));
     for i in 2..=5 {
         h.provider.push(MockTurn::text(&format!("answer {i}")).with_usage(usage(9_000)));
@@ -580,6 +581,35 @@ async fn c9_micro_is_sticky_across_requests() {
     let t = h.transcript_text();
     assert_eq!(t.matches("\"subtype\":\"microcompact\"").count(), 1, "recorded once");
     assert!(t.contains("line of text"), "the transcript keeps the original");
+}
+
+/// A large tool result pushes the next request over the threshold: compaction runs before
+/// it is sent, not after the server rejects it.
+#[tokio::test]
+async fn c9_compacts_before_a_request_that_would_overflow() {
+    let h = Harness::new(vec![]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    let big = h.cwd().join("big.txt");
+    std::fs::write(&big, "line of text\n".repeat(1500)).unwrap();
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    // 9k reported + a ~7.5k-token result: over the 15k threshold only once the result is counted.
+    h.provider.push(MockTurn::tool("Read", json!({"file_path": big})).with_usage(usage(9_000)));
+    h.provider.push(MockTurn::text("<analysis>a</analysis><summary>Read big.txt.</summary>"));
+    h.provider.push(MockTurn::text("done"));
+    let r = e.submit(prompt("read big.txt")).await;
+    assert_eq!(r.result.as_deref(), Some("done"));
+    let reqs = h.provider.requests();
+    assert_eq!(reqs[1].tool_choice, Some(json!({"type": "none"})), "the second request is the summary");
+}
+
+/// A server that reports no usage still gets a context size (estimated), so compaction works.
+#[tokio::test]
+async fn context_is_estimated_when_the_server_reports_no_usage() {
+    let h = Harness::new(vec![MockTurn::text("hello").with_usage(forge_types::Usage::default())]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("hi")).await;
+    assert_eq!(e.state.context_tokens, 0);
+    assert!(e.projected_context_tokens() > 0, "estimated from the conversation, the system prompt and tools");
 }
 
 #[tokio::test]
