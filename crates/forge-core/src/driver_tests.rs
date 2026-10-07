@@ -842,3 +842,48 @@ async fn loop_md_and_scheduled_commands() {
     assert!(last_user_text(t.p.requests().last().unwrap()).contains("\"/help\""));
     assert!(!t.d.has_pending(), "a one-shot is gone after it fires");
 }
+
+#[tokio::test]
+async fn advisor_is_consulted_only_while_set() {
+    let mut t = driver();
+    let tool_names = |r: &forge_types::MessagesRequest| r.tools.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
+    assert!(local(&mut t.d, "/advisor").await.starts_with("No advisor is set"));
+    t.p.push(MockTurn::text("ok"));
+    run(&mut t.d, "refactor the parser").await;
+    assert!(!tool_names(&t.p.requests()[0]).contains(&"Advisor".to_string()), "hidden until set");
+
+    let out = local(&mut t.d, "/advisor sonnet").await;
+    assert_eq!(out, "Advisor set to Sonnet 5.5 (claude-sonnet-5-5). Forge can now ask it for advice; each question is a request to that model. (This session only.)");
+    let cost_before = t.d.engine.state.total_cost_usd;
+    t.p.push(MockTurn::tool("Advisor", serde_json::json!({"question": "Is splitting the lexer safe?"})));
+    t.p.push(
+        MockTurn::text("Add a regression test for nested quotes first.")
+            .with_usage(forge_types::Usage { input_tokens: 1_000_000, ..Default::default() }),
+    );
+    t.p.push(MockTurn::text("Will do."));
+    run(&mut t.d, "go ahead").await;
+    let reqs = t.p.requests();
+    assert!(tool_names(&reqs[1]).contains(&"Advisor".to_string()));
+    let ask = &reqs[2];
+    assert_eq!(ask.model, "claude-sonnet-5-5");
+    assert!(ask.tools.is_empty() && ask.system[0].text.contains("advising a coding agent"));
+    let q = last_user_text(ask);
+    assert!(
+        q.contains("USER: refactor the parser") && q.contains("The agent asks:\\nIs splitting the lexer safe?"),
+        "{q}"
+    );
+    let result = serde_json::to_string(&reqs[3].messages).unwrap();
+    assert!(result.contains("Add a regression test for nested quotes first."), "{result}");
+    // A million input tokens on Sonnet 5.5: $2, counted in the session.
+    assert!(t.d.engine.state.total_cost_usd - cost_before >= 2.0, "{}", t.d.engine.state.total_cost_usd);
+    assert!(t.d.engine.state.model_usage.contains_key("claude-sonnet-5-5"));
+
+    // Off: hidden again, and a call by name fails.
+    local(&mut t.d, "/advisor off").await;
+    t.p.push(MockTurn::tool("Advisor", serde_json::json!({"question": "?"})));
+    t.p.push(MockTurn::text("fine"));
+    run(&mut t.d, "again").await;
+    let last = t.p.requests().last().unwrap().clone();
+    assert!(!tool_names(&last).contains(&"Advisor".to_string()));
+    assert!(serde_json::to_string(&last.messages).unwrap().contains("is_error"), "the hidden tool isn't run");
+}

@@ -20,6 +20,8 @@
   summarize part of the conversation), `/branch`, `/resume`, `/cd`,
   `/reload-skills`, `/reload-plugins`; `/clear` now starts a new session
   and keeps the old one resumable.
+- `/advisor <model>`: an Advisor tool the model can consult; it sees the
+  conversation so far, and its cost counts toward the session.
 - `/import`: MCP servers and instructions from Codex, Gemini CLI and
   Cursor, planned first and applied with `--yes`, following the MCP trust
   rules.

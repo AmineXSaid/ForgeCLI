@@ -1,5 +1,6 @@
 //! Builds a ready-to-run session from launch options and settings.
 
+pub mod advisor;
 pub mod commands;
 pub mod debug;
 pub mod doctor;
@@ -216,6 +217,8 @@ pub struct Session {
     pub prompt: PromptSpec,
     /// Scheduled prompts (`None` when FORGE_DISABLE_CRON is set).
     pub scheduler: Option<schedule_tools::SharedScheduler>,
+    /// The advisor model, while one is set.
+    pub advisor: advisor::AdvisorCell,
     /// Custom slash commands, skills, output styles and plugins (M5).
     pub commands: Vec<forge_agents::CommandDef>,
     pub skills: Vec<forge_agents::SkillDef>,
@@ -506,6 +509,10 @@ pub fn build_session(
             tools.register(t);
         }
     }
+    // The Advisor tool, shown only while an advisor model is set (`/advisor`).
+    let advisor: advisor::AdvisorCell =
+        Arc::new(std::sync::RwLock::new(settings.str("/advisorModel").map(forge_api::resolve_model)));
+    tools.register(Arc::new(advisor::Advisor { provider: provider.clone(), model: advisor.clone() }));
     let agent_store =
         (!opts.no_session_persistence).then(|| SessionStore::new(store.root.join("agents").join(&session_id)));
     let agent_rt_slot: Arc<std::sync::OnceLock<Arc<forge_agents::AgentRuntime>>> = Arc::new(std::sync::OnceLock::new());
@@ -527,6 +534,7 @@ pub fn build_session(
     let mut tool_ctx = ToolContext::new(&cwd);
     tool_ctx.session_id = session_id.clone();
     tool_ctx.spill_dir = Some(spill_dir);
+    tool_ctx.transcript_path = transcript.path().map(Path::to_path_buf);
     {
         let mut wd = tool_ctx.working_dirs.write().unwrap();
         wd.extend(add_dirs.iter().cloned());
@@ -758,6 +766,7 @@ pub fn build_session(
         init,
         prompt,
         scheduler,
+        advisor,
         commands,
         skills,
         styles,

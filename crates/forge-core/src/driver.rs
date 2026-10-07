@@ -116,6 +116,8 @@ pub struct Driver {
     pub(crate) self_paced: Option<SelfPaced>,
     /// The pending wakeup is a fallback check.
     pub(crate) fallback_pending: bool,
+    /// The advisor model, while one is set (`/advisor`).
+    pub advisor: crate::advisor::AdvisorCell,
 }
 
 /// Book-keeping for a self-paced loop: did the iteration reschedule or stop?
@@ -181,6 +183,7 @@ impl Driver {
             scheduler: s.scheduler,
             self_paced: None,
             fallback_pending: false,
+            advisor: s.advisor,
         }
     }
 
@@ -304,6 +307,7 @@ impl Driver {
             next.prompt.output_style = self.prompt.output_style.clone();
             next.info.init.output_style = self.info.init.output_style.clone();
         }
+        *next.advisor.write().unwrap() = self.advisor.read().unwrap().clone();
         next.prompt.replace = self.prompt.replace.clone();
         next.prompt.append = self.prompt.append.clone();
         next.rebuild_system();

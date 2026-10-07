@@ -107,6 +107,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Builtin::Loop => super::looping::run(d, args).await,
         Builtin::Feedback => super::feedback::run(d, args),
         Builtin::Import => super::importing::run(d, args),
+        Builtin::Advisor => super::settings::advisor(d, args),
         Builtin::Rewind => super::switching::rewind(d, args).await,
         Builtin::Resume => super::switching::resume(d, args).await,
         Builtin::Branch => super::switching::branch(d, args).await,

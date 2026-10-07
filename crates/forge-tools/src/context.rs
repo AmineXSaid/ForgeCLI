@@ -41,6 +41,9 @@ pub struct ToolContext {
     pub sandbox: SandboxCell,
     /// Where output too long for a result is saved in full (`None` = not saved).
     pub spill_dir: Option<PathBuf>,
+    /// The session's transcript file (`None` without session persistence), for
+    /// tools that look at the conversation so far (Advisor).
+    pub transcript_path: Option<PathBuf>,
 }
 
 impl ToolContext {
@@ -60,6 +63,7 @@ impl ToolContext {
             max_output_chars: 30_000,
             sandbox: Arc::new(RwLock::new(None)),
             spill_dir: None,
+            transcript_path: None,
         }
     }
 

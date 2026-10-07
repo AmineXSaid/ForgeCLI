@@ -637,3 +637,42 @@ pub(super) fn sandbox(d: &mut Driver, args: &str) -> Exec {
         saved,
     ]))
 }
+
+pub(super) fn advisor(d: &mut Driver, args: &str) -> Exec {
+    let current = d.advisor.read().unwrap().clone();
+    match args {
+        "" | "status" => ok(match current {
+            Some(m) => format!(
+                "Advisor: {} ({m}). Forge can ask it for advice at key moments; /advisor off stops that.",
+                model_info_or_default(&m).display_name
+            ),
+            None => "No advisor is set. /advisor <model> lets Forge consult a second model (for example /advisor \
+                     opus) before risky changes, when stuck, and before calling work done."
+                .to_string(),
+        }),
+        "off" | "none" => {
+            *d.advisor.write().unwrap() = None;
+            let saved = save_default(d, Scope::User, &["advisorModel"], None);
+            ok(join(&["Advisor off.".to_string(), saved]))
+        }
+        name => {
+            let id = forge_api::resolve_model(name);
+            if model_info(&id).is_none()
+                && d.engine.cfg.max_budget_usd.is_some()
+                && !d.engine.cfg.pricing.contains_key(&id)
+            {
+                return err(format!("{id} has no known pricing, so --max-budget-usd couldn't count its cost."));
+            }
+            *d.advisor.write().unwrap() = Some(id.clone());
+            let saved = save_default(d, Scope::User, &["advisorModel"], Some(json!(name)));
+            let shown = match model_info(&id) {
+                Some(m) => format!("{} ({id})", m.display_name),
+                None => id.clone(),
+            };
+            ok(join(&[
+                format!("Advisor set to {shown}. Forge can now ask it for advice; each question is a request to that model."),
+                saved,
+            ]))
+        }
+    }
+}

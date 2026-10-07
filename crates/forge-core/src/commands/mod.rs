@@ -69,6 +69,7 @@ impl Surfaces {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     AddDir,
+    Advisor,
     Agents,
     Autocompact,
     Branch,
@@ -145,6 +146,7 @@ macro_rules! cmd {
 /// Every built-in command, alphabetically.
 pub static BUILTINS: &[CommandSpec] = &[
     cmd!(AddDir, "add-dir", [], "<path> [--save]", "Add a working directory for this session"),
+    cmd!(Advisor, "advisor", [], "[model|off]", "Let Forge consult a second model for advice at key moments"),
     cmd!(Agents, "agents", [], "", "List subagents, and how to add your own"),
     cmd!(
         Autocompact,
