@@ -17,6 +17,7 @@ mod feedback;
 mod importing;
 mod looping;
 mod mcp;
+pub mod picker;
 mod run;
 mod session;
 mod settings;

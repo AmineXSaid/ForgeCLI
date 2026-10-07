@@ -10,7 +10,10 @@
 - Permission, question and plan-approval dialogs; Esc and Ctrl-C interrupt;
   Shift+Tab cycles the permission mode; messages typed during a turn are
   queued.
-- Prompt history per project directory in `<state>/history.jsonl`.
+- Prompt history per project directory in `<state>/history.jsonl`; Ctrl+R
+  searches it.
+- Pickers for `/model`, `/resume`, `/rewind`, `/output-style` and
+  `/permissions` typed without an argument; `@` completes project paths.
 - `--no-tui` or `FORGE_TUI=0` keeps the line REPL.
 
 ### Slash commands

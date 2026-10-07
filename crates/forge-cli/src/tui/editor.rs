@@ -55,7 +55,6 @@ impl Editor {
         t
     }
 
-    #[cfg(test)]
     pub fn history(&self) -> &[String] {
         &self.history
     }
@@ -68,6 +67,20 @@ impl Editor {
             self.cursor += 1;
         }
         self.browsing = None;
+    }
+
+    /// Replace the `n` characters before the cursor with `with` (a completion).
+    pub fn replace_back(&mut self, n: usize, with: &str) {
+        let from = self.cursor.saturating_sub(n);
+        self.text.drain(from..self.cursor);
+        self.cursor = from;
+        self.insert(with);
+    }
+
+    /// The word before the cursor: its start and its text (up to whitespace).
+    pub fn word_before_cursor(&self) -> (usize, String) {
+        let start = self.text[..self.cursor].iter().rposition(|c| c.is_whitespace()).map(|i| i + 1).unwrap_or(0);
+        (start, self.text[start..self.cursor].iter().collect())
     }
 
     pub fn backspace(&mut self) {

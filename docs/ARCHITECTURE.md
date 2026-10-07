@@ -542,8 +542,8 @@ front end (print, stream-json, REPL, TUI) passes each input to
   `is_error` on failure, so every output format and exit status works
   unchanged.
 - Commands need no front-end code. A command that needs a choice takes
-  its answer as arguments, so it works in `-p`; the TUI (M8) will draw a
-  picker that fills those arguments in.
+  its answer as arguments, so it works in `-p`; the TUI draws a picker
+  whose rows are those arguments (`commands::picker`).
 
 **Changing the running session.** Settings commands change the live
 objects and never rebuild the session:

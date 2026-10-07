@@ -64,8 +64,14 @@ model, context used, cost). Design and key table: `docs/TUI.md`.
 | Ctrl+D | Exit (empty prompt) |
 | Shift+Tab | Cycle the permission mode: default, accept edits, plan |
 | Up / Down | Move between lines; earlier prompts from the first or last line; move in menus and dialogs |
-| Tab | Complete the highlighted command |
+| Tab | Complete the highlighted command or `@` path |
+| Ctrl+R | Search earlier prompts; Ctrl+R again for older ones, Esc to cancel |
 | Ctrl+L | Redraw |
+
+`/model`, `/resume`, `/rewind`, `/output-style` and `/permissions` without
+an argument open a picker (type to filter, Enter to choose). Each choice runs
+the same command with its argument, as you could type it. Typing `@` and part
+of a path lists matching project files.
 
 When you leave, Forge prints `Resume this conversation with: forge --resume <id>`.
 

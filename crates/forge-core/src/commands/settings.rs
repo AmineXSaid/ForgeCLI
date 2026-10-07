@@ -98,7 +98,7 @@ fn join(parts: &[String]) -> String {
     parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join(" ")
 }
 
-fn window_label(n: u64) -> String {
+pub(super) fn window_label(n: u64) -> String {
     if n >= 1_000_000 && n.is_multiple_of(1_000_000) {
         format!("{}M", n / 1_000_000)
     } else {

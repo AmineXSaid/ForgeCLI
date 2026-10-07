@@ -203,6 +203,38 @@ pub fn append_history(path: &Path, cwd: &str, text: &str) -> std::io::Result<()>
     writeln!(f, "{}", serde_json::json!({"text": text, "cwd": cwd}))
 }
 
+// ---- `@` completion ----
+
+/// Most paths offered for `@` completion.
+const MAX_FILES: usize = 20_000;
+
+/// The project's files and directories (relative, `/`-separated; directories end in `/`),
+/// skipping what `.gitignore` and hidden-file rules skip.
+pub fn project_files(root: &Path) -> Vec<String> {
+    let mut out = vec![];
+    for e in ignore::WalkBuilder::new(root).build().flatten() {
+        let Ok(rel) = e.path().strip_prefix(root) else { continue };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let mut p = rel.to_string_lossy().replace('\\', "/");
+        if e.file_type().is_some_and(|t| t.is_dir()) {
+            p.push('/');
+        }
+        out.push(p);
+        if out.len() >= MAX_FILES {
+            break;
+        }
+    }
+    out
+}
+
+fn walk_files(root: String, ui: mpsc::UnboundedSender<UiEvent>) {
+    tokio::task::spawn_blocking(move || {
+        let _ = ui.send(UiEvent::Files(project_files(Path::new(&root))));
+    });
+}
+
 // ---- the loop ----
 
 /// The interactive UI: until `/exit`, Ctrl-D or Ctrl-C twice.
@@ -229,7 +261,12 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     }
 
     let (to_session, rx) = mpsc::unbounded_channel::<ToSession>();
-    // The session task holds the only senders (here and in its sink and prompter): when it
+    walk_files(cwd.clone(), ui_tx.clone());
+    // Re-walked when the session moves (/cd). A weak sender, so the channel still
+    // closes when the session task ends.
+    let files_tx = ui_tx.downgrade();
+    let mut files_root = cwd.clone();
+    // The session task holds the other senders (here and in its sink and prompter): when it
     // ends, the UI sees the channel close.
     let task = tokio::spawn(session::run(driver, rx, ui_tx));
     let guard = setup().map_err(|e| Fail::config(format!("cannot set up the terminal: {e}")))?;
@@ -265,6 +302,12 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         while let Some(t) = app.next_queued() {
             send(t, &to_session);
         }
+        if !app.status.cwd.is_empty() && app.status.cwd != files_root {
+            files_root = app.status.cwd.clone();
+            if let Some(tx) = files_tx.upgrade() {
+                walk_files(files_root.clone(), tx);
+            }
+        }
         let now = Instant::now();
         if app.dirty && now.duration_since(last_draw) >= FRAME {
             let max = screen.rows().saturating_sub(1).max(1);
@@ -292,6 +335,9 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     for a in app.on_term_event(ev) {
                         match a {
                             Action::Send(t) => send(t, &to_session),
+                            Action::Picker(t) => {
+                                let _ = to_session.send(ToSession::Picker(t));
+                            }
                             Action::Interrupt => {
                                 live.handle().interrupt();
                                 app.close_dialog_if_stale();
@@ -399,5 +445,19 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn project_files_follow_ignore_rules() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("src")).unwrap();
+        std::fs::create_dir_all(d.path().join("target")).unwrap();
+        std::fs::write(d.path().join("src/main.rs"), "").unwrap();
+        std::fs::write(d.path().join("target/out"), "").unwrap();
+        std::fs::write(d.path().join(".gitignore"), "target/\n").unwrap();
+        std::process::Command::new("git").arg("init").arg("-q").current_dir(d.path()).status().ok();
+        let mut files = project_files(d.path());
+        files.sort();
+        assert_eq!(files, ["src/", "src/main.rs"]);
     }
 }

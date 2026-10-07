@@ -30,7 +30,7 @@ pub(super) async fn clear(d: &mut Driver, args: &str) -> Exec {
     ok(format!("Conversation cleared. The previous one is saved{name}: /resume {old} brings it back."))
 }
 
-fn age(t: std::time::SystemTime) -> String {
+pub(super) fn age(t: std::time::SystemTime) -> String {
     let secs = t.elapsed().map(|d| d.as_secs()).unwrap_or(0);
     match secs {
         0..=59 => "just now".into(),
@@ -40,7 +40,7 @@ fn age(t: std::time::SystemTime) -> String {
     }
 }
 
-fn sessions(d: &Driver) -> Vec<forge_session::SessionSummary> {
+pub(super) fn sessions(d: &Driver) -> Vec<forge_session::SessionSummary> {
     let store = match &d.rebuild_store() {
         Some(root) => forge_session::SessionStore::new(root.clone()),
         None => forge_session::SessionStore::default_store(),

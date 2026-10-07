@@ -1286,3 +1286,52 @@ async fn subtasks_stop_on_request_and_are_orphaned_by_clear() {
     assert!(!next.contains("subtask_2"), "{next}");
     assert!(!t.d.has_pending());
 }
+
+#[tokio::test]
+async fn pickers_list_choices_that_are_command_text() {
+    use crate::commands::picker::{picker, Pick};
+    let mut t = driver_with(accept_edits);
+    let a = t.proj.join("a.txt");
+    for turn in [write_turn(&a, "one"), MockTurn::text("created"), MockTurn::text("hi")] {
+        t.p.push(turn);
+    }
+    run(&mut t.d, "create a").await;
+    run(&mut t.d, "hello").await;
+
+    // Commands with an argument, and others, run as typed.
+    assert!(picker(&t.d, "/model opus").is_none() && picker(&t.d, "/status").is_none());
+    assert!(picker(&t.d, "/resume").is_none(), "nothing to resume: the command says so");
+
+    let m = picker(&t.d, "/model").unwrap();
+    assert_eq!(m.choices.len(), forge_api::models::MODELS.len());
+    let cur = m.choices.iter().find(|c| c.current).unwrap();
+    assert_eq!(cur.pick, Pick::Run(format!("/model {}", t.d.engine.handle().model())));
+
+    // Rewind: newest first; the second step lists actions for that prompt number.
+    let r = picker(&t.d, "/undo").unwrap();
+    assert_eq!(r.choices.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["hello", "create a"]);
+    assert_eq!(r.choices[1].pick, Pick::Step("/rewind 1".into()));
+    assert_eq!(r.choices[1].detail, "1 file(s) changed since");
+    let step = picker(&t.d, "/rewind 1").unwrap();
+    assert_eq!(step.choices.len(), 5);
+    assert_eq!(step.choices[0].pick, Pick::RunThenEdit { command: "/rewind 1 both".into(), edit: "create a".into() });
+    let no_code = picker(&t.d, "/rewind 2").unwrap();
+    assert!(no_code.choices.iter().all(|c| c.label != "Restore the code"), "nothing changed after prompt 2");
+    assert!(picker(&t.d, "/rewind 9").is_none());
+    // What a row runs is what a person could type.
+    let Pick::Run(cmd) = &step.choices[2].pick else { panic!() };
+    assert_eq!(local(&mut t.d, cmd).await, "Restored 0 file(s), deleted 1 new one(s). The conversation is unchanged.");
+
+    let s = picker(&t.d, "/output-style").unwrap();
+    assert!(s.choices.iter().any(|c| c.current && c.label == "default"));
+    local(&mut t.d, "/permissions add allow Bash(npm test:*) --scope session").await;
+    let p = picker(&t.d, "/allowed-tools").unwrap();
+    assert_eq!(p.choices[0].pick, Pick::Run("/permissions remove Bash(npm test:*)".into()));
+    assert!(p.choices.iter().any(|c| c.pick == Pick::Edit("/permissions add deny ".into())));
+
+    // Another conversation to resume.
+    local(&mut t.d, "/clear").await;
+    let r = picker(&t.d, "/resume").unwrap();
+    assert_eq!(r.choices.len(), 1);
+    assert!(matches!(&r.choices[0].pick, Pick::Run(c) if c.starts_with("/resume ")));
+}

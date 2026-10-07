@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use forge_core::commands::picker::picker;
 use forge_core::commands::Surface;
 use forge_core::{Driver, Flow};
 use forge_engine::{EngineEvent, EventSink, PermissionAnswer, PermissionPrompt, PermissionPrompter, TurnResult};
@@ -19,6 +20,8 @@ use super::app::{CommandInfo, StatusView, UiEvent};
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToSession {
     Input(String),
+    /// The picker for a command's second step (`/rewind 2`).
+    Picker(String),
     Exit,
 }
 
@@ -115,8 +118,19 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         let wait = driver.next_wait();
         tokio::select! {
             msg = rx.recv() => match msg {
+                Some(ToSession::Picker(text)) => match picker(&driver, &text) {
+                    Some(p) => {
+                        let _ = ui.send(UiEvent::Picker(p));
+                    }
+                    None => {
+                        let _ = ui.send(UiEvent::Reply { text: "Nothing to choose from.".into(), is_error: true });
+                    }
+                },
                 Some(ToSession::Input(text)) => {
-                    if driver.input(MessageContent::Text(text), &mut report).await == Flow::Exit {
+                    // A command typed without its choice opens a picker instead.
+                    if let Some(p) = picker(&driver, &text) {
+                        let _ = ui.send(UiEvent::Picker(p));
+                    } else if driver.input(MessageContent::Text(text), &mut report).await == Flow::Exit {
                         let _ = ui.send(UiEvent::Exit);
                         break;
                     }
@@ -304,6 +318,14 @@ mod tests {
         assert!(result.unwrap_or_default().contains("forge-tui-ok"), "the allowed command ran");
         let evs = until_idle(&mut t.ui).await;
         assert_eq!(streamed_text(&evs), "second answer", "the queued input ran after Idle");
+
+        // A command without its choice opens a picker; a second step is asked for by text.
+        t.to.send(ToSession::Input("/model".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Picker(p) if p.choices.iter().any(|c| c.current))));
+        t.to.send(ToSession::Picker("/rewind 1".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        assert!(evs.iter().any(|e| matches!(e, UiEvent::Picker(p) if p.choices.len() >= 4)));
 
         // /exit ends the session with Exit.
         t.to.send(ToSession::Input("/exit".into())).unwrap();

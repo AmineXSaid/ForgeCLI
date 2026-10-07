@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use forge_core::commands::picker::{Pick, Picker};
 use forge_engine::{EngineEvent, NoticeLevel, PermissionAnswer, PermissionPrompt};
 use forge_permissions::{PermissionMode, Suggestion};
 use forge_types::{ContentBlock, Delta, StreamEvent};
@@ -51,6 +52,10 @@ pub enum UiEvent {
     },
     Status(StatusView),
     Commands(Vec<CommandInfo>),
+    /// The project's files, for `@` completion.
+    Files(Vec<String>),
+    /// Choices for a command typed without its argument (`/model`, `/resume`, ...).
+    Picker(Picker),
     /// The session started work by itself (a scheduled task).
     Busy,
     /// The session is ready for the next input.
@@ -63,6 +68,8 @@ pub enum UiEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Send(String),
+    /// Ask the session for the picker of this command text (a second step).
+    Picker(String),
     Interrupt,
     SetMode(PermissionMode),
     Exit,
@@ -78,20 +85,46 @@ struct Question {
 
 #[derive(Debug)]
 enum DialogKind {
-    Permission { always: Option<String> },
+    Permission {
+        always: Option<String>,
+    },
     Plan,
-    Questions { questions: Vec<Question>, at: usize, answers: serde_json::Map<String, Value>, picked: Vec<bool> },
+    Questions {
+        questions: Vec<Question>,
+        at: usize,
+        answers: serde_json::Map<String, Value>,
+        picked: Vec<bool>,
+    },
+    /// Typing filters the rows.
+    Picker {
+        picker: Picker,
+        filter: String,
+    },
 }
 
 /// An open question for the person.
 pub struct Dialog {
-    prompt: PermissionPrompt,
+    /// The question being answered (none for a picker).
+    prompt: Option<PermissionPrompt>,
     reply: Option<oneshot::Sender<PermissionAnswer>>,
     kind: DialogKind,
     selected: usize,
     /// "Type an answer" in a question.
     typing: Option<Editor>,
 }
+
+/// Ctrl+R: a search back through prompt history.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Search {
+    pub query: String,
+    /// The history entry shown.
+    pub hit: Option<usize>,
+    /// What was typed before the search, for Esc.
+    draft: String,
+}
+
+/// Rows the `@` menu offers at most.
+const FILE_MATCHES: usize = 50;
 
 /// Two presses of Esc or Ctrl-C within this make the second one count.
 const DOUBLE_PRESS: Duration = Duration::from_millis(800);
@@ -116,6 +149,8 @@ pub struct App {
     streamed: bool,
     pub dialog: Option<Dialog>,
     commands: Vec<CommandInfo>,
+    files: Vec<String>,
+    pub search: Option<Search>,
     pub menu_selected: usize,
     menu_dismissed: bool,
     last_esc: Option<Instant>,
@@ -181,6 +216,8 @@ impl App {
             streamed: false,
             dialog: None,
             commands: vec![],
+            files: vec![],
+            search: None,
             menu_selected: 0,
             menu_dismissed: false,
             last_esc: None,
@@ -282,6 +319,18 @@ impl App {
             }
             UiEvent::Status(s) => self.status = s,
             UiEvent::Commands(c) => self.commands = c,
+            UiEvent::Files(f) => self.files = f,
+            UiEvent::Picker(picker) => {
+                self.flush_live();
+                let selected = picker.choices.iter().position(|c| c.current).unwrap_or(0);
+                self.dialog = Some(Dialog {
+                    prompt: None,
+                    reply: None,
+                    kind: DialogKind::Picker { picker, filter: String::new() },
+                    selected,
+                    typing: None,
+                });
+            }
             UiEvent::Busy => {
                 if !self.busy {
                     self.busy = true;
@@ -453,7 +502,7 @@ impl App {
             }
             _ => DialogKind::Permission { always: prompt.suggestions.first().and_then(rule_text) },
         };
-        self.dialog = Some(Dialog { prompt, reply: Some(reply), kind, selected: 0, typing: None });
+        self.dialog = Some(Dialog { prompt: Some(prompt), reply: Some(reply), kind, selected: 0, typing: None });
     }
 
     fn answer(&mut self, a: PermissionAnswer) {
@@ -496,15 +545,39 @@ impl App {
                 v.push(("Type an answer".into(), String::new()));
                 v
             }
+            DialogKind::Picker { .. } => self
+                .picker_rows()
+                .into_iter()
+                .map(|c| (if c.current { format!("{} ✔", c.label) } else { c.label.clone() }, c.detail.clone()))
+                .collect(),
         }
+    }
+
+    /// The open picker's rows that match its filter.
+    fn picker_rows(&self) -> Vec<&forge_core::commands::picker::Choice> {
+        let Some(Dialog { kind: DialogKind::Picker { picker, filter }, .. }) = &self.dialog else { return vec![] };
+        let f = filter.to_lowercase();
+        picker
+            .choices
+            .iter()
+            .filter(|c| f.is_empty() || c.label.to_lowercase().contains(&f) || c.detail.to_lowercase().contains(&f))
+            .collect()
     }
 
     /// The dialog's title and body lines.
     pub fn dialog_text(&self) -> (String, Vec<String>) {
         let Some(d) = &self.dialog else { return (String::new(), vec![]) };
         match &d.kind {
+            DialogKind::Picker { picker, filter } => {
+                let body = if filter.is_empty() {
+                    vec!["Type to filter".to_string()]
+                } else {
+                    vec![format!("Filter: {filter}")]
+                };
+                (picker.title.clone(), body)
+            }
             DialogKind::Permission { .. } => {
-                let p = &d.prompt;
+                let Some(p) = &d.prompt else { return (String::new(), vec![]) };
                 let arg = summarize(&p.tool_name, &p.input);
                 let mut body = vec![];
                 if p.tool_name == "Bash" {
@@ -538,6 +611,27 @@ impl App {
     fn dialog_key(&mut self, key: KeyEvent) -> Vec<Action> {
         let n = self.dialog_options().len();
         let Some(d) = self.dialog.as_mut() else { return vec![] };
+        if let DialogKind::Picker { filter, .. } = &mut d.kind {
+            match key.code {
+                KeyCode::Up => d.selected = d.selected.checked_sub(1).unwrap_or(n.saturating_sub(1)),
+                KeyCode::Down | KeyCode::Tab => d.selected = (d.selected + 1) % n.max(1),
+                KeyCode::Enter if n > 0 => {
+                    let i = d.selected.min(n - 1);
+                    return self.choose(i);
+                }
+                KeyCode::Esc => self.dialog = None,
+                KeyCode::Backspace => {
+                    filter.pop();
+                    d.selected = 0;
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    filter.push(c);
+                    d.selected = 0;
+                }
+                _ => {}
+            }
+            return vec![];
+        }
         // Typing a free-form answer.
         if let Some(e) = d.typing.as_mut() {
             match key.code {
@@ -590,13 +684,29 @@ impl App {
         let allow = |updated_permissions| PermissionAnswer::Allow { updated_input: None, updated_permissions };
         let stop = |message: &str| PermissionAnswer::Deny { message: message.to_string(), interrupt: true };
         match &mut d.kind {
+            DialogKind::Picker { .. } => {
+                let Some(pick) = self.picker_rows().get(i).map(|c| c.pick.clone()) else { return vec![] };
+                self.dialog = None;
+                return match pick {
+                    Pick::Run(text) => self.submit(text),
+                    Pick::RunThenEdit { command, edit } => {
+                        let a = self.submit(command);
+                        self.editor.set(&edit);
+                        a
+                    }
+                    Pick::Step(text) => vec![Action::Picker(text)],
+                    Pick::Edit(text) => {
+                        self.editor.set(&text);
+                        vec![]
+                    }
+                };
+            }
             DialogKind::Permission { always } => {
                 let always_row = always.is_some();
+                let suggestions = d.prompt.as_ref().map(|p| p.suggestions.clone()).unwrap_or_default();
                 let a = match (i, always_row) {
                     (0, _) => allow(vec![]),
-                    (1, true) => {
-                        allow(d.prompt.suggestions.iter().filter_map(|s| serde_json::to_value(s).ok()).collect())
-                    }
+                    (1, true) => allow(suggestions.iter().filter_map(|s| serde_json::to_value(s).ok()).collect()),
                     _ => stop("The user said no. Wait for them to say what to do instead."),
                 };
                 self.answer(a);
@@ -644,7 +754,7 @@ impl App {
             d.selected = 0;
             return;
         }
-        let mut input = d.prompt.input.clone();
+        let mut input = d.prompt.as_ref().map(|p| p.input.clone()).unwrap_or_default();
         input["answers"] = Value::Object(std::mem::take(answers));
         self.answer(PermissionAnswer::Allow { updated_input: Some(input), updated_permissions: vec![] });
     }
@@ -676,6 +786,81 @@ impl App {
         starts
     }
 
+    /// Files matching the `@word` before the cursor: name matches first, then shorter paths.
+    pub fn file_menu(&self) -> Vec<&str> {
+        if self.menu_dismissed || self.dialog.is_some() || self.search.is_some() {
+            return vec![];
+        }
+        let (_, word) = self.editor.word_before_cursor();
+        let Some(q) = word.strip_prefix('@') else { return vec![] };
+        let q = q.to_lowercase();
+        let mut hits: Vec<(bool, usize, &str)> = self
+            .files
+            .iter()
+            .filter(|f| f.to_lowercase().contains(&q))
+            .map(|f| {
+                let name = f.trim_end_matches('/').rsplit('/').next().unwrap_or(f).to_lowercase();
+                (!name.starts_with(&q), f.len(), f.as_str())
+            })
+            .collect();
+        hits.sort();
+        hits.into_iter().take(FILE_MATCHES).map(|(_, _, f)| f).collect()
+    }
+
+    fn complete_file(&mut self, path: &str) {
+        let (_, word) = self.editor.word_before_cursor();
+        self.editor.replace_back(word.chars().count(), &format!("@{path} "));
+    }
+
+    // ---- history search (Ctrl+R) ----
+
+    /// The newest history entry at or before `from` that contains `query`.
+    fn find_history(&self, query: &str, from: Option<usize>) -> Option<usize> {
+        let h = self.editor.history();
+        let end = from.map(|f| f + 1).unwrap_or(h.len()).min(h.len());
+        (0..end).rev().find(|&i| h[i].contains(query))
+    }
+
+    fn search_key(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let mut s = self.search.take()?;
+        match key.code {
+            KeyCode::Char('r') if ctrl => {
+                let older = s.hit.and_then(|h| h.checked_sub(1)).and_then(|o| self.find_history(&s.query, Some(o)));
+                s.hit = older.or(s.hit);
+            }
+            // Esc or Ctrl+G: back to what was typed.
+            KeyCode::Esc => {
+                self.editor.set(&s.draft);
+                return Some(vec![]);
+            }
+            KeyCode::Char('g') if ctrl => {
+                self.editor.set(&s.draft);
+                return Some(vec![]);
+            }
+            KeyCode::Backspace => {
+                s.query.pop();
+                s.hit = self.find_history(&s.query, None);
+            }
+            KeyCode::Char(c) if !ctrl => {
+                s.query.push(c);
+                s.hit = self.find_history(&s.query, None);
+            }
+            // Enter takes the match into the input box; any other key takes it and then acts.
+            KeyCode::Enter => return Some(vec![]),
+            _ => return None,
+        }
+        match s.hit {
+            Some(h) => {
+                let text = self.editor.history()[h].clone();
+                self.editor.set(&text);
+            }
+            None => self.editor.set(&s.draft),
+        }
+        self.search = Some(s);
+        Some(vec![])
+    }
+
     // ---- keys ----
 
     pub fn on_term_event(&mut self, ev: Event) -> Vec<Action> {
@@ -704,6 +889,7 @@ impl App {
         let now = Instant::now();
         // Ctrl-C: clear, interrupt, or (twice) exit; it works in dialogs too.
         if ctrl && key.code == KeyCode::Char('c') {
+            self.search = None;
             if self.dialog.is_some() {
                 self.answer(PermissionAnswer::Deny { message: "The user interrupted.".into(), interrupt: true });
                 return vec![Action::Interrupt];
@@ -725,8 +911,42 @@ impl App {
         if self.dialog.is_some() {
             return self.dialog_key(key);
         }
+        if self.search.is_some() {
+            if let Some(a) = self.search_key(key) {
+                return a;
+            }
+        }
+        if ctrl && key.code == KeyCode::Char('r') {
+            let draft = self.editor.text();
+            self.search = Some(Search { query: String::new(), hit: None, draft });
+            return vec![];
+        }
         if ctrl && key.code == KeyCode::Char('d') && self.editor.is_empty() {
             return vec![Action::Exit];
+        }
+        let files = self.file_menu().len();
+        if files > 0 {
+            match key.code {
+                KeyCode::Up => {
+                    self.menu_selected = self.menu_selected.checked_sub(1).unwrap_or(files - 1);
+                    return vec![];
+                }
+                KeyCode::Down => {
+                    self.menu_selected = (self.menu_selected + 1) % files;
+                    return vec![];
+                }
+                KeyCode::Tab | KeyCode::Enter if !key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) => {
+                    let path = self.file_menu()[self.menu_selected.min(files - 1)].to_string();
+                    self.complete_file(&path);
+                    self.menu_selected = 0;
+                    return vec![];
+                }
+                KeyCode::Esc => {
+                    self.menu_dismissed = true;
+                    return vec![];
+                }
+                _ => {}
+            }
         }
         if key.code == KeyCode::BackTab {
             let cur = MODES.iter().position(|m| m.as_str() == self.status.mode).unwrap_or(0);
@@ -820,7 +1040,7 @@ impl App {
         }
         // Typing changes the menu: show it again from the top.
         self.menu_dismissed = false;
-        if self.menu().len() != menu_len {
+        if self.menu().len() != menu_len || self.file_menu().len() != files {
             self.menu_selected = 0;
         }
         vec![]
@@ -1070,5 +1290,112 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn picker() -> Picker {
+        use forge_core::commands::picker::Choice;
+        let c = |label: &str, pick: Pick, current: bool| Choice {
+            label: label.into(),
+            detail: String::new(),
+            pick,
+            current,
+        };
+        Picker {
+            title: "Pick".into(),
+            choices: vec![
+                c("Opus", Pick::Run("/model opus".into()), false),
+                c("Haiku", Pick::Run("/model haiku".into()), true),
+                c("Step", Pick::Step("/rewind 1".into()), false),
+                c("Back", Pick::RunThenEdit { command: "/rewind 1 both".into(), edit: "old prompt".into() }, false),
+                c("Add", Pick::Edit("/permissions add allow ".into()), false),
+            ],
+        }
+    }
+
+    #[test]
+    fn pickers_filter_and_run_command_text() {
+        let mut a = app();
+        a.on_event(UiEvent::Picker(picker()));
+        assert_eq!(a.dialog_selected(), 1, "the current choice is selected");
+        assert_eq!(a.dialog_options()[1].0, "Haiku ✔");
+        typed(&mut a, "op");
+        assert_eq!(a.dialog_options().len(), 1);
+        assert_eq!(a.dialog_text().1, ["Filter: op"]);
+        assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/model opus".into())]);
+        assert!(a.dialog.is_none());
+        a.on_event(UiEvent::Idle);
+
+        a.on_event(UiEvent::Picker(picker()));
+        typed(&mut a, "step");
+        assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Picker("/rewind 1".into())]);
+        a.on_event(UiEvent::Picker(picker()));
+        typed(&mut a, "back");
+        assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/rewind 1 both".into())]);
+        assert_eq!(a.editor.text(), "old prompt", "the rewound prompt is back in the input box");
+        a.on_event(UiEvent::Idle);
+        a.editor.clear();
+        a.on_event(UiEvent::Picker(picker()));
+        typed(&mut a, "add");
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(a.editor.text(), "/permissions add allow ");
+        a.on_event(UiEvent::Picker(picker()));
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.dialog.is_none(), "Esc closes a picker");
+    }
+
+    #[test]
+    fn ctrl_r_searches_history() {
+        let mut a =
+            App::new(Theme { color: false }, vec!["cargo test".into(), "git status".into(), "cargo build".into()]);
+        typed(&mut a, "draft");
+        a.on_key(ctrl('r'));
+        typed(&mut a, "cargo");
+        assert_eq!(a.editor.text(), "cargo build", "the newest match first");
+        a.on_key(ctrl('r'));
+        assert_eq!(a.editor.text(), "cargo test", "Ctrl+R again: older");
+        a.on_key(ctrl('r'));
+        assert_eq!(a.editor.text(), "cargo test", "no older match: it stays");
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(a.editor.text(), "draft", "Esc goes back to what was typed");
+        assert!(a.search.is_none());
+        a.on_key(ctrl('r'));
+        typed(&mut a, "stat");
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "Enter takes the match, it doesn't send");
+        assert_eq!(a.editor.text(), "git status");
+        assert!(a.search.is_none());
+        // Another key takes the match and acts.
+        a.editor.clear();
+        a.on_key(ctrl('r'));
+        typed(&mut a, "build");
+        a.on_key(key(KeyCode::End));
+        typed(&mut a, " --release");
+        assert_eq!(a.editor.text(), "cargo build --release");
+    }
+
+    #[test]
+    fn at_completes_paths() {
+        let mut a = app();
+        a.on_event(UiEvent::Files(vec![
+            "src/".into(),
+            "src/main.rs".into(),
+            "docs/main-notes.md".into(),
+            "Cargo.toml".into(),
+        ]));
+        typed(&mut a, "explain @mai");
+        assert_eq!(a.file_menu(), ["src/main.rs", "docs/main-notes.md"], "name matches, shorter first");
+        a.on_key(key(KeyCode::Down));
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "Enter completes instead of sending");
+        assert_eq!(a.editor.text(), "explain @docs/main-notes.md ");
+        assert!(a.file_menu().is_empty());
+        typed(&mut a, "and @CARGO");
+        a.on_key(key(KeyCode::Tab));
+        assert_eq!(a.editor.text(), "explain @docs/main-notes.md and @Cargo.toml ");
+        typed(&mut a, "@src");
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.file_menu().is_empty(), "Esc hides it");
+        assert_eq!(
+            a.on_key(key(KeyCode::Enter)),
+            vec![Action::Send("explain @docs/main-notes.md and @Cargo.toml @src".into())]
+        );
     }
 }

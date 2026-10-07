@@ -164,11 +164,30 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
     (rows, cursor)
 }
 
+/// The `@` menu: matching paths.
+fn file_menu(app: &App, w: usize) -> Vec<Line<'static>> {
+    let t = app.theme;
+    let items = app.file_menu();
+    if items.is_empty() {
+        return vec![];
+    }
+    let sel = app.menu_selected.min(items.len() - 1);
+    let first = sel.saturating_sub(MENU_ROWS - 1);
+    items[first..items.len().min(first + MENU_ROWS)]
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let st = if first + i == sel { t.selected() } else { Style::default() };
+            Line::from(Span::styled(fit(&format!("  + {f}"), w), st))
+        })
+        .collect()
+}
+
 fn menu(app: &App, w: usize) -> Vec<Line<'static>> {
     let t = app.theme;
     let items = app.menu();
     if items.is_empty() {
-        return vec![];
+        return file_menu(app, w);
     }
     let sel = app.menu_selected.min(items.len() - 1);
     let first = sel.saturating_sub(MENU_ROWS - 1);
@@ -244,12 +263,26 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     // 5. The input box (hidden while a dialog is open).
     let rule = Line::from(Span::styled("─".repeat(w), t.dim()));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, w) } else { (vec![], (0, 0)) };
-    // 6. The `/` menu, 7. the status line.
+    // Ctrl+R: what is being searched for, above the input.
+    let search: Vec<Line<'static>> = app
+        .search
+        .as_ref()
+        .map(|s| {
+            let miss = if s.hit.is_none() && !s.query.is_empty() { " (no match)" } else { "" };
+            Line::from(Span::styled(fit(&format!("  search history: {}{miss}", s.query), w), t.accent()))
+        })
+        .into_iter()
+        .collect();
+    // 6. The `/` or `@` menu, 7. the status line.
     let menu = menu(app, w);
     let status = status(app, w, now);
 
-    let fixed =
-        spinner.len() + dialog.len() + if input_rows.is_empty() { 0 } else { input_rows.len() + 2 } + menu.len() + 1;
+    let fixed = spinner.len()
+        + search.len()
+        + dialog.len()
+        + if input_rows.is_empty() { 0 } else { input_rows.len() + 2 }
+        + menu.len()
+        + 1;
     let max = (max_height as usize).max(1);
     let spare = max.saturating_sub(fixed);
     // Too tall: drop the answer's rows first, then queued messages.
@@ -265,6 +298,7 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     lines.extend(spinner);
     lines.extend(dialog);
     lines.extend(queued);
+    lines.extend(search);
     let mut cur = None;
     if !input_rows.is_empty() {
         lines.push(rule.clone());
@@ -483,5 +517,45 @@ mod tests {
         let later = Instant::now() + HINT_FOR;
         let (rows, _) = draw(&live_view_at(&a, 70, 10, later), 70);
         assert!(rows.last().unwrap().starts_with("  ⏸ plan mode"));
+    }
+
+    #[test]
+    fn pickers_search_and_file_menus() {
+        use forge_core::commands::picker::{Choice, Pick, Picker};
+        let mut a = app(false);
+        let c = |l: &str, d: &str, cur: bool| Choice {
+            label: l.into(),
+            detail: d.into(),
+            pick: Pick::Run(String::new()),
+            current: cur,
+        };
+        a.on_event(UiEvent::Picker(Picker {
+            title: "Select a model".into(),
+            choices: vec![c("Opus", "big", false), c("Haiku", "small", true)],
+        }));
+        let (rows, _) = draw(&live_view(&a, 40, 30), 40);
+        assert_eq!(rows[1], "│ Select a model                       │");
+        assert_eq!(rows[2], "│ Type to filter                       │");
+        assert_eq!(rows[4], "│   1. Opus  big                       │");
+        assert_eq!(rows[5], "│ ❯ 2. Haiku ✔  small                  │");
+        a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        // Ctrl+R shows the search and the match in the input box.
+        let mut a = App::new(Theme { color: false }, vec!["cargo test".into(), "git status".into()]);
+        a.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        typed(&mut a, "car");
+        let (rows, _) = draw(&live_view(&a, 40, 30), 40);
+        assert_eq!(rows[0], "  search history: car");
+        assert_eq!(rows[2], "> cargo test");
+        typed(&mut a, "zz");
+        let (rows, _) = draw(&live_view(&a, 40, 30), 40);
+        assert_eq!(rows[0], "  search history: carzz (no match)");
+
+        // `@` lists matching paths.
+        let mut a = app(false);
+        a.on_event(UiEvent::Files(vec!["src/".into(), "src/main.rs".into(), "README.md".into()]));
+        typed(&mut a, "look at @ma");
+        let (rows, _) = draw(&live_view(&a, 40, 30), 40);
+        assert_eq!(rows[3], "  + src/main.rs");
     }
 }

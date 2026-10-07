@@ -15,7 +15,7 @@ terminals. `--no-tui` (or `FORGE_TUI=0`) keeps the line REPL
 | Renderer for the live region (`LiveView`) | done, tested | `crates/forge-cli/src/tui/render.rs` |
 | Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/forge-cli/src/tui/mod.rs` |
 | Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | done | `crates/forge-cli/src/main.rs`, `args.rs` |
-| Pickers, Ctrl+R search, `@file` completion | to do (phase 2) | |
+| Pickers, Ctrl+R search, `@file` completion | done, tested | `crates/forge-core/src/commands/picker.rs`, `tui/app.rs`, `tui/session.rs` |
 | UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | to do (phase 3) | |
 
 Dependencies are in `crates/forge-cli/Cargo.toml`:
@@ -282,7 +282,8 @@ with `{"text", "cwd"}`:
 | Ctrl+D | Exit (empty prompt) |
 | Shift+Tab | Next permission mode: default, acceptEdits, plan |
 | Up / Down | Line up/down; history on the first/last line; menu or dialog selection |
-| Tab | Complete the highlighted `/` command |
+| Tab | Complete the highlighted `/` command or `@` path |
+| Ctrl+R | Search prompt history |
 | Ctrl+A / Ctrl+E, Home / End | Start / end of line |
 | Ctrl+W, Alt+Backspace | Delete the word before the cursor |
 | Ctrl+U / Ctrl+K | Delete to the start / end of the line |
@@ -343,22 +344,37 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
      - `docs/PARITY.md`: TUI rows;
      - `CHANGELOG.md`;
      - `docs/CHECKLIST.md`: the manual steps below.
-2. **Pickers.** A `Picker` dialog (title, rows, filter by typing). It is
-   filled from data the session sends on request
-   (`ToSession::Picker(kind)` → `UiEvent::Picker { kind, rows }`):
+2. **Pickers** (done). A `Picker` dialog (title, rows, filter by typing).
+   The rows come from `forge_core::commands::picker::picker(driver, text)`,
+   so they number and name things exactly as the commands do. Each row is a
+   `Pick`: `Run(text)`, `RunThenEdit` (run, then put the rewound prompt back
+   in the input box), `Step(text)` (a second picker) or `Edit(text)` (put
+   a command in the input box to finish by hand).
+   - The session task answers an input that is one of these commands
+     without its argument with `UiEvent::Picker(..)` instead of running it,
+     so aliases (`/undo`, `/allowed-tools`) open pickers too.
+   - A `Step` is `ToSession::Picker(text)`, answered the same way.
+
+   The pickers:
    - `/model` with no argument: `forge_api::models::MODELS`;
    - `/resume`: `forge_session::SessionStore::list(cwd)`;
    - `/rewind`: `driver.engine.prompt_points()`, then a second step for the
      action (both, conversation, code, summarize from, summarize to);
    - `/output-style`: `driver.catalog.styles`;
-   - `/permissions`: the rules, with add and remove.
+   - `/permissions`: each rule (choosing it removes it), "Add an allow/ask/deny
+     rule…" (puts `/permissions add <behavior> ` in the input box), and the
+     full list.
 
-   Choosing a row sends the existing argument form (`/model opus`,
-   `/resume 3`, `/rewind 2 code`, ...), so the commands don't change. Also in
+   Choosing a row sends the existing argument form (`/model <id>`,
+   `/resume <id>`, `/rewind 2 code`, ...), so the commands don't change. Also in
    this phase:
-   - Ctrl+R reverse history search in the input box;
-   - `@` file completion (a menu of paths from the `ignore` crate's walk of
-     the project, filtered as you type).
+   - Ctrl+R reverse history search: typing searches back through prompts
+     (newest first), Ctrl+R again goes older, Enter or any editing key keeps
+     the match in the input box, Esc or Ctrl+G goes back to what was typed;
+   - `@` file completion: a menu of paths from the `ignore` crate's walk of
+     the project (`.gitignore` respected, at most 20,000 paths, walked again
+     after `/cd`), file-name matches first. Tab or Enter completes. The path
+     reaches the model as text; it reads the file with its tools.
 3. **UI-only commands.**
    - `/theme`: dark, light, no colour; saved as `theme` in user settings.
    - `/copy [N]`: the Nth latest answer to the clipboard via OSC 52.
