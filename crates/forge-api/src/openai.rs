@@ -417,7 +417,15 @@ impl Provider for OpenAiProvider {
             match res {
                 Ok(r) => break r,
                 Err(e) if e.is_retryable() && attempt < self.config.max_retries => {
-                    tokio::time::sleep(backoff_delay(attempt, None)).await;
+                    let retry_after = match &e {
+                        ApiError::Http { retry_after, .. } => *retry_after,
+                        _ => None,
+                    };
+                    tracing::warn!(attempt, error = %e, "retrying API request");
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Err(ApiError::Cancelled),
+                        _ = tokio::time::sleep(backoff_delay(attempt, retry_after)) => {}
+                    }
                     attempt += 1;
                 }
                 Err(e) => return Err(e.with_origin(self.config.origin())),

@@ -45,6 +45,17 @@
 - Costs of models without a known price show as unknown (`cost ?`, `$1.20+`,
   `price unknown` in `/usage`) instead of `$0.00`.
 
+### Rate limits
+- One limit on model requests in flight for the whole session
+  (`maxConcurrentRequests`, default 4): requests wait for a slot instead of
+  failing. A 429 halves the limit, says so, waits (honouring `Retry-After`)
+  and retries; the limit grows back after a run of successes.
+- The OpenAI-compatible provider honours `Retry-After` and
+  `FORGE_MAX_RETRIES`, and stops waiting when interrupted.
+- `maxParallelAgents` (default 4) caps Task sub-agents running at once.
+- A failed sub-agent's result starts with `FAILED:` and tells the model its
+  task is not done, so it can't be reported as finished.
+
 ### Terminal UI
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom

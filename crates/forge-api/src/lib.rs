@@ -7,6 +7,7 @@
 
 pub mod accumulate;
 pub mod auth;
+pub mod limit;
 pub mod messages;
 pub mod mock;
 pub mod models;

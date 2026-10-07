@@ -409,3 +409,18 @@ async fn doctor_probe_checks_the_key() {
     assert!(out.contains("FAIL probe") && out.contains("401"), "{out}");
     assert!(api.headers()[0].starts_with("get /v1/models"), "{:?}", api.headers());
 }
+
+/// A 429 doesn't fail the run: the request waits, is sent again, and the
+/// person is told the concurrency limit went down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rate_limits_are_waited_out_and_reported() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::http_error(429, "rate_limit_error"), MockTurn::text("answered")]).await;
+    let mut c = with_api(forge(&e, &["-p", "hello"]), &api);
+    c.env("FORGE_MAX_CONCURRENT_REQUESTS", "2");
+    let (code, out, err) = tokio::task::spawn_blocking(move || run(c)).await.unwrap();
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "answered");
+    assert!(err.contains("The endpoint is limiting requests (HTTP 429). Forge now sends at most 1 at a time"), "{err}");
+    assert_eq!(api.requests().len(), 2);
+}

@@ -262,6 +262,13 @@ fn env_nonempty(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// Concurrent model requests per session unless `maxConcurrentRequests` or
+/// `FORGE_MAX_CONCURRENT_REQUESTS` says otherwise; 429s lower it further.
+pub const DEFAULT_CONCURRENT_REQUESTS: usize = 4;
+
+/// Task agents running at once unless `maxParallelAgents` or `FORGE_MAX_PARALLEL_AGENTS` says otherwise.
+pub const DEFAULT_PARALLEL_AGENTS: usize = 4;
+
 /// The provider for this session: an OpenAI-compatible endpoint when one is
 /// configured, the Messages API otherwise (see [`endpoint`] for the rules).
 pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<dyn Provider>, CoreError> {
@@ -291,13 +298,16 @@ fn make_provider_with_shell(
     }
     match r.backend() {
         forge_api::auth::Backend::OpenAi => {
-            let cfg = OpenAiConfig {
+            let mut cfg = OpenAiConfig {
                 base_url: r.url.clone().unwrap_or_default(),
                 api_key: key,
                 url_from: r.url_from,
                 key_helper: helper_name,
                 ..Default::default()
             };
+            if let Some(n) = env_nonempty("FORGE_MAX_RETRIES").and_then(|v| v.trim().parse().ok()) {
+                cfg.max_retries = n;
+            }
             Ok(Arc::new(OpenAiProvider::new(cfg)?))
         }
         forge_api::auth::Backend::Messages => {
@@ -485,6 +495,20 @@ pub fn build_session(
     let provider = match opts.provider.clone() {
         Some(p) => p,
         None => make_provider_with_shell(&settings, &opts.betas, &shell, &mut warnings)?,
+    };
+    // One limit on concurrent requests for everything in the session (main agent, sub-agents,
+    // compaction, goal checks): requests wait for a slot, and 429s lower the limit.
+    let provider: Arc<dyn Provider> = {
+        let max = env_nonempty("FORGE_MAX_CONCURRENT_REQUESTS")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .or_else(|| settings.get("/maxConcurrentRequests").and_then(Value::as_u64).map(|n| n as usize))
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_CONCURRENT_REQUESTS);
+        let sink = sink.clone();
+        let notify: forge_api::limit::Notifier = Arc::new(move |text| {
+            sink.emit(forge_engine::EngineEvent::Notice { level: forge_engine::NoticeLevel::Warning, text })
+        });
+        Arc::new(forge_api::limit::LimitedProvider::new(provider, forge_api::limit::Limiter::new(max), Some(notify)))
     };
 
     // Plugins, commands, skills and output styles (M5).
@@ -815,6 +839,13 @@ pub fn build_session(
         env: tool_ctx.env.clone(),
         sandbox: tool_ctx.sandbox.clone(),
         shell: shell.clone(),
+        agent_slots: Arc::new(tokio::sync::Semaphore::new(
+            env_nonempty("FORGE_MAX_PARALLEL_AGENTS")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .or_else(|| settings.get("/maxParallelAgents").and_then(Value::as_u64).map(|n| n as usize))
+                .filter(|n| *n > 0)
+                .unwrap_or(DEFAULT_PARALLEL_AGENTS),
+        )),
         extra_tools: web_tools
             .iter()
             .cloned()

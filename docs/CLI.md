@@ -372,6 +372,8 @@ the context window to compact in time, and prices to show costs.
 | `FORGE_CONTEXT_WINDOW` | Context window, in tokens, for models Forge doesn't know (see `modelLimits`) |
 | `FORGE_MAX_THINKING_TOKENS` | Thinking budget |
 | `FORGE_MAX_RETRIES` | API retries (default 3) |
+| `FORGE_MAX_CONCURRENT_REQUESTS` | Model requests in flight at once for the whole session (default 4; also `maxConcurrentRequests`) |
+| `FORGE_MAX_PARALLEL_AGENTS` | Task sub-agents running at once (default 4; also `maxParallelAgents`) |
 | `FORGE_PROMPTS_DIR` | A local prompt set |
 | `FORGE_HOME` | One root for config, state and cache |
 | `FORGE_SANDBOX` | Same as `--sandbox` |
@@ -647,6 +649,24 @@ Settings example:
   `forge ... | head`, or when a host exits.
 - **SIGPIPE stays ignored**, so a hook or MCP server that exits before
   reading its input can't kill the process.
+
+## Rate limits
+
+Every model request in a session (the main agent, Task sub-agents,
+`/subtask`, compaction, goal checks, `/btw`) shares one limit on requests in
+flight: `maxConcurrentRequests` or `FORGE_MAX_CONCURRENT_REQUESTS`, default 4.
+A request over the limit waits for a slot instead of failing.
+
+When the endpoint answers 429 anyway, Forge halves the limit (never below 1),
+says so once on stderr or in the UI, waits (`Retry-After` when the endpoint
+sends one, otherwise 2, 4, 8... seconds, at most 60) and sends the request
+again, up to 6 times on top of the provider's own retries. After 8 requests in
+a row succeed, the limit grows back by one.
+
+`maxParallelAgents` (or `FORGE_MAX_PARALLEL_AGENTS`, default 4) caps how many
+Task sub-agents run at once; the others wait their turn. A sub-agent that
+fails returns a result starting with `FAILED:` that tells the model its task
+is not done.
 
 ## Network behaviour
 

@@ -35,6 +35,8 @@ pub struct AgentRuntime {
     pub sandbox: forge_tools::SandboxCell,
     /// The session's shell (Bash tool), the same for sub-agents.
     pub shell: forge_tools::shells::ShellChoice,
+    /// Task agents that may run at once (`maxParallelAgents`); more wait their turn.
+    pub agent_slots: Arc<tokio::sync::Semaphore>,
     /// Tools beyond the built-ins (MCP servers' tools), offered to sub-agents too.
     pub extra_tools: Vec<Arc<dyn Tool>>,
     /// Where sub-agent transcripts go (`None` = not persisted).
@@ -333,6 +335,14 @@ impl Tool for TaskTool {
         let agent = self.agent(input.get("subagent_type").and_then(Value::as_str).unwrap_or("")).cloned().unwrap();
         let prompt = input.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
         let started = Instant::now();
+        // At most `maxParallelAgents` run at once; the others wait here, without spending anything.
+        let _slot = tokio::select! {
+            _ = ctx.cancel.cancelled() => return ToolOutput::error(forge_tools::INTERRUPTED),
+            p = self.rt.agent_slots.clone().acquire_owned() => match p {
+                Ok(p) => p,
+                Err(_) => return ToolOutput::error("Sub-agents are not available in this session."),
+            },
+        };
 
         let model = match &agent.model {
             Some(m) => forge_api::resolve_model(m),
@@ -384,7 +394,14 @@ impl Tool for TaskTool {
         let text = result.result.clone().unwrap_or_default();
         if result.is_error {
             let detail = if text.is_empty() { result.errors.join("; ") } else { text };
-            return ToolOutput::error(format!("The {} agent failed: {detail}", agent.name)).with_structured(structured);
+            return ToolOutput::error(format!(
+                "FAILED: the {} agent did not finish its task. {detail}\n\
+                 Nothing it was asked to do can be counted as done, and it wrote no report. Run it again (after \
+                 the cause is fixed), do the work yourself, or tell the user it failed; never describe its task \
+                 as completed.",
+                agent.name
+            ))
+            .with_structured(structured);
         }
         if result.stop_reason.as_deref() == Some("interrupted") {
             return ToolOutput::error(forge_tools::INTERRUPTED).with_structured(structured);
