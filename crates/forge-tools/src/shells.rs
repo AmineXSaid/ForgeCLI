@@ -8,18 +8,39 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use forge_platform::process::ProcessTree;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
-/// The shell used for commands: bash when available, else sh.
-pub fn shell_program() -> String {
-    for candidate in ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"] {
-        if Path::new(candidate).exists() {
-            return candidate.to_string();
+pub use forge_platform::shell::{Shell, ShellChoice, ShellKind, ShellMissing};
+
+/// Why a command didn't start.
+#[derive(Debug)]
+pub enum StartError {
+    /// No usable shell in this session (the Bash tool reports it as non-retryable).
+    NoShell(ShellMissing),
+    /// The shell (or the sandbox wrapper) exists but could not be started.
+    Spawn { program: String, error: std::io::Error },
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartError::NoShell(m) => write!(f, "{m}"),
+            StartError::Spawn { program, error } => write!(f, "could not start {program}: {error}"),
         }
     }
-    "/bin/sh".to_string()
+}
+
+impl StartError {
+    /// No command can run until the user fixes the setup.
+    pub fn is_setup_problem(&self) -> bool {
+        match self {
+            StartError::NoShell(_) => true,
+            StartError::Spawn { error, .. } => error.kind() == std::io::ErrorKind::NotFound,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -35,61 +56,50 @@ pub struct CommandResult {
 
 type Sandbox<'a> = Option<&'a (crate::sandbox::Backend, crate::sandbox::SandboxPolicy)>;
 
+struct Prepared {
+    command: Command,
+    program: String,
+    /// Windows: the script file, kept until the process exits.
+    script: Option<forge_platform::shell::ScriptFile>,
+}
+
 fn build(
+    shell: &ShellChoice,
     command: &str,
     cwd: &Path,
     env: &HashMap<String, String>,
     cwd_file: Option<&Path>,
     sandbox: Sandbox,
-) -> Command {
-    let script = match cwd_file {
-        Some(f) => format!(
-            "{command}\n__forge_ec=$?\npwd -P > '{}' 2>/dev/null\nexit $__forge_ec",
-            f.display().to_string().replace('\'', "'\\''")
-        ),
-        None => command.to_string(),
-    };
-    let mut c = match sandbox {
+) -> Result<Prepared, StartError> {
+    let shell = shell.as_ref().map_err(|m| StartError::NoShell(m.clone()))?;
+    let script = shell.script(command, cwd_file);
+    let program = shell.program.display().to_string();
+    let (mut c, program, file) = match sandbox {
         Some((backend, policy)) => {
-            let (prog, args) = policy.wrap(*backend, &shell_program(), &script, cwd);
-            let mut c = Command::new(prog);
+            let (prog, args) = policy.wrap(*backend, &program, &script, cwd);
+            let mut c = std::process::Command::new(&prog);
             c.args(args);
-            c
+            (c, prog, None)
         }
         None => {
-            let mut c = Command::new(shell_program());
-            c.arg("-c").arg(script);
-            c
+            let (c, file) =
+                shell.command(&script).map_err(|error| StartError::Spawn { program: program.clone(), error })?;
+            (c, program, file)
         }
     };
     c.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     c.env("FORGECLI", "1");
-    for (k, v) in env {
-        c.env(k, v);
-    }
-    #[cfg(unix)]
-    c.process_group(0);
+    c.envs(env);
+    forge_platform::process::isolate(&mut c);
+    let mut c = Command::from(c);
     c.kill_on_drop(true);
-    c
+    Ok(Prepared { command: c, program, script: file })
 }
 
-/// Kill the whole process group (the shell and everything it started).
-pub fn kill_tree(child_pid: Option<u32>) {
-    #[cfg(unix)]
-    if let Some(pid) = child_pid {
-        // SAFETY: plain syscall; a negative pid addresses the process group.
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
-        }
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        });
-    }
-    #[cfg(not(unix))]
-    let _ = child_pid;
+fn spawn(p: &mut Prepared) -> Result<(Child, Option<ProcessTree>), StartError> {
+    let child = p.command.spawn().map_err(|error| StartError::Spawn { program: p.program.clone(), error })?;
+    let tree = child.id().map(ProcessTree::attach);
+    Ok((child, tree))
 }
 
 /// Output kept from each stream: the first and the last this many bytes.
@@ -139,34 +149,42 @@ async fn read_capped<R: AsyncRead + Unpin>(r: &mut R, keep: usize) -> String {
 
 /// Run a command to completion, honouring timeout and cancellation.
 pub async fn run_command(
+    shell: &ShellChoice,
     command: &str,
     cwd: &Path,
     env: &HashMap<String, String>,
     timeout: Duration,
     cancel: &CancellationToken,
     sandbox: Sandbox<'_>,
-) -> std::io::Result<CommandResult> {
+) -> Result<CommandResult, StartError> {
     let cwd_file = std::env::temp_dir().join(format!("forge-cwd-{}", uuid::Uuid::new_v4()));
-    let mut child: Child = build(command, cwd, env, Some(&cwd_file), sandbox).spawn()?;
-    let pid = child.id();
+    let mut prepared = build(shell, command, cwd, env, Some(&cwd_file), sandbox)?;
+    let (mut child, tree) = spawn(&mut prepared)?;
+    let kill = || {
+        if let Some(t) = &tree {
+            t.kill();
+        }
+    };
     let out = tokio::spawn(read_all(child.stdout.take().expect("piped")));
     let err = tokio::spawn(read_all(child.stderr.take().expect("piped")));
     let mut result = CommandResult::default();
     tokio::select! {
         status = child.wait() => { result.code = status.ok().and_then(|s| s.code()); }
-        _ = tokio::time::sleep(timeout) => { result.timed_out = true; kill_tree(pid); let _ = child.wait().await; }
-        _ = cancel.cancelled() => { result.interrupted = true; kill_tree(pid); let _ = child.wait().await; }
+        _ = tokio::time::sleep(timeout) => { result.timed_out = true; kill(); let _ = child.wait().await; }
+        _ = cancel.cancelled() => { result.interrupted = true; kill(); let _ = child.wait().await; }
     }
     // Background children of the command may keep the pipes open; do not wait forever.
     let grace = Duration::from_millis(if result.timed_out || result.interrupted { 200 } else { 2000 });
     result.stdout = tokio::time::timeout(grace, out).await.ok().and_then(|r| r.ok()).unwrap_or_default();
     result.stderr = tokio::time::timeout(grace, err).await.ok().and_then(|r| r.ok()).unwrap_or_default();
-    if let Ok(dir) = std::fs::read_to_string(&cwd_file) {
-        let dir = dir.trim();
-        if !dir.is_empty() {
-            result.final_cwd = Some(PathBuf::from(dir));
-        }
+    if let (Ok(written), Ok(shell)) = (std::fs::read_to_string(&cwd_file), shell) {
+        result.final_cwd = shell.parse_cwd(&written);
     }
+    if cfg!(windows) {
+        result.stdout = result.stdout.replace("\r\n", "\n");
+        result.stderr = result.stderr.replace("\r\n", "\n");
+    }
+    drop(prepared);
     let _ = std::fs::remove_file(&cwd_file);
     Ok(result)
 }
@@ -198,7 +216,7 @@ pub struct BackgroundShell {
     read_out: Mutex<usize>,
     read_err: Mutex<usize>,
     status: Mutex<ShellStatus>,
-    pid: Option<u32>,
+    tree: Option<ProcessTree>,
 }
 
 impl BackgroundShell {
@@ -221,7 +239,9 @@ impl BackgroundShell {
     pub fn kill(&self) {
         let mut st = self.status.lock().unwrap();
         if *st == ShellStatus::Running {
-            kill_tree(self.pid);
+            if let Some(t) = &self.tree {
+                t.kill();
+            }
             *st = ShellStatus::Killed;
         }
     }
@@ -237,12 +257,16 @@ pub struct ShellManager {
 impl ShellManager {
     pub fn spawn(
         &self,
+        shell: &ShellChoice,
         command: &str,
         cwd: &Path,
         env: &HashMap<String, String>,
         sandbox: Sandbox<'_>,
-    ) -> std::io::Result<Arc<BackgroundShell>> {
-        let mut child = build(command, cwd, env, None, sandbox).kill_on_drop(false).spawn()?;
+    ) -> Result<Arc<BackgroundShell>, StartError> {
+        let mut prepared = build(shell, command, cwd, env, None, sandbox)?;
+        prepared.command.kill_on_drop(false);
+        let (mut child, tree) = spawn(&mut prepared)?;
+        let script = prepared.script.take();
         let id = format!("bash_{}", self.counter.fetch_add(1, Ordering::SeqCst) + 1);
         let shell = Arc::new(BackgroundShell {
             id: id.clone(),
@@ -253,7 +277,7 @@ impl ShellManager {
             read_out: Mutex::new(0),
             read_err: Mutex::new(0),
             status: Mutex::new(ShellStatus::Running),
-            pid: child.id(),
+            tree,
         });
         let pump = |mut r: Box<dyn AsyncRead + Unpin + Send>, sh: Arc<BackgroundShell>, is_err: bool| async move {
             let mut buf = [0u8; 8192];
@@ -273,6 +297,7 @@ impl ShellManager {
         let sh = shell.clone();
         tokio::spawn(async move {
             let code = child.wait().await.ok().and_then(|s| s.code());
+            drop(script);
             let mut st = sh.status.lock().unwrap();
             if *st == ShellStatus::Running {
                 *st = ShellStatus::Completed(code);

@@ -159,22 +159,30 @@ fn status_command(d: &Driver) -> Option<String> {
 
 /// Run the status line command (at most 3 s) and send its first output line.
 fn refresh_status_line(
+    shell: forge_platform::shell::ShellChoice,
     cmd: String,
     input: serde_json::Value,
     cwd: std::path::PathBuf,
     ui: mpsc::UnboundedSender<UiEvent>,
 ) {
     tokio::spawn(async move {
-        let line = run_status_command(&cmd, &input, &cwd).await;
+        let line = run_status_command(&shell, &cmd, &input, &cwd).await;
         let _ = ui.send(UiEvent::StatusLine(line));
     });
 }
 
-pub async fn run_status_command(cmd: &str, input: &serde_json::Value, cwd: &std::path::Path) -> Option<String> {
+pub async fn run_status_command(
+    shell: &forge_platform::shell::ShellChoice,
+    cmd: &str,
+    input: &serde_json::Value,
+    cwd: &std::path::Path,
+) -> Option<String> {
     use tokio::io::AsyncWriteExt;
-    let mut child = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
+    let shell = shell.as_ref().ok()?;
+    // Windows: the script file must outlive the process.
+    let (mut std_cmd, _script) = shell.command(&shell.script(cmd, None)).ok()?;
+    forge_platform::process::no_window(&mut std_cmd);
+    let mut child = tokio::process::Command::from(std_cmd)
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -302,7 +310,13 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         match status_command(&driver) {
             Some(cmd) => {
                 had_status_command = true;
-                refresh_status_line(cmd, status_json(&driver), driver.info.cwd.clone(), ui.clone());
+                refresh_status_line(
+                    driver.engine.tool_ctx().shell.clone(),
+                    cmd,
+                    status_json(&driver),
+                    driver.info.cwd.clone(),
+                    ui.clone(),
+                );
             }
             None if had_status_command => {
                 had_status_command = false;

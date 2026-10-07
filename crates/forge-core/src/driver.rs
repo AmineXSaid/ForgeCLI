@@ -994,7 +994,9 @@ impl Driver {
     async fn shell(&mut self, cmd: &str) -> (TurnResult, bool) {
         let ctx = self.engine.tool_ctx().clone();
         let cancel = self.engine.handle().new_token();
-        let run = forge_tools::shells::run_command(cmd, &ctx.shell_cwd(), &ctx.env, SHELL_TIMEOUT, &cancel, None).await;
+        let run =
+            forge_tools::shells::run_command(&ctx.shell, cmd, &ctx.shell_cwd(), &ctx.env, SHELL_TIMEOUT, &cancel, None)
+                .await;
         let (code, output) = match run {
             Ok(r) if r.interrupted => return (self.engine.local_result("Interrupted.", true), false),
             Ok(r) => {
@@ -1010,7 +1012,7 @@ impl Driver {
                 }
                 (r.code.unwrap_or(-1), text)
             }
-            Err(e) => (-1, format!("could not start the shell: {e}")),
+            Err(e) => (-1, e.to_string()),
         };
         let output = forge_tools::truncate_middle(output.trim_end(), SHELL_OUTPUT_CHARS);
         // The output can't close its wrapper early and pass as the user's own words.

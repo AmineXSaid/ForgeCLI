@@ -2,6 +2,20 @@
 
 ## 0.1.0 (unreleased)
 
+### Windows
+- Commands run on Windows: Forge finds Git Bash (next to `git.exe`, the
+  standard install directories, scoop), else PowerShell; `FORGE_SHELL` picks
+  one. Hooks, `apiKeyHelper`, the status line and custom-command `!` lines use
+  the same shell. The Bash tool's description and the environment prompt name
+  the shell and how to write paths for it.
+- No shell is a clear, non-retryable answer naming where Forge looked and the
+  fix, a startup warning and a failing `forge doctor` row, instead of an OS
+  error the model kept retrying.
+- Timeouts, Esc and KillShell stop a command with everything it started (a job
+  object). Paths are shown without the `\\?\` prefix. File tools and
+  permission rules accept Git Bash paths and compare paths without regard to
+  case, as the filesystem does. `forge doctor` finds `git.exe`.
+
 ### Terminal UI
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom

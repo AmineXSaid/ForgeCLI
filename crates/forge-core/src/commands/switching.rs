@@ -128,7 +128,7 @@ pub(super) async fn cd(d: &mut Driver, args: &str) -> Exec {
         return err("Usage: /cd <directory>");
     }
     let path = forge_tools::expand_path(args, &d.info.cwd);
-    let dir = match path.canonicalize() {
+    let dir = match forge_platform::path::canonicalize(&path) {
         Ok(p) if p.is_dir() => p,
         Ok(_) => return err(format!("{} is not a directory.", path.display())),
         Err(e) => return err(format!("{}: {e}", path.display())),

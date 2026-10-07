@@ -33,6 +33,8 @@ pub struct AgentRuntime {
     /// The session's shell sandbox, inherited by sub-agents.
     /// The parent session's sandbox, shared so `/sandbox` reaches sub-agents too.
     pub sandbox: forge_tools::SandboxCell,
+    /// The session's shell (Bash tool), the same for sub-agents.
+    pub shell: forge_tools::shells::ShellChoice,
     /// Tools beyond the built-ins (MCP servers' tools), offered to sub-agents too.
     pub extra_tools: Vec<Arc<dyn Tool>>,
     /// Where sub-agent transcripts go (`None` = not persisted).
@@ -124,6 +126,7 @@ impl AgentRuntime {
         tool_ctx.working_dirs = self.working_dirs.clone();
         tool_ctx.env = self.env.clone();
         tool_ctx.sandbox = self.sandbox.clone();
+        tool_ctx.shell = self.shell.clone();
         tool_ctx.session_id = self.session_id.clone();
         if let Some(turn) = spec.checkpoint_turn {
             tool_ctx.checkpointer = Some(Arc::new(TurnCheckpointer { history: parent.history.clone(), turn }));
@@ -242,6 +245,7 @@ impl TaskTool {
     fn registry_for(&self, agent: &AgentDef) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         forge_tools::builtin::register_core(&mut reg);
+        forge_tools::builtin::set_shell(&mut reg, &self.rt.shell);
         for t in &self.rt.extra_tools {
             reg.register(t.clone());
         }
@@ -335,7 +339,8 @@ impl Tool for TaskTool {
             None => parent.handle.model(),
         };
         let dirs: Vec<PathBuf> = self.rt.working_dirs.read().unwrap().iter().skip(1).cloned().collect();
-        let env = EnvInfo::collect(&self.rt.project_dir, &dirs, &model);
+        let mut env = EnvInfo::collect(&self.rt.project_dir, &dirs, &model);
+        env.shell = forge_platform::shell::env_line(&self.rt.shell);
         let mut sys = forge_types::SystemBlock::text(format!("{}\n\n{}", agent.prompt, env.render()));
         sys.cache_control = Some(forge_types::CacheControl::ephemeral());
         let spec = ChildSpec {

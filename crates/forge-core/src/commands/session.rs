@@ -548,7 +548,7 @@ pub(super) fn add_dir(d: &mut Driver, args: &str) -> Exec {
         return err("Usage: /add-dir <path> [--save]");
     }
     let path = forge_tools::expand_path(raw, &d.info.cwd);
-    let dir: PathBuf = match path.canonicalize() {
+    let dir: PathBuf = match forge_platform::path::canonicalize(&path) {
         Ok(p) if p.is_dir() => p,
         Ok(_) => return err(format!("{} is not a directory.", path.display())),
         Err(e) => return err(format!("{}: {e}", path.display())),

@@ -109,10 +109,12 @@ pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
 /// MCP prompts) reaches the model as plain text.
 pub(crate) async fn scheduled_prompt(d: &Driver, prompt: &str) -> MessageContent {
     match parse(prompt, &d.catalog) {
-        Invocation::Custom { def, args } => match forge_agents::commands::expand(def, args, &d.info.cwd).await {
-            Ok(p) => MessageContent::Text(p),
-            Err(_) => MessageContent::Text(prompt.to_string()),
-        },
+        Invocation::Custom { def, args } => {
+            match forge_agents::commands::expand(def, args, &d.info.cwd, &d.engine.tool_ctx().shell).await {
+                Ok(p) => MessageContent::Text(p),
+                Err(_) => MessageContent::Text(prompt.to_string()),
+            }
+        }
         Invocation::Skills { chain, args } if chain.iter().all(|s| s.model_invocable) => MessageContent::Text(
             chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args)).collect::<Vec<_>>().join("\n\n"),
         ),

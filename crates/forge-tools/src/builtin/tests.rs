@@ -21,13 +21,13 @@ async fn bash_runs_and_keeps_cwd_inside_project() {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir(d.path().join("sub")).unwrap();
     let c = ctx(d.path());
-    let out = Bash.call(json!({"command": "cd sub && echo hi"}), &c).await;
+    let out = Bash::default().call(json!({"command": "cd sub && echo hi"}), &c).await;
     assert!(!out.is_error, "{out:?}");
     assert_eq!(out.text_content(), "hi");
-    let out = Bash.call(json!({"command": "pwd"}), &c).await;
+    let out = Bash::default().call(json!({"command": "pwd"}), &c).await;
     assert!(out.text_content().ends_with("/sub"), "{}", out.text_content());
     // Leaving the working directories resets the cwd.
-    let out = Bash.call(json!({"command": "cd / && true"}), &c).await;
+    let out = Bash::default().call(json!({"command": "cd / && true"}), &c).await;
     assert!(out.text_content().contains("Shell cwd was reset"), "{}", out.text_content());
     assert_eq!(c.shell_cwd(), c.project_dir);
 }
@@ -35,7 +35,7 @@ async fn bash_runs_and_keeps_cwd_inside_project() {
 #[tokio::test]
 async fn bash_reports_exit_code_and_stderr() {
     let d = tempfile::tempdir().unwrap();
-    let out = Bash.call(json!({"command": "echo out; echo err >&2; exit 3"}), &ctx(d.path())).await;
+    let out = Bash::default().call(json!({"command": "echo out; echo err >&2; exit 3"}), &ctx(d.path())).await;
     assert!(out.is_error);
     let t = out.text_content();
     assert!(t.starts_with("Exit code 3"), "{t}");
@@ -46,7 +46,7 @@ async fn bash_reports_exit_code_and_stderr() {
 async fn bash_timeout_kills_process_group() {
     let d = tempfile::tempdir().unwrap();
     let start = Instant::now();
-    let out = Bash.call(json!({"command": "sleep 30 & sleep 30", "timeout": 300}), &ctx(d.path())).await;
+    let out = Bash::default().call(json!({"command": "sleep 30 & sleep 30", "timeout": 300}), &ctx(d.path())).await;
     assert!(out.is_error);
     assert!(out.text_content().contains("timed out"));
     assert!(start.elapsed() < Duration::from_secs(5));
@@ -58,7 +58,7 @@ async fn bash_interrupt_returns_interrupted() {
     let base = ctx(d.path());
     let cancel = CancellationToken::new();
     let c = base.for_call("t1", cancel.clone());
-    let task = tokio::spawn(async move { Bash.call(json!({"command": "sleep 20"}), &c).await });
+    let task = tokio::spawn(async move { Bash::default().call(json!({"command": "sleep 20"}), &c).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
     cancel.cancel();
     let out = tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
@@ -70,7 +70,7 @@ async fn bash_interrupt_returns_interrupted() {
 async fn background_shell_output_and_kill() {
     let d = tempfile::tempdir().unwrap();
     let c = ctx(d.path());
-    let out = Bash.call(json!({"command": "echo started; sleep 20", "run_in_background": true}), &c).await;
+    let out = Bash::default().call(json!({"command": "echo started; sleep 20", "run_in_background": true}), &c).await;
     assert!(out.text_content().contains("bash_1"), "{}", out.text_content());
     tokio::time::sleep(Duration::from_millis(300)).await;
     let o = BashOutput.call(json!({"bash_id": "bash_1"}), &c).await;
@@ -288,6 +288,7 @@ fn edit_failures_point_at_the_nearest_text() {
     assert!(e.contains("Found 2 matches") && e.contains("lines 7, 8"), "{e}");
 }
 
+#[cfg(unix)]
 fn sandboxed_ctx(dir: &std::path::Path) -> Option<ToolContext> {
     crate::sandbox::backend()?;
     let c = ctx(dir);
@@ -300,6 +301,7 @@ fn sandboxed_ctx(dir: &std::path::Path) -> Option<ToolContext> {
     Some(c)
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn sandbox_confines_writes_and_network() {
     // The system temp dirs are writable inside the sandbox, so the test tree lives under target/.
@@ -312,13 +314,13 @@ async fn sandbox_confines_writes_and_network() {
         return;
     };
     let input = json!({"command": "echo inside > made.txt && cat made.txt"});
-    assert!(Bash.sandboxed(&input, &c));
-    let out = Bash.call(input, &c).await;
+    assert!(Bash::default().sandboxed(&input, &c));
+    let out = Bash::default().call(input, &c).await;
     assert!(!out.is_error, "{out:?}");
     assert!(c.project_dir.join("made.txt").exists());
 
     let outside = root.path().join("outside.txt");
-    let out = Bash.call(json!({"command": format!("touch '{}'", outside.display())}), &c).await;
+    let out = Bash::default().call(json!({"command": format!("touch '{}'", outside.display())}), &c).await;
     assert!(out.is_error && !outside.exists(), "writes outside the workspace fail: {out:?}");
     assert!(
         out.text_content().contains("dangerouslyDisableSandbox"),
@@ -326,19 +328,19 @@ async fn sandbox_confines_writes_and_network() {
         out.text_content()
     );
 
-    let out = Bash
+    let out = Bash::default()
         .call(json!({"command": "echo '{\"permissions\":{\"allow\":[\"Bash\"]}}' > .forge/settings.json"}), &c)
         .await;
     assert!(out.is_error, "settings stay read-only inside the sandbox");
     assert_eq!(std::fs::read_to_string(c.project_dir.join(".forge/settings.json")).unwrap(), "{}");
 
-    let out = Bash.call(json!({"command": "cat < /dev/tcp/1.1.1.1/53 || exit 7"}), &c).await;
+    let out = Bash::default().call(json!({"command": "cat < /dev/tcp/1.1.1.1/53 || exit 7"}), &c).await;
     assert!(out.is_error, "no network in the sandbox");
 
     // Escalation runs unconfined (permission is the engine's job).
     let esc = json!({"command": format!("touch '{}'", outside.display()), "dangerouslyDisableSandbox": true});
-    assert!(!Bash.sandboxed(&esc, &c));
-    assert!(!Bash.call(esc, &c).await.is_error);
+    assert!(!Bash::default().sandboxed(&esc, &c));
+    assert!(!Bash::default().call(esc, &c).await.is_error);
     assert!(outside.exists());
 }
 
@@ -370,7 +372,7 @@ async fn long_output_is_saved_in_full_and_pointed_to() {
     c.max_output_chars = 2_000;
     c.spill_dir = Some(d.path().join("spill"));
     let c = c.for_call("toolu_big", c.cancel.clone());
-    let out = Bash.call(json!({"command": "seq 1 5000"}), &c).await;
+    let out = Bash::default().call(json!({"command": "seq 1 5000"}), &c).await;
     let text = out.text_content();
     let saved = d.path().join("spill/toolu_big-stdout.txt");
     assert!(text.contains("lines truncated") && text.contains(&saved.display().to_string()), "{text}");
@@ -469,4 +471,47 @@ async fn web_fetch_converts_summarizes_and_reports_redirects() {
         plain.permission_subject(&json!({"url": "http://docs.rs/x"}), &c),
         forge_permissions::Subject::Url("https://docs.rs/x".into())
     );
+}
+
+#[tokio::test]
+async fn no_shell_is_a_non_retryable_error_naming_the_fix() {
+    use forge_platform::shell::{Os, ShellMissing};
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ctx(d.path());
+    c.shell = Err(ShellMissing {
+        os: Os::Windows,
+        looked_for: vec![r"C:\Program Files\Git\bin\bash.exe".into(), "bash.exe on PATH".into()],
+        powershell: vec![],
+        bad_override: None,
+    });
+    let bash = Bash::new(&c.shell);
+    let e = bash.validate(&json!({"command": "echo hello"}), &c).unwrap_err();
+    assert!(e.starts_with("Bash can't run commands in this session: No shell found to run commands."), "{e}");
+    assert!(e.contains(r"C:\Program Files\Git\bin\bash.exe") && e.contains("FORGE_SHELL"), "{e}");
+    assert!(e.contains("Don't call Bash again in this session"), "{e}");
+    assert!(bash.description().contains("can't run commands"), "the model is told up front");
+}
+
+#[tokio::test]
+async fn a_shell_that_will_not_start_is_named() {
+    use forge_platform::shell::{Found, Os, Shell, ShellKind};
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ctx(d.path());
+    c.shell =
+        Ok(Shell { kind: ShellKind::Bash, program: "/nonexistent/bash".into(), found: Found::EnvVar, os: Os::Unix });
+    let out = Bash::new(&c.shell).call(json!({"command": "echo hello"}), &c).await;
+    assert!(out.is_error);
+    let t = out.text_content();
+    assert!(t.contains("could not start /nonexistent/bash") && t.contains("Don't call Bash again"), "{t}");
+    assert_eq!(out.structured.unwrap()["shellUnavailable"], true);
+}
+
+#[test]
+fn powershell_read_only_rejects_subexpressions() {
+    assert!(super::bash::powershell_is_read_only("Get-ChildItem -Recurse src"));
+    assert!(super::bash::powershell_is_read_only("git status"));
+    assert!(!super::bash::powershell_is_read_only("echo (Remove-Item -Recurse x)"));
+    assert!(!super::bash::powershell_is_read_only("ls | Remove-Item"));
+    assert!(!super::bash::powershell_is_read_only("Get-Content $env:USERPROFILE\\.ssh\\id_rsa"));
+    assert!(!super::bash::powershell_is_read_only("Remove-Item x"));
 }

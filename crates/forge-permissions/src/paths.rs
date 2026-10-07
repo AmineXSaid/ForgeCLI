@@ -5,7 +5,14 @@ use std::path::{Component, Path, PathBuf};
 /// the home directory.
 pub fn normalize(path: &Path, base: &Path) -> PathBuf {
     let s = path.to_string_lossy();
-    let joined = if let Some(rest) = s.strip_prefix("~/") {
+    // Windows: Git Bash paths (`/c/x`) and verbatim ones (`\\?\C:\x`) name the
+    // same files as `C:\x`; rules and working directories use that form.
+    if cfg!(windows) {
+        if let Some(w) = windows_form(&s) {
+            return normalize(Path::new(&w), base);
+        }
+    }
+    let joined = if let Some(rest) = s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\").filter(|_| cfg!(windows))) {
         dirs::home_dir().unwrap_or_default().join(rest)
     } else if s == "~" {
         dirs::home_dir().unwrap_or_default()
@@ -27,7 +34,58 @@ pub fn normalize(path: &Path, base: &Path) -> PathBuf {
     out
 }
 
-/// `path` equals `dir` or lies below it (both already normalised).
+/// A Windows path written another way, in native form: `/c/x` and
+/// `/cygdrive/c/x` (Git Bash), `C:/x`, and the verbatim `\\?\C:\x`. `None` when
+/// it is already native (or not a Windows path).
+pub fn windows_form(s: &str) -> Option<String> {
+    if s.starts_with(r"\\?\") {
+        return forge_platform::path::simplify_verbatim(s);
+    }
+    if s.contains('/') {
+        return forge_platform::path::msys_to_windows(s);
+    }
+    None
+}
+
+/// `path` equals `dir` or lies below it (both already normalised). Windows
+/// paths compare without regard to case or separator, as the filesystem does.
 pub fn is_within(path: &Path, dir: &Path) -> bool {
-    path.starts_with(dir)
+    is_within_on(cfg!(windows), path, dir)
+}
+
+fn is_within_on(windows: bool, path: &Path, dir: &Path) -> bool {
+    if !windows {
+        return path.starts_with(dir);
+    }
+    let (p, d) = (fold(path), fold(dir));
+    let d = d.trim_end_matches('/');
+    p == d || p.starts_with(&format!("{d}/"))
+}
+
+/// A Windows path for comparison: forward slashes, lower case.
+pub(crate) fn fold(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+#[cfg(test)]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn windows_paths_in_other_forms() {
+        assert_eq!(windows_form("/c/Users/me/proj").as_deref(), Some(r"C:\Users\me\proj"));
+        assert_eq!(windows_form("C:/Users/me").as_deref(), Some(r"C:\Users\me"));
+        assert_eq!(windows_form(r"\\?\C:\Users\me").as_deref(), Some(r"C:\Users\me"));
+        assert_eq!(windows_form(r"C:\Users\me"), None);
+        assert_eq!(windows_form("src/main.rs"), None, "relative paths stay relative");
+    }
+
+    #[test]
+    fn windows_containment_ignores_case_and_separators() {
+        let dir = Path::new(r"C:\Users\Me\Proj");
+        assert!(is_within_on(true, Path::new(r"c:\users\me\proj\src\a.rs"), dir));
+        assert!(is_within_on(true, Path::new("C:/Users/Me/Proj"), dir));
+        assert!(!is_within_on(true, Path::new(r"C:\Users\Me\Project2\a.rs"), dir));
+        assert!(!is_within_on(false, Path::new("/home/ME/proj/a"), Path::new("/home/me/proj")));
+    }
 }

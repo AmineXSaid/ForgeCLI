@@ -14,6 +14,7 @@ Dependencies point one way. Nothing lower in the list depends on anything
 higher.
 
 ```
+forge-platform                   OS differences: the shell commands run in, process trees, path display
 forge-types                      wire types (Messages API + stream-json protocol)
   ├─ forge-api                   Provider trait, Messages API SSE client, OpenAI-compatible adapter, mock, model table + pricing
   ├─ forge-config                settings layers, memory files (FORGE.md), resource search paths

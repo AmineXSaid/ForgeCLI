@@ -259,7 +259,7 @@ fn approve(cwd: &std::path::Path, name: Option<String>, all: bool) -> Result<i32
 async fn serve(cwd: &std::path::Path) -> Result<i32, Fail> {
     let mut reg = forge_tools::ToolRegistry::new();
     forge_tools::builtin::register_core(&mut reg);
-    let ctx = forge_tools::ToolContext::new(&cwd.canonicalize().unwrap_or(cwd.to_path_buf()));
+    let ctx = forge_tools::ToolContext::new(&forge_platform::path::canonicalize(cwd).unwrap_or(cwd.to_path_buf()));
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
     forge_mcp::server::serve(reg, ctx, stdin, tokio::io::stdout())
         .await

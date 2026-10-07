@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+forge-platform.workspace = true
 forge-types.workspace = true
 forge-api.workspace = true
 forge-config.workspace = true

@@ -333,6 +333,7 @@ them.
 | `FORGE_PROMPTS_DIR` | A local prompt set |
 | `FORGE_HOME` | One root for config, state and cache |
 | `FORGE_SANDBOX` | Same as `--sandbox` |
+| `FORGE_SHELL` | The shell commands run in: a full path, or a name on PATH (bash, sh, zsh, pwsh, powershell). Also read from the settings `env` block. See "Shells" below |
 | `FORGE_VERIFY` | `0` turns the verification loop off |
 | `FORGE_DISABLE_CRON` | `1` turns scheduled prompts off (`/loop`, `CronCreate`, ...) |
 | `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT` | MCP connect and call timeouts, in milliseconds (30 s, 10 min) |
@@ -526,6 +527,34 @@ listed in the system prompt's environment section.
   is data and not to follow it. Nothing is removed. This is OWASP LLM01:
   prompt injection.
 
+## Shells
+
+Every command Forge runs (the Bash tool, `!command`, hooks, `apiKeyHelper`,
+the status line, `!` lines in custom commands) runs in one shell, chosen at
+startup:
+1. `FORGE_SHELL`, from the environment, else from a settings `env` block. A
+   value that names no program, or a program Forge can't drive (cmd, fish),
+   is an error, never silently skipped.
+2. **Windows:** Git Bash: next to `git.exe` on PATH, then the standard install
+   directories (`%ProgramFiles%\Git`, `%LOCALAPPDATA%\Programs\Git`, scoop),
+   then a `bash.exe` on PATH that isn't the WSL launcher. Without Git Bash:
+   PowerShell 7 (`pwsh`), then Windows PowerShell 5.1. cmd.exe is never used.
+   **Unix:** bash, then sh.
+
+The tool keeps the name `Bash` (permission rules and hooks match on it); its
+description and the model's environment prompt say which shell it is, and on
+Windows how to write paths for it.
+
+**With no shell,** Forge starts anyway: it warns once on stderr, `forge doctor`
+fails its `shell` row with the places it looked, and the Bash tool answers
+every call with that message and tells the model not to retry, instead of
+failing with an OS error.
+
+On Windows, a command is stopped with everything it started (a job object), so
+the timeout, Esc and KillShell end it; paths are shown without the `\\?\`
+prefix; and Git Bash paths (`/c/Users/me`) are understood by the file tools
+and permission rules, which compare paths without regard to case.
+
 ## Sandbox
 
 `--sandbox <mode>`, `FORGE_SANDBOX` or the `sandbox.mode` setting (in that
@@ -552,6 +581,7 @@ operating system, not a rule, limits what it can touch.
 - Linux: bubblewrap (`bwrap`). Install it with your package manager.
 - macOS: `sandbox-exec` with a generated Seatbelt profile. This backend is
   untested.
+- Windows: none. Run Forge inside WSL 2 to confine commands.
 
 `forge doctor` reports which backend was found.
 

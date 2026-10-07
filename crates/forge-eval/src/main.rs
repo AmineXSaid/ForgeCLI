@@ -69,7 +69,8 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Run { tasks, forge, label, repeat, jobs, out, only, forge_args } => {
             let list = load_tasks(&tasks, &only)?;
             anyhow::ensure!(!list.is_empty(), "no tasks found in {}", tasks.display());
-            let forge = forge.canonicalize().with_context(|| format!("forge binary not found: {}", forge.display()))?;
+            let forge = forge_platform::path::canonicalize(&forge)
+                .with_context(|| format!("forge binary not found: {}", forge.display()))?;
             let out_dir = out.unwrap_or_else(|| PathBuf::from("evals/results").join(&label));
             std::fs::create_dir_all(&out_dir)?;
             let opts = RunOptions {
@@ -77,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
                 args: forge_args,
                 env: vec![],
                 label,
-                out_dir: out_dir.canonicalize()?,
+                out_dir: forge_platform::path::canonicalize(&out_dir)?,
                 repeat,
                 jobs,
             };

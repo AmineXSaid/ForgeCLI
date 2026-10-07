@@ -126,6 +126,11 @@ fn status(v: &SessionView) -> String {
         None => "off".into(),
     };
     let _ = writeln!(s, "Sandbox:        {sandbox}");
+    let shell = match &d.tool_ctx.shell {
+        Ok(sh) => sh.describe(),
+        Err(m) => format!("none ({m})"),
+    };
+    let _ = writeln!(s, "Shell:          {shell}");
     let _ = writeln!(s, "API:            {} via {}", d.init.api_key_source, d.provider.name());
     let files: Vec<String> = d
         .settings

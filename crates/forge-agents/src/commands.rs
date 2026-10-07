@@ -124,7 +124,12 @@ pub fn bang_allowed(allowed_tools: &[String], cmd: &str, cwd: &Path) -> bool {
 }
 
 /// The prompt `/name args` sends.
-pub async fn expand(cmd: &CommandDef, args: &str, cwd: &Path) -> Result<String, String> {
+pub async fn expand(
+    cmd: &CommandDef,
+    args: &str,
+    cwd: &Path,
+    shell: &forge_platform::shell::ShellChoice,
+) -> Result<String, String> {
     let args = args.trim();
     let mut text = cmd.body.clone();
     let positional = shlex::split(args).unwrap_or_else(|| args.split_whitespace().map(str::to_string).collect());
@@ -155,9 +160,20 @@ pub async fn expand(cmd: &CommandDef, args: &str, cwd: &Path) -> Result<String, 
                 command.split_whitespace().next().unwrap_or(command)
             ));
         }
-        let run = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
+        let prepared = match shell {
+            Ok(sh) => sh.command(&sh.script(command, None)).map_err(|e| e.to_string()),
+            Err(m) => Err(m.to_string()),
+        };
+        let (std_cmd, _script) = match prepared {
+            Ok(c) => c,
+            Err(why) => {
+                out.push_str(&format!("(could not run: {why})"));
+                continue;
+            }
+        };
+        let mut std_cmd = std_cmd;
+        forge_platform::process::no_window(&mut std_cmd);
+        let run = tokio::process::Command::from(std_cmd)
             .current_dir(cwd)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
@@ -210,17 +226,20 @@ mod tests {
         std::fs::write(d.path().join("notes.md"), "remember this").unwrap();
         let c = cmd("Fix issue #$1 with priority $2. All: $ARGUMENTS", &[]);
         assert_eq!(
-            expand(&c, "123 \"very high\"", d.path()).await.unwrap(),
+            expand(&c, "123 \"very high\"", d.path(), forge_platform::shell::detect()).await.unwrap(),
             "Fix issue #123 with priority very high. All: 123 \"very high\""
         );
         let c = cmd("Review the code.", &[]);
-        assert_eq!(expand(&c, "src/main.rs", d.path()).await.unwrap(), "Review the code.\n\nARGUMENTS: src/main.rs");
+        assert_eq!(
+            expand(&c, "src/main.rs", d.path(), forge_platform::shell::detect()).await.unwrap(),
+            "Review the code.\n\nARGUMENTS: src/main.rs"
+        );
         let c = cmd("Status:\n!`echo clean`\nDone", &["Bash(echo:*)"]);
-        assert_eq!(expand(&c, "", d.path()).await.unwrap(), "Status:\nclean\nDone");
+        assert_eq!(expand(&c, "", d.path(), forge_platform::shell::detect()).await.unwrap(), "Status:\nclean\nDone");
         let c = cmd("!`rm -rf x`", &["Bash(echo:*)"]);
-        assert!(expand(&c, "", d.path()).await.unwrap_err().contains("allowed-tools"));
+        assert!(expand(&c, "", d.path(), forge_platform::shell::detect()).await.unwrap_err().contains("allowed-tools"));
         let c = cmd("Summarize @notes.md please, not @missing.md", &[]);
-        let out = expand(&c, "", d.path()).await.unwrap();
+        let out = expand(&c, "", d.path(), forge_platform::shell::detect()).await.unwrap();
         assert!(
             out.ends_with(&format!("<file path=\"{}\">\nremember this\n</file>", d.path().join("notes.md").display())),
             "{out}"

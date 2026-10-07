@@ -189,10 +189,30 @@ pub fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The shell task checks run in: a POSIX shell (tasks are shell scripts),
+/// `FORGE_SHELL` if set. Found once.
+fn eval_shell() -> &'static forge_platform::shell::ShellChoice {
+    static S: std::sync::OnceLock<forge_platform::shell::ShellChoice> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        forge_platform::shell::resolve(&forge_platform::shell::ShellConfig {
+            posix_only: true,
+            ..forge_platform::shell::ShellConfig::from_env()
+        })
+    })
+}
+
 async fn sh(cmd: &str, dir: &Path, task_dir: &Path, timeout: Duration) -> (bool, String) {
-    let child = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(cmd)
+    let shell = match eval_shell() {
+        Ok(s) => s,
+        Err(m) => return (false, m.to_string()),
+    };
+    let (std_cmd, _script) = match shell.command(&shell.script(cmd, None)) {
+        Ok(c) => c,
+        Err(e) => return (false, format!("could not run {cmd}: {e}")),
+    };
+    let mut std_cmd = std_cmd;
+    forge_platform::process::no_window(&mut std_cmd);
+    let child = Command::from(std_cmd)
         .current_dir(dir)
         .env("FORGE_EVAL_TASK_DIR", task_dir)
         // Checks must see the files as they are now, never stale bytecode.
@@ -226,7 +246,7 @@ pub async fn validate_task(task: &Task, scratch: &Path) -> Result<(), String> {
     } else {
         std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
     }
-    let task_dir = task.dir.canonicalize().map_err(|e| e.to_string())?;
+    let task_dir = forge_platform::path::canonicalize(&task.dir).map_err(|e| e.to_string())?;
     let init = "git init -q && git add -A && git -c user.email=eval@forge -c user.name=forge-eval commit -q --allow-empty -m fixture";
     sh(init, &ws, &task_dir, Duration::from_secs(60)).await;
     if let Some(setup) = &task.spec.setup {
@@ -243,7 +263,9 @@ pub async fn validate_task(task: &Task, scratch: &Path) -> Result<(), String> {
     if !solution.exists() {
         return Err("no solution.sh".into());
     }
-    let (ok, out) = sh(&format!("sh '{}'", solution.display()), &ws, &task_dir, Duration::from_secs(300)).await;
+    // Forward slashes: the POSIX shell on Windows (Git Bash) reads `\` as an escape.
+    let solution = solution.display().to_string().replace('\\', "/");
+    let (ok, out) = sh(&format!("sh '{solution}'"), &ws, &task_dir, Duration::from_secs(300)).await;
     if !ok {
         return Err(format!("solution.sh failed: {out}"));
     }
@@ -317,9 +339,9 @@ pub async fn run_task(task: &Task, run: u32, opts: &RunOptions) -> anyhow::Resul
     } else {
         std::fs::create_dir_all(&ws)?;
     }
-    let ws = ws.canonicalize()?;
+    let ws = forge_platform::path::canonicalize(&ws)?;
     let init = "git init -q && git add -A && git -c user.email=eval@forge -c user.name=forge-eval commit -q --allow-empty -m fixture";
-    let task_dir = task.dir.canonicalize()?;
+    let task_dir = forge_platform::path::canonicalize(&task.dir)?;
     sh(init, &ws, &task_dir, Duration::from_secs(60)).await;
     if let Some(setup) = &task.spec.setup {
         let (ok, out) = sh(setup, &ws, &task_dir, Duration::from_secs(300)).await;

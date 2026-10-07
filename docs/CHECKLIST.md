@@ -302,6 +302,27 @@ Reset first, so `calc.py` has its uncommitted change.
     during a turn runs after it (the REPL reads input only between turns).
 55. (new) `FORGE_TUI=0 forge` also starts the line REPL.
 
+### Windows (Windows Terminal and PowerShell)
+
+Checked under Wine with Git for Windows 2.47 (not a real Windows machine):
+the shell search, the no-shell message, `forge doctor` and paths without
+`\\?\`. These need a real Windows machine:
+
+56. (new) With Git for Windows installed: `forge doctor` shows
+    `ok   shell        Git Bash (C:\Program Files\Git\bin\bash.exe), ...`
+    and `ok   git`. In `forge`, `run echo hello` answers `hello`; the header
+    and `/status` show `C:\...` paths, never `\\?\C:\...`.
+57. (new) Without Git Bash (or with `FORGE_SHELL=C:\nowhere\bash.exe`):
+    `forge doctor` fails the `shell` row and names what it looked for; in
+    `forge`, `run echo hello` gets one clear answer naming the fix, and the
+    model does not retry through cmd.exe or PowerShell.
+58. (new) `FORGE_SHELL=pwsh forge`: `run Get-ChildItem` works, and `/status`
+    shows `Shell: PowerShell 7 (...)`.
+59. (new) `run ping -n 100 127.0.0.1`, then Esc after a few seconds: the
+    command stops at once (Task Manager shows no leftover `PING.EXE`).
+60. (new) A deny rule `Read(./secrets/**)`: reading `.\Secrets\key.txt` or
+    `/c/.../secrets/key.txt` is denied too.
+
 ## Results
 
 Copy this table into the release notes or an issue, one row per check:

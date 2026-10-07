@@ -162,7 +162,7 @@ fn enter_worktree(cwd: &Path, name: &str, session_id: Option<&str>) -> Result<Wo
             .map_err(|e| CoreError::Config(format!("--worktree: git could not create it: {e}")))?;
         let _ = forge_git::exclude(&root, ".forge/worktrees/");
     }
-    Ok(Worktree { name, path: path.canonicalize().unwrap_or(path), main_repo: root })
+    Ok(Worktree { name, path: forge_platform::path::canonicalize(&path).unwrap_or(path), main_repo: root })
 }
 
 /// Load the session's settings the way [`build_session`] does.
@@ -177,7 +177,7 @@ fn session_settings(opts: &LaunchOptions, cwd: &Path) -> LoadedSettings {
 
 /// Which MCP servers this session would start (contract C16). `--bare` keeps only `--mcp-config`.
 pub fn resolve_mcp(opts: &LaunchOptions) -> forge_mcp::Resolved {
-    let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
     let settings = session_settings(opts, &cwd);
     // Plugin servers count as explicitly chosen, like --mcp-config.
     let mut configs: Vec<String> = session_plugins(opts, &settings, &cwd, &mut vec![])
@@ -207,7 +207,7 @@ fn session_plugins(
 /// Connect the session's MCP servers. Failures are reported in the manager, never fatal.
 pub async fn connect_mcp(opts: &LaunchOptions) -> (Arc<forge_mcp::McpManager>, Vec<String>) {
     let resolved = resolve_mcp(opts);
-    let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
     let manager = forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(&cwd)).await;
     let mut warnings = resolved.warnings;
     warnings.extend(manager.warnings());
@@ -264,6 +264,14 @@ fn env_nonempty(k: &str) -> Option<String> {
 /// The provider for this session: an OpenAI-compatible endpoint when one is
 /// configured, the Messages API otherwise.
 pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<dyn Provider>, CoreError> {
+    make_provider_with_shell(settings, betas, &session_shell(settings))
+}
+
+fn make_provider_with_shell(
+    settings: &LoadedSettings,
+    betas: &[String],
+    shell: &forge_platform::shell::ShellChoice,
+) -> Result<Arc<dyn Provider>, CoreError> {
     let openai_url =
         env_nonempty("FORGE_OPENAI_BASE_URL").or_else(|| settings.str("/openai/baseUrl").map(str::to_string));
     if let Some(url) = openai_url {
@@ -278,7 +286,9 @@ pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<
     }
     if !cfg.has_credentials() {
         if let Some(helper) = settings.str("/apiKeyHelper") {
-            cfg.api_key = run_key_helper(helper);
+            cfg.api_key = run_key_helper(helper, shell).map_err(|why| {
+                CoreError::Auth(format!("no API credentials found: apiKeyHelper `{helper}` could not run: {why}"))
+            })?;
         }
     }
     if !cfg.has_credentials() {
@@ -292,11 +302,29 @@ pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<
     Ok(Arc::new(MessagesProvider::new(cfg)?))
 }
 
-/// `apiKeyHelper`: a command whose stdout is the key.
-fn run_key_helper(cmd: &str) -> Option<String> {
-    let out = std::process::Command::new("/bin/sh").arg("-c").arg(cmd).output().ok()?;
+/// `apiKeyHelper`: a command whose stdout is the key. `Err` when it could not
+/// start at all; `Ok(None)` when it ran but printed no key.
+fn run_key_helper(cmd: &str, shell: &forge_platform::shell::ShellChoice) -> Result<Option<String>, String> {
+    let shell = shell.as_ref().map_err(|m| m.to_string())?;
+    let (mut c, _script) = shell.command(&shell.script(cmd, None)).map_err(|e| e.to_string())?;
+    forge_platform::process::no_window(&mut c);
+    let out = c
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("could not start {}: {e}", shell.program.display()))?;
     let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !key.is_empty()).then_some(key)
+    Ok((out.status.success() && !key.is_empty()).then_some(key))
+}
+
+/// The shell for a session: `FORGE_SHELL` from the environment, else from the
+/// settings `env` block, else the platform's search (forge_platform::shell).
+pub fn session_shell(settings: &LoadedSettings) -> forge_platform::shell::ShellChoice {
+    let from_settings = settings.env().into_iter().find(|(k, _)| k == "FORGE_SHELL").map(|(_, v)| v);
+    forge_platform::shell::resolve(&forge_platform::shell::ShellConfig {
+        env_override: env_nonempty("FORGE_SHELL"),
+        settings_override: from_settings.filter(|v| !v.trim().is_empty()),
+        posix_only: false,
+    })
 }
 
 /// Tools named in `--disallowedTools` without a specifier are removed outright.
@@ -350,7 +378,7 @@ pub fn build_session(
     sink: Arc<dyn EventSink>,
     prompter: Arc<dyn PermissionPrompter>,
 ) -> Result<Session, CoreError> {
-    let mut cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let mut cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
     let mut warnings = vec![];
     let worktree = match &opts.worktree {
         Some(name) => {
@@ -365,9 +393,15 @@ pub fn build_session(
     let settings = session_settings(&opts, &cwd);
     warnings.extend(settings.errors.iter().map(|e| format!("settings: {e}")));
 
+    // The shell every command runs in (Bash, `!`, hooks, apiKeyHelper, status line).
+    let shell = session_shell(&settings);
+    if let Err(m) = &shell {
+        warnings.push(format!("shell: {m}"));
+    }
+
     let provider = match opts.provider.clone() {
         Some(p) => p,
-        None => make_provider(&settings, &opts.betas)?,
+        None => make_provider_with_shell(&settings, &opts.betas, &shell)?,
     };
 
     // Plugins, commands, skills and output styles (M5).
@@ -512,6 +546,7 @@ pub fn build_session(
     // Tools.
     let mut tools = ToolRegistry::new();
     forge_tools::builtin::register_core(&mut tools);
+    forge_tools::builtin::set_shell(&mut tools, &shell);
     let web_tools = web_tools(&provider, &settings);
     for t in &web_tools {
         tools.register(t.clone());
@@ -554,6 +589,7 @@ pub fn build_session(
     tools.retain(|n| !removed.iter().any(|r| Rule::parse(r).map(|rule| rule.covers_tool(n)).unwrap_or(false)));
 
     let mut tool_ctx = ToolContext::new(&cwd);
+    tool_ctx.shell = shell.clone();
     if let Some(shells) = &opts.shells {
         tool_ctx.shells = shells.clone();
     }
@@ -579,7 +615,7 @@ pub fn build_session(
                 warnings.push(format!(
                     "sandbox {} requested but unavailable ({}); shell commands will ask for approval instead",
                     mode.as_str(),
-                    if cfg!(target_os = "linux") { "install bubblewrap (bwrap)" } else { "no sandbox-exec" }
+                    forge_tools::sandbox::unavailable_reason()
                 ));
             } else {
                 tool_ctx.set_sandbox(Some(forge_tools::sandbox::SandboxPolicy {
@@ -614,6 +650,7 @@ pub fn build_session(
         },
     );
     hooks.disabled = opts.bare || settings.bool("/disableAllHooks") == Some(true);
+    hooks.shell = Some(shell.clone());
     if let Some(agent) = &main_agent {
         if let Some(allowed) = &agent.tools {
             tools.retain(|n| allowed.iter().any(|a| a == n));
@@ -639,6 +676,7 @@ pub fn build_session(
         .collect();
     let verify = verify_config(&settings, &cwd);
     let mut env_info = EnvInfo::collect(&cwd, &add_dirs, &model);
+    env_info.shell = forge_platform::shell::env_line(&shell);
     if let Some(v) = &verify {
         env_info.checks = v.commands.clone();
     }
@@ -676,6 +714,7 @@ pub fn build_session(
         working_dirs: tool_ctx.working_dirs.clone(),
         env: tool_ctx.env.clone(),
         sandbox: tool_ctx.sandbox.clone(),
+        shell: shell.clone(),
         extra_tools: web_tools
             .iter()
             .cloned()

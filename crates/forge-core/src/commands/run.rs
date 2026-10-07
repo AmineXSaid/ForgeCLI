@@ -33,10 +33,11 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Invocation::NotACommand => return Exec::Submit(MessageContent::Text(text.to_string())),
         Invocation::Unknown(name) => return err(format!("Unknown command: /{name}")),
         Invocation::Custom { def, args } => {
-            return match forge_agents::commands::expand(def, args, &cwd).await {
+            let shell = d.engine.tool_ctx().shell.clone();
+            return match forge_agents::commands::expand(def, args, &cwd, &shell).await {
                 Ok(p) => Exec::Submit(MessageContent::Text(p)),
                 Err(e) => err(e),
-            }
+            };
         }
         Invocation::Skills { chain, args } => {
             let prompts: Vec<String> = chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args)).collect();

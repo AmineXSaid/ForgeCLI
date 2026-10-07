@@ -603,7 +603,7 @@ pub(super) fn sandbox(d: &mut Driver, args: &str) -> Exec {
             ),
             (Some(p), None) => format!("Sandbox: {} requested, but no sandbox is available here.", p.mode.as_str()),
             (None, Some(b)) => format!("Sandbox: off ({b:?} is available). /sandbox on confines shell commands."),
-            (None, None) => "Sandbox: off. None is available: install bubblewrap (Linux).".into(),
+            (None, None) => format!("Sandbox: off. None is available: {}.", forge_tools::sandbox::unavailable_reason()),
         });
     }
     let wanted = if args == "on" { "workspace-write" } else { args };
@@ -611,11 +611,7 @@ pub(super) fn sandbox(d: &mut Driver, args: &str) -> Exec {
         return err("Usage: /sandbox [on|off|read-only|workspace-write|status]");
     };
     if mode.is_some() && backend.is_none() {
-        return err(if cfg!(target_os = "linux") {
-            "No sandbox is available here: install bubblewrap (bwrap) to confine shell commands."
-        } else {
-            "No sandbox is available on this system."
-        });
+        return err(format!("No sandbox is available here: {}.", forge_tools::sandbox::unavailable_reason()));
     }
     let st = &d.info.settings;
     ctx.set_sandbox(mode.map(|mode| forge_tools::sandbox::SandboxPolicy {

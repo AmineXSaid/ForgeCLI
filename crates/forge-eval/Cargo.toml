@@ -10,6 +10,7 @@ name = "forge-eval"
 path = "src/main.rs"
 
 [dependencies]
+forge-platform.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
