@@ -115,3 +115,39 @@ Run these in a real terminal emulator (not through a pipe).
     - It answers in a line or two, while the turn goes on.
     - After the turn, `/usage` includes the side question's tokens, and the
       main conversation (`/export`) has no trace of it.
+
+## Screens (terminal UI)
+
+In the scratch repository, with an uncommitted change to `calc.py` and an
+untracked `notes.md`:
+
+29. `/diff` opens a box listing `calc.py  +N -M` and `notes.md (untracked)`.
+    - Enter on `calc.py` jumps to its hunks: additions green, deletions red,
+      `@@` lines dim. Esc goes back to the list; Esc again closes it.
+    - PageDown/PageUp and Home/End scroll; the footer counts the rows.
+    - In a 40-column window the box still fits; with `NO_COLOR=1` the `+`
+      and `-` markers still show which side a line is on.
+30. `/context` shows a 10×10 grid coloured by part, and the legend's numbers
+    match `/context all`'s top lines. During a long turn, `/context` still
+    opens.
+31. `/hooks`: "Add hook…", choose `PreToolUse`, matcher `Bash`, command
+    `echo hook-ran >> /tmp/forge-hook.log`, scope local, Enter.
+    - The reply says it was added and applies now;
+      `.forge/settings.local.json` has it.
+    - Ask Forge to run `ls`: `/tmp/forge-hook.log` gets a line.
+    - `/hooks` again, Enter on the hook, Yes: it is gone from the file.
+32. `/agents`: "Create an agent…", name `test-writer`, a description, pick
+    Read and Write, model sonnet, project, Enter.
+    - `.forge/agents/test-writer.md` exists with those fields.
+    - `/agents` lists it; asking Forge to "use the test-writer agent" runs it
+      through the Task tool.
+33. Write `{"ctrl+s": "submit", "ctrl+r": "none", "ctrl+q": "nope"}` to
+    `keybindings.json` in the config directory (`forge config paths`) and
+    start `forge`.
+    - A warning names `ctrl+q` and the unknown action.
+    - Ctrl+S sends a prompt; Ctrl+R does nothing.
+    - `/keybindings` lists `enter, ctrl+s` for sending and "Unbound: ctrl+r".
+34. `/color green` turns the prompt marker and selections green; `/color
+    default` brings Forge's colour back. `/focus`, then ask for something
+    that runs tools: no tool lines in the scrollback, the spinner names the
+    tool; `/focus off` shows them again.

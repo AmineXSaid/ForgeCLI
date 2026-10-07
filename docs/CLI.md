@@ -389,6 +389,9 @@ them all. The built-ins so far:
 | `/feedback [description]` (`/bug`, `/share`) | Saves a bug-report bundle in `<state>/feedback/` (report, doctor checks, this session's transcript and settings, with secrets masked). Nothing is uploaded |
 | `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, Forge reads the log and diagnoses it |
 | `/release-notes` | The changelog |
+| `/color [name\|default]` | Terminal UI only: the accent colour (prompt and answer markers, selections, dialog borders) for this session: red, orange, yellow, green, cyan, blue, purple, pink; `default` is Forge's own. Not saved |
+| `/focus [on\|off]` | Terminal UI only: keeps tool calls and their results out of the scrollback until turned off (the spinner still names the running tool) |
+| `/diff`, `/context`, `/hooks`, `/agents` with no arguments | Terminal UI: a screen instead of the text answer (TUI.md, "Screens"): the diff viewer, the context grid, the hooks editor, the agents wizard |
 | `/theme [dark\|light\|none]` | Terminal UI only: the colour theme, saved as `theme` in user settings; without an argument, a picker. `NO_COLOR` still wins |
 | `/copy [n]` | Terminal UI only: the latest answer (or the nth latest) to the clipboard through the terminal (OSC 52; inside tmux, `set -g set-clipboard on`) |
 | `/keybindings` | Terminal UI only: the keyboard shortcuts (also `?` on an empty prompt) |

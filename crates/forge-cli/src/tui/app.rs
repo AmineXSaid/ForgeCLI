@@ -259,6 +259,8 @@ pub struct App {
     pub viewer_page: std::cell::Cell<usize>,
     /// Key bindings in effect (`keybindings.json`).
     pub keymap: super::keys::Keymap,
+    /// `/focus`: tool calls and their results stay out of the scrollback.
+    pub focus: bool,
 }
 
 /// The main argument of a tool call, for one line.
@@ -330,6 +332,7 @@ impl App {
             status_text: None,
             viewer_page: std::cell::Cell::new(10),
             keymap: Default::default(),
+            focus: false,
         }
     }
 
@@ -425,7 +428,12 @@ impl App {
             UiEvent::Status(s) => self.status = s,
             UiEvent::Commands(c) => self.commands = c,
             UiEvent::Files(f) => self.files = f,
-            UiEvent::Theme(name) => self.theme = Theme::named(&name, self.color_ok),
+            UiEvent::Theme(name) => {
+                // The session's /color stays.
+                let accent = self.theme.accent;
+                self.theme = Theme::named(&name, self.color_ok);
+                self.theme.accent = accent;
+            }
             UiEvent::Copy(text) => self.clipboard = Some(text),
             UiEvent::StatusLine(text) => self.status_text = text,
             UiEvent::Picker(picker) => self.open_picker(picker),
@@ -507,6 +515,7 @@ impl App {
                                 self.commit_text_line(l);
                             }
                         }
+                        ContentBlock::ToolUse { name, .. } if self.focus => self.activity = format!("Running {name}"),
                         ContentBlock::ToolUse { name, input, .. } => {
                             self.gap();
                             let t = self.theme;
@@ -523,6 +532,10 @@ impl App {
                 self.streamed = false;
             }
             EngineEvent::User { message, is_meta: false, .. } => {
+                if self.focus {
+                    self.activity = "Working".into();
+                    return;
+                }
                 for b in &message.content {
                     if let ContentBlock::ToolResult { content, is_error, .. } = b {
                         let text = content.to_text();
@@ -1328,19 +1341,59 @@ impl App {
         vec![]
     }
 
+    /// `/color [name|default]`: the accent colour for this session.
+    fn color_command(&mut self, arg: &str) -> (String, bool) {
+        let names: Vec<&str> = super::text::ACCENTS.iter().map(|(n, _)| *n).collect();
+        let list = format!("Colours: {}, default.", names.join(", "));
+        match arg {
+            "" => (format!("The accent colour marks prompts, answers and selections. {list} /color <name> sets it for this session."), false),
+            "default" | "reset" => {
+                self.theme.accent = None;
+                ("Accent colour: Forge's own.".into(), false)
+            }
+            name => match super::text::ACCENTS.iter().find(|(n, _)| *n == name) {
+                Some((n, c)) => {
+                    self.theme.accent = Some(*c);
+                    let note = if self.theme.color { "" } else { " (Colour is off, so it shows once colour is on.)" };
+                    (format!("Accent colour: {n}, for this session.{note}"), false)
+                }
+                None => (format!("Unknown colour {name:?}. {list}"), true),
+            },
+        }
+    }
+
+    /// `/focus [on|off]`: keep tool calls out of the scrollback.
+    fn focus_command(&mut self, arg: &str) -> (String, bool) {
+        let on = match arg {
+            "" => !self.focus,
+            "on" => true,
+            "off" => false,
+            _ => return ("Usage: /focus [on|off]".into(), true),
+        };
+        self.focus = on;
+        let text = if on {
+            "Focus on: tool calls and their results stay out of the scrollback (the spinner still names the tool). /focus again turns it off."
+        } else {
+            "Focus off: tool calls show again."
+        };
+        (text.into(), false)
+    }
+
     /// Send `text` as if typed (queued while a turn runs).
     pub fn submit(&mut self, text: String) -> Vec<Action> {
         self.menu_selected = 0;
         self.menu_dismissed = false;
         // The UI's own immediate commands answer at once, even while a turn runs.
         let local = match text.trim() {
-            "/keybindings" => Some(keys_text(&self.keymap)),
-            "/terminal-setup" => Some(terminal_setup_text(super::keyboard_protocol())),
+            "/keybindings" => Some((keys_text(&self.keymap), false)),
+            "/terminal-setup" => Some((terminal_setup_text(super::keyboard_protocol()), false)),
+            t if t == "/color" || t.starts_with("/color ") => Some(self.color_command(t["/color".len()..].trim())),
+            t if t == "/focus" || t.starts_with("/focus ") => Some(self.focus_command(t["/focus".len()..].trim())),
             _ => None,
         };
-        if let Some(answer) = local {
+        if let Some((answer, is_error)) = local {
             self.echo_prompt(&text);
-            self.reply_lines(&answer, false);
+            self.reply_lines(&answer, is_error);
             return vec![];
         }
         if self.busy {
@@ -1364,7 +1417,7 @@ mod tests {
     use forge_types::{ApiMessage, MessageContent, Role, StopReason, Usage};
 
     fn app() -> App {
-        let mut a = App::new(Theme { color: false, light: false }, vec![]);
+        let mut a = App::new(Theme { color: false, light: false, accent: None }, vec![]);
         a.commands = vec![
             CommandInfo { name: "clear".into(), args: "[name]".into(), description: "Start a new conversation".into() },
             CommandInfo { name: "compact".into(), args: "[instructions]".into(), description: "Summarize".into() },
@@ -1436,6 +1489,61 @@ mod tests {
         let table = keys_text(&a.keymap);
         assert!(table.contains("enter, ctrl+s") && table.contains("Unbound: ctrl+r."), "{table}");
         assert!(keys_text(&Default::default()).starts_with("Enter "), "the defaults read as before");
+    }
+
+    #[test]
+    fn color_and_focus_change_this_session_only() {
+        let mut a = App::new(Theme { color: true, light: false, accent: None }, vec![]);
+        assert!(a.submit("/color green".into()).is_empty(), "answered by the UI");
+        assert_eq!(a.theme.accent, Some(ratatui::style::Color::Green));
+        assert_eq!(a.theme.accent().fg, Some(ratatui::style::Color::Green));
+        a.on_event(UiEvent::Theme("light".into()));
+        assert_eq!(a.theme.accent, Some(ratatui::style::Color::Green), "a theme change keeps it");
+        a.take_pending();
+        a.submit("/color mauve".into());
+        assert!(texts(&a.take_pending()).iter().any(|l| l.contains("Unknown colour \"mauve\"")));
+        a.submit("/color default".into());
+        assert_eq!(a.theme.accent, None);
+
+        // Focus: tool calls and results stay out of the scrollback; text still shows.
+        a.submit("/focus".into());
+        assert!(a.focus);
+        a.take_pending();
+        a.on_event(UiEvent::Engine(EngineEvent::Assistant {
+            message: ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: Role::Assistant,
+                model: "m".into(),
+                content: vec![
+                    ContentBlock::text("Looking."),
+                    ContentBlock::ToolUse {
+                        id: "t".into(),
+                        name: "Bash".into(),
+                        input: json!({"command": "ls"}),
+                        cache_control: None,
+                    },
+                ],
+                stop_reason: Some(StopReason::ToolUse),
+                stop_sequence: None,
+                usage: Usage::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        a.on_event(UiEvent::Engine(EngineEvent::User {
+            message: forge_types::Message::user(vec![ContentBlock::tool_result("t".to_string(), "file.txt", false)]),
+            uuid: "u2".into(),
+            tool_use_result: None,
+            is_meta: false,
+            parent_tool_use_id: None,
+        }));
+        let lines = texts(&a.take_pending());
+        assert!(lines.iter().any(|l| l.contains("Looking.")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("Bash") || l.contains("file.txt")), "{lines:?}");
+        assert_eq!(a.activity, "Working");
+        a.submit("/focus off".into());
+        assert!(!a.focus);
     }
 
     #[test]
@@ -1679,7 +1787,7 @@ mod tests {
     #[test]
     fn ctrl_r_searches_history() {
         let mut a = App::new(
-            Theme { color: false, light: false },
+            Theme { color: false, light: false, accent: None },
             vec!["cargo test".into(), "git status".into(), "cargo build".into()],
         );
         typed(&mut a, "draft");
@@ -1760,7 +1868,7 @@ mod tests {
 
     #[test]
     fn question_mark_themes_and_clipboard() {
-        let mut a = App::new(Theme { color: true, light: false }, vec![]);
+        let mut a = App::new(Theme { color: true, light: false, accent: None }, vec![]);
         a.on_key(key(KeyCode::Char('?')));
         let shown = texts(&a.take_pending()).join("\n");
         assert!(shown.contains("Shift+Tab") && shown.contains("Ctrl+R"), "{shown}");
@@ -1769,13 +1877,13 @@ mod tests {
         assert_eq!(a.editor.text(), "why?");
 
         a.on_event(UiEvent::Theme("light".into()));
-        assert_eq!(a.theme, Theme { color: true, light: true });
+        assert_eq!(a.theme, Theme { color: true, light: true, accent: None });
         a.on_event(UiEvent::Theme("none".into()));
         assert!(!a.theme.color);
         a.on_event(UiEvent::Theme("dark".into()));
-        assert_eq!(a.theme, Theme { color: true, light: false });
+        assert_eq!(a.theme, Theme { color: true, light: false, accent: None });
         // Without colour allowed, no theme brings it back.
-        let mut b = App::new(Theme { color: false, light: false }, vec![]);
+        let mut b = App::new(Theme { color: false, light: false, accent: None }, vec![]);
         b.on_event(UiEvent::Theme("light".into()));
         assert!(!b.theme.color);
 

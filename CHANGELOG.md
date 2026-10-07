@@ -94,6 +94,8 @@
 - Key rebinding: `<config>/keybindings.json` maps keys to named actions
   (`submit`, `historySearch`, `cycleMode`, ...; `none` unbinds).
   `/keybindings` shows the keys in effect; bad entries are warnings.
+- `/color <name>` sets the accent colour for this session; `/focus` keeps
+  tool calls out of the scrollback until turned off.
 
 ### Immediate commands mid-turn
 - `/status`, `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp` and

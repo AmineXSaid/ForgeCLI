@@ -147,6 +147,15 @@ builtins! {
     ),
     (Cd, "cd", [], "<directory>", "Move this conversation to another directory"),
     (Clear, "clear", ["reset", "new"], "[name]", "Start a new conversation; the current one stays resumable"),
+    (
+        Color,
+        "color",
+        [],
+        "[name|default]",
+        "Set the accent colour for this session",
+        Surfaces::TUI,
+        true
+    ),
     (Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
     (Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
     (Context, "context", [], "[all]", "Show what fills the context window", Surfaces::ALL, true),
@@ -172,6 +181,15 @@ builtins! {
         ["bug", "share"],
         "[description]",
         "Save a bug-report bundle on this machine (nothing is uploaded)"
+    ),
+    (
+        Focus,
+        "focus",
+        [],
+        "[on|off]",
+        "Keep tool calls out of the scrollback until turned off",
+        Surfaces::TUI,
+        true
     ),
     (Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
     (Help, "help", [], "", "Show help and the available commands"),

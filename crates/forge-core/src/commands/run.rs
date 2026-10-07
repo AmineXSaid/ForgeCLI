@@ -115,7 +115,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Builtin::Theme => super::settings::theme(d, args),
         Builtin::Statusline => super::settings::statusline(d, args),
         // The terminal UI answers these itself: they need the terminal.
-        Builtin::Copy | Builtin::Keybindings | Builtin::TerminalSetup => {
+        Builtin::Copy | Builtin::Keybindings | Builtin::TerminalSetup | Builtin::Color | Builtin::Focus => {
             let name = BUILTINS.iter().find(|c| c.id == id).map(|c| c.name).unwrap_or("");
             err(format!("/{name} works only in the terminal UI."))
         }

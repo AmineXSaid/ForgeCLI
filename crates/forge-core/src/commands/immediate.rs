@@ -29,7 +29,9 @@ pub async fn execute_immediate(v: &SessionView, text: &str, cancel: &Cancellatio
         return None;
     }
     Some(match spec.id {
-        Builtin::Keybindings | Builtin::TerminalSetup => err(format!("/{} works only in the terminal UI.", spec.name)),
+        Builtin::Keybindings | Builtin::TerminalSetup | Builtin::Color | Builtin::Focus => {
+            err(format!("/{} works only in the terminal UI.", spec.name))
+        }
         id => run(v, id, args.trim(), cancel).await,
     })
 }

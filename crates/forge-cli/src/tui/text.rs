@@ -13,12 +13,26 @@ pub struct Theme {
     pub color: bool,
     /// Colours for a light background.
     pub light: bool,
+    /// The accent colour chosen with `/color` for this session (`None`: Forge's own).
+    pub accent: Option<Color>,
 }
+
+/// `/color` names and their colours.
+pub const ACCENTS: &[(&str, Color)] = &[
+    ("red", Color::Red),
+    ("orange", Color::Rgb(0xe0, 0x8a, 0x3c)),
+    ("yellow", Color::Yellow),
+    ("green", Color::Green),
+    ("cyan", Color::Cyan),
+    ("blue", Color::Blue),
+    ("purple", Color::Rgb(0x9b, 0x7b, 0xf0)),
+    ("pink", Color::Rgb(0xe8, 0x7a, 0xb8)),
+];
 
 impl Theme {
     /// The theme named in settings (`dark`, `light`, `none`), when colour is allowed at all.
     pub fn named(name: &str, color_ok: bool) -> Theme {
-        Theme { color: color_ok && name != "none", light: name == "light" }
+        Theme { color: color_ok && name != "none", light: name == "light", accent: None }
     }
 
     fn fg(&self, c: Color) -> Style {
@@ -31,6 +45,9 @@ impl Theme {
 
     /// Forge's own colour: the prompt marker, the answer marker, selections.
     pub fn accent(&self) -> Style {
+        if let (true, Some(c)) = (self.color, self.accent) {
+            return Style::default().fg(c);
+        }
         if self.color {
             Style::default().fg(if self.light { Color::Rgb(0x5b, 0x3c, 0xc4) } else { Color::Rgb(0x9b, 0x7b, 0xf0) })
         } else {
@@ -243,7 +260,7 @@ pub fn plain(line: &Line) -> String {
 mod tests {
     use super::*;
 
-    const T: Theme = Theme { color: true, light: false };
+    const T: Theme = Theme { color: true, light: false, accent: None };
 
     #[test]
     fn markdown_lines_keep_track_of_fences() {

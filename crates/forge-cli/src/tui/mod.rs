@@ -259,7 +259,7 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let persist = !o.no_session_persistence;
     let hist_path = history_path();
     // The `theme` setting arrives from the session first thing.
-    let theme = text::Theme { color: crate::term::get().color, light: false };
+    let theme = text::Theme { color: crate::term::get().color, light: false, accent: None };
     let mut app = App::new(theme, load_history(&hist_path, &cwd));
     // Bad entries in keybindings.json are warnings, never a failure.
     let (keymap, key_warnings) = keys::Keymap::load();

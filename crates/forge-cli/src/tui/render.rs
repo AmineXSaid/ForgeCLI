@@ -455,7 +455,7 @@ mod tests {
     use serde_json::json;
 
     fn app(color: bool) -> App {
-        let mut a = App::new(Theme { color, light: false }, vec![]);
+        let mut a = App::new(Theme { color, light: false, accent: None }, vec![]);
         a.on_event(UiEvent::Status(StatusView {
             model: "opus".into(),
             mode: "default".into(),
@@ -663,7 +663,10 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         // Ctrl+R shows the search and the match in the input box.
-        let mut a = App::new(Theme { color: false, light: false }, vec!["cargo test".into(), "git status".into()]);
+        let mut a = App::new(
+            Theme { color: false, light: false, accent: None },
+            vec!["cargo test".into(), "git status".into()],
+        );
         a.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         typed(&mut a, "car");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);

@@ -140,7 +140,12 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
      `/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`.
      Checked against mocks and in a pseudo-terminal; the real-terminal checks
      are in docs/CHECKLIST.md.
-   - **Still to build:** key rebinding, `/color`, `/focus`, `/tui`, `/scroll-speed`, and the
+   - **Done since:** the editor-style screens (`/diff` viewer, `/context`
+     grid, `/hooks` editor, `/agents` wizard), key rebinding
+     (`keybindings.json`), `/color` and `/focus`. `/tui` and `/scroll-speed`
+     are out (PARITY).
+   - **Still to build:** nothing from the TUI list; see PARITY for smaller
+     gaps. Earlier list, kept for reference: key rebinding, `/color`, `/focus`, `/tui`, `/scroll-speed`, and the
      editor-style dialogs (`/hooks`, `/agents` wizard, `/diff` viewer,
      `/context` grid).
 8. Remaining flags and polish.

@@ -16,7 +16,7 @@ terminals. `--no-tui` (or `FORGE_TUI=0`) keeps the line REPL
 | Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/forge-cli/src/tui/mod.rs` |
 | Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | done | `crates/forge-cli/src/main.rs`, `args.rs` |
 | Pickers, Ctrl+R search, `@file` completion | done, tested | `crates/forge-core/src/commands/picker.rs`, `tui/app.rs`, `tui/session.rs` |
-| Screens: the scrolling viewer and forms; `/diff`, `/context` (Phase 4) | done, tested | `forge-core` `commands/screens.rs`, `tui/app.rs` (`Viewer`, `Form`), `tui/render.rs` |
+| Screens: the scrolling viewer and forms; `/diff`, `/context`, `/hooks`, `/agents`; key rebinding; `/color`, `/focus` (Phase 4) | done, tested | `forge-core` `commands/screens.rs`, `tui/app.rs` (`Viewer`, `Form`), `tui/render.rs` |
 | UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | done, tested | `forge-core` `commands/settings.rs` (`/theme`, `/statusline`), `tui/session.rs` (the others) |
 
 Dependencies are in `crates/forge-cli/Cargo.toml`:
@@ -470,6 +470,20 @@ The screens:
 
    Register them in `BUILTINS` with `Surfaces` set to the TUI only, so
    `/help` in other modes leaves them out.
+4. **Screens and settings** (done). The pattern is in "Screens" above:
+   forge-core builds a `Screen` (and any `Form`), the TUI draws it in the
+   live region, and every change is command text.
+   - A scrolling viewer dialog (`DialogKind::Viewer`) and a form dialog
+     (`DialogKind::Form`), with `TestBackend` tests at 40 and 100 columns,
+     colour and no colour.
+   - `/diff` viewer, `/context` grid, `/hooks` editor
+     (`/hooks add|remove` argument forms), `/agents` wizard
+     (`/agents create`).
+   - Key rebinding from `keybindings.json` ("Keys", "Rebinding").
+   - `/color <name>` (the accent colour for this session) and `/focus` (tool
+     calls stay out of the scrollback), answered by the app itself like
+     `/keybindings`. `/tui` and `/scroll-speed` are out: Forge has one UI,
+     and the terminal scrolls its own scrollback.
 
 ## Manual checks
 
