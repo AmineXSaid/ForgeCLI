@@ -274,8 +274,9 @@ pub fn describe_server(c: &ServerConfig) -> String {
 //
 // Tables (`[a.b]`, quoted keys), `key = value` with dotted keys, basic and
 // literal strings (and their triple-quoted forms), integers, floats,
-// booleans, arrays (multi-line too) and inline tables. Array-of-tables
-// (`[[x]]`) and dates are accepted but read as plain values or skipped.
+// booleans, arrays (multi-line too) and inline tables. Each array-of-tables
+// entry (`[[x]]`) becomes a table under its index (`x.0`, `x.1`); dates are
+// read as plain strings.
 
 struct Toml<'a> {
     s: &'a [u8],
@@ -475,6 +476,8 @@ pub fn parse_toml(text: &str) -> Result<Value, String> {
     let mut t = Toml { s: text.as_bytes(), i: 0 };
     let mut root = Map::new();
     let mut table: Vec<String> = vec![];
+    // Entries seen per array of tables (`[[x]]`): each entry is kept under its index.
+    let mut entries: std::collections::HashMap<Vec<String>, usize> = Default::default();
     loop {
         t.skip(true);
         let Some(c) = t.peek() else { break };
@@ -487,7 +490,12 @@ pub fn parse_toml(text: &str) -> Result<Value, String> {
                 return Err(t.err("expected ] after a table name"));
             }
             t.i += close.len();
-            // Arrays of tables aren't needed here: their entries are kept as one table.
+            // Arrays of tables aren't needed here: each entry becomes a table named by its index.
+            if array {
+                let n = entries.entry(table.clone()).or_insert(0);
+                table.push(n.to_string());
+                *n += 1;
+            }
             let mut cur = &mut root;
             for k in &table {
                 let entry = cur.entry(k.clone()).or_insert_with(|| Value::Object(Map::new()));
@@ -552,6 +560,15 @@ enabled = true
         assert_eq!(v["mcp_servers"]["remote"]["enabled"], true);
         let triple = parse_toml("a = \"\"\"\nline one\nline two\"\"\"\nb = '''raw \\n'''").unwrap();
         assert_eq!((triple["a"].as_str(), triple["b"].as_str()), (Some("line one\nline two"), Some("raw \\n")));
+        // Arrays of tables: each entry stands alone.
+        let aot =
+            parse_toml("[[profiles]]\nname = \"a\"\n[[profiles]]\nname = \"b\"\n[mcp_servers.x]\ncommand = \"y\"")
+                .unwrap();
+        assert_eq!(
+            (aot["profiles"]["0"]["name"].as_str(), aot["profiles"]["1"]["name"].as_str()),
+            (Some("a"), Some("b"))
+        );
+        assert_eq!(aot["mcp_servers"]["x"]["command"], "y");
         for bad in ["a = ", "a = \"open", "[t\nb = 1", "a = 1 b", "a = 1\na = 2", "a = [1 2]"] {
             assert!(parse_toml(bad).is_err(), "{bad:?}");
         }

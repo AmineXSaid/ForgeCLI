@@ -79,6 +79,8 @@
   keys in JSON or YAML text (`"api_key": "..."`), private key blocks, and
   more token shapes (Google, npm, GitLab, Stripe, Slack). The `/feedback`
   report and doctor files are masked too.
+- `/import codex` no longer fails on a `config.toml` with several `[[x]]`
+  entries that share a key.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving
