@@ -110,7 +110,7 @@ fn ui_command(d: &Driver, text: &str) -> Option<Vec<UiEvent>> {
     let Invocation::Builtin { spec, args } = parse(text, &d.catalog) else { return None };
     let reply = |text: String, is_error: bool| UiEvent::Reply { text, is_error };
     Some(match spec.id {
-        Builtin::Keybindings => vec![reply(super::app::keys_text(), false)],
+        Builtin::Keybindings => vec![reply(super::app::keys_text(&super::keys::Keymap::load().0), false)],
         Builtin::TerminalSetup => vec![reply(super::app::terminal_setup_text(super::keyboard_protocol()), false)],
         Builtin::Copy => {
             let n = if args.is_empty() { Some(1) } else { args.parse::<usize>().ok().filter(|n| *n > 0) };

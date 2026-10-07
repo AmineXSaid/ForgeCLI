@@ -13,6 +13,7 @@
 
 pub mod app;
 pub mod editor;
+pub mod keys;
 pub mod render;
 pub mod session;
 pub mod text;
@@ -260,6 +261,10 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     // The `theme` setting arrives from the session first thing.
     let theme = text::Theme { color: crate::term::get().color, light: false };
     let mut app = App::new(theme, load_history(&hist_path, &cwd));
+    // Bad entries in keybindings.json are warnings, never a failure.
+    let (keymap, key_warnings) = keys::Keymap::load();
+    app.keymap = keymap;
+    let warnings: Vec<String> = warnings.into_iter().chain(key_warnings).collect();
     app.pending.push(Line::from(vec![
         ratatui::text::Span::styled("✻ ", theme.accent()),
         ratatui::text::Span::styled(format!("ForgeCLI {}", forge_core::VERSION), theme.bold()),
@@ -344,7 +349,9 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         tokio::select! {
             ev = events.next() => match ev {
                 Some(Ok(Event::Key(k))) if k.kind != KeyEventKind::Release
-                    && k.code == KeyCode::Char('l') && k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    && app.keymap.translate(k).is_some_and(|k| {
+                        k.code == KeyCode::Char('l') && k.modifiers.contains(KeyModifiers::CONTROL)
+                    }) => {
                     screen.clear().map_err(io_fail)?;
                     app.dirty = true;
                 }

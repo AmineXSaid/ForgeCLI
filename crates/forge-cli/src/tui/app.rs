@@ -150,31 +150,51 @@ pub struct Search {
 }
 
 /// The keyboard shortcuts (`?` on an empty prompt, `/keybindings`).
-pub const KEYS: &[(&str, &str)] = &[
-    ("Enter", "Send (queued while a turn runs)"),
-    ("Shift+Enter, Alt+Enter, Ctrl+J, \\ Enter", "New line"),
-    ("Esc", "Interrupt the turn; close a menu; cancel a dialog"),
-    ("Esc Esc", "On an empty prompt: rewind (/rewind)"),
-    ("Ctrl+C", "Clear the input; interrupt; twice on an empty prompt: exit"),
-    ("Ctrl+D", "Exit (empty prompt)"),
-    ("Shift+Tab", "Cycle the permission mode: default, accept edits, plan"),
-    ("Up / Down", "Move between lines; earlier prompts"),
-    ("Ctrl+R", "Search earlier prompts"),
-    ("Tab", "Complete a / command or an @ path"),
-    ("@", "Mention a file (a menu of project paths)"),
-    ("!", "At the start: run a shell command"),
-    ("/", "At the start: a command (the menu lists them)"),
-    ("Ctrl+A / Ctrl+E, Home / End", "Start / end of line"),
-    ("Ctrl+W, Alt+Backspace", "Delete the word before the cursor"),
-    ("Ctrl+U / Ctrl+K", "Delete to the start / end of the line"),
-    ("Alt+B / Alt+F, Ctrl+Left / Ctrl+Right", "Word left / right"),
-    ("Ctrl+L", "Redraw the screen"),
+pub const KEYS: &[(&str, &str, Option<&str>)] = &[
+    ("Enter", "Send (queued while a turn runs)", Some("submit")),
+    ("Shift+Enter, Alt+Enter, Ctrl+J, \\ Enter", "New line", Some("newline")),
+    ("Esc", "Interrupt the turn; close a menu; cancel a dialog", Some("cancel")),
+    ("Esc Esc", "On an empty prompt: rewind (/rewind)", None),
+    ("Ctrl+C", "Clear the input; interrupt; twice on an empty prompt: exit", Some("interrupt")),
+    ("Ctrl+D", "Exit (empty prompt)", Some("exit")),
+    ("Shift+Tab", "Cycle the permission mode: default, accept edits, plan", Some("cycleMode")),
+    ("Up / Down", "Move between lines; earlier prompts", None),
+    ("Ctrl+R", "Search earlier prompts", Some("historySearch")),
+    ("Tab", "Complete a / command or an @ path", Some("complete")),
+    ("@", "Mention a file (a menu of project paths)", None),
+    ("!", "At the start: run a shell command", None),
+    ("/", "At the start: a command (the menu lists them)", None),
+    ("Ctrl+A / Ctrl+E, Home / End", "Start / end of line", None),
+    ("Ctrl+W, Alt+Backspace", "Delete the word before the cursor", Some("deleteWord")),
+    ("Ctrl+U / Ctrl+K", "Delete to the start / end of the line", None),
+    ("Alt+B / Alt+F, Ctrl+Left / Ctrl+Right", "Word left / right", None),
+    ("Ctrl+L", "Redraw the screen", Some("redraw")),
 ];
 
-/// The shortcuts as text, one per line.
-pub fn keys_text() -> String {
-    let w = KEYS.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
-    KEYS.iter().map(|(k, what)| format!("{k:<w$}  {what}")).collect::<Vec<_>>().join("\n")
+/// The shortcuts in effect, one per line: the defaults, or with `keybindings.json`
+/// the keys each action has now, and the user's own bindings.
+pub fn keys_text(keymap: &super::keys::Keymap) -> String {
+    let rows: Vec<(String, String)> = KEYS
+        .iter()
+        .map(|(k, what, action)| {
+            let keys = match action {
+                Some(a) if !keymap.is_default() => keymap.keys_for(a).join(", "),
+                _ => k.to_string(),
+            };
+            (keys, what.to_string())
+        })
+        .collect();
+    let w = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    let mut lines: Vec<String> = rows.iter().map(|(k, what)| format!("{k:<w$}  {what}")).collect();
+    if !keymap.is_default() {
+        lines.push(String::new());
+        lines.push(format!("Custom bindings from {}.", forge_config::config_dir().join("keybindings.json").display()));
+        let unbound = keymap.unbound();
+        if !unbound.is_empty() {
+            lines.push(format!("Unbound: {}.", unbound.join(", ")));
+        }
+    }
+    lines.join("\n")
 }
 
 const TERMINAL_SETUP: &str = "Shift+Enter starts a new line when the terminal reports it as its own key. Forge asks \
@@ -237,6 +257,8 @@ pub struct App {
     pub status_text: Option<String>,
     /// Rows a screen showed last time it was drawn (PageUp/PageDown move by this).
     pub viewer_page: std::cell::Cell<usize>,
+    /// Key bindings in effect (`keybindings.json`).
+    pub keymap: super::keys::Keymap,
 }
 
 /// The main argument of a tool call, for one line.
@@ -307,6 +329,7 @@ impl App {
             clipboard: None,
             status_text: None,
             viewer_page: std::cell::Cell::new(10),
+            keymap: Default::default(),
         }
     }
 
@@ -1116,7 +1139,11 @@ impl App {
     pub fn on_term_event(&mut self, ev: Event) -> Vec<Action> {
         self.dirty = true;
         match ev {
-            Event::Key(k) if k.kind != KeyEventKind::Release => self.on_key(k),
+            // Through the user's key bindings first (keybindings.json).
+            Event::Key(k) if k.kind != KeyEventKind::Release => match self.keymap.translate(k) {
+                Some(k) => self.on_key(k),
+                None => vec![],
+            },
             Event::Paste(text) => {
                 if let Some(e) = self.dialog.as_mut().and_then(|d| d.typing.as_mut()) {
                     e.insert(&text);
@@ -1206,7 +1233,7 @@ impl App {
             return vec![Action::SetMode(next)];
         }
         if key.code == KeyCode::Char('?') && self.editor.is_empty() && !ctrl && !alt {
-            self.reply_lines(&keys_text(), false);
+            self.reply_lines(&keys_text(&self.keymap), false);
             return vec![];
         }
         let menu_len = self.menu().len();
@@ -1307,7 +1334,7 @@ impl App {
         self.menu_dismissed = false;
         // The UI's own immediate commands answer at once, even while a turn runs.
         let local = match text.trim() {
-            "/keybindings" => Some(keys_text()),
+            "/keybindings" => Some(keys_text(&self.keymap)),
             "/terminal-setup" => Some(terminal_setup_text(super::keyboard_protocol())),
             _ => None,
         };
@@ -1392,6 +1419,23 @@ mod tests {
         typed(&mut a, "two");
         a.on_key(ctrl('j'));
         assert_eq!(a.editor.text(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn key_bindings_apply_and_show_in_the_key_table() {
+        let mut a = app();
+        let (k, w) = crate::tui::keys::Keymap::parse(r#"{"ctrl+s": "submit", "ctrl+r": "none"}"#);
+        assert!(w.is_empty(), "{w:?}");
+        a.keymap = k;
+        let term = |a: &mut App, code, m| a.on_term_event(Event::Key(KeyEvent::new(code, m)));
+        typed(&mut a, "hello");
+        assert_eq!(term(&mut a, KeyCode::Char('s'), KeyModifiers::CONTROL), vec![Action::Send("hello".into())]);
+        a.on_event(UiEvent::Idle);
+        term(&mut a, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(a.search.is_none(), "Ctrl+R is unbound");
+        let table = keys_text(&a.keymap);
+        assert!(table.contains("enter, ctrl+s") && table.contains("Unbound: ctrl+r."), "{table}");
+        assert!(keys_text(&Default::default()).starts_with("Enter "), "the defaults read as before");
     }
 
     #[test]

@@ -91,6 +91,9 @@
 - `/agents create <name> --description .. [--tools ..] [--model ..]
   [--scope project|user]` writes an agent definition and reloads; the TUI's
   agents screen has a wizard for it.
+- Key rebinding: `<config>/keybindings.json` maps keys to named actions
+  (`submit`, `historySearch`, `cycleMode`, ...; `none` unbinds).
+  `/keybindings` shows the keys in effect; bad entries are warnings.
 
 ### Immediate commands mid-turn
 - `/status`, `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp` and

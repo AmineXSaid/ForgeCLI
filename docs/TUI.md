@@ -304,6 +304,14 @@ with `{"text", "cwd"}`:
 
 Pasted text (bracketed paste) is inserted as typed, newlines included.
 
+**Rebinding** (`tui/keys.rs`): `keybindings.json` (CLI.md, "Key bindings")
+is read once at start into a `Keymap`. Every key event goes through
+`Keymap::translate` before `App::on_key` (and before the loop's Ctrl+L
+check): a bound key becomes its action's default key, an unbound one is
+dropped, anything else passes. So `on_key` keeps one set of keys, and the
+bindings work in dialogs and screens too. `keys_text` shows each action's
+keys in effect, the file and the unbound keys.
+
 ## Dialogs (implemented in `app.rs`)
 
 | Dialog | Options | Answer |

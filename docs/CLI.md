@@ -73,6 +73,39 @@ an argument open a picker (type to filter, Enter to choose). Each choice runs
 the same command with its argument, as you could type it. Typing `@` and part
 of a path lists matching project files.
 
+**Key bindings.** `keybindings.json` in the config directory (`forge config
+paths` shows it; `$FORGE_HOME` when set) maps keys to actions:
+
+```json
+{"ctrl+s": "submit", "alt+r": "historySearch", "ctrl+g": "none"}
+```
+
+A key is modifiers (`ctrl`, `alt` or `meta`, `shift`) and a key name joined
+by `+`: a character, `enter`, `tab`, `esc`, `backspace`, `delete`, `up`,
+`down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space`,
+`f1`-`f12`. `"none"` unbinds a key. A bound key does what the action's
+default key does, everywhere (dialogs and screens too); default keys keep
+working unless they are bound to something else or to `"none"`. A bad entry
+(unknown key or action, invalid JSON) is a warning at start and is skipped.
+`/keybindings` (and `?`) show the keys in effect. The actions:
+
+| Action | Default keys | Does |
+| --- | --- | --- |
+| `submit` | Enter | Send the prompt |
+| `newline` | Shift+Enter, Alt+Enter, Ctrl+J | New line |
+| `cancel` | Esc | Interrupt the turn; close a menu or dialog; twice: `/rewind` |
+| `interrupt` | Ctrl+C | Clear the input; interrupt; twice on an empty prompt: exit |
+| `exit` | Ctrl+D | Exit (empty prompt) |
+| `cycleMode` | Shift+Tab | Cycle the permission mode |
+| `historySearch` | Ctrl+R | Search earlier prompts |
+| `complete` | Tab | Complete a `/` command or an `@` path |
+| `lineStart`, `lineEnd` | Ctrl+A / Home, Ctrl+E / End | Start, end of line |
+| `deleteWord` | Ctrl+W, Alt+Backspace | Delete the word before the cursor |
+| `killToStart`, `killToEnd` | Ctrl+U, Ctrl+K | Delete to the start, end of the line |
+| `wordLeft`, `wordRight` | Alt+B / Ctrl+Left, Alt+F / Ctrl+Right | Word left, right |
+| `redraw` | Ctrl+L | Redraw the screen |
+| `showKeys` | `?` | Show the shortcuts (empty prompt) |
+
 When you leave, Forge prints `Resume this conversation with: forge --resume <id>`.
 
 **The line REPL** (`--no-tui`, or `FORGE_TUI=0`, or when stdout isn't a
