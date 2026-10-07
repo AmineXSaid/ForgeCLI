@@ -1383,3 +1383,23 @@ async fn bypass_needs_the_launch_flag_and_no_managed_ban() {
     );
     assert!(!t.d.bypass_allowed());
 }
+
+#[tokio::test]
+async fn advisor_cost_uses_custom_pricing() {
+    let mut t = driver_with(|dir, o| {
+        let s = r#"{"modelPricing": {"house-advisor": {"input": 10, "output": 10, "cacheRead": 1, "cacheWrite": 10}}}"#;
+        std::fs::write(dir.join("proj/.forge/settings.json"), s).unwrap();
+        o.max_budget_usd = Some(100.0);
+    });
+    let out = local(&mut t.d, "/advisor house-advisor").await;
+    assert!(out.starts_with("Advisor set to house-advisor."), "{out}");
+    let before = t.d.engine.state.total_cost_usd;
+    t.p.push(MockTurn::tool("Advisor", serde_json::json!({"question": "Safe?"})));
+    t.p.push(MockTurn::text("Yes.").with_usage(forge_types::Usage { input_tokens: 1_000_000, ..Default::default() }));
+    t.p.push(MockTurn::text("Done."));
+    run(&mut t.d, "go").await;
+    // A million input tokens at $10 per million, from modelPricing.
+    let spent = t.d.engine.state.total_cost_usd - before;
+    assert!(spent >= 10.0, "advisor spend counted: {spent}");
+    assert!(t.d.engine.state.model_usage.contains_key("house-advisor"));
+}

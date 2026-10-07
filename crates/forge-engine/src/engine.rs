@@ -1492,6 +1492,13 @@ impl Engine {
                     if let Some(sub) = r.output.structured.as_ref().and_then(|s| s.get("subagentUsage")) {
                         self.record_subagent_usage(sub);
                     }
+                    // A request a tool made itself (the Advisor): priced here, custom pricing included.
+                    if let Some(side) = r.output.structured.as_ref().and_then(|s| s.get("sideUsage")) {
+                        let model = side["model"].as_str().unwrap_or_default().to_string();
+                        if let Ok(u) = serde_json::from_value::<Usage>(side["usage"].clone()) {
+                            self.record_side_usage(&model, &u);
+                        }
+                    }
                     let block = ContentBlock::ToolResult {
                         tool_use_id: r.id.clone(),
                         content: r.output.content.clone(),

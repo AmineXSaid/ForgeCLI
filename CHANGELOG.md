@@ -81,6 +81,8 @@
   report and doctor files are masked too.
 - `/import codex` no longer fails on a `config.toml` with several `[[x]]`
   entries that share a key.
+- An advisor model priced through `modelPricing` counted as free against
+  `--max-budget-usd`; its requests are now priced like the session's own.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving
