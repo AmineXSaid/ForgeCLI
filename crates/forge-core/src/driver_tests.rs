@@ -1698,3 +1698,53 @@ async fn hooks_add_list_and_remove_through_settings() {
     assert!(fails(&mut t.d, "/hooks add Stop x y --scope everywhere").await.contains("--scope takes"));
     assert!(fails(&mut t.d, "/hooks frob").await.starts_with("Usage: /hooks"));
 }
+
+#[tokio::test]
+async fn agents_create_writes_a_definition_and_reloads() {
+    let mut t = driver();
+    t.d.info.user_settings = t._dir.path().join("home/settings.json");
+    let out = local(
+        &mut t.d,
+        "/agents create code-reviewer --description 'Reviews diffs for bugs' --tools Read,Grep --model sonnet",
+    )
+    .await;
+    let path = t.proj.join(".forge/agents/code-reviewer.md");
+    assert!(out.starts_with(&format!("Created the code-reviewer agent in {}. Reloaded:", path.display())), "{out}");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.starts_with(
+            "---\nname: code-reviewer\ndescription: Reviews diffs for bugs\ntools: Read, Grep\nmodel: sonnet\n---\n\n"
+        ),
+        "{text}"
+    );
+    let def = forge_agents::parse_agent_markdown(&text, forge_agents::AgentSource::Project).unwrap();
+    assert_eq!(def.tools, Some(vec!["Read".to_string(), "Grep".to_string()]));
+    assert!(t.d.catalog.agents.iter().any(|a| a.name == "code-reviewer"), "the session reloaded");
+    assert!(local(&mut t.d, "/agents").await.contains("code-reviewer (Project) - Reviews diffs for bugs [Read, Grep]"));
+
+    // The wizard's command: empty tools mean all tools, inherit means no model line; user scope.
+    let screen = crate::commands::screens::screen(&t.d, "/agents").unwrap();
+    let Some(crate::commands::screens::RowAction::Form(mut form)) = screen.rows[0].action.clone() else { panic!() };
+    form.fields[0].kind = crate::commands::screens::FieldKind::Text("notes-taker".into());
+    form.fields[1].kind = crate::commands::screens::FieldKind::Text("Takes notes".into());
+    if let crate::commands::screens::FieldKind::Choice { at, .. } = &mut form.fields[5].kind {
+        *at = 1;
+    }
+    let cmd = form.command();
+    assert_eq!(
+        cmd,
+        "/agents create notes-taker --description 'Takes notes' --prompt '' --tools '' --model inherit --scope user"
+    );
+    let out = local(&mut t.d, &cmd).await;
+    let user = t._dir.path().join("home/agents/notes-taker.md");
+    assert!(out.contains(&user.display().to_string()), "{out}");
+    let text = std::fs::read_to_string(&user).unwrap();
+    assert!(!text.contains("tools:") && !text.contains("model:") && text.contains("Takes notes"), "{text}");
+
+    assert!(fails(&mut t.d, "/agents create code-reviewer --description again").await.contains("already exists"));
+    assert!(fails(&mut t.d, "/agents create Bad_Name --description x").await.contains("lowercase"));
+    assert!(fails(&mut t.d, "/agents create x").await.contains("needs a description"));
+    assert!(fails(&mut t.d, "/agents create x --description y --tools Nope").await.contains("Unknown tool(s): Nope"));
+    assert!(fails(&mut t.d, "/agents create x --description y --model gpt-9").await.contains("Unknown model"));
+    assert!(fails(&mut t.d, "/agents frob").await.starts_with("Usage: /agents"));
+}

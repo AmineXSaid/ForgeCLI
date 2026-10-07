@@ -167,6 +167,7 @@ pub fn screen(d: &Driver, text: &str) -> Option<Screen> {
         Builtin::Context => Some(context(&d.view())),
         Builtin::Diff => Some(super::session::diff_screen(d)),
         Builtin::Hooks => Some(super::hooks::screen(d)),
+        Builtin::Agents => Some(super::agents::screen(d)),
         _ => None,
     }
 }

@@ -14,6 +14,7 @@
 //! `slash_commands` and the stream-json `initialize` `commands` are all
 //! generated from it.
 
+mod agents;
 mod feedback;
 mod hooks;
 mod immediate;
@@ -120,7 +121,13 @@ macro_rules! cmd {
 builtins! {
     (AddDir, "add-dir", [], "<path> [--save]", "Add a working directory for this session"),
     (Advisor, "advisor", [], "[model|off]", "Let Forge consult a second model for advice at key moments"),
-    (Agents, "agents", [], "", "List subagents, and how to add your own"),
+    (
+        Agents,
+        "agents",
+        [],
+        "[create <name> --description <text> ...]",
+        "List subagents, or create one"
+    ),
     (
         Autocompact,
         "autocompact",

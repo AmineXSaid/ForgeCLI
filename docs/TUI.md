@@ -367,6 +367,10 @@ The screens:
   `/hooks` numbers them, each with its source and timeout. Enter on a user,
   project or local hook asks, then runs `/hooks remove <Event> <n>`. The
   session reloads after a change, so the hook applies at once.
+- **`/agents`:** "+ Create an agent…" (a form: name, description,
+  instructions, tools as a multi-select of the session's tools, model,
+  scope, which runs `/agents create ...`), then each agent with its source,
+  model and tools.
 
 ## Testing
 

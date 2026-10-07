@@ -88,6 +88,9 @@
   `/hooks remove <Event> <n>` change hooks in settings and reload the
   session; `/hooks` numbers each event's hooks and names their source. The
   TUI's hooks screen adds (a form) and removes (Enter, then confirm).
+- `/agents create <name> --description .. [--tools ..] [--model ..]
+  [--scope project|user]` writes an agent definition and reloads; the TUI's
+  agents screen has a wizard for it.
 
 ### Immediate commands mid-turn
 - `/status`, `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp` and

@@ -72,7 +72,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             r
         }
         Builtin::Skills => ok(skills(d)),
-        Builtin::Agents => ok(agents(d)),
+        Builtin::Agents => super::agents::run(d, args).await,
         Builtin::Hooks => super::hooks::run(d, args).await,
         Builtin::Memory => ok(memory(d)),
         Builtin::Doctor => doctor(d),
@@ -177,19 +177,6 @@ fn skills(d: &Driver) -> String {
         );
     }
     s.trim_end().to_string()
-}
-
-fn agents(d: &Driver) -> String {
-    let mut s = String::from("Subagents:\n");
-    for a in &d.catalog.agents {
-        let tools = a.tools.as_ref().map(|t| t.join(", ")).unwrap_or_else(|| "all tools".into());
-        let _ = writeln!(s, "  {} ({:?}) - {} [{}]", a.name, a.source, a.description, tools);
-    }
-    s.push_str(
-        "\nTo add one, ask Forge to create it, or write .forge/agents/<name>.md (a `---` header with name, \
-         description and optional tools and model, then its instructions).",
-    );
-    s
 }
 
 fn memory(d: &Driver) -> String {
