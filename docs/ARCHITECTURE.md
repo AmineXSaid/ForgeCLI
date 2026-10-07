@@ -488,6 +488,12 @@ Tests:
 directory). Other server requests (`sampling`, `elicitation`) get "method
 not found".
 
+**`/import`** follows the same trust rule:
+- servers from the user's own configs (`~/.codex`, `~/.gemini`,
+  `~/.cursor`) go to user settings;
+- servers shipped in the repository (`.cursor/mcp.json`) go to `.mcp.json`
+  and still need approval.
+
 **`forge mcp serve`** exposes the built-in tools without prompts, since the
 client approves, but refuses commands matching dangerous-command patterns.
 
@@ -572,6 +578,13 @@ tool result or only a system reminder):
   `summarize-to`, the kept messages are written again after a compact
   boundary under their original uuids, so checkpoints and SDK `rewind_files`
   ids stay valid.
+
+**Tools that come and go.** Some tools are registered once but shown only
+while a setting allows them: the Advisor (while `/advisor` names a model)
+and later disabled MCP servers. `ToolRegistry` filters on `is_enabled()`
+for the tool list *and* for lookups, so a hidden tool can't run even if
+the model names it. Showing or hiding one changes the tool list, which
+costs one cache miss on the next request.
 
 **Immediate commands** (`/status`, `/usage`, `/tasks`, `/mcp`, `/context`) only read
 state. They are marked in the registry so the TUI and stream-json hosts
