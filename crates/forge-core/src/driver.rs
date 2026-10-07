@@ -109,6 +109,8 @@ pub struct Driver {
     /// Earlier `/btw` questions and answers, oldest first.
     pub side_questions: Vec<(String, String)>,
     live: Live,
+    /// What immediate commands read while a turn holds the driver (C17).
+    view: crate::view::SessionView,
     rebuild: Option<Rebuild>,
     /// Scheduled prompts (`None` when FORGE_DISABLE_CRON is set).
     pub scheduler: Option<crate::schedule_tools::SharedScheduler>,
@@ -160,7 +162,8 @@ impl Driver {
         let cost = s.engine.state.total_cost_usd;
         let goal = s.resumed.as_ref().and_then(|r| r.goal.as_ref()).and_then(|g| Goal::restore(g, cost));
         let live = Live::new(&s.engine, &s.session_id);
-        Driver {
+        let view = crate::view::SessionView::new(view_state_of(&s.engine, &s.session_id, &s.init, surface));
+        let mut d = Driver {
             engine: s.engine,
             catalog: Catalog {
                 commands: s.commands,
@@ -185,6 +188,7 @@ impl Driver {
             goal,
             side_questions: vec![],
             live,
+            view,
             rebuild: None,
             scheduler: s.scheduler,
             self_paced: None,
@@ -192,7 +196,67 @@ impl Driver {
             advisor: s.advisor,
             agent_rt: s.agent_rt,
             subtasks: Default::default(),
+        };
+        d.sync_view();
+        d
+    }
+
+    /// The read-only session view, for commands that run while a turn is in progress (C17).
+    /// It stays valid across session switches.
+    pub fn view(&self) -> crate::view::SessionView {
+        self.view.clone()
+    }
+
+    /// Apply what immediate commands left for the driver ([`crate::view::Effect`]), then
+    /// publish the engine's and the driver's state into the view. Call it while idle.
+    pub fn sync_view(&mut self) {
+        let mut mcp = false;
+        for e in self.view.take_effects() {
+            match e {
+                crate::view::Effect::RefreshMcp => mcp = true,
+                crate::view::Effect::SideUsage { model, usage } => self.engine.record_side_usage(&model, &usage),
+                crate::view::Effect::SideQuestion { question, answer } => {
+                    self.side_questions.push((question, answer));
+                    let extra = self.side_questions.len().saturating_sub(MAX_SIDE_QUESTIONS);
+                    self.side_questions.drain(..extra);
+                }
+            }
         }
+        if mcp {
+            self.refresh_mcp();
+        }
+        self.engine.publish();
+        self.publish_view();
+    }
+
+    /// Publish the driver's part of the view (the engine publishes its own during a turn).
+    fn publish_view(&self) {
+        let hooks = self.engine.hooks();
+        let state = crate::view::ViewState {
+            session_id: self.info.session_id.clone(),
+            cwd: self.info.cwd.clone(),
+            init: self.info.init.clone(),
+            settings: self.info.settings.clone(),
+            warnings: self.info.warnings.clone(),
+            surface: self.surface,
+            can_switch: self.can_switch(),
+            handle: self.engine.handle(),
+            transcript: self.engine.transcript().clone(),
+            tool_ctx: self.engine.tool_ctx().clone(),
+            provider: self.engine.provider(),
+            hooks_disabled: hooks.disabled,
+            hook_count: hooks.config.events.values().map(|m| m.iter().map(|x| x.hooks.len()).sum::<usize>()).sum(),
+            started: self.started,
+            activity: self.activity.clone(),
+            side_questions: self.side_questions.clone(),
+            skills: self.catalog.skills.iter().map(|k| (k.name.clone(), k.description.clone())).collect(),
+            memory: forge_config::load_memory(&self.info.cwd),
+            subtasks: self.subtasks.rows(),
+            finished_subtasks: self.subtasks.finished().to_vec(),
+            scheduler: self.scheduler.clone(),
+            mcp: self.catalog.mcp.clone(),
+        };
+        self.view.publish(state);
     }
 
     pub fn handle(&self) -> EngineHandle {
@@ -212,6 +276,7 @@ impl Driver {
         prompter: Arc<dyn PermissionPrompter>,
     ) {
         self.rebuild = Some(Rebuild { opts, sink, prompter });
+        self.publish_view();
     }
 
     /// May the permission mode become `bypassPermissions` now (an SDK host's
@@ -420,7 +485,10 @@ impl Driver {
         next.rebuild = self.rebuild.take();
         next.live = self.live.clone();
         next.live.set(&next.engine, &next.info.session_id);
+        // The view too: front ends hold it. Effects still waiting apply to the new session.
+        next.view = self.view.clone();
         *self = next;
+        self.sync_view();
         Ok(())
     }
 
@@ -428,6 +496,7 @@ impl Driver {
     pub async fn input(&mut self, content: MessageContent, report: &mut Report<'_>) -> Flow {
         // Subtasks that finished since the last input are handed back first: their reports ride along with it.
         self.deliver_subtasks();
+        self.sync_view();
         // Shell mode is for a person at the keyboard: on print and stream surfaces the
         // prompt usually comes from a program, so `!...` is an ordinary prompt there.
         let shell = shell_command(&content).filter(|_| matches!(self.surface, Surface::Repl | Surface::Tui));
@@ -469,6 +538,7 @@ impl Driver {
             }
         }
         self.after_turn(result, engine_turn, report).await;
+        self.sync_view();
         Flow::Continue
     }
 
@@ -565,6 +635,7 @@ impl Driver {
         self.record(&result, false);
         report(&result);
         self.after_turn(result, engine_turn, report).await;
+        self.sync_view();
         true
     }
 
@@ -713,6 +784,8 @@ impl Driver {
             self.activity.turns += r.num_turns;
             self.activity.api_time += Duration::from_millis(r.duration_api_ms);
         }
+        // Between the turns of one input (a goal), immediate commands see the totals so far.
+        self.publish_view();
     }
 
     fn notice(&self, level: NoticeLevel, text: impl Into<String>) {
@@ -975,4 +1048,32 @@ fn shell_command(content: &MessageContent) -> Option<String> {
     let text = commands::command_text_any(content)?;
     let cmd = text.trim_start().strip_prefix('!')?.trim();
     (!cmd.is_empty()).then(|| cmd.to_string())
+}
+
+/// The first view, before the driver exists: it is published again at once.
+fn view_state_of(engine: &Engine, session_id: &str, init: &InitInfo, surface: Surface) -> crate::view::ViewState {
+    crate::view::ViewState {
+        session_id: session_id.to_string(),
+        cwd: engine.tool_ctx().project_dir.clone(),
+        init: init.clone(),
+        settings: LoadedSettings::default(),
+        warnings: vec![],
+        surface,
+        can_switch: false,
+        handle: engine.handle(),
+        transcript: engine.transcript().clone(),
+        tool_ctx: engine.tool_ctx().clone(),
+        provider: engine.provider(),
+        hooks_disabled: false,
+        hook_count: 0,
+        started: Instant::now(),
+        activity: Activity::default(),
+        side_questions: vec![],
+        skills: vec![],
+        memory: vec![],
+        subtasks: vec![],
+        finished_subtasks: vec![],
+        scheduler: None,
+        mcp: None,
+    }
 }

@@ -119,22 +119,3 @@ pub(crate) async fn scheduled_prompt(d: &Driver, prompt: &str) -> MessageContent
         _ => MessageContent::Text(prompt.to_string()),
     }
 }
-
-/// Scheduled tasks for `/tasks`.
-pub(super) fn listing(d: &Driver) -> Vec<String> {
-    let Some(s) = &d.scheduler else { return vec![] };
-    s.lock()
-        .unwrap()
-        .tasks
-        .iter()
-        .map(|t| format!("  {} [scheduled, {}] next {}: {}", t.id, t.describe(), t.due.format("%H:%M"), t.prompt))
-        .collect()
-}
-
-/// `/tasks stop <id>` for a scheduled task.
-pub(super) fn stop(d: &Driver, id: &str) -> Option<String> {
-    let s = d.scheduler.as_ref()?;
-    let t = s.lock().unwrap().delete(id)?;
-    d.save_schedule();
-    Some(format!("Deleted scheduled task {} ({}).", t.id, t.describe()))
-}

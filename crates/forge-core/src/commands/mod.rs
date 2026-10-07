@@ -15,6 +15,7 @@
 //! generated from it.
 
 mod feedback;
+mod immediate;
 mod importing;
 mod looping;
 mod mcp;
@@ -24,6 +25,7 @@ mod session;
 mod settings;
 mod switching;
 
+pub use immediate::{execute_immediate, immediate};
 pub(crate) use looping::scheduled_prompt;
 pub(crate) use run::duration;
 pub use run::{execute, Exec};

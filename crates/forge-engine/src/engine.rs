@@ -17,7 +17,8 @@ use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::events::{EngineEvent, EventSink, NoticeLevel, PermissionPrompter};
-use crate::request::{apply_cache_breakpoints, normalize, thinking_params};
+use crate::request::{apply_cache_breakpoints, normalize};
+use crate::snapshot::{EngineSnapshot, RequestParts, TurnProgress};
 use crate::{INTERRUPT_MARKER, INTERRUPT_MARKER_TOOLS};
 
 /// USD per million tokens (settings `modelPricing` override).
@@ -120,11 +121,6 @@ pub enum EngineError {
     UnknownPricing(String),
 }
 
-/// Sent with a `/btw` question.
-const SIDE_QUESTION_NOTE: &str = "<system-reminder>\nThis is a side question from the user. Answer it briefly from \
-what you already know of this conversation. You can't use tools for it, and neither the question nor your answer \
-becomes part of the main conversation.\n</system-reminder>";
-
 /// The beta flag fast mode needs.
 pub const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 /// Fast mode's price over the model's standard rates (input and output alike).
@@ -147,6 +143,8 @@ pub struct EngineHandle {
     pub permissions: Arc<RwLock<PermEngine>>,
     pub runtime: Arc<RwLock<Runtime>>,
     transcript: Arc<Transcript>,
+    /// The engine's state as last published, replaced whole (C17, immediate commands).
+    snapshot: Arc<RwLock<Arc<EngineSnapshot>>>,
 }
 
 impl EngineHandle {
@@ -196,6 +194,12 @@ impl EngineHandle {
 
     pub fn model(&self) -> String {
         self.runtime.read().unwrap().model.clone()
+    }
+
+    /// The engine's state as last published ([`Engine::publish`]). The lock is held only to
+    /// clone the `Arc`.
+    pub fn snapshot(&self) -> Arc<EngineSnapshot> {
+        self.snapshot.read().unwrap().clone()
     }
 }
 
@@ -353,6 +357,7 @@ impl Engine {
             permissions: permissions.clone(),
             runtime: Arc::new(RwLock::new(runtime)),
             transcript: parts.transcript.clone(),
+            snapshot: Default::default(),
         };
         let shared = Arc::new(Shared {
             provider: parts.provider,
@@ -602,45 +607,57 @@ impl Engine {
 
     fn build_request(&self, model: &str) -> MessagesRequest {
         let rt = self.handle.runtime.read().unwrap().clone();
-        let info = forge_api::models::model_info_or_default(model);
-        let (thinking, output_config, max_tokens) = thinking_params(
-            &info,
-            rt.max_thinking_tokens,
-            rt.effort.as_deref(),
-            self.output_cap.unwrap_or(self.cfg.max_output_tokens),
-        );
-        let mut output_config = output_config;
-        if let Some(schema) = &self.cfg.json_schema {
-            let oc = output_config.get_or_insert_with(|| json!({}));
-            oc["format"] = json!({"type": "json_schema", "schema": schema});
-        }
-        // Fast mode only where the model offers it; elsewhere the flag is ignored.
-        let fast = self.sends_fast(model);
-        let mut messages = normalize(&self.state.messages, &self.state.microcompacted);
-        apply_cache_breakpoints(&mut messages);
-        let mut tools = self.shared.tools.specs();
-        if let Some(last) = tools.last_mut() {
-            last.cache_control = Some(forge_types::CacheControl::ephemeral());
-        }
-        let mut system = self.system.clone();
-        if let Some(last) = system.last_mut() {
-            last.cache_control = Some(forge_types::CacheControl::ephemeral());
-        }
-        MessagesRequest {
-            model: model.to_string(),
-            max_tokens,
-            messages,
-            system,
-            tools,
-            tool_choice: None,
-            thinking,
-            temperature: None,
-            metadata: self.cfg.metadata_user_id.as_ref().map(|u| json!({"user_id": u})),
-            output_config,
-            speed: fast.then(|| "fast".to_string()),
-            stream: true,
-            betas: if fast { vec![FAST_MODE_BETA.to_string()] } else { vec![] },
-        }
+        crate::snapshot::assemble(
+            model,
+            &rt,
+            RequestParts {
+                messages: &self.state.messages,
+                microcompacted: &self.state.microcompacted,
+                system: &self.system,
+                tools: self.shared.tools.specs(),
+                max_output_tokens: self.output_cap.unwrap_or(self.cfg.max_output_tokens),
+                json_schema: self.cfg.json_schema.as_ref(),
+                metadata_user_id: self.cfg.metadata_user_id.as_deref(),
+                provider_name: self.shared.provider.name(),
+            },
+        )
+    }
+
+    /// Publish the state for readers outside the turn ([`EngineHandle::snapshot`]): the driver
+    /// calls this while idle; the engine itself after each model call, each tool batch and at
+    /// the end of a turn.
+    pub fn publish(&self) {
+        self.publish_with(None);
+    }
+
+    fn publish_with(&self, turn: Option<TurnProgress>) {
+        let snap = EngineSnapshot {
+            messages: Arc::new(self.state.messages.clone()),
+            microcompacted: Arc::new(self.state.microcompacted.clone()),
+            system: Arc::new(self.system.clone()),
+            tools: Arc::new(self.shared.tools.specs()),
+            total_usage: self.state.total_usage.clone(),
+            total_cost_usd: self.state.total_cost_usd,
+            model_usage: self.state.model_usage.clone(),
+            context_tokens: self.state.context_tokens,
+            turn,
+            provider_name: self.shared.provider.name().to_string(),
+            max_output_tokens: self.cfg.max_output_tokens,
+            json_schema: self.cfg.json_schema.clone(),
+            metadata_user_id: self.cfg.metadata_user_id.clone(),
+            autocompact_window: self.cfg.autocompact_window,
+            auto_compact: self.cfg.auto_compact,
+        };
+        *self.handle.snapshot.write().unwrap() = Arc::new(snap);
+    }
+
+    fn publish_turn(&self, started: Instant, turn: &TurnAcc) {
+        self.publish_with(Some(TurnProgress {
+            started,
+            api_calls: turn.api_calls,
+            api_ms: turn.api_ms,
+            tool_calls: turn.tool_calls,
+        }));
     }
 
     /// Stream one model response, emitting events. Keeps a usable partial on interrupt.
@@ -706,9 +723,7 @@ impl Engine {
 
     /// Requests for `model` go out in fast mode: it's on and the model offers it.
     fn sends_fast(&self, model: &str) -> bool {
-        self.handle.runtime().fast
-            && model_info(model).is_some_and(|m| m.supports_fast_mode)
-            && self.shared.provider.name() != "openai"
+        crate::snapshot::sends_fast(&self.handle.runtime(), model, self.shared.provider.name())
     }
 
     fn record_usage(&mut self, model: &str, usage: &Usage, turn: &mut TurnAcc) {
@@ -1116,20 +1131,9 @@ impl Engine {
     /// tools, so the cached prefix is reused; its cost counts toward the session.
     pub async fn side_question(&mut self, question: &str, earlier: &[(String, String)]) -> Result<String, String> {
         let model = self.handle.model();
-        let mut req = self.build_request(&model);
-        let mut extra = vec![];
-        for (q, a) in earlier {
-            extra.push(Message::user_text(q.clone()));
-            extra.push(Message::assistant(vec![ContentBlock::text(a.clone())]));
-        }
-        extra.push(Message::user_text(format!("{SIDE_QUESTION_NOTE}\n\n{question}")));
-        for m in extra {
-            match req.messages.last_mut() {
-                Some(last) if last.role == m.role => last.content.extend(m.content),
-                _ => req.messages.push(m),
-            }
-        }
-        req.tool_choice = Some(json!({"type": "none"}));
+        self.publish();
+        let req =
+            crate::snapshot::side_question_request(&self.handle.snapshot(), &self.handle.runtime(), question, earlier);
         let cancel = self.new_turn_token();
         let msg = forge_api::complete(self.shared.provider.as_ref(), req, &cancel).await.map_err(|e| match e {
             ApiError::Cancelled => "interrupted".to_string(),
@@ -1417,6 +1421,7 @@ impl Engine {
             let tool_uses: Vec<(String, String, Value)> =
                 msg.to_message().tool_uses().map(|(a, b, c)| (a.to_string(), b.to_string(), c.clone())).collect();
             self.push_assistant(msg);
+            self.publish_turn(started, &turn);
 
             // Budget (contract C7): checked after every call.
             if let Some(budget) = self.cfg.max_budget_usd {
@@ -1512,6 +1517,7 @@ impl Engine {
                     };
                     self.push_user(Message::user(vec![block]), false, r.output.structured.clone(), true);
                 }
+                self.publish_turn(started, &turn);
                 if let (Some(s), false) = (stuck.first(), interrupted) {
                     self.system_event("loop_guard", s.record());
                     self.push_user(Message::user_text(s.text()), true, None, true);
@@ -1719,6 +1725,7 @@ impl Engine {
             None
         };
         let is_error = subtype != ResultSubtype::Success;
+        self.publish();
         TurnResult {
             subtype,
             is_error,

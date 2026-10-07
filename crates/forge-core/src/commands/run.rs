@@ -3,7 +3,6 @@
 use std::fmt::Write as _;
 
 use forge_types::MessageContent;
-use serde_json::Value;
 
 use super::{parse, Builtin, Invocation, BUILTINS};
 use crate::driver::Driver;
@@ -63,8 +62,15 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             Ok(info) => ok(format!("Compacted the conversation (about {} tokens before).", info.pre_tokens)),
             Err(e) => err(format!("Could not compact: {e}")),
         },
-        Builtin::Usage => ok(usage(d)),
-        Builtin::Status => ok(status(d)),
+        // Immediate commands read the session view, idle or mid-turn (C17): one implementation.
+        Builtin::Usage | Builtin::Status | Builtin::Tasks | Builtin::Context | Builtin::Mcp | Builtin::Btw => {
+            d.sync_view();
+            // Ctrl-C (or a host's interrupt) stops a side question, as it stops a turn.
+            let cancel = if id == Builtin::Btw { d.handle().new_token() } else { Default::default() };
+            let r = super::immediate::run(&d.view(), id, args, &cancel).await;
+            d.sync_view();
+            r
+        }
         Builtin::Skills => ok(skills(d)),
         Builtin::Agents => ok(agents(d)),
         Builtin::Hooks => ok(hooks(d)),
@@ -75,8 +81,6 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             "" | "list" => ok(plugins(d)),
             _ => err("Plugin marketplaces aren't supported. Load a plugin directory with --plugin-dir or the pluginDirs setting."),
         },
-        Builtin::Mcp => super::mcp::run(d, args).await,
-        Builtin::Tasks => tasks(d, args),
         Builtin::Subtask => subtask(d, args),
         Builtin::Model => super::settings::model(d, args),
         Builtin::Effort => super::settings::effort(d, args),
@@ -91,12 +95,10 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             "" => super::session::diff(d),
             _ => err("Usage: /diff"),
         },
-        Builtin::Context => super::session::context(d, args),
         Builtin::Debug => super::session::debug(d, args),
         Builtin::Permissions => super::session::permissions(d, args),
         Builtin::AddDir => super::session::add_dir(d, args),
         Builtin::Goal => super::session::goal(d, args),
-        Builtin::Btw => super::session::btw(d, args).await,
         Builtin::Recap => match args {
             "" => super::session::recap(d).await,
             _ => err("Usage: /recap"),
@@ -146,110 +148,6 @@ pub(crate) fn duration(d: std::time::Duration) -> String {
         60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
         _ => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
     }
-}
-
-fn usage(d: &Driver) -> String {
-    let st = &d.engine.state;
-    let tool_calls: usize = st.messages.iter().map(|m| m.tool_uses().count()).sum();
-    let mut s = String::new();
-    let _ = writeln!(s, "Total cost:     ${:.4}", st.total_cost_usd);
-    let _ = writeln!(
-        s,
-        "Duration:       {} wall, {} API · {} model calls for {} prompts · {} tool calls in this conversation",
-        duration(d.started.elapsed()),
-        duration(d.activity.api_time),
-        d.activity.turns,
-        d.activity.prompts,
-        tool_calls
-    );
-    if st.model_usage.is_empty() {
-        let _ = writeln!(s, "Usage by model: none yet");
-    } else {
-        let _ = writeln!(s, "Usage by model:");
-        for (model, u) in &st.model_usage {
-            let n = |k: &str| thousands(u.get(k).and_then(Value::as_u64).unwrap_or(0));
-            let _ = writeln!(
-                s,
-                "  {model}: {} input, {} output, {} cache read, {} cache write (${:.4})",
-                n("inputTokens"),
-                n("outputTokens"),
-                n("cacheReadInputTokens"),
-                n("cacheCreationInputTokens"),
-                u.get("costUSD").and_then(Value::as_f64).unwrap_or(0.0)
-            );
-        }
-    }
-    let model = d.handle().model();
-    let window = forge_api::models::model_info_or_default(&model).context_window;
-    let _ = write!(s, "Context now:    about {} of {} tokens", thousands(st.context_tokens), thousands(window));
-    s
-}
-
-fn status(d: &Driver) -> String {
-    let h = d.handle();
-    let rt = h.runtime.read().unwrap().clone();
-    let mode = h.permissions.read().unwrap().mode;
-    let info = &d.info;
-    let mut s = String::new();
-    let _ = writeln!(s, "ForgeCLI {}", crate::VERSION);
-    let title = d.engine.transcript().title();
-    let _ = writeln!(s, "Session:        {}{}", info.session_id, title.map(|t| format!(" ({t})")).unwrap_or_default());
-    let _ = writeln!(s, "Directory:      {}", info.cwd.display());
-    let dirs: Vec<String> =
-        d.engine.tool_ctx().working_dirs.read().unwrap().iter().skip(1).map(|p| p.display().to_string()).collect();
-    if !dirs.is_empty() {
-        let _ = writeln!(s, "Also allowed:   {}", dirs.join(", "));
-    }
-    let _ = writeln!(
-        s,
-        "Model:          {} · effort {} · thinking {}",
-        rt.model,
-        rt.effort.as_deref().unwrap_or("default"),
-        match rt.max_thinking_tokens {
-            None => "default".to_string(),
-            Some(0) => "off".to_string(),
-            Some(n) => format!("{n} tokens"),
-        }
-    );
-    let _ = writeln!(s, "Permissions:    {} mode", mode.as_str());
-    let _ = writeln!(s, "Output style:   {}", info.init.output_style);
-    let sandbox = match d.engine.tool_ctx().sandbox_policy() {
-        Some(p) => format!("{} (network {})", p.mode.as_str(), if p.network { "on" } else { "off" }),
-        None => "off".into(),
-    };
-    let _ = writeln!(s, "Sandbox:        {sandbox}");
-    let _ = writeln!(s, "API:            {} via {}", info.init.api_key_source, d.engine.provider_name());
-    let files: Vec<String> = info
-        .settings
-        .layers
-        .iter()
-        .map(|l| match &l.path {
-            Some(p) => format!("{} ({})", p.display(), l.source.as_str()),
-            None => l.source.as_str().to_string(),
-        })
-        .collect();
-    let _ = writeln!(s, "Settings:       {}", if files.is_empty() { "none".into() } else { files.join(", ") });
-    let memory = forge_config::load_memory(&info.cwd);
-    let _ = writeln!(s, "Memory:         {} file(s)", memory.len());
-    if let Some(m) = &d.catalog.mcp {
-        let st = m.status();
-        let count = |w: &str| st.iter().filter(|(_, s)| s == w).count();
-        let _ = writeln!(
-            s,
-            "MCP servers:    {} connected, {} failed, {} disabled",
-            count("connected"),
-            count("failed"),
-            count("disabled")
-        );
-    }
-    let hooks = d.engine.hooks();
-    let n: usize = hooks.config.events.values().map(|m| m.iter().map(|x| x.hooks.len()).sum::<usize>()).sum();
-    let _ = write!(
-        s,
-        "Hooks:          {}",
-        if hooks.disabled { "disabled".to_string() } else { format!("{n} configured") }
-    );
-    s
 }
 
 pub(super) fn tokens_of(text: &str) -> usize {
@@ -384,70 +282,6 @@ fn plugins(d: &Driver) -> String {
         let _ = writeln!(s, "  {}{version} - {} ({})", p.name, p.description, p.dir.display());
     }
     s.trim_end().to_string()
-}
-
-fn tasks(d: &Driver, args: &str) -> Exec {
-    let shells = &d.engine.tool_ctx().shells;
-    if let Some(id) = args.strip_prefix("stop").map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(msg) = super::looping::stop(d, id) {
-            return ok(msg);
-        }
-        if let Some(msg) = d.subtasks.stop(id) {
-            return ok(msg);
-        }
-        return match shells.get(id) {
-            Some(sh) => {
-                sh.kill();
-                ok(format!("Stopped {id}."))
-            }
-            None => err(format!("No background task {id}.")),
-        };
-    }
-    if !args.is_empty() {
-        return err("Usage: /tasks [stop <id>]");
-    }
-    let list = shells.list();
-    let scheduled = super::looping::listing(d);
-    if list.is_empty() && scheduled.is_empty() && d.subtasks.is_empty() && d.subtasks.finished().is_empty() {
-        return ok("No background tasks.");
-    }
-    let mut s = String::from("Background tasks:\n");
-    for t in d.subtasks.iter() {
-        let state = if t.is_running() { "running" } else { "done, reported with your next prompt" };
-        let _ = writeln!(
-            s,
-            "  {} [subtask, {state}, {}, {} tool calls] {}",
-            t.id,
-            duration(t.started.elapsed()),
-            t.tool_calls(),
-            t.task.chars().take(100).collect::<String>()
-        );
-    }
-    for f in d.subtasks.finished() {
-        let _ = writeln!(
-            s,
-            "  {} [subtask, {}, took {}, {} tool calls] {}",
-            f.id,
-            f.status,
-            duration(f.duration),
-            f.tool_calls,
-            f.task.chars().take(100).collect::<String>()
-        );
-    }
-    for sh in list {
-        let _ = writeln!(
-            s,
-            "  {} [{}, {}] {}",
-            sh.id,
-            sh.status().label(),
-            duration(sh.started.elapsed()),
-            sh.command.chars().take(100).collect::<String>()
-        );
-    }
-    for line in scheduled {
-        let _ = writeln!(s, "{line}");
-    }
-    ok(s.trim_end())
 }
 
 fn subtask(d: &mut Driver, args: &str) -> Exec {

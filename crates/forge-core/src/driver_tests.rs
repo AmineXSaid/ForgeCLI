@@ -1499,3 +1499,133 @@ async fn at_mentions_attach_files_to_plain_prompts() {
         "{list}"
     );
 }
+
+// ---- immediate commands mid-turn (C17) ----
+
+/// Answer an immediate command from the view, as front ends do while a turn runs.
+async fn immediate(v: &crate::view::SessionView, text: &str) -> (String, bool) {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    match crate::commands::execute_immediate(v, text, &cancel).await {
+        Some(crate::commands::Exec::Local { text, is_error }) => (text, is_error),
+        other => panic!("{text}: not answered locally: {other:?}"),
+    }
+}
+
+/// Poll `f` until it holds (at most 10 s).
+async fn wait_for(mut f: impl FnMut() -> bool) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !f() {
+        assert!(std::time::Instant::now() < end, "timed out");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn immediate_commands_answer_from_the_view_during_a_turn() {
+    let mut t = driver();
+    assert!(crate::commands::immediate("/cost", &t.d.catalog), "aliases count");
+    assert!(crate::commands::immediate("/mcp reconnect x", &t.d.catalog), "arguments don't matter");
+    assert!(!crate::commands::immediate("/model", &t.d.catalog) && !crate::commands::immediate("hi", &t.d.catalog));
+    let view = t.d.view();
+    let slow = std::time::Duration::from_millis(150);
+    t.p.push(MockTurn::tool("Glob", serde_json::json!({"pattern": "*"})));
+    t.p.push(MockTurn::text("Done looking.").with_delay(slow));
+    let snap = view.clone();
+    let during = async {
+        let (before, _) = immediate(&view, "/usage").await;
+        assert!(before.contains("0 model calls for 0 prompts"), "{before}");
+        // After the turn's first model call (and its tool batch), the view has moved on.
+        wait_for(|| snap.engine().turn.as_ref().is_some_and(|p| p.api_calls == 1 && p.tool_calls == 1)).await;
+        let (usage, _) = immediate(&view, "/usage").await;
+        assert!(usage.contains("1 model calls for 1 prompts · 1 tool calls"), "{usage}");
+        assert!(!usage.contains("Total cost:     $0.0000"), "{usage}");
+        let (status, _) = immediate(&view, "/status").await;
+        assert!(status.contains("Model:") && status.contains("Permissions:    default mode"), "{status}");
+        assert_eq!(immediate(&view, "/tasks").await, ("No background tasks.".to_string(), false));
+        assert!(immediate(&view, "/context").await.0.starts_with("Context: about"));
+        assert!(snap.engine().turn.is_some(), "still mid-turn");
+    };
+    let (r, ()) = tokio::join!(run(&mut t.d, "look around"), during);
+    assert_eq!(r.result.as_deref(), Some("Done looking."));
+    assert!(view.engine().turn.is_none());
+    let usage = local(&mut t.d, "/usage").await;
+    assert!(usage.contains("2 model calls for 1 prompts"), "{usage}");
+}
+
+#[tokio::test]
+async fn btw_mid_turn_answers_and_its_cost_counts_after_the_turn() {
+    let mut t = driver();
+    let view = t.d.view();
+    t.p.push(MockTurn::text("The main answer.").with_delay(std::time::Duration::from_millis(100)));
+    t.p.push(MockTurn::text("A side answer.").with_usage(forge_types::Usage {
+        input_tokens: 5_000,
+        output_tokens: 7,
+        ..Default::default()
+    }));
+    let requests = t.p.request_log();
+    let during = async {
+        wait_for(|| requests.lock().unwrap().len() == 1).await;
+        let (answer, is_error) = immediate(&view, "/btw what are you doing?").await;
+        assert_eq!((answer.as_str(), is_error), ("A side answer.", false));
+    };
+    let (r, ()) = tokio::join!(run(&mut t.d, "answer slowly"), during);
+    assert_eq!(r.result.as_deref(), Some("The main answer."));
+    let side = &t.p.requests()[1];
+    assert_eq!(side.tool_choice, Some(serde_json::json!({"type": "none"})));
+    assert!(serde_json::to_string(&side.messages).unwrap().contains("what are you doing?"));
+    // Recorded when the turn ended: the side question's tokens and the exchange.
+    let usage = local(&mut t.d, "/usage").await;
+    assert!(usage.contains("5,100 input"), "{usage}");
+    assert_eq!(t.d.side_questions, vec![("what are you doing?".to_string(), "A side answer.".to_string())]);
+    assert!(t.d.engine.state.messages.iter().all(|m| !m.text().contains("A side answer.")), "not in the conversation");
+}
+
+#[tokio::test]
+async fn mcp_changes_mid_turn_refresh_the_session_after_the_turn() {
+    if std::process::Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped: python3 not found");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("notes.py");
+    std::fs::write(&script, NOTES_SERVER).unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let resolved = forge_mcp::Resolved {
+        servers: vec![forge_mcp::NamedServer {
+            name: "notes".into(),
+            scope: forge_mcp::Scope::Settings,
+            config: forge_mcp::ServerConfig::Stdio {
+                command: "python3".into(),
+                args: vec![script.display().to_string()],
+                env: Default::default(),
+            },
+        }],
+        ..Default::default()
+    };
+    let m = Arc::new(forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(&proj)).await);
+    let mut t = driver_with(|_, o| o.mcp = Some(m.clone()));
+    let view = t.d.view();
+    let has_note = |d: &Driver| d.engine.system().iter().any(|b| b.text.contains("Notes keeps the team's notes."));
+    assert!(has_note(&t.d));
+    let slow = std::time::Duration::from_millis(100);
+
+    t.p.push(MockTurn::text("first").with_delay(slow));
+    let during = async {
+        let (out, _) = immediate(&view, "/mcp disable notes").await;
+        assert!(out.starts_with("Disabled notes"), "{out}");
+    };
+    tokio::join!(run(&mut t.d, "go on"), during);
+    assert!(!has_note(&t.d), "its instructions left with the turn's end");
+    assert_eq!(t.d.info.init.mcp_servers[0].status, "disabled");
+
+    t.p.push(MockTurn::text("second").with_delay(slow));
+    let during = async {
+        assert!(immediate(&view, "/mcp enable notes").await.0.starts_with("Enabled notes"));
+        assert!(immediate(&view, "/mcp reconnect notes").await.0.starts_with("Reconnected notes"));
+    };
+    tokio::join!(run(&mut t.d, "and again"), during);
+    assert!(has_note(&t.d), "back after the turn");
+    assert_eq!(t.d.info.init.mcp_servers[0].status, "connected");
+    m.shutdown().await;
+}

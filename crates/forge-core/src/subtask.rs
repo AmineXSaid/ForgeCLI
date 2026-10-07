@@ -177,6 +177,53 @@ impl Subtask {
     pub fn tool_calls(&self) -> usize {
         self.calls.load(Ordering::Relaxed)
     }
+
+    /// A row for the session view: it follows this subtask (running state, tool calls) and can stop it.
+    pub fn row(&self) -> SubtaskRow {
+        SubtaskRow {
+            id: self.id.clone(),
+            task: self.task.clone(),
+            started: self.started,
+            calls: self.calls.clone(),
+            stop: self.stop.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+}
+
+/// A subtask as the session view sees it (`/tasks` mid-turn). Cheap to clone.
+#[derive(Clone)]
+pub struct SubtaskRow {
+    pub id: String,
+    pub task: String,
+    pub started: Instant,
+    calls: Arc<AtomicUsize>,
+    stop: CancellationToken,
+    outcome: Arc<Mutex<Option<Outcome>>>,
+}
+
+impl SubtaskRow {
+    pub fn is_running(&self) -> bool {
+        self.outcome.lock().unwrap().is_none()
+    }
+
+    pub fn tool_calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
+/// `/tasks stop <id>` for a subtask: what happened, or `None` when there is no such subtask.
+pub fn stop_row(rows: &[SubtaskRow], finished: &[FinishedSubtask], id: &str) -> Option<String> {
+    if finished.iter().any(|f| f.id == id) {
+        return Some(format!("{id} has already finished and been reported."));
+    }
+    let t = rows.iter().find(|t| t.id == id)?;
+    Some(if t.is_running() {
+        t.stop.cancel();
+        format!("Stopping {id}. It ends after its current step; what it did so far is handed back.")
+    } else {
+        format!("{id} has already finished; its report is handed back with your next prompt.")
+    })
 }
 
 /// A subtask that was handed back, for `/tasks`.
@@ -273,16 +320,12 @@ impl Subtasks {
 
     /// `/tasks stop <id>`.
     pub fn stop(&self, id: &str) -> Option<String> {
-        if self.finished.iter().any(|f| f.id == id) {
-            return Some(format!("{id} has already finished and been reported."));
-        }
-        let t = self.list.iter().find(|t| t.id == id)?;
-        Some(if t.is_running() {
-            t.stop.cancel();
-            format!("Stopping {id}. It ends after its current step; what it did so far is handed back.")
-        } else {
-            format!("{id} has already finished; its report is handed back with your next prompt.")
-        })
+        stop_row(&self.rows(), &self.finished, id)
+    }
+
+    /// Rows for the session view, oldest first.
+    pub fn rows(&self) -> Vec<SubtaskRow> {
+        self.list.iter().map(Subtask::row).collect()
     }
 
     /// The conversation changed under them (`/clear`, `/resume`): stop the running ones, and

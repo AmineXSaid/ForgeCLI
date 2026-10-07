@@ -11,6 +11,7 @@ pub mod prompt;
 pub mod schedule;
 pub mod schedule_tools;
 pub mod subtask;
+pub mod view;
 pub mod web;
 
 pub use driver::{Driver, Flow, Report};
