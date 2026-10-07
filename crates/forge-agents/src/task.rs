@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use forge_api::Provider;
 use forge_engine::{
-    Engine, EngineConfig, EngineHandle, EngineParts, EnvInfo, EventSink, ForwardSink, PermissionPrompter,
+    Engine, EngineConfig, EngineHandle, EngineParts, EnvInfo, EventSink, ForwardSink, PermissionPrompter, TurnResult,
+    TurnState,
 };
 use forge_hooks::HookRunner;
 use forge_permissions::Subject;
@@ -45,6 +46,168 @@ pub struct AgentRuntime {
     /// Memory files, given to sub-agents as context.
     pub memory_context: Option<String>,
     pub parent: OnceLock<ParentLink>,
+}
+
+/// What a child engine is built from, besides what it shares with the session.
+pub struct ChildSpec<'a> {
+    /// Engine settings (`is_subagent` is forced on).
+    pub cfg: EngineConfig,
+    pub tools: ToolRegistry,
+    pub system: Vec<forge_types::SystemBlock>,
+    pub prompter: Arc<dyn PermissionPrompter>,
+    pub sink: Arc<dyn EventSink>,
+    /// A fork starts from this conversation; `None` starts it empty.
+    pub seed: Option<&'a TurnState>,
+}
+
+/// A child engine and its id (its transcript's session id).
+pub struct Child {
+    pub id: String,
+    pub engine: Engine,
+}
+
+impl AgentRuntime {
+    /// Settings for a fresh sub-agent on `model`: the session's base settings and the parent's
+    /// current thinking budget and effort, without the run's limits.
+    pub fn child_config(&self, model: &str) -> EngineConfig {
+        let mut cfg = self.base.clone();
+        cfg.model = model.to_string();
+        cfg.fallback_models = vec![];
+        cfg.max_budget_usd = None;
+        cfg.max_turns = None;
+        cfg.json_schema = None;
+        cfg.is_subagent = true;
+        cfg.initial_context = self.memory_context.clone();
+        if let Some(p) = self.parent.get() {
+            let rt = p.handle.runtime();
+            cfg.max_thinking_tokens = rt.max_thinking_tokens;
+            cfg.effort = rt.effort;
+        }
+        cfg
+    }
+
+    /// Build a child engine (the Task tool's agents, `/subtask`). It shares the session's
+    /// provider, hooks, sandbox, working directories and file history, starts with a copy of the
+    /// parent's permission rules and mode, and gets its own transcript, tool context (Bash cwd,
+    /// todos, read state, shells) and conversation.
+    pub fn child(&self, spec: ChildSpec<'_>) -> Result<Child, String> {
+        let parent = self.parent.get().ok_or("Sub-agents are not available in this session.")?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let transcript = match &self.store {
+            Some(store) => Transcript::create(store, &self.project_dir, &id, None, true),
+            None => Transcript::create(
+                &SessionStore::new(PathBuf::from("/nonexistent")),
+                &self.project_dir,
+                &id,
+                None,
+                false,
+            ),
+        }
+        .map_err(|e| e.to_string())?;
+        let mut tool_ctx = ToolContext::new(&self.project_dir);
+        tool_ctx.working_dirs = self.working_dirs.clone();
+        tool_ctx.env = self.env.clone();
+        tool_ctx.sandbox = self.sandbox.clone();
+        tool_ctx.session_id = self.session_id.clone();
+        let mut cfg = spec.cfg;
+        cfg.is_subagent = true;
+        let permissions = parent.handle.permissions.read().unwrap().clone();
+        let parts = EngineParts {
+            provider: self.provider.clone(),
+            tools: spec.tools,
+            tool_ctx,
+            permissions,
+            hooks: self.hooks.clone(),
+            prompter: spec.prompter,
+            sink: spec.sink,
+            transcript: Arc::new(transcript),
+            history: parent.history.clone(),
+            system: spec.system,
+        };
+        let mut engine = Engine::new(cfg, parts).map_err(|e| e.to_string())?;
+        if let Some(seed) = spec.seed {
+            engine.seed(seed);
+        }
+        Ok(Child { id, engine })
+    }
+}
+
+/// How a child's turn ended: `completed`, `interrupted` or `error`.
+pub fn status_of(r: &TurnResult) -> &'static str {
+    if r.is_error {
+        "error"
+    } else if r.stop_reason.as_deref() == Some("interrupted") {
+        "interrupted"
+    } else {
+        "completed"
+    }
+}
+
+/// A child's spend, as `Engine::record_subagent_usage` takes it (`subagentUsage`).
+pub fn usage_of(r: &TurnResult) -> Value {
+    json!({"costUsd": r.total_cost_usd, "usage": r.usage, "modelUsage": r.model_usage})
+}
+
+/// Tools a fork lists but may not run: they would reach the person, change the session's
+/// schedule, or start agents that ask through the person's prompter.
+const NOT_IN_FORKS: &[(&str, &str)] = &[
+    ("Task", "Background subtasks can't start other agents."),
+    (
+        "AskUserQuestion",
+        "Nobody can answer questions in a background subtask: decide, and list your assumptions in the report.",
+    ),
+    ("EnterPlanMode", "Plan mode isn't available in a background subtask."),
+    ("ExitPlanMode", "Plan mode isn't available in a background subtask."),
+    ("CronCreate", "Background subtasks can't schedule tasks."),
+    ("CronDelete", "Background subtasks can't change scheduled tasks."),
+    ("ScheduleWakeup", "Background subtasks can't schedule tasks."),
+];
+
+/// A fork's tools: the parent's, in the same order and with the same text, so the request
+/// prefix matches and the parent's prompt cache is read; refused tools stay listed.
+pub fn fork_tools(parent: &ToolRegistry) -> ToolRegistry {
+    let mut reg = parent.clone();
+    for &(name, why) in NOT_IN_FORKS {
+        reg.wrap(name, |inner| Arc::new(Unavailable { inner, why }));
+    }
+    reg
+}
+
+struct Unavailable {
+    inner: Arc<dyn Tool>,
+    why: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Tool for Unavailable {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> String {
+        self.inner.description()
+    }
+
+    fn input_schema(&self) -> Value {
+        self.inner.input_schema()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.inner.is_enabled()
+    }
+
+    /// Refused before any permission check.
+    fn is_read_only(&self, _input: &Value) -> bool {
+        true
+    }
+
+    fn validate(&self, _input: &Value, _ctx: &ToolContext) -> Result<(), String> {
+        Err(self.why.to_string())
+    }
+
+    async fn call(&self, _input: Value, _ctx: &ToolContext) -> ToolOutput {
+        ToolOutput::error(self.why)
+    }
 }
 
 pub struct TaskTool {
@@ -152,58 +315,20 @@ impl Tool for TaskTool {
             Some(m) => forge_api::resolve_model(m),
             None => parent.handle.model(),
         };
-        let child_id = uuid::Uuid::new_v4().to_string();
-        let transcript = match &self.rt.store {
-            Some(store) => Transcript::create(store, &self.rt.project_dir, &child_id, None, true),
-            None => Transcript::create(
-                &SessionStore::new(PathBuf::from("/nonexistent")),
-                &self.rt.project_dir,
-                &child_id,
-                None,
-                false,
-            ),
-        };
-        let transcript = match transcript {
-            Ok(t) => Arc::new(t),
-            Err(e) => return ToolOutput::error(format!("Could not start the sub-agent: {e}")),
-        };
-        let mut tool_ctx = ToolContext::new(&self.rt.project_dir);
-        tool_ctx.working_dirs = self.rt.working_dirs.clone();
-        tool_ctx.env = self.rt.env.clone();
-        tool_ctx.sandbox = self.rt.sandbox.clone();
-        tool_ctx.session_id = self.rt.session_id.clone();
-
         let dirs: Vec<PathBuf> = self.rt.working_dirs.read().unwrap().iter().skip(1).cloned().collect();
         let env = EnvInfo::collect(&self.rt.project_dir, &dirs, &model);
-        let system_text = format!("{}\n\n{}", agent.prompt, env.render());
-        let mut sys = forge_types::SystemBlock::text(system_text);
+        let mut sys = forge_types::SystemBlock::text(format!("{}\n\n{}", agent.prompt, env.render()));
         sys.cache_control = Some(forge_types::CacheControl::ephemeral());
-
-        let mut cfg = self.rt.base.clone();
-        cfg.model = model.clone();
-        cfg.fallback_models = vec![];
-        cfg.max_budget_usd = None;
-        cfg.max_turns = None;
-        cfg.json_schema = None;
-        cfg.is_subagent = true;
-        cfg.initial_context = self.rt.memory_context.clone();
-        cfg.max_thinking_tokens = parent.handle.runtime.read().unwrap().max_thinking_tokens;
-        cfg.effort = parent.handle.runtime.read().unwrap().effort.clone();
-        let permissions = parent.handle.permissions.read().unwrap().clone();
-        let parts = EngineParts {
-            provider: self.rt.provider.clone(),
+        let spec = ChildSpec {
+            cfg: self.rt.child_config(&model),
             tools: self.registry_for(&agent),
-            tool_ctx,
-            permissions,
-            hooks: self.rt.hooks.clone(),
+            system: vec![sys],
             prompter: parent.prompter.clone(),
             sink: Arc::new(ForwardSink { parent: self.rt.sink.clone(), parent_tool_use_id: ctx.tool_use_id.clone() }),
-            transcript,
-            history: parent.history.clone(),
-            system: vec![sys],
+            seed: None,
         };
-        let mut child = match Engine::new(cfg, parts) {
-            Ok(e) => e,
+        let Child { id: child_id, engine: mut child } = match self.rt.child(spec) {
+            Ok(c) => c,
             Err(e) => return ToolOutput::error(format!("Could not start the sub-agent: {e}")),
         };
         // Interrupting the caller interrupts the agent.
@@ -226,14 +351,10 @@ impl Tool for TaskTool {
         let structured = json!({
             "agentType": agent.name,
             "agentId": child_id,
-            "status": if result.is_error { "error" } else if result.stop_reason.as_deref() == Some("interrupted") { "interrupted" } else { "completed" },
+            "status": status_of(&result),
             "totalToolUseCount": tool_uses,
             "totalDurationMs": started.elapsed().as_millis() as u64,
-            "subagentUsage": {
-                "costUsd": result.total_cost_usd,
-                "usage": result.usage,
-                "modelUsage": result.model_usage,
-            },
+            "subagentUsage": usage_of(&result),
         });
         let text = result.result.clone().unwrap_or_default();
         if result.is_error {

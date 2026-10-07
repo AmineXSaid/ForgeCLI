@@ -1199,3 +1199,90 @@ async fn mcp_servers_turn_off_and_on_through_the_driver() {
     assert!(fails(&mut t.d, "/mcp restart notes").await.starts_with("Usage: /mcp"));
     m.shutdown().await;
 }
+
+// ---- /subtask (C20) ----
+
+/// Wait until no subtask is running.
+async fn subtasks_settle(d: &Driver) {
+    let mut w = d.subtasks.watch();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let _ = *w.borrow_and_update();
+        if d.subtasks.running() == 0 {
+            return;
+        }
+        assert!(tokio::time::timeout_at(deadline, w.changed()).await.is_ok(), "a subtask never finished");
+    }
+}
+
+#[tokio::test]
+async fn subtask_forks_the_conversation_and_reports_back() {
+    let mut t = driver();
+    t.p.push(MockTurn::text("hi there"));
+    run(&mut t.d, "hello").await;
+    let main_req = t.p.requests()[0].clone();
+
+    // The fork asks a question nobody can answer, then reports.
+    t.p.push(MockTurn::tool("AskUserQuestion", serde_json::json!({"questions": []})));
+    t.p.push(
+        MockTurn::text("Found 3 files.")
+            .with_usage(forge_types::Usage { input_tokens: 1_000_000, ..Default::default() }),
+    );
+    let out = local(&mut t.d, "/subtask count the files").await;
+    assert!(out.starts_with("Started subtask_1 in the background: count the files."), "{out}");
+    subtasks_settle(&t.d).await;
+    // Any input hands it back first (a notice now, its report with the next prompt).
+    assert_eq!(local(&mut t.d, "/tasks").await, "No background tasks.");
+
+    let fork = &t.p.requests()[1];
+    // The same prefix as the main conversation, so its prompt cache is read.
+    assert_eq!(fork.system, main_req.system);
+    let names = |r: &forge_types::MessagesRequest| r.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(fork), names(&main_req));
+    assert_eq!(
+        serde_json::to_value(&fork.messages[0]).unwrap()["content"][0]["text"],
+        serde_json::to_value(&main_req.messages[0]).unwrap()["content"][0]["text"]
+    );
+    let task = last_user_text(fork);
+    assert!(task.contains("You are now a background subtask") && task.contains("Task: count the files"), "{task}");
+    let refused = last_user_text(&t.p.requests()[2]);
+    assert!(refused.contains("Nobody can answer questions in a background subtask"), "{refused}");
+
+    // The next prompt carries the report, and the spend joins the session's.
+    let before = t.d.engine.state.total_cost_usd;
+    t.p.push(MockTurn::text("great"));
+    run(&mut t.d, "thanks").await;
+    let next = serde_json::to_string(&t.p.requests()[3].messages).unwrap();
+    assert!(
+        next.contains("Background subtask subtask_1 (count the files) has finished. Its report:\\n\\nFound 3 files."),
+        "{next}"
+    );
+    assert!(before >= 0.9, "the fork's tokens are counted: {before}");
+    assert!(fails(&mut t.d, "/subtask").await.starts_with("Usage: /subtask <task>"));
+}
+
+#[tokio::test]
+async fn subtasks_stop_on_request_and_are_orphaned_by_clear() {
+    let mut t = driver();
+    t.p.push(MockTurn::text("slow").with_delay(std::time::Duration::from_secs(20)));
+    local(&mut t.d, "/subtask a long job").await;
+    assert!(local(&mut t.d, "/tasks").await.contains("subtask_1 [subtask, running"));
+    assert!(t.d.has_pending());
+    assert!(local(&mut t.d, "/tasks stop subtask_1").await.starts_with("Stopping subtask_1."));
+    subtasks_settle(&t.d).await;
+    t.p.push(MockTurn::text("ok"));
+    run(&mut t.d, "next").await;
+    let next = serde_json::to_string(&t.p.requests().last().unwrap().messages).unwrap();
+    assert!(next.contains("Background subtask subtask_1 (a long job) was stopped before it finished"), "{next}");
+
+    // /clear starts another conversation: a running subtask stops and its report isn't passed on.
+    t.p.push(MockTurn::text("slow").with_delay(std::time::Duration::from_secs(20)));
+    local(&mut t.d, "/subtask another job").await;
+    local(&mut t.d, "/clear").await;
+    subtasks_settle(&t.d).await;
+    t.p.push(MockTurn::text("fresh"));
+    run(&mut t.d, "start over").await;
+    let next = serde_json::to_string(&t.p.requests().last().unwrap().messages).unwrap();
+    assert!(!next.contains("subtask_2"), "{next}");
+    assert!(!t.d.has_pending());
+}

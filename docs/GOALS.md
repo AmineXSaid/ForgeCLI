@@ -132,6 +132,6 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
    - **Done:** MCP (stdio, HTTP and SSE client, `forge mcp`, `forge mcp
      serve`), web tools, plan mode and AskUserQuestion, skills, output styles.
    - **Mostly done:** slash commands, with one registry, goals (C18) and
-     scheduled prompts (C19). Still to build: `/subtask`.
+     scheduled prompts (C19), and background subtasks (C20).
    - **Still to build:** the full-screen UI.
 8. Remaining flags and polish.

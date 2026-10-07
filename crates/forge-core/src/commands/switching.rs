@@ -18,6 +18,7 @@ pub(super) async fn clear(d: &mut Driver, args: &str) -> Exec {
         d.engine.transcript().set_title(&clean_title(args));
     }
     if !d.can_switch() {
+        d.subtasks.orphan_all();
         d.engine.clear();
         d.goal = None;
         return ok("Conversation cleared.");

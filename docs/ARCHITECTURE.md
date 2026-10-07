@@ -707,6 +707,51 @@ interval emits `system/scheduled`. `/tasks` lists scheduled tasks, and
   or when the budget is spent.
 - `FORGE_TEST_TIME_SCALE` speeds up the scheduler's clock, for tests only.
 
+### C20. Subtasks
+
+`/subtask <task>` forks the conversation into a background sub-agent.
+
+**The fork.**
+- The same system prompt, tools (same order and text) and messages as the
+  main conversation, then a note saying it is a background subtask, and the
+  task. Its first request reads the main conversation's prompt cache.
+- Task, AskUserQuestion, EnterPlanMode, ExitPlanMode, CronCreate, CronDelete
+  and ScheduleWakeup stay listed but refuse to run.
+- It never asks: any permission prompt is denied with a reason. It starts
+  with a copy of the main conversation's rules and mode.
+- It shares the session's provider, hooks (SubagentStop at the end),
+  sandbox, working directories and file checkpoints. Its edits get their own
+  checkpoint turn, so `/rewind` to an earlier prompt undoes them. Its
+  transcript goes under the session's `agents/` directory, with a `forkOf`
+  record.
+- With `--max-budget-usd` it may spend what was left when it started;
+  `--max-turns` caps its turn. At most 8 run at once. Background shells it
+  started are killed when it ends.
+
+**Handing back**, the next time the session is idle (a front end waiting for
+input, or the start of the next input or scheduled task):
+- its spend joins the session's;
+- the person gets a notice with its report;
+- hosts get `system/subtask` (`status` completed, interrupted or error;
+  `result`, `num_tool_calls`, `duration_ms`, `total_cost_usd`,
+  `transcript_path`);
+- its report reaches the model with the next prompt.
+
+Starting one emits `system/subtask` with `status: started`, and the model
+hears of it with the next prompt.
+
+**Stopping.** `/tasks` lists subtasks; `/tasks stop <id>` interrupts one,
+which is handed back as interrupted. `/clear` and `/resume` stop running
+subtasks and pass no report on (their spend still counts); `/branch`, `/cd`
+and the reloads keep them. Session end gives them 3 s, then aborts them.
+
+**Front ends.**
+- REPL: a notice when one finishes while the prompt waits.
+- stream-json: `system/subtask` as soon as one finishes while idle; no turn
+  runs by itself.
+- `-p`: keeps running while subtasks are out, then hands them all back and
+  runs one more turn, whose answer is the run's result.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

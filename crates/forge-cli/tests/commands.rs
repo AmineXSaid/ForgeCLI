@@ -450,3 +450,29 @@ async fn import_shows_a_plan_then_applies_it() {
     assert!(err.contains("Unknown source \"vscode\""), "{err}");
     assert!(api.requests().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_mode_waits_for_subtasks_then_answers_with_their_reports() {
+    let e = env();
+    let api =
+        MockApi::start(vec![MockTurn::text("There are 3 TODOs."), MockTurn::text("The subtask found 3 TODOs.")]).await;
+    let (code, out, err) = forge(&e, &api.url, &["-p", "/subtask count the TODOs"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("Started subtask_1 in the background: count the TODOs."), "{out}");
+    assert!(out.trim_end().ends_with("The subtask found 3 TODOs."), "{out}");
+    let reqs = api.requests();
+    assert_eq!(reqs.len(), 2, "the fork's turn, then one turn with its report");
+    let last = reqs[1]["messages"].to_string();
+    assert!(
+        last.contains("Background subtask subtask_1 (count the TODOs) has finished")
+            && last.contains("There are 3 TODOs."),
+        "{last}"
+    );
+
+    // JSON output stays one object: the turn that handed the report back, with the fork's cost in it.
+    let api = MockApi::start(vec![MockTurn::text("found it"), MockTurn::text("done")]).await;
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/subtask look", "--output-format", "json"]).await;
+    assert_eq!(code, 0);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["result"], "done");
+}

@@ -10,6 +10,7 @@ pub mod import;
 pub mod prompt;
 pub mod schedule;
 pub mod schedule_tools;
+pub mod subtask;
 pub mod web;
 
 pub use driver::{Driver, Flow, Report};
@@ -221,6 +222,8 @@ pub struct Session {
     pub scheduler: Option<schedule_tools::SharedScheduler>,
     /// The advisor model, while one is set.
     pub advisor: advisor::AdvisorCell,
+    /// Builds sub-agents: the Task tool's and `/subtask`'s (C20).
+    pub agent_rt: Arc<forge_agents::AgentRuntime>,
     /// Custom slash commands, skills, output styles and plugins (M5).
     pub commands: Vec<forge_agents::CommandDef>,
     pub skills: Vec<forge_agents::SkillDef>,
@@ -533,7 +536,6 @@ pub fn build_session(
     tools.register(Arc::new(advisor::Advisor { provider: provider.clone(), model: advisor.clone() }));
     let agent_store =
         (!opts.no_session_persistence).then(|| SessionStore::new(store.root.join("agents").join(&session_id)));
-    let agent_rt_slot: Arc<std::sync::OnceLock<Arc<forge_agents::AgentRuntime>>> = Arc::new(std::sync::OnceLock::new());
     if let Some(list) = &opts.tools {
         let names: Vec<String> = list.iter().flat_map(|s| forge_permissions::split_rule_list(s)).collect();
         if !(names.len() == 1 && names[0] == "default") {
@@ -663,41 +665,38 @@ pub fn build_session(
         }
     }
 
-    // Sub-agents: the Task tool shares this session's provider, rules, hooks and budget.
+    // Sub-agents: the Task tool and `/subtask` share this session's provider, rules, hooks and budget.
     let memory = if opts.bare { None } else { memory_context(&cwd) };
+    let agent_rt = Arc::new(forge_agents::AgentRuntime {
+        provider: provider.clone(),
+        agents: agents.clone(),
+        project_dir: cwd.clone(),
+        working_dirs: tool_ctx.working_dirs.clone(),
+        env: tool_ctx.env.clone(),
+        sandbox: tool_ctx.sandbox.clone(),
+        extra_tools: web_tools
+            .iter()
+            .cloned()
+            .chain(opts.mcp.as_ref().map(|m| m.tools()).unwrap_or_default())
+            .collect(),
+        store: agent_store,
+        session_id: session_id.clone(),
+        hooks: hooks.clone(),
+        sink: sink.clone(),
+        base: EngineConfig {
+            max_output_tokens: env_nonempty("FORGE_MAX_OUTPUT_TOKENS").and_then(|v| v.parse().ok()).unwrap_or(32_000),
+            pricing: pricing_from_settings(&settings),
+            ..Default::default()
+        },
+        memory_context: memory.clone(),
+        parent: std::sync::OnceLock::new(),
+    });
     if tools.get("Task").is_none()
         && opts.tools.as_ref().map(|t| t.iter().any(|x| x.contains("Task") || x == "default")).unwrap_or(true)
         && main_agent.as_ref().and_then(|a| a.tools.as_ref()).map(|t| t.iter().any(|x| x == "Task")).unwrap_or(true)
         && !removed.iter().any(|r| r == "Task")
     {
-        let rt = Arc::new(forge_agents::AgentRuntime {
-            provider: provider.clone(),
-            agents: agents.clone(),
-            project_dir: cwd.clone(),
-            working_dirs: tool_ctx.working_dirs.clone(),
-            env: tool_ctx.env.clone(),
-            sandbox: tool_ctx.sandbox.clone(),
-            extra_tools: web_tools
-                .iter()
-                .cloned()
-                .chain(opts.mcp.as_ref().map(|m| m.tools()).unwrap_or_default())
-                .collect(),
-            store: agent_store,
-            session_id: session_id.clone(),
-            hooks: hooks.clone(),
-            sink: sink.clone(),
-            base: EngineConfig {
-                max_output_tokens: env_nonempty("FORGE_MAX_OUTPUT_TOKENS")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(32_000),
-                pricing: pricing_from_settings(&settings),
-                ..Default::default()
-            },
-            memory_context: memory.clone(),
-            parent: std::sync::OnceLock::new(),
-        });
-        tools.register(Arc::new(forge_agents::TaskTool { rt: rt.clone() }));
-        let _ = agent_rt_slot.set(rt);
+        tools.register(Arc::new(forge_agents::TaskTool { rt: agent_rt.clone() }));
     }
     let tool_names = tools.names();
     let cfg = EngineConfig {
@@ -747,13 +746,11 @@ pub fn build_session(
         system,
     };
     let mut engine = Engine::new(cfg, parts)?;
-    if let Some(rt) = agent_rt_slot.get() {
-        let _ = rt.parent.set(forge_agents::ParentLink {
-            handle: engine.handle(),
-            prompter: engine.prompter(),
-            history: engine.history().clone(),
-        });
-    }
+    let _ = agent_rt.parent.set(forge_agents::ParentLink {
+        handle: engine.handle(),
+        prompter: engine.prompter(),
+        history: engine.history().clone(),
+    });
     if let Some(r) = resumed.as_mut() {
         engine.restore(r);
         engine.set_start_source("resume");
@@ -795,6 +792,7 @@ pub fn build_session(
         prompt,
         scheduler,
         advisor,
+        agent_rt,
         commands,
         skills,
         styles,

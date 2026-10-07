@@ -20,4 +20,4 @@ pub use definitions::{builtin_agents, load_agents, parse_agent_markdown, parse_a
 pub use plugins::{load_plugins, Plugin};
 pub use skills::{load_skills, SkillDef, SkillTool};
 pub use styles::{load_styles, OutputStyle};
-pub use task::{AgentRuntime, ParentLink, TaskTool};
+pub use task::{fork_tools, status_of, usage_of, AgentRuntime, Child, ChildSpec, ParentLink, TaskTool};

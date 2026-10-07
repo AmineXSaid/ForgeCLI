@@ -118,6 +118,10 @@ pub struct Driver {
     pub(crate) fallback_pending: Option<String>,
     /// The advisor model, while one is set (`/advisor`).
     pub advisor: crate::advisor::AdvisorCell,
+    /// Builds sub-agents for the Task tool and `/subtask` (C20).
+    pub(crate) agent_rt: Arc<forge_agents::AgentRuntime>,
+    /// Background subtasks: running, or finished and not yet handed back.
+    pub subtasks: crate::subtask::Subtasks,
 }
 
 /// Book-keeping for a self-paced loop: did the iteration reschedule or stop?
@@ -186,6 +190,8 @@ impl Driver {
             self_paced: None,
             fallback_pending: None,
             advisor: s.advisor,
+            agent_rt: s.agent_rt,
+            subtasks: Default::default(),
         }
     }
 
@@ -378,6 +384,18 @@ impl Driver {
         next.info.user_settings = self.info.user_settings.clone();
         next.activity = self.activity.clone();
         next.started = self.started;
+        // Subtasks follow the conversation (C20). A branch, a move or a reload continues it: they
+        // carry on and report there, and notes still due for the next prompt come along. A new or
+        // resumed conversation is another one: they stop, and their reports aren't passed on.
+        // Move the registry, never rebuild it: front ends hold receivers of its watch channel.
+        if continues {
+            for note in self.engine.take_reminders() {
+                next.engine.remind(note);
+            }
+        } else {
+            self.subtasks.orphan_all();
+        }
+        next.subtasks = std::mem::take(&mut self.subtasks);
         next.rebuild = self.rebuild.take();
         next.live = self.live.clone();
         next.live.set(&next.engine, &next.info.session_id);
@@ -387,6 +405,8 @@ impl Driver {
 
     /// Run one input. `report` gets each turn's result as it finishes.
     pub async fn input(&mut self, content: MessageContent, report: &mut Report<'_>) -> Flow {
+        // Subtasks that finished since the last input are handed back first: their reports ride along with it.
+        self.deliver_subtasks();
         // Shell mode is for a person at the keyboard: on print and stream surfaces the
         // prompt usually comes from a program, so `!...` is an ordinary prompt there.
         let shell = shell_command(&content).filter(|_| matches!(self.surface, Surface::Repl | Surface::Tui));
@@ -440,9 +460,9 @@ impl Driver {
         self.scheduler.as_ref().and_then(|s| s.lock().unwrap().next_wait()) == Some(Duration::ZERO)
     }
 
-    /// Are scheduled tasks waiting? (`-p` keeps running while they are.)
+    /// Are scheduled tasks waiting, or subtasks out? (`-p` keeps running while they are.)
     pub fn has_pending(&self) -> bool {
-        self.scheduler.as_ref().is_some_and(|s| !s.lock().unwrap().tasks.is_empty())
+        self.scheduler.as_ref().is_some_and(|s| !s.lock().unwrap().tasks.is_empty()) || !self.subtasks.is_empty()
     }
 
     pub(crate) fn save_schedule(&self) {
@@ -454,6 +474,7 @@ impl Driver {
     /// Run the next due scheduled task, if any, as a turn. Call it only while idle.
     pub async fn run_due(&mut self, report: &mut Report<'_>) -> bool {
         let Some(task) = self.scheduler.as_ref().and_then(|s| s.lock().unwrap().take_due()) else { return false };
+        self.deliver_subtasks();
         self.save_schedule();
         self.engine.announce(
             "scheduled_task",
@@ -480,6 +501,105 @@ impl Driver {
         self.record(&result, false);
         report(&result);
         self.after_turn(result, engine_turn, report).await;
+        true
+    }
+
+    /// `/subtask <task>`: fork this conversation into a background sub-agent (C20). Call only
+    /// while idle. Returns its id.
+    pub(crate) fn start_subtask(&mut self, task: &str) -> Result<String, String> {
+        use crate::subtask::{self, SubtaskPrompter, SubtaskSink};
+        if self.subtasks.running() >= subtask::MAX_RUNNING {
+            return Err(format!(
+                "{} subtasks are already running. Stop one with /tasks stop <id>, or wait for one to finish.",
+                subtask::MAX_RUNNING
+            ));
+        }
+        let spent = self.engine.state.total_cost_usd;
+        let budget = match self.engine.cfg.max_budget_usd {
+            Some(b) if spent >= b => return Err("the session's budget is used up.".into()),
+            b => b.map(|b| b - spent),
+        };
+        // The main conversation's settings as they are now, so the fork's requests match its prefix.
+        let rt = self.engine.handle().runtime();
+        let mut cfg = self.engine.cfg.clone();
+        cfg.model = rt.model;
+        cfg.effort = rt.effort;
+        cfg.max_thinking_tokens = rt.max_thinking_tokens;
+        cfg.fast = rt.fast;
+        cfg.max_budget_usd = budget;
+        cfg.json_schema = None;
+        cfg.verify = None;
+        let id = self.subtasks.next_id();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let child = self.agent_rt.child(forge_agents::ChildSpec {
+            cfg,
+            tools: forge_agents::fork_tools(self.engine.tools()),
+            system: self.engine.system().to_vec(),
+            prompter: Arc::new(SubtaskPrompter),
+            sink: Arc::new(SubtaskSink::new(&id, self.agent_rt.sink.clone(), calls.clone())),
+            seed: Some(&self.engine.state),
+        })?;
+        child.engine.transcript().append_meta(serde_json::json!({
+            "forkOf": {"sessionId": self.info.session_id, "leafUuid": self.engine.transcript().last_uuid()},
+        }));
+        // Its edits get a checkpoint turn of their own (sub-agents never begin one), so a rewind
+        // to an earlier prompt undoes them too.
+        self.engine.history().begin_turn(&format!("{id}-{}", child.id));
+        self.subtasks.spawn(id.clone(), task, child.engine, subtask::prompt(task), calls);
+        self.engine.remind(subtask::started_note(&id, task));
+        self.engine.announce("subtask", serde_json::json!({"id": id, "status": "started", "task": task}));
+        Ok(id)
+    }
+
+    /// Hand back finished subtasks (C20): each one's spend joins the session's, the person gets a
+    /// notice and a host `system/subtask`, and its report rides along with the next prompt.
+    /// Returns how many reports the model will see. Call only while idle.
+    pub fn deliver_subtasks(&mut self) -> usize {
+        let mut reports = 0;
+        for (t, o) in self.subtasks.take_finished() {
+            self.engine.record_subagent_usage(&o.usage);
+            let cost = o.usage.get("costUsd").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+            let mut text = format!(
+                "Subtask {} {} ({} tool calls, {}): {}\n{}",
+                t.id,
+                o.how(),
+                t.tool_calls(),
+                commands::duration(o.duration),
+                t.task,
+                o.report
+            );
+            if t.orphaned {
+                text.push_str("\n(The conversation it was forked from was closed, so this report isn't passed on.)");
+            }
+            let level = if o.status == "completed" || t.orphaned { NoticeLevel::Info } else { NoticeLevel::Warning };
+            self.notice(level, text);
+            self.engine.announce(
+                "subtask",
+                serde_json::json!({
+                    "id": t.id, "status": o.status, "task": t.task, "result": o.report,
+                    "num_tool_calls": t.tool_calls(), "duration_ms": o.duration.as_millis() as u64,
+                    "total_cost_usd": cost, "permission_denials": o.denials,
+                    "transcript_path": t.transcript, "handed_back": !t.orphaned,
+                }),
+            );
+            if !t.orphaned {
+                self.engine.remind(crate::subtask::report_note(&t.id, &t.task, &o));
+                reports += 1;
+            }
+        }
+        reports
+    }
+
+    /// After the input ended (`-p`): hand back finished subtasks and run one more turn, so the
+    /// model uses their reports. False when there was nothing to hand back.
+    pub async fn continue_with_subtasks(&mut self, report: &mut Report<'_>) -> bool {
+        if self.deliver_subtasks() == 0 {
+            return false;
+        }
+        let result = self.engine.submit(MessageContent::Text(crate::subtask::CONTINUE_PROMPT.into())).await;
+        self.record(&result, false);
+        report(&result);
+        self.after_turn(result, true, report).await;
         true
     }
 
@@ -761,6 +881,12 @@ impl Driver {
     }
 
     pub async fn shutdown(&self, reason: &str) {
+        let running = self.subtasks.running();
+        if running > 0 {
+            self.notice(NoticeLevel::Info, format!("Stopping {running} running subtask(s)."));
+        }
+        // Before the session ends: they use its MCP connections.
+        self.subtasks.shutdown(crate::subtask::SHUTDOWN_GRACE).await;
         self.engine.end_session(reason).await;
         if let Some(m) = &self.catalog.mcp {
             m.shutdown().await;

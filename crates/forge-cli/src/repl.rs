@@ -243,10 +243,15 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         }
     };
     let mut next = prompt;
+    // Changes each time a subtask finishes (C20).
+    let mut finished = driver.subtasks.watch();
     'session: loop {
         let text = match next.take() {
             Some(t) => t,
             None => {
+                // Subtasks that finished during the last turn are reported before the prompt.
+                let _ = *finished.borrow_and_update();
+                driver.deliver_subtasks();
                 eprint!("\n> ");
                 let _ = std::io::stderr().flush();
                 // Scheduled tasks (/loop, CronCreate) run while the prompt waits. Waits are
@@ -267,6 +272,12 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
                                 driver.run_due(&mut report).await;
                                 continue 'session;
                             }
+                        }
+                        // One finished while the prompt waited: the next pass reports it and asks again.
+                        _ = finished.changed() => {
+                            drop(rx);
+                            eprintln!();
+                            continue 'session;
                         }
                     }
                 }

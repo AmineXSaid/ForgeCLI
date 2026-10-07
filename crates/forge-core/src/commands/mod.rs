@@ -23,6 +23,7 @@ mod settings;
 mod switching;
 
 pub(crate) use looping::scheduled_prompt;
+pub(crate) use run::duration;
 pub use run::{execute, Exec};
 pub(crate) use session::side_request_with;
 pub use session::{clean_title, render_conversation};
@@ -210,6 +211,7 @@ builtins! {
     ),
     (Skills, "skills", [], "", "List available skills"),
     (Status, "status", [], "", "Show version, model, session and setup status", Surfaces::ALL, true),
+    (Subtask, "subtask", [], "<task>", "Hand a task to a background agent that starts from this conversation"),
     (
         Tasks,
         "tasks",

@@ -77,6 +77,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         },
         Builtin::Mcp => super::mcp::run(d, args).await,
         Builtin::Tasks => tasks(d, args),
+        Builtin::Subtask => subtask(d, args),
         Builtin::Model => super::settings::model(d, args),
         Builtin::Effort => super::settings::effort(d, args),
         Builtin::Fast => super::settings::fast(d, args),
@@ -131,7 +132,7 @@ pub(super) fn thousands(n: u64) -> String {
     out
 }
 
-pub(super) fn duration(d: std::time::Duration) -> String {
+pub(crate) fn duration(d: std::time::Duration) -> String {
     let s = d.as_secs();
     match s {
         0..=59 => format!("{s}s"),
@@ -384,6 +385,9 @@ fn tasks(d: &Driver, args: &str) -> Exec {
         if let Some(msg) = super::looping::stop(d, id) {
             return ok(msg);
         }
+        if let Some(msg) = d.subtasks.stop(id) {
+            return ok(msg);
+        }
         return match shells.get(id) {
             Some(sh) => {
                 sh.kill();
@@ -397,10 +401,21 @@ fn tasks(d: &Driver, args: &str) -> Exec {
     }
     let list = shells.list();
     let scheduled = super::looping::listing(d);
-    if list.is_empty() && scheduled.is_empty() {
+    if list.is_empty() && scheduled.is_empty() && d.subtasks.is_empty() {
         return ok("No background tasks.");
     }
     let mut s = String::from("Background tasks:\n");
+    for t in d.subtasks.iter() {
+        let state = if t.is_running() { "running" } else { "done, reported with your next prompt" };
+        let _ = writeln!(
+            s,
+            "  {} [subtask, {state}, {}, {} tool calls] {}",
+            t.id,
+            duration(t.started.elapsed()),
+            t.tool_calls(),
+            t.task.chars().take(100).collect::<String>()
+        );
+    }
     for sh in list {
         let _ = writeln!(
             s,
@@ -415,6 +430,20 @@ fn tasks(d: &Driver, args: &str) -> Exec {
         let _ = writeln!(s, "{line}");
     }
     ok(s.trim_end())
+}
+
+fn subtask(d: &mut Driver, args: &str) -> Exec {
+    if args.is_empty() {
+        return err("Usage: /subtask <task>. A background agent works on it from a copy of this conversation \
+                    while you go on; its report comes back when it's done.");
+    }
+    match d.start_subtask(args) {
+        Ok(id) => ok(format!(
+            "Started {id} in the background: {args}. Its report comes back to this conversation when it's done; \
+             /tasks stop {id} ends it."
+        )),
+        Err(e) => err(format!("Could not start a subtask: {e}")),
+    }
 }
 
 #[cfg(test)]

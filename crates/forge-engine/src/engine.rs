@@ -420,6 +420,24 @@ impl Engine {
         self.start_source = source.to_string();
     }
 
+    /// Notes still waiting for the next prompt (a session switch carries them over).
+    pub fn take_reminders(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.reminders)
+    }
+
+    /// Start from another engine's conversation (a forked sub-agent, `/subtask`): its messages,
+    /// cleared tool results and context size. Not its spend, which stays with the session that
+    /// made it, and not its transcript chain or task list, unlike [`Engine::restore`].
+    pub fn seed(&mut self, from: &TurnState) {
+        self.state.messages = from.messages.clone();
+        self.state.uuids = from.uuids.clone();
+        self.state.meta = from.meta.clone();
+        self.state.microcompacted = from.microcompacted.clone();
+        // Automatic compaction measures this before the first request.
+        self.state.context_tokens = from.context_tokens;
+        self.session_started = !self.state.messages.is_empty();
+    }
+
     /// Tell the model something with the next prompt (a system reminder).
     pub fn remind(&mut self, text: impl Into<String>) {
         self.reminders.push(text.into());
@@ -1056,8 +1074,9 @@ impl Engine {
         }
     }
 
-    /// Add a sub-agent's spend to this session (budgets include sub-agents).
-    fn record_subagent_usage(&mut self, sub: &Value) {
+    /// Add a sub-agent's spend (`{costUsd, usage, modelUsage}`) to this session: a Task call's as
+    /// its result arrives, a subtask's when it is handed back. Budgets include both.
+    pub fn record_subagent_usage(&mut self, sub: &Value) {
         let cost = sub.get("costUsd").and_then(Value::as_f64).unwrap_or(0.0);
         self.state.total_cost_usd += cost;
         if let Some(usage) = sub.get("usage").and_then(|u| serde_json::from_value::<Usage>(u.clone()).ok()) {

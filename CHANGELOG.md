@@ -25,6 +25,8 @@
 - `/import`: MCP servers and instructions from Codex, Gemini CLI and
   Cursor, planned first and applied with `--yes`, following the MCP trust
   rules.
+- `/subtask <task>`: a background agent forked from the conversation (C20).
+  Its report comes back with the next prompt; `-p` waits for it.
 - `/mcp reconnect|enable|disable <server|all>`: restart a server, or turn it
   off and on. Disabling hides its tools and prompts at once and is saved in
   local settings; stream-json hosts get the same through `mcp_reconnect` and

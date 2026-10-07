@@ -371,27 +371,52 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         limit_hit: false,
     };
     let mut closed = false;
+    // Changes each time a subtask finishes (C20).
+    let mut finished = driver.subtasks.watch();
     loop {
-        // Scheduled tasks (C19) fire while idle. After the input ends, print mode keeps
-        // running while any are pending: until they finish, Ctrl-C, or a turn or budget limit.
+        // Mark subtask news seen before looking at the subtasks: one that ends after this line
+        // still wakes the waits below.
+        let _ = *finished.borrow_and_update();
+        // Scheduled tasks (C19) fire while idle. After the input ends, print mode keeps running while
+        // any are pending or subtasks are out: until they finish, Ctrl-C, or a turn or budget limit.
         let wait = driver.next_wait();
         if closed {
             let turns_out = o.max_turns.is_some_and(|m| driver.activity.turns >= m);
-            if (rep.limit_hit || turns_out) && wait.is_some() {
-                // Tasks were still scheduled when a limit stopped the run.
-                rep.fail(exit::LIMIT);
+            let running = driver.subtasks.running() > 0;
+            if rep.limit_hit || turns_out {
+                if wait.is_some() || !driver.subtasks.is_empty() {
+                    // Work was still scheduled or out when a limit stopped the run.
+                    rep.fail(exit::LIMIT);
+                }
                 break;
             }
-            let Some(w) = wait else { break };
-            if !sleep_unless(w, &interrupted).await {
-                break;
-            }
-            // --max-turns counts across the whole run: a scheduled run gets what is left.
+            // --max-turns counts across the whole run: what runs next gets what is left.
             if let Some(m) = o.max_turns {
                 driver.engine.cfg.max_turns = Some(m - driver.activity.turns);
             }
-            driver.run_due(&mut |r| rep.report(r)).await;
+            if !running && !driver.subtasks.is_empty() {
+                // Every subtask is back: one more turn gives the model their reports.
+                driver.continue_with_subtasks(&mut |r| rep.report(r)).await;
+            } else if wait.is_none() && !running {
+                break;
+            } else {
+                let far = Duration::from_secs(365 * 86_400);
+                tokio::select! {
+                    due = sleep_unless(wait.unwrap_or(far), &interrupted) => {
+                        if !due {
+                            break;
+                        }
+                        driver.run_due(&mut |r| rep.report(r)).await;
+                    }
+                    _ = finished.changed(), if running => {}
+                }
+            }
         } else {
+            // stream-json: a finished subtask is reported at once, and its report rides along with
+            // the host's next message (no turn runs by itself). Plain -p hands back after its input.
+            if stream_in {
+                driver.deliver_subtasks();
+            }
             let far = Duration::from_secs(365 * 86_400);
             let input = tokio::select! {
                 i = rx.recv() => i,
@@ -400,6 +425,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     rep.flush();
                     continue;
                 }
+                _ = finished.changed(), if stream_in => continue,
             };
             match input {
                 Some(Input::User(content)) => {
@@ -418,7 +444,10 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                 Some(Input::Eof) | None => closed = true,
             }
         }
-        rep.flush();
+        // JSON output is one object: while subtasks are out, it waits for the turn that hands them back.
+        if !(o.output_format == OutputFormat::Json && !driver.subtasks.is_empty()) {
+            rep.flush();
+        }
         // A command switched sessions (/clear, /resume, /branch, /cd): say so to stream hosts.
         if driver.info.session_id != session_id {
             session_id = driver.info.session_id.clone();
@@ -428,6 +457,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             }
         }
     }
+    rep.flush();
     let code = rep.code;
     // MCP restarts a host asked for answer before Forge exits.
     if let Some(c) = &control {

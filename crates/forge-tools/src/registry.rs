@@ -41,6 +41,18 @@ impl ToolRegistry {
         self.tools.retain(|t| keep(t.name()));
     }
 
+    /// Replace tool `name` with `with(old)` where it stands. Unlike `register`, which moves a
+    /// tool to the end, the order (and so the cached prompt prefix) stays the same.
+    pub fn wrap(&mut self, name: &str, with: impl FnOnce(Arc<dyn Tool>) -> Arc<dyn Tool>) -> bool {
+        match self.tools.iter_mut().find(|t| t.name() == name) {
+            Some(slot) => {
+                *slot = with(slot.clone());
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools
             .iter()
