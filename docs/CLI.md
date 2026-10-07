@@ -128,7 +128,9 @@ the process; `/exit` or end-of-file quits.
   - `control_request` messages: `initialize`, `interrupt`,
     `set_permission_mode`, `set_model`, `set_max_thinking_tokens`,
     `mcp_status`, `mcp_reconnect` (`serverName`), `mcp_toggle`
-    (`serverName`, `enabled`), `rewind_files`;
+    (`serverName`, `enabled`), `rewind_files`. `set_permission_mode` to
+    `bypassPermissions` needs `--allow-dangerously-skip-permissions` (or a
+    launch in that mode) and is refused when managed settings disable it;
   - `control_response` answers to Forge's `can_use_tool` requests.
 - **Output:** NDJSON on stdout, as in print mode, plus `control_request` and
   `control_response` lines.

@@ -42,7 +42,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `control_request` `can_use_tool` (CLI → host) | done | inferred | `e2e::host_permission_prompt_allow_and_deny` | Contract C1 |
 | `control_request` `initialize` | partial | inferred | `e2e::host_permission_prompt_allow_and_deny` | `systemPrompt` / `appendSystemPrompt` are applied; SDK callback hooks and SDK MCP servers in `initialize` are not supported yet |
 | `control_request` `interrupt` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` | Contract C3 |
-| `control_request` `set_permission_mode` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
+| `control_request` `set_permission_mode` | done | inferred | `e2e::host_controls_mode_model_and_interrupt`, `core::driver_tests::bypass_needs_the_launch_flag_and_no_managed_ban` | `bypassPermissions` only when launched in it or with `--allow-dangerously-skip-permissions`, and never when managed settings disable it |
 | `control_request` `set_model` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
 | `control_request` `set_max_thinking_tokens` | done | inferred | `e2e::host_sets_thinking_tokens` |  |
 | `control_request` `mcp_status` | done | inferred | `mcp::session_uses_mcp_tools_and_reports_status` | `{mcpServers: [{name, status, scope, serverInfo, tools, error}]}` |

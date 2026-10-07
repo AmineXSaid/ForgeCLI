@@ -67,6 +67,10 @@
   version`) is a prompt, not `Unknown command`.
 - A stream-json host's `set_model` now reaches the system prompt too, which
   told the new model it was the old one.
+- A host's `set_permission_mode: bypassPermissions` is refused unless the
+  session was launched in that mode or with
+  `--allow-dangerously-skip-permissions`, and always when managed settings
+  set `disableBypassPermissionsMode`.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

@@ -347,6 +347,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             pending: pending.clone(),
             live: live.clone(),
             mcp: Some(mcp.clone()),
+            bypass_allowed: driver.bypass_allowed(),
             init_response: json!({
                 "commands": driver.catalog.catalog_json(surface),
                 "output_style": driver.info.init.output_style.clone(),

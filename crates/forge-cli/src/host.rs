@@ -120,6 +120,8 @@ pub struct ControlContext {
     pub live: forge_core::driver::Live,
     pub mcp: Option<Arc<forge_mcp::McpManager>>,
     pub init_response: Value,
+    /// `set_permission_mode` may choose `bypassPermissions` (`Driver::bypass_allowed`).
+    pub bypass_allowed: bool,
     /// `mcp_reconnect` and `mcp_toggle` still running; awaited before exit.
     pub tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -159,6 +161,12 @@ impl ControlContext {
                 self.answer(id, Ok(None));
             }
             "set_permission_mode" => match b.get_str("mode").and_then(PermissionMode::parse) {
+                Some(PermissionMode::BypassPermissions) if !self.bypass_allowed => self.answer(
+                    id,
+                    Err("bypassPermissions needs --allow-dangerously-skip-permissions at launch, and managed \
+                         settings must not disable it"
+                        .into()),
+                ),
                 Some(m) => {
                     self.live.handle().set_permission_mode(m);
                     self.answer(id, Ok(None));

@@ -1366,3 +1366,20 @@ async fn tui_only_commands_save_theme_and_status_line() {
     local(d, "/statusline off").await;
     assert!(read_json(&user).get("statusLine").is_none());
 }
+
+#[tokio::test]
+async fn bypass_needs_the_launch_flag_and_no_managed_ban() {
+    let t = driver();
+    assert!(!t.d.bypass_allowed(), "not launched with it");
+    let mut t = driver_with(|_, o| o.allow_dangerously_skip_permissions = true);
+    assert!(t.d.bypass_allowed());
+    // A managed ban wins over the flag.
+    let managed = t._dir.path().join("managed.json");
+    t.d.info.settings.apply(
+        SettingSource::Managed,
+        &managed,
+        &["permissions", "disableBypassPermissionsMode"],
+        Some(serde_json::json!("disable")),
+    );
+    assert!(!t.d.bypass_allowed());
+}

@@ -224,6 +224,11 @@ async fn host_controls_mode_model_and_interrupt() {
     h.send(json!({"type": "control_request", "request_id": "m2", "request": {"subtype": "set_permission_mode", "mode": "nope"}})).await;
     let r = h.until(|v| v["type"] == "control_response").await;
     assert_eq!(r["response"]["subtype"], "error");
+    // Bypassing permissions takes --allow-dangerously-skip-permissions at launch.
+    h.send(json!({"type": "control_request", "request_id": "m4", "request": {"subtype": "set_permission_mode", "mode": "bypassPermissions"}})).await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "m4").await;
+    assert_eq!(r["response"]["subtype"], "error");
+    assert!(r["response"]["error"].as_str().unwrap().contains("--allow-dangerously-skip-permissions"));
     h.send(
         json!({"type": "control_request", "request_id": "m3", "request": {"subtype": "set_model", "model": "sonnet"}}),
     )

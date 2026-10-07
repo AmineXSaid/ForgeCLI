@@ -214,6 +214,27 @@ impl Driver {
         self.rebuild = Some(Rebuild { opts, sink, prompter });
     }
 
+    /// May the permission mode become `bypassPermissions` now (an SDK host's
+    /// `set_permission_mode`)? Only when the session was launched in it or with
+    /// `--allow-dangerously-skip-permissions`, and managed settings allow it.
+    pub fn bypass_allowed(&self) -> bool {
+        let disabled = self
+            .info
+            .settings
+            .managed()
+            .and_then(|m| m.pointer("/permissions/disableBypassPermissionsMode"))
+            .and_then(serde_json::Value::as_str)
+            == Some("disable");
+        let launched = self.rebuild.as_ref().is_some_and(|r| {
+            r.opts.dangerously_skip_permissions
+                || r.opts.allow_dangerously_skip_permissions
+                || r.opts.permission_mode.as_deref() == Some("bypassPermissions")
+        });
+        let now = self.engine.handle().permissions.read().unwrap().mode
+            == forge_permissions::PermissionMode::BypassPermissions;
+        !disabled && (launched || now)
+    }
+
     pub fn can_switch(&self) -> bool {
         self.rebuild.is_some()
     }
