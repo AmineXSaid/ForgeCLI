@@ -157,6 +157,22 @@ pub fn keys_text() -> String {
     KEYS.iter().map(|(k, what)| format!("{k:<w$}  {what}")).collect::<Vec<_>>().join("\n")
 }
 
+const TERMINAL_SETUP: &str = "Shift+Enter starts a new line when the terminal reports it as its own key. Forge asks \
+for this through the keyboard protocol that kitty, WezTerm, foot, Ghostty, Alacritty and iTerm2 (with \
+\"Report keys using CSI u\" on) support.\n\nWhere it isn't available, these always start a new line: Alt+Enter \
+(Option+Enter on macOS, with \"Use Option as Meta key\" on), Ctrl+J, or \\ then Enter.\n\nInside tmux, add \
+`set -s extended-keys on` and `set -as terminal-features 'xterm*:extkeys'` to ~/.tmux.conf.";
+
+/// `/terminal-setup`: whether Shift+Enter works here, and the ways around it.
+pub fn terminal_setup_text(keyboard_protocol: bool) -> String {
+    let now = if keyboard_protocol {
+        "This terminal has the keyboard protocol on: Shift+Enter works."
+    } else {
+        "This terminal didn't turn the keyboard protocol on, so Shift+Enter may arrive as Enter."
+    };
+    format!("{now}\n\n{TERMINAL_SETUP}")
+}
+
 /// Rows the `@` menu offers at most.
 const FILE_MATCHES: usize = 50;
 
@@ -1100,6 +1116,17 @@ impl App {
     pub fn submit(&mut self, text: String) -> Vec<Action> {
         self.menu_selected = 0;
         self.menu_dismissed = false;
+        // The UI's own immediate commands answer at once, even while a turn runs.
+        let local = match text.trim() {
+            "/keybindings" => Some(keys_text()),
+            "/terminal-setup" => Some(terminal_setup_text(super::keyboard_protocol())),
+            _ => None,
+        };
+        if let Some(answer) = local {
+            self.echo_prompt(&text);
+            self.reply_lines(&answer, false);
+            return vec![];
+        }
         if self.busy {
             self.queued.push_back(text);
             return vec![];
@@ -1476,5 +1503,18 @@ mod tests {
         assert_eq!(a.clipboard.as_deref(), Some("text"));
         a.on_event(UiEvent::StatusLine(Some("custom".into())));
         assert_eq!(a.status_text.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn ui_commands_answer_at_once_while_busy() {
+        let mut a = app();
+        typed(&mut a, "long task");
+        a.on_key(key(KeyCode::Enter));
+        a.take_pending();
+        typed(&mut a, "/keybindings");
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty());
+        assert!(a.queued.is_empty(), "not queued behind the turn");
+        assert!(texts(&a.take_pending()).iter().any(|l| l.contains("Shift+Tab")));
+        assert!(terminal_setup_text(false).contains("Alt+Enter") && terminal_setup_text(true).contains("works"));
     }
 }

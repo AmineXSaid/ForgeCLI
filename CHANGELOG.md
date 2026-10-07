@@ -88,6 +88,8 @@
   loop counted them as the prompt's own writes. They now keep their own turn.
 - `/tasks` lists subtasks that have finished (the last 20), not only the
   running ones: they were handed back before the list was made.
+- In the terminal UI, `/keybindings` and `/terminal-setup` answer at once
+  while a turn runs instead of waiting in the queue.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

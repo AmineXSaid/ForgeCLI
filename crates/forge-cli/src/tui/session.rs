@@ -101,12 +101,6 @@ pub fn answer_text(d: &Driver, n: usize) -> Option<String> {
         .nth(n.checked_sub(1)?)
 }
 
-const TERMINAL_SETUP: &str = "Shift+Enter starts a new line when the terminal reports it as its own key. Forge asks \
-for this through the keyboard protocol that kitty, WezTerm, foot, Ghostty, Alacritty and iTerm2 (with \
-\"Report keys using CSI u\" on) support.\n\nWhere it isn't available, these always start a new line: Alt+Enter \
-(Option+Enter on macOS, with \"Use Option as Meta key\" on), Ctrl+J, or \\ then Enter.\n\nInside tmux, add \
-`set -s extended-keys on` and `set -as terminal-features 'xterm*:extkeys'` to ~/.tmux.conf.";
-
 /// Commands the UI answers itself, since they need the terminal: `/copy`,
 /// `/keybindings`, `/terminal-setup`. `None` for everything else.
 fn ui_command(d: &Driver, text: &str) -> Option<Vec<UiEvent>> {
@@ -114,14 +108,7 @@ fn ui_command(d: &Driver, text: &str) -> Option<Vec<UiEvent>> {
     let reply = |text: String, is_error: bool| UiEvent::Reply { text, is_error };
     Some(match spec.id {
         Builtin::Keybindings => vec![reply(super::app::keys_text(), false)],
-        Builtin::TerminalSetup => {
-            let now = if super::keyboard_protocol() {
-                "This terminal has the keyboard protocol on: Shift+Enter works."
-            } else {
-                "This terminal didn't turn the keyboard protocol on, so Shift+Enter may arrive as Enter."
-            };
-            vec![reply(format!("{now}\n\n{TERMINAL_SETUP}"), false)]
-        }
+        Builtin::TerminalSetup => vec![reply(super::app::terminal_setup_text(super::keyboard_protocol()), false)],
         Builtin::Copy => {
             let n = if args.is_empty() { Some(1) } else { args.parse::<usize>().ok().filter(|n| *n > 0) };
             let Some(n) = n else {

@@ -608,9 +608,15 @@ costs one cache miss on the next request.
 state, except `/mcp reconnect|enable|disable`, which is safe mid-turn because
 each server's changes are serialized and tool calls see a consistent state.
 They are marked in the registry so the TUI and stream-json hosts can run them
-while a turn is in progress; today every command still waits for the turn to
-finish, and stream-json hosts can use `mcp_reconnect` / `mcp_toggle`, which
-don't wait.
+while a turn is in progress. Today:
+- the TUI answers its own immediate commands (`/keybindings`,
+  `/terminal-setup`, and `?`) at once, even mid-turn;
+- driver commands still wait for the turn to finish. A turn holds the driver
+  mutably, and `/status`, `/usage`, `/tasks` and `/context` read state the
+  turn is changing; running them mid-turn needs a read-only view of the
+  session published between steps (not built yet);
+- stream-json hosts can use `mcp_status`, `mcp_reconnect` and `mcp_toggle`,
+  which don't wait.
 
 ### C18. Goals
 
