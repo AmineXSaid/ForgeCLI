@@ -414,9 +414,9 @@ impl Driver {
             self.shell(&cmd).await
         } else {
             match commands::command_text(&content) {
-                None => (self.engine.submit(content).await, true),
+                None => (self.submit(content).await, true),
                 Some(text) => match commands::execute(self, &text).await {
-                    commands::Exec::Submit(prompt) => (self.engine.submit(prompt).await, true),
+                    commands::Exec::Submit(prompt) => (self.submit(prompt).await, true),
                     commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
                     commands::Exec::Exit => return Flow::Exit,
                 },
@@ -487,13 +487,13 @@ impl Driver {
         }
         let (result, engine_turn) = if task.prompt.trim_start().starts_with("/loop") {
             match commands::execute(self, task.prompt.trim()).await {
-                commands::Exec::Submit(p) => (self.engine.submit(p).await, true),
+                commands::Exec::Submit(p) => (self.submit(p).await, true),
                 commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
                 commands::Exec::Exit => return true,
             }
         } else {
             let prompt = commands::scheduled_prompt(self, &task.prompt).await;
-            (self.engine.submit(prompt).await, true)
+            (self.submit(prompt).await, true)
         };
         if let Some(it) = self.self_paced.as_mut() {
             it.fallback = is_fallback;
@@ -596,7 +596,7 @@ impl Driver {
         if self.deliver_subtasks() == 0 {
             return false;
         }
-        let result = self.engine.submit(MessageContent::Text(crate::subtask::CONTINUE_PROMPT.into())).await;
+        let result = self.submit(MessageContent::Text(crate::subtask::CONTINUE_PROMPT.into())).await;
         self.record(&result, false);
         report(&result);
         self.after_turn(result, true, report).await;
@@ -779,8 +779,7 @@ impl Driver {
                     }
                     // --max-turns counts across the whole goal loop, not per turn.
                     self.engine.cfg.max_turns = max_turns.map(|m| m - used);
-                    let next =
-                        self.engine.submit(MessageContent::Text(goal::continue_prompt(&condition, &reason))).await;
+                    let next = self.submit(MessageContent::Text(goal::continue_prompt(&condition, &reason))).await;
                     self.engine.cfg.max_turns = max_turns;
                     ran_any = true;
                     used += next.num_turns;
@@ -846,10 +845,22 @@ impl Driver {
         if !output.is_empty() {
             self.notice(NoticeLevel::Info, format!("$ {cmd}\n{output}"));
         }
-        (self.engine.submit(MessageContent::Text(note)).await, true)
+        (self.submit(MessageContent::Text(note)).await, true)
     }
 
     /// Rebuild the system prompt from [`Driver::prompt`] after changing it.
+    /// Start a model turn. A model set from outside the driver (an SDK host's
+    /// `set_model`) first reaches the system prompt, which names the model.
+    async fn submit(&mut self, content: MessageContent) -> forge_engine::TurnResult {
+        let model = self.engine.handle().model();
+        if self.prompt.env.model != model {
+            self.prompt.set_model(&model);
+            self.rebuild_system();
+            self.info.init.model = model;
+        }
+        self.engine.submit(content).await
+    }
+
     pub fn rebuild_system(&mut self) {
         self.engine.set_system(self.prompt.build().0);
     }

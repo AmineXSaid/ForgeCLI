@@ -65,6 +65,8 @@
 ### Fixes from the front-end review
 - A prompt that starts with a file name (`/package.json has the wrong
   version`) is a prompt, not `Unknown command`.
+- A stream-json host's `set_model` now reaches the system prompt too, which
+  told the new model it was the old one.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

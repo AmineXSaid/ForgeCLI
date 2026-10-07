@@ -237,6 +237,9 @@ async fn host_controls_mode_model_and_interrupt() {
     assert_eq!(r["stop_reason"], "interrupted");
     assert_eq!(r["subtype"], "success");
     assert_eq!(api.requests()[0]["model"], "claude-sonnet-5-5");
+    // The system prompt names the model the host switched to.
+    let system = api.requests()[0]["system"].to_string();
+    assert!(system.contains("Sonnet 5.5") && !system.contains("Opus 5.5"), "{system}");
     let unknown = json!({"type": "control_request", "request_id": "u", "request": {"subtype": "teleport"}});
     h.send(unknown).await;
     let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "u").await;
