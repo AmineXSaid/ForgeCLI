@@ -13,16 +13,20 @@ use super::Exec;
 use crate::driver::Driver;
 
 /// The model for side requests: `smallFastModel`, else the default small
-/// model; an OpenAI-compatible endpoint uses the session's model.
+/// model; an OpenAI-compatible endpoint (which may not serve that model) uses
+/// the session's model unless `smallFastModel` names one.
 fn small_model(d: &Driver) -> String {
-    if d.engine.provider_name() == "openai" {
-        return d.engine.handle().model();
+    match d.info.settings.str("/smallFastModel") {
+        Some(m) => forge_api::resolve_model(m),
+        None if d.engine.provider_name() == "openai" => d.engine.handle().model(),
+        None => forge_api::models::SMALL_FAST_MODEL.to_string(),
     }
-    d.info
-        .settings
-        .str("/smallFastModel")
-        .map(forge_api::resolve_model)
-        .unwrap_or_else(|| forge_api::models::SMALL_FAST_MODEL.to_string())
+}
+
+/// The model that judges `/goal`: `goalCheckModel`, else the session's model.
+/// A small model is too easily convinced by the agent's own summary.
+pub(crate) fn goal_model(d: &Driver) -> String {
+    d.info.settings.str("/goalCheckModel").map(forge_api::resolve_model).unwrap_or_else(|| d.engine.handle().model())
 }
 
 /// A one-off request with no tools, outside the conversation. Its cost counts toward the session.
@@ -44,6 +48,19 @@ pub(crate) async fn side_request_with(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<String, String> {
     let model = small_model(d);
+    side_request_on(d, &model, system, user, max_tokens, cancel).await
+}
+
+/// [`side_request_with`] on a given model.
+pub(crate) async fn side_request_on(
+    d: &mut Driver,
+    model: &str,
+    system: &str,
+    user: String,
+    max_tokens: u32,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<String, String> {
+    let model = model.to_string();
     let req = MessagesRequest {
         model: model.clone(),
         max_tokens,

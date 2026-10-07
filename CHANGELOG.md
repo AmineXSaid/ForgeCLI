@@ -56,6 +56,18 @@
 - A failed sub-agent's result starts with `FAILED:` and tells the model its
   task is not done, so it can't be reported as finished.
 
+### Goals and side questions
+- The `/goal` check treats the agent's own messages as claims: a `met` verdict
+  must cite the tool output that proves it, failed tool calls and sub-agents
+  are listed first so a long session can't hide them, and the final summary is
+  marked as claims to check. It runs on the session's model (`goalCheckModel`
+  picks another), not the small one.
+- `/btw` mid-turn knows what is running: the tool calls (sub-agents included)
+  that haven't returned, how long the turn has run, and the background tasks.
+- On an OpenAI-compatible endpoint, WebFetch summaries and side requests use
+  the session's model unless `smallFastModel` names one, instead of a model
+  the endpoint may not serve.
+
 ### Terminal UI
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom

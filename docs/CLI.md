@@ -459,7 +459,8 @@ a limit that stops it while tasks are still scheduled exits with status 4.
 Contract C19 has the details.
 
 **Goals:** `/goal <condition>` sends the condition as the prompt. After each
-turn a small model checks the conversation against it, and Forge keeps going
+turn the model checks the conversation against it, trusting tool output rather
+than the agent's own summary (a pass must cite the evidence), and Forge keeps going
 until the check says it is met or can't be met. It pauses after three turns
 without a tool call, an interrupt or an error, and resumes with your next
 prompt. In `-p` the whole loop runs in one invocation: one `result` per turn

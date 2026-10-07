@@ -901,7 +901,8 @@ impl Driver {
             let cancel = self.engine.handle().turn_token();
             let transcript = goal::evaluator_transcript(&self.engine.state.messages);
             let user = format!("Goal: {condition}\n\nTranscript:\n{transcript}");
-            let answer = commands::side_request_with(self, goal::EVALUATOR_PROMPT, user, 400, &cancel).await;
+            let model = commands::goal_model(self);
+            let answer = commands::side_request_on(self, &model, goal::EVALUATOR_PROMPT, user, 800, &cancel).await;
             if cancel.is_cancelled() {
                 self.pause("interrupted", "Goal paused: interrupted. Send a message to continue.");
                 return true;

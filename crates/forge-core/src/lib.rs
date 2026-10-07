@@ -118,13 +118,15 @@ pub struct LaunchOptions {
 }
 
 /// WebFetch (always) and WebSearch (when the provider can search), backed by a small model.
-fn web_tools(provider: &Arc<dyn Provider>, settings: &LoadedSettings) -> Vec<Arc<dyn forge_tools::Tool>> {
+fn web_tools(provider: &Arc<dyn Provider>, settings: &LoadedSettings, model: &str) -> Vec<Arc<dyn forge_tools::Tool>> {
     let backend = Arc::new(web::ProviderWeb {
         provider: provider.clone(),
-        model: settings
-            .str("/smallFastModel")
-            .map(forge_api::resolve_model)
-            .unwrap_or_else(|| forge_api::models::SMALL_FAST_MODEL.to_string()),
+        // An OpenAI-compatible endpoint may not serve the default small model: use the session's.
+        model: match settings.str("/smallFastModel") {
+            Some(m) => forge_api::resolve_model(m),
+            None if provider.name() == "openai" => model.to_string(),
+            None => forge_api::models::SMALL_FAST_MODEL.to_string(),
+        },
         search: provider.name() != "openai",
         search_tool: settings.str("/webSearch/toolType").unwrap_or("web_search_20250305").to_string(),
     });
@@ -260,6 +262,18 @@ pub(crate) fn verify_config(settings: &LoadedSettings, cwd: &Path) -> Option<for
 
 fn env_nonempty(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// The session's model: `--model`, `FORGE_MODEL`, the `model` setting, else the default.
+fn session_model(opts: &LaunchOptions, settings: &LoadedSettings) -> String {
+    forge_api::resolve_model(
+        &opts
+            .model
+            .clone()
+            .or_else(|| env_nonempty("FORGE_MODEL"))
+            .or_else(|| settings.str("/model").map(str::to_string))
+            .unwrap_or_else(|| "default".into()),
+    )
 }
 
 /// Concurrent model requests per session unless `maxConcurrentRequests` or
@@ -654,7 +668,7 @@ pub fn build_session(
     let mut tools = ToolRegistry::new();
     forge_tools::builtin::register_core(&mut tools);
     forge_tools::builtin::set_shell(&mut tools, &shell);
-    let web_tools = web_tools(&provider, &settings);
+    let web_tools = web_tools(&provider, &settings, &session_model(&opts, &settings));
     for t in &web_tools {
         tools.register(t.clone());
     }
@@ -765,14 +779,7 @@ pub fn build_session(
     }
 
     // Model and system prompt.
-    let model = forge_api::resolve_model(
-        &opts
-            .model
-            .clone()
-            .or_else(|| env_nonempty("FORGE_MODEL"))
-            .or_else(|| settings.str("/model").map(str::to_string))
-            .unwrap_or_else(|| "default".into()),
-    );
+    let model = session_model(&opts, &settings);
     // Limits for models the built-in table doesn't know (C9 compaction needs the real window).
     let pricing = pricing_from_settings(&settings);
     let autocompact_window = match opts.autocompact.as_deref() {

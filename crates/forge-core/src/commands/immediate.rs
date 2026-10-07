@@ -468,7 +468,12 @@ async fn btw(v: &SessionView, args: &str, cancel: &CancellationToken) -> Exec {
         };
     }
     let rt = d.handle.runtime();
-    let req = forge_engine::side_question_request(&v.engine(), &rt, args, &earlier);
+    // Background work (shells, subtasks, scheduled prompts) as /tasks lists it.
+    let background = match tasks(v, "") {
+        Exec::Local { text, is_error: false } if text != "No background tasks." => Some(text),
+        _ => None,
+    };
+    let req = forge_engine::side_question_request(&v.engine(), &rt, args, &earlier, background.as_deref());
     let msg = match forge_api::complete(d.provider.as_ref(), req, cancel).await {
         Ok(m) => m,
         Err(forge_api::ApiError::Cancelled) => return err("Could not answer: interrupted"),

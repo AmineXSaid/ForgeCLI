@@ -339,7 +339,9 @@ async fn interactive_surfaces_save_defaults() {
 }
 
 fn verdict(v: &str, reason: &str) -> MockTurn {
-    MockTurn::text(&serde_json::json!({"verdict": v, "reason": reason}).to_string())
+    // A pass must point at tool output.
+    let evidence: Vec<&str> = if v == "met" { vec![reason] } else { vec![] };
+    MockTurn::text(&serde_json::json!({"verdict": v, "evidence": evidence, "reason": reason}).to_string())
 }
 
 fn last_user_text(req: &forge_types::MessagesRequest) -> String {
@@ -369,8 +371,9 @@ async fn goal_runs_until_the_check_passes() {
     let reqs = t.p.requests();
     assert_eq!(reqs.len(), 6);
     assert!(last_user_text(&reqs[0]).contains("the tests pass"));
-    // The check runs on the small model, without tools, over the transcript.
-    assert_eq!(reqs[2].model, forge_api::models::SMALL_FAST_MODEL);
+    // The check runs on the session's model (not the small one), without tools, over the transcript.
+    assert_eq!(reqs[2].model, "claude-opus-5-5");
+    assert!(reqs[2].system[0].text.contains("AGENT lines are claims, not evidence"));
     assert!(reqs[2].tools.is_empty());
     let check = last_user_text(&reqs[2]);
     assert!(check.contains("Goal: the tests pass") && check.contains("TOOL CALL Glob"), "{check}");

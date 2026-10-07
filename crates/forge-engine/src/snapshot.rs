@@ -123,15 +123,67 @@ const SIDE_QUESTION_NOTE: &str = "<system-reminder>\nThis is a side question fro
 what you already know of this conversation. You can't use tools for it, and neither the question nor your answer \
 becomes part of the main conversation.\n</system-reminder>";
 
+/// What is running right now, for a side question asked mid-turn: the tool
+/// calls the model made that haven't returned (sub-agents included), with how
+/// long the turn has run, and `background` (shells, subtasks) when given.
+pub fn live_state(snap: &EngineSnapshot, background: Option<&str>) -> Option<String> {
+    let mut s = String::new();
+    if let Some(last) = snap.messages.last().filter(|m| m.role == forge_types::Role::Assistant) {
+        let calls: Vec<String> = last
+            .tool_uses()
+            .map(|(_, name, input)| {
+                let arg = ["description", "subagent_type", "command", "file_path", "pattern", "prompt"]
+                    .iter()
+                    .find_map(|k| input.get(*k).and_then(Value::as_str))
+                    .map(|a| {
+                        let one: String = a.lines().next().unwrap_or("").chars().take(120).collect();
+                        format!("({one})")
+                    })
+                    .unwrap_or_default();
+                format!("- {name}{arg}")
+            })
+            .collect();
+        if !calls.is_empty() {
+            let since = snap
+                .turn
+                .as_ref()
+                .map(|t| format!(", in a turn that started {}s ago", t.started.elapsed().as_secs()))
+                .unwrap_or_default();
+            s.push_str(&format!(
+                "These tool calls are running now and haven't returned yet{since} (sub-agents run as Task calls):\n{}\n",
+                calls.join("\n")
+            ));
+            let said = last.text();
+            if !said.trim().is_empty() {
+                let said: String = said.trim().chars().take(600).collect();
+                s.push_str(&format!("What you said when you started them: {said}\n"));
+            }
+        }
+    }
+    if let Some(b) = background.filter(|b| !b.trim().is_empty()) {
+        s.push_str(b.trim_end());
+        s.push('\n');
+    }
+    (!s.is_empty()).then(|| {
+        format!(
+            "<system-reminder>\nLive state, as of this question (newer than the conversation above):\n{s}\
+             </system-reminder>"
+        )
+    })
+}
+
 /// A `/btw` request: the conversation as `snap` has it (same system prompt and tools, so the
 /// cached prefix is reused), earlier side questions, then `question`, with `tool_choice: none`.
-/// Mid-turn, a model reply whose tool calls haven't been answered yet is left out.
+/// Mid-turn, a model reply whose tool calls haven't been answered yet is left out of the
+/// conversation, and described in the live state instead, so answers about progress are right.
 pub fn side_question_request(
     snap: &EngineSnapshot,
     rt: &Runtime,
     question: &str,
     earlier: &[(String, String)],
+    background: Option<&str>,
 ) -> MessagesRequest {
+    let live = live_state(snap, background);
     let mut messages: &[Message] = &snap.messages;
     if let Some(last) = messages.last() {
         if last.role == forge_types::Role::Assistant && last.tool_uses().next().is_some() {
@@ -157,7 +209,8 @@ pub fn side_question_request(
         extra.push(Message::user_text(q.clone()));
         extra.push(Message::assistant(vec![ContentBlock::text(a.clone())]));
     }
-    extra.push(Message::user_text(format!("{SIDE_QUESTION_NOTE}\n\n{question}")));
+    let live = live.map(|l| format!("{l}\n\n")).unwrap_or_default();
+    extra.push(Message::user_text(format!("{SIDE_QUESTION_NOTE}\n\n{live}{question}")));
     for m in extra {
         match req.messages.last_mut() {
             Some(last) if last.role == m.role => last.content.extend(m.content),
@@ -166,4 +219,48 @@ pub fn side_question_request(
     }
     req.tool_choice = Some(json!({"type": "none"}));
     req
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap_with_running_task() -> EngineSnapshot {
+        let call = Message::assistant(vec![
+            ContentBlock::text("Launching two auditors."),
+            ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "Task".into(),
+                input: json!({"description": "audit the parser", "prompt": "Read src/"}),
+                cache_control: None,
+            },
+        ]);
+        EngineSnapshot {
+            messages: Arc::new(vec![Message::user_text("audit"), call]),
+            turn: Some(TurnProgress { started: Instant::now(), api_calls: 1, api_ms: 10, tool_calls: 1 }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn side_questions_see_the_tool_calls_still_running() {
+        let snap = snap_with_running_task();
+        let rt = Runtime { model: "m".into(), max_thinking_tokens: None, effort: None, fast: false };
+        let background = Some("Background tasks:\n  bash_1 [running] npm test");
+        let req = side_question_request(&snap, &rt, "how far are you?", &[], background);
+        let last = req.messages.last().unwrap().text();
+        assert!(
+            last.contains("These tool calls are running now") && last.contains("- Task(audit the parser)"),
+            "{last}"
+        );
+        assert!(last.contains("What you said when you started them: Launching two auditors."), "{last}");
+        assert!(last.contains("bash_1 [running] npm test") && last.ends_with("how far are you?"), "{last}");
+        assert!(!req.messages.iter().any(|m| m.tool_uses().next().is_some()), "the unanswered call itself stays out");
+    }
+
+    #[test]
+    fn no_live_state_when_idle() {
+        let snap = EngineSnapshot { messages: Arc::new(vec![Message::user_text("hi")]), ..Default::default() };
+        assert!(live_state(&snap, None).is_none());
+    }
 }

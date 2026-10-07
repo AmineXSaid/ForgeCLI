@@ -699,11 +699,16 @@ question. When idle, Ctrl-C cancels it as before.
 `/goal <condition>` sets a condition (at most 4,000 characters) and sends it
 as the prompt. After every model turn while the goal is active:
 
-1. A small model (`smallFastModel`) checks the conversation against the
-   condition. It sees the prompts, replies, tool calls and the end of each
-   tool result (the newest 60,000 characters), and answers
-   `{"verdict": "met" | "not_met" | "impossible", "reason": ...}`. Anything
-   it can't parse counts as `not_met`; text without JSON is never a pass.
+1. The session's model (`goalCheckModel` picks another) checks the
+   conversation against the condition. It sees the prompts, replies, tool
+   calls and the end of each tool result, each labelled with its tool (the
+   newest 60,000 characters), after a list of every failed tool call in the
+   session (errors, and sub-agent results that start with `FAILED`). Its
+   instructions: the agent's messages are claims, not evidence; failed work
+   counts as not done unless redone; details no tool result shows are
+   unverified. It answers `{"verdict": "met" | "not_met" | "impossible",
+   "evidence": [...], "reason": ...}`. A `met` with no evidence, anything it
+   can't parse, and text without JSON all count as `not_met`.
 2. **met:** the goal is achieved. **impossible:** it fails, with the reason.
 3. **not_met:** the driver starts another turn with a reminder that names
    the reason and the condition.

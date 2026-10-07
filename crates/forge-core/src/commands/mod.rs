@@ -32,8 +32,8 @@ pub use immediate::{execute_immediate, immediate};
 pub(crate) use looping::scheduled_prompt;
 pub(crate) use run::duration;
 pub use run::{execute, Exec};
-pub(crate) use session::side_request_with;
 pub use session::{clean_title, render_conversation};
+pub(crate) use session::{goal_model, side_request_on};
 pub use settings::{Scope, THEMES};
 
 use std::path::Path;

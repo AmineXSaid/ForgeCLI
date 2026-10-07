@@ -236,7 +236,9 @@ async fn debug_turns_on_a_session_log() {
 }
 
 fn verdict(v: &str, reason: &str) -> MockTurn {
-    MockTurn::text(&serde_json::json!({"verdict": v, "reason": reason}).to_string())
+    // A pass must point at tool output.
+    let evidence: Vec<&str> = if v == "met" { vec![reason] } else { vec![] };
+    MockTurn::text(&serde_json::json!({"verdict": v, "evidence": evidence, "reason": reason}).to_string())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

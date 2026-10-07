@@ -1180,8 +1180,13 @@ impl Engine {
     pub async fn side_question(&mut self, question: &str, earlier: &[(String, String)]) -> Result<String, String> {
         let model = self.handle.model();
         self.publish();
-        let req =
-            crate::snapshot::side_question_request(&self.handle.snapshot(), &self.handle.runtime(), question, earlier);
+        let req = crate::snapshot::side_question_request(
+            &self.handle.snapshot(),
+            &self.handle.runtime(),
+            question,
+            earlier,
+            None,
+        );
         let cancel = self.new_turn_token();
         let msg = forge_api::complete(self.shared.provider.as_ref(), req, &cancel).await.map_err(|e| match e {
             ApiError::Cancelled => "interrupted".to_string(),
