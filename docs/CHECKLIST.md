@@ -101,3 +101,17 @@ Run these in a real terminal emulator (not through a pipe).
       `/rewind` lists the prompt as typed.
     - `forge -p --permission-mode acceptEdits "fix @calc.py"` edits the file
       without reading it first.
+
+## Immediate commands
+
+27. In the TUI, ask for something long (`explain every file here in detail`).
+    While it streams, type `/usage`.
+    - The answer appears at once; the spinner keeps going and the turn isn't
+      interrupted.
+    - It counts the turn so far (model calls above 0 once the first reply
+      came, a cost above $0).
+    - `/usage` after the turn shows the final totals.
+28. During another long turn, `/btw what are you working on?`.
+    - It answers in a line or two, while the turn goes on.
+    - After the turn, `/usage` includes the side question's tokens, and the
+      main conversation (`/export`) has no trace of it.

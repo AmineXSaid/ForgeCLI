@@ -356,6 +356,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                 "pid": std::process::id(),
             }),
             tasks: Mutex::new(vec![]),
+            view: driver.view(),
         });
         control = Some(ctx.clone());
         tokio::spawn(host::read_stdin(ctx, tx));
@@ -375,6 +376,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let mut closed = false;
     // Changes each time a subtask finishes (C20).
     let mut finished = driver.subtasks.watch();
+    let view = driver.view();
     loop {
         // Mark subtask news seen before looking at the subtasks: one that ends after this line
         // still wakes the waits below.
@@ -428,6 +430,11 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     continue;
                 }
                 _ = finished.changed(), if stream_in => continue,
+                // An immediate command left work for the driver (/btw's cost, /mcp's refresh).
+                _ = view.effect_recorded(), if stream_in => {
+                    driver.sync_view();
+                    continue;
+                }
             };
             match input {
                 Some(Input::User(content)) => {

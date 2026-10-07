@@ -78,7 +78,10 @@ When you leave, Forge prints `Resume this conversation with: forge --resume <id>
 **The line REPL** (`--no-tui`, or `FORGE_TUI=0`, or when stdout isn't a
 terminal) reads one line at a time and prints the conversation on stdout;
 warnings go to stderr. Ctrl-C interrupts the current turn without killing
-the process; `/exit` or end-of-file quits.
+the process; `/exit` or end-of-file quits. It reads input only between
+turns, so a command typed during a turn runs after it. In the terminal UI,
+`/status`, `/usage`, `/tasks`, `/context`, `/mcp` and `/btw` answer at once,
+even mid-turn.
 
 **`@` mentions** (every mode: TUI, REPL, `-p`, stream-json). A prompt that
 names `@path` (at the start or after a space; `@"name with spaces.md"`
@@ -157,6 +160,13 @@ commands, `!shell` lines and scheduled prompts aren't scanned (custom commands a
   `--permission-prompts none` or `--no-input` they are denied.
 - **Ends** at end-of-file on stdin. `--replay-user-messages` echoes each user
   message with the uuid it was stored under; `rewind_files` takes that uuid.
+- **Immediate commands:** a `user` message that is one of `/status`,
+  `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp`, `/btw` (one
+  text block) is answered at once, even while a turn runs, and never queues
+  behind it. The answer is a `result` line with `num_turns: 0`, the current
+  `session_id` and `"immediate": true`; the running turn's own result comes
+  later without that field. `/btw`'s cost and `/mcp`'s effect on the system
+  prompt and `system/init` are applied when the turn ends.
 
 ### `forge doctor`
 

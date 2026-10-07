@@ -268,6 +268,28 @@ async fn host_controls_mode_model_and_interrupt() {
 }
 
 #[tokio::test]
+async fn stream_json_answers_immediate_commands_mid_turn() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("A slow answer.").with_delay(Duration::from_millis(100))]).await;
+    let mut h = Host::spawn(command(&forge_bin(), &e.cwd, &e.home, &api.url, &stream_args(&[])));
+    let init = h.until(|v| v["type"] == "system" && v["subtype"] == "init").await;
+    // The turn streams for a while; the reader answers /status meanwhile.
+    h.send_user("take your time").await;
+    h.send_user("/status").await;
+    // The command's result comes first, marked immediate; the turn's own result follows.
+    let first = h.until_type("result").await;
+    assert_eq!((first["immediate"].clone(), first["num_turns"].clone()), (json!(true), json!(0)), "{first}");
+    assert!(first["result"].as_str().unwrap().contains("Model:"), "{first}");
+    assert_eq!(first["session_id"], init["session_id"]);
+    let second = h.until_type("result").await;
+    assert_eq!(second["result"], "A slow answer.");
+    assert!(second.get("immediate").is_none(), "{second}");
+    assert_eq!(api.requests().len(), 1, "/status never reached the model");
+    let (code, _) = h.wait().await;
+    assert_eq!(code, 0);
+}
+
+#[tokio::test]
 async fn replay_uuid_drives_rewind_files() {
     let e = env();
     let f = e.cwd.join("notes.txt");

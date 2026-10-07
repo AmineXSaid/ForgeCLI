@@ -76,6 +76,19 @@
 - TUI: completion quotes paths with spaces, and a dim `(attached: ...)` line
   follows the prompt.
 
+### Immediate commands mid-turn
+- `/status`, `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp` and
+  `/btw` answer at once while a turn runs, in the TUI and for stream-json
+  hosts, instead of waiting for the turn to end. The spinner keeps going.
+- They read a session view the engine and driver publish (after each model
+  call and tool batch, and when idle), so mid-turn numbers are current:
+  `/usage` counts the turn so far.
+- Stream-json marks their `result` lines `"immediate": true`, so hosts can
+  tell them from the running turn's result.
+- `/btw` mid-turn answers from the conversation so far; its cost and
+  exchange, and `/mcp`'s refresh of instructions and `system/init`, are
+  applied when the turn ends.
+
 ### Fixes from the front-end review
 - A prompt that starts with a file name (`/package.json has the wrong
   version`) is a prompt, not `Unknown command`.

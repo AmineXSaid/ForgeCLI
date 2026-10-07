@@ -61,15 +61,24 @@ pub async fn run(mut driver: forge_core::Driver,
   - `let _ = *finished.borrow_and_update();` (where `finished = driver.subtasks.watch()`);
   - `driver.deliver_subtasks();`
   - send `UiEvent::Status(..)` and `UiEvent::Idle`.
-- Then `select!` on:
+  - `driver.sync_view()`: apply what immediate commands left (ARCHITECTURE.md, C17).
+- Then take the next input from the local queue (inputs that arrived during a
+  turn), or `select!` on:
   - `rx.recv()`:
-    - `Input(text)` runs `driver.input(MessageContent::Text(text), &mut report).await`;
+    - `Input(text)` runs `driver.input(MessageContent::Text(text), &mut report)` through
+      `while_busy` (below);
     - if that returns `Flow::Exit`, send `UiEvent::Exit` and break;
     - `Exit` or a closed channel breaks.
-  - `sleep(driver.next_wait())` when it is `Some`: run `driver.run_due(&mut report)` if `driver.task_due()`.
-    A due task makes the session busy too: the task sends `UiEvent::Busy` first, so the
-    spinner shows, and the UI gets no `Idle` until it ends.
+  - `sleep(driver.next_wait())` when it is `Some`: run `driver.run_due(&mut report)` if `driver.task_due()`,
+    also through `while_busy`. A due task makes the session busy too: the task sends `UiEvent::Busy`
+    first, so the spinner shows, and the UI gets no `Idle` until it ends.
   - `finished.changed()`: continue (the next idle pass hands the subtask back).
+  - `view.effect_recorded()`: continue (an immediate command finished after its turn).
+- **`while_busy`** pins the turn's future and `select!`s it with `rx.recv()`. An
+  immediate command (`commands::immediate`) is answered from `driver.view()`
+  on a task of its own, which sends `UiEvent::Reply`; the turn and the
+  spinner go on. Any other message goes to the local queue. A closed channel
+  queues `Exit` for after the turn.
 - After the loop, `driver.shutdown("prompt_input_exit").await`.
 
 **The `report` callback** turns each `TurnResult` into what the UI shows:
@@ -275,7 +284,7 @@ with `{"text", "cwd"}`:
 
 | Key | Does |
 | --- | --- |
-| Enter | Send (queued while a turn runs); in the `/` menu, run the command, or complete it when it takes arguments |
+| Enter | Send. While a turn runs, a message is queued, but an immediate command (`/status`, `/usage`, `/tasks`, `/context`, `/mcp`, `/btw`, `/keybindings`, `/terminal-setup`) is answered at once. In the `/` menu, run the command, or complete it when it takes arguments |
 | Shift+Enter, Alt+Enter, Ctrl+J, `\` then Enter | New line |
 | Esc | Interrupt the turn; close the menu; cancel a dialog (its last option); twice on an empty prompt: `/rewind` |
 | Ctrl+C | Clear the input; interrupt the turn (and deny an open dialog); twice on an empty prompt: exit |

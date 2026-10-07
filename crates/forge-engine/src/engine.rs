@@ -631,6 +631,10 @@ impl Engine {
     }
 
     fn publish_with(&self, turn: Option<TurnProgress>) {
+        // Nobody reads a sub-agent's snapshot (its caller reports for it): skip the copy.
+        if self.cfg.is_subagent {
+            return;
+        }
         let snap = EngineSnapshot {
             messages: Arc::new(self.state.messages.clone()),
             microcompacted: Arc::new(self.state.microcompacted.clone()),

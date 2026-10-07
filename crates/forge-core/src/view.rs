@@ -121,6 +121,33 @@ impl SessionView {
         std::mem::take(&mut *self.0.effects.lock().unwrap())
     }
 
+    /// A local answer's result, in the shape the driver reports one (`num_turns: 0`).
+    pub fn local_result(&self, text: impl Into<String>, is_error: bool) -> forge_engine::TurnResult {
+        let snap = self.engine();
+        forge_engine::TurnResult {
+            subtype: if is_error {
+                forge_types::sdk::ResultSubtype::ErrorDuringExecution
+            } else {
+                forge_types::sdk::ResultSubtype::Success
+            },
+            is_error,
+            result: Some(text.into()),
+            stop_reason: None,
+            num_turns: 0,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            usage: Usage::default(),
+            total_cost_usd: snap.total_cost_usd,
+            model_usage: snap.model_usage.clone(),
+            permission_denials: vec![],
+            errors: vec![],
+            structured_output: None,
+            prompt_blocked: None,
+            fatal: false,
+            tool_calls: 0,
+        }
+    }
+
     /// Wakes when an effect has been recorded (a front end's idle loop then calls
     /// [`crate::Driver::sync_view`]).
     pub async fn effect_recorded(&self) {

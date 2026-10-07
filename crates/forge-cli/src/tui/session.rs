@@ -4,11 +4,14 @@
 //! (`repl.rs`): scheduled tasks fire and finished subtasks are handed back
 //! while the session is idle.
 
+use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use forge_core::commands::picker::picker;
-use forge_core::commands::{parse, Builtin, Invocation, Surface};
+use forge_core::commands::{parse, Builtin, Catalog, Exec, Invocation, Surface};
+use forge_core::view::SessionView;
 use forge_core::{Driver, Flow};
 use forge_engine::{EngineEvent, EventSink, PermissionAnswer, PermissionPrompt, PermissionPrompter, TurnResult};
 use forge_types::MessageContent;
@@ -212,6 +215,47 @@ fn strip_escapes(s: &str) -> String {
     out
 }
 
+/// Run `work` (a turn, holding the driver) to its end. Meanwhile immediate commands from the
+/// UI are answered from the session view, each on its own task so the turn and the spinner
+/// keep going; any other input waits in `queue` for the turn to end (C17).
+async fn while_busy<F: Future>(
+    work: F,
+    view: &SessionView,
+    rx: &mut mpsc::UnboundedReceiver<ToSession>,
+    ui: &mpsc::UnboundedSender<UiEvent>,
+    queue: &mut VecDeque<ToSession>,
+) -> F::Output {
+    tokio::pin!(work);
+    let mut open = true;
+    loop {
+        tokio::select! {
+            out = &mut work => return out,
+            msg = rx.recv(), if open => match msg {
+                Some(ToSession::Input(text)) if forge_core::commands::immediate(&text, &Catalog::default()) => {
+                    answer_immediate(view.clone(), text, ui.clone());
+                }
+                Some(m) => queue.push_back(m),
+                None => {
+                    open = false;
+                    queue.push_back(ToSession::Exit);
+                }
+            },
+        }
+    }
+}
+
+/// Answer an immediate command from the view and send the reply.
+fn answer_immediate(view: SessionView, text: String, ui: mpsc::UnboundedSender<UiEvent>) {
+    tokio::spawn(async move {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        if let Some(Exec::Local { text, is_error }) =
+            forge_core::commands::execute_immediate(&view, &text, &cancel).await
+        {
+            let _ = ui.send(UiEvent::Reply { text, is_error });
+        }
+    });
+}
+
 /// Run the session until the UI says exit, `/exit` runs, or the UI is gone.
 pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>, ui: mpsc::UnboundedSender<UiEvent>) {
     let send = ui.clone();
@@ -230,10 +274,15 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
     // Changes each time a subtask finishes (C20).
     let mut finished = driver.subtasks.watch();
     let far = Duration::from_secs(365 * 86_400);
+    let view = driver.view();
+    // Inputs that came in during a turn, in order.
+    let mut queue: VecDeque<ToSession> = VecDeque::new();
     loop {
         // Subtasks that finished during the last turn are handed back before the next input.
         let _ = *finished.borrow_and_update();
         driver.deliver_subtasks();
+        // What immediate commands that ended after the turn left (/btw's cost, /mcp's refresh).
+        driver.sync_view();
         if driver.info.session_id != session_id {
             // /clear, /resume, /branch, /cd and the reloads can change the commands.
             session_id = driver.info.session_id.clone();
@@ -258,40 +307,50 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         let _ = ui.send(UiEvent::Status(status(&driver)));
         let _ = ui.send(UiEvent::Idle);
         let wait = driver.next_wait();
-        tokio::select! {
-            msg = rx.recv() => match msg {
-                Some(ToSession::Picker(text)) => match picker(&driver, &text) {
-                    Some(p) => {
-                        let _ = ui.send(UiEvent::Picker(p));
+        let msg = match queue.pop_front() {
+            Some(m) => Some(m),
+            None => tokio::select! {
+                msg = rx.recv() => msg,
+                // A scheduled task fires while idle; the UI shows the session busy until it ends.
+                _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
+                    if driver.task_due() {
+                        let _ = ui.send(UiEvent::Busy);
+                        while_busy(driver.run_due(&mut report), &view, &mut rx, &ui, &mut queue).await;
                     }
-                    None => {
-                        let _ = ui.send(UiEvent::Reply { text: "Nothing to choose from.".into(), is_error: true });
+                    continue;
+                }
+                // One finished while idle: the next pass hands it back.
+                _ = finished.changed() => continue,
+                // An immediate command answered after its turn left work: the next pass applies it.
+                _ = view.effect_recorded() => continue,
+            },
+        };
+        match msg {
+            Some(ToSession::Picker(text)) => match picker(&driver, &text) {
+                Some(p) => {
+                    let _ = ui.send(UiEvent::Picker(p));
+                }
+                None => {
+                    let _ = ui.send(UiEvent::Reply { text: "Nothing to choose from.".into(), is_error: true });
+                }
+            },
+            Some(ToSession::Input(text)) => {
+                // A command typed without its choice opens a picker instead.
+                if let Some(p) = picker(&driver, &text) {
+                    let _ = ui.send(UiEvent::Picker(p));
+                } else if let Some(events) = ui_command(&driver, &text) {
+                    for e in events {
+                        let _ = ui.send(e);
                     }
-                },
-                Some(ToSession::Input(text)) => {
-                    // A command typed without its choice opens a picker instead.
-                    if let Some(p) = picker(&driver, &text) {
-                        let _ = ui.send(UiEvent::Picker(p));
-                    } else if let Some(events) = ui_command(&driver, &text) {
-                        for e in events {
-                            let _ = ui.send(e);
-                        }
-                    } else if driver.input(MessageContent::Text(text), &mut report).await == Flow::Exit {
+                } else {
+                    let input = driver.input(MessageContent::Text(text), &mut report);
+                    if while_busy(input, &view, &mut rx, &ui, &mut queue).await == Flow::Exit {
                         let _ = ui.send(UiEvent::Exit);
                         break;
                     }
                 }
-                Some(ToSession::Exit) | None => break,
-            },
-            // A scheduled task fires while idle; the UI shows the session busy until it ends.
-            _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
-                if driver.task_due() {
-                    let _ = ui.send(UiEvent::Busy);
-                    driver.run_due(&mut report).await;
-                }
             }
-            // One finished while idle: the next pass hands it back.
-            _ = finished.changed() => {}
+            Some(ToSession::Exit) | None => break,
         }
     }
     driver.shutdown("prompt_input_exit").await;
@@ -513,6 +572,26 @@ mod tests {
         t.to.send(ToSession::Input("/exit".into())).unwrap();
         let evs = until_idle(&mut t.ui).await;
         assert!(matches!(evs.last(), Some(UiEvent::Exit)));
+        tokio::time::timeout(Duration::from_secs(10), t.task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn immediate_commands_answer_while_a_turn_runs() {
+        let mut t = start(|_| {});
+        until_idle(&mut t.ui).await;
+        t.p.push(MockTurn::text("a slow answer").with_delay(Duration::from_millis(100)));
+        t.p.push(MockTurn::text("the next one"));
+        t.to.send(ToSession::Input("take your time".into())).unwrap();
+        t.to.send(ToSession::Input("/status".into())).unwrap();
+        t.to.send(ToSession::Input("then this".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        let reply = evs.iter().position(|e| matches!(e, UiEvent::Reply { text, .. } if text.contains("Model:")));
+        let last_stream = evs.iter().rposition(|e| matches!(e, UiEvent::Engine(EngineEvent::Stream { .. })));
+        assert!(reply.unwrap() < last_stream.unwrap(), "/status was answered while the turn streamed");
+        assert_eq!(streamed_text(&evs), "a slow answer", "the plain prompt waited");
+        let evs = until_idle(&mut t.ui).await;
+        assert_eq!(streamed_text(&evs), "the next one");
+        t.to.send(ToSession::Exit).unwrap();
         tokio::time::timeout(Duration::from_secs(10), t.task).await.unwrap().unwrap();
     }
 

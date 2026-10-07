@@ -1145,6 +1145,12 @@ impl App {
             return vec![];
         }
         if self.busy {
+            // Immediate commands (/status, /usage, /btw ...) are answered from the session view
+            // while the turn runs (C17); anything else waits for the turn to end.
+            if forge_core::commands::immediate(&text, &forge_core::commands::Catalog::default()) {
+                self.echo_prompt(&text);
+                return vec![Action::Send(text)];
+            }
             self.queued.push_back(text);
             return vec![];
         }
@@ -1214,6 +1220,21 @@ mod tests {
         typed(&mut a, "two");
         a.on_key(ctrl('j'));
         assert_eq!(a.editor.text(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn immediate_commands_are_sent_while_busy() {
+        let mut a = app();
+        typed(&mut a, "hello");
+        a.on_key(key(KeyCode::Enter));
+        a.take_pending();
+        typed(&mut a, "/usage");
+        assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/usage".into())], "sent, not queued");
+        assert!(a.queued.is_empty() && a.busy, "the turn goes on");
+        assert_eq!(texts(&a.take_pending()), ["", "> /usage "], "echoed");
+        typed(&mut a, "/compact");
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "not immediate: queued");
+        assert_eq!(a.queued.len(), 1);
     }
 
     #[test]

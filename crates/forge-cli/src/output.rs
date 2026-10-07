@@ -55,6 +55,7 @@ pub fn result_message(r: &TurnResult, session_id: &str) -> ResultMessage {
         structured_output: r.structured_output.clone(),
         errors: r.errors.clone(),
         uuid: new_uuid(),
+        immediate: None,
     }
 }
 
