@@ -78,6 +78,13 @@
 - TUI: completion quotes paths with spaces, and a dim `(attached: ...)` line
   follows the prompt.
 
+### Fixes from checking the four together
+- A screen that arrives while a permission prompt is open (`/context` typed
+  mid-turn) waits for the answer instead of replacing the prompt, which
+  denied the tool and interrupted the turn.
+- The TUI's `/` menu follows a reload that keeps the session
+  (`/reload-skills`, `/hooks add`, `/agents create`): new skills show up.
+
 ### The manual check run
 - `docs/CHECKLIST.md` is one ordered run of 55 checks in three parts (print
   mode, interactive, special setups), with exact commands, what to see,

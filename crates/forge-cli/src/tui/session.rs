@@ -269,13 +269,13 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
             let _ = send.send(ev);
         }
     };
-    let _ = ui.send(UiEvent::Commands(commands(&driver)));
+    let mut menu = commands(&driver);
+    let _ = ui.send(UiEvent::Commands(menu.clone()));
     let mut theme = driver.info.settings.str("/theme").map(str::to_string);
     if let Some(t) = &theme {
         let _ = ui.send(UiEvent::Theme(t.clone()));
     }
     let mut had_status_command = false;
-    let mut session_id = driver.info.session_id.clone();
     // Changes each time a subtask finishes (C20).
     let mut finished = driver.subtasks.watch();
     let far = Duration::from_secs(365 * 86_400);
@@ -288,10 +288,12 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         driver.deliver_subtasks();
         // What immediate commands that ended after the turn left (/btw's cost, /mcp's refresh).
         driver.sync_view();
-        if driver.info.session_id != session_id {
-            // /clear, /resume, /branch, /cd and the reloads can change the commands.
-            session_id = driver.info.session_id.clone();
-            let _ = ui.send(UiEvent::Commands(commands(&driver)));
+        // /clear, /resume, /branch, /cd and the reloads (/reload-skills, and /hooks add or
+        // /agents create, which reload) can change the commands; a reload keeps the session id.
+        let now_menu = commands(&driver);
+        if now_menu != menu {
+            menu = now_menu;
+            let _ = ui.send(UiEvent::Commands(menu.clone()));
         }
         let now = driver.info.settings.str("/theme").map(str::to_string);
         if now != theme {
@@ -626,6 +628,27 @@ mod tests {
         let evs = until_idle(&mut t.ui).await;
         assert!(screen(&evs).is_none());
         assert!(evs.iter().any(|e| matches!(e, UiEvent::Reply { text, .. } if text.contains("Tools:"))));
+        t.to.send(ToSession::Exit).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), t.task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_adds_a_skill_updates_the_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("proj")).unwrap();
+        let proj = dir.path().join("proj").canonicalize().unwrap();
+        let mut t = start(|o| o.cwd = proj.clone());
+        until_idle(&mut t.ui).await;
+        std::fs::create_dir_all(proj.join(".forge/skills/lint")).unwrap();
+        std::fs::write(proj.join(".forge/skills/lint/SKILL.md"), "---\ndescription: Lint it\n---\nRun make lint.")
+            .unwrap();
+        t.to.send(ToSession::Input("/reload-skills".into())).unwrap();
+        let evs = until_idle(&mut t.ui).await;
+        let menu = evs.iter().find_map(|e| match e {
+            UiEvent::Commands(c) => Some(c.clone()),
+            _ => None,
+        });
+        assert!(menu.expect("a new menu").iter().any(|c| c.name == "lint"));
         t.to.send(ToSession::Exit).unwrap();
         tokio::time::timeout(Duration::from_secs(10), t.task).await.unwrap().unwrap();
     }

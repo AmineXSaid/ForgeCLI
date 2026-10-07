@@ -100,8 +100,9 @@ pub async fn run(mut driver: forge_core::Driver,
 
 Also send `UiEvent::Commands` from `driver.catalog.catalog_json(Surface::Tui)`
 (fields `name`, `argumentHint`, `description`). Send it once at start and
-again whenever `driver.info.session_id` changes (`/clear`, `/resume`,
-`/branch`, `/cd` and the reloads change commands).
+again whenever the list changes: `/clear`, `/resume`, `/branch`, `/cd` and
+the reloads (`/reload-skills`, and `/hooks add` or `/agents create`, which
+reload) can change it, and a reload keeps the session id.
 
 **`TuiSink`** (an `EventSink`) sends every `EngineEvent` as
 `UiEvent::Engine(e)`. The channel is unbounded, so it never blocks the engine.
@@ -350,6 +351,10 @@ height minus the status line, and long content scrolls inside it.
 - **The session task** answers a bare screen command with
   `UiEvent::Screen(..)`, after pickers. `/context` is immediate, so it opens
   mid-turn too, built from the `SessionView`.
+- **Questions win:** a screen or picker that arrives while a permission
+  prompt or question waits for its answer (a `/context` typed mid-turn) is
+  held and shows once the question is answered. Replacing that dialog would
+  drop its reply, which the engine reads as "the UI closed".
 - **Keys:** Up/Down move the highlighted row; PageUp/PageDown (and Space) move
   by the rows shown; Home/End; Enter (or Right) acts on the row; Esc (or
   Left) goes back from a jump, else closes; `q` closes.

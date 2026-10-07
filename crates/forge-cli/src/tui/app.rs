@@ -261,6 +261,8 @@ pub struct App {
     pub keymap: super::keys::Keymap,
     /// `/focus`: tool calls and their results stay out of the scrollback.
     pub focus: bool,
+    /// A screen or picker waiting for an open question to be answered.
+    held: Option<Dialog>,
 }
 
 /// The main argument of a tool call, for one line.
@@ -333,6 +335,7 @@ impl App {
             viewer_page: std::cell::Cell::new(10),
             keymap: Default::default(),
             focus: false,
+            held: None,
         }
     }
 
@@ -636,6 +639,19 @@ impl App {
                 let _ = tx.send(a);
             }
         }
+        // A screen or picker that arrived while the question was open shows now.
+        self.dialog = self.held.take();
+    }
+
+    /// Show a screen or picker, unless a question is waiting for its answer: replacing that
+    /// dialog would drop its reply, which the engine reads as "the UI closed" (deny and
+    /// interrupt). It is held until the question is answered.
+    fn show(&mut self, d: Dialog) {
+        if self.dialog.as_ref().is_some_and(|open| open.reply.is_some()) {
+            self.held = Some(d);
+        } else {
+            self.dialog = Some(d);
+        }
     }
 
     /// The rows of the open dialog: (label, description).
@@ -897,7 +913,7 @@ impl App {
     fn open_picker(&mut self, picker: Picker) {
         self.flush_live();
         let selected = picker.choices.iter().position(|c| c.current).unwrap_or(0);
-        self.dialog = Some(Dialog {
+        self.show(Dialog {
             prompt: None,
             reply: None,
             kind: DialogKind::Picker { picker, filter: String::new() },
@@ -912,7 +928,7 @@ impl App {
     pub fn open_screen(&mut self, screen: Screen) {
         self.flush_live();
         let kind = DialogKind::Viewer { screen, cursor: 0, top: 0, back: vec![] };
-        self.dialog = Some(Dialog { prompt: None, reply: None, kind, selected: 0, typing: None });
+        self.show(Dialog { prompt: None, reply: None, kind, selected: 0, typing: None });
     }
 
     /// The open screen: its rows, the highlighted row and the first row shown.
@@ -1046,7 +1062,7 @@ impl App {
     /// Esc on a dialog that the reply can't reach any more (the turn was interrupted).
     pub fn close_dialog_if_stale(&mut self) {
         if self.dialog.as_ref().is_some_and(|d| d.reply.as_ref().is_some_and(|r| r.is_closed())) {
-            self.dialog = None;
+            self.dialog = self.held.take();
             self.dirty = true;
         }
     }
@@ -1544,6 +1560,31 @@ mod tests {
         assert_eq!(a.activity, "Working");
         a.submit("/focus off".into());
         assert!(!a.focus);
+    }
+
+    #[test]
+    fn a_screen_arriving_during_a_question_waits_for_its_answer() {
+        let mut a = app();
+        let (tx, mut rx) = oneshot::channel();
+        a.on_event(UiEvent::Ask {
+            prompt: PermissionPrompt {
+                tool_name: "Bash".into(),
+                tool_use_id: "t".into(),
+                input: json!({"command": "ls"}),
+                reason: String::new(),
+                suggestions: vec![],
+                blocked_path: None,
+            },
+            reply: tx,
+        });
+        // /context typed mid-turn comes back as a screen while the question is open.
+        let screen = forge_core::commands::screens::Screen { title: "Context".into(), rows: vec![] };
+        a.on_event(UiEvent::Screen(screen));
+        assert_eq!(a.dialog_text().0, "Allow Bash?", "the question stays");
+        assert!(rx.try_recv().is_err(), "and isn't answered");
+        a.on_key(key(KeyCode::Char('1')));
+        assert!(matches!(rx.try_recv(), Ok(PermissionAnswer::Allow { .. })));
+        assert_eq!(a.viewer().map(|v| v.0.title.as_str()), Some("Context"), "then the screen shows");
     }
 
     #[test]
