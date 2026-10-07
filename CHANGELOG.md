@@ -71,6 +71,8 @@
   as read, so the model can edit them at once.
 - One implementation (`forge_agents::attach`) serves prompts and custom
   commands. UserPromptSubmit hooks see the prompt without the attachments.
+- An attached file can't close its own wrapper, and text that looks like
+  instructions to an agent is flagged as data, as for Read output.
 - TUI: completion quotes paths with spaces, and a dim `(attached: ...)` line
   follows the prompt.
 

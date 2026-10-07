@@ -809,4 +809,7 @@ text says.
   use Read instead. The permission check is Read's decision on the path,
   never a prompt: `ask` and `deny` both leave the file out. Attached files
   are marked read (`FileState::record_read`) before the turn, and forgotten
-  again if a UserPromptSubmit hook blocks the prompt.
+  again if a UserPromptSubmit hook blocks the prompt. A file's `</file>`,
+  `</directory>` and `</system-reminder>` are escaped so it can't close its
+  wrapper, and text the injection scan flags (as for Read output) gets a
+  note that it comes from the file, not the user.
