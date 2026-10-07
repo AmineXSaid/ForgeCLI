@@ -1231,8 +1231,11 @@ async fn subtask_forks_the_conversation_and_reports_back() {
     let out = local(&mut t.d, "/subtask count the files").await;
     assert!(out.starts_with("Started subtask_1 in the background: count the files."), "{out}");
     subtasks_settle(&t.d).await;
-    // Any input hands it back first (a notice now, its report with the next prompt).
-    assert_eq!(local(&mut t.d, "/tasks").await, "No background tasks.");
+    // Any input hands it back first (a notice now, its report with the next prompt); /tasks
+    // still lists it, as finished.
+    let tasks = local(&mut t.d, "/tasks").await;
+    assert!(tasks.contains("subtask_1 [subtask, completed, took ") && tasks.contains("count the files"), "{tasks}");
+    assert_eq!(local(&mut t.d, "/tasks stop subtask_1").await, "subtask_1 has already finished and been reported.");
 
     let fork = &t.p.requests()[1];
     // The same prefix as the main conversation, so its prompt cache is read.

@@ -86,6 +86,8 @@
 - A subtask's edits made while a later prompt ran were checkpointed under
   that prompt: `/rewind <that prompt> code` undid them, and the verification
   loop counted them as the prompt's own writes. They now keep their own turn.
+- `/tasks` lists subtasks that have finished (the last 20), not only the
+  running ones: they were handed back before the list was made.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

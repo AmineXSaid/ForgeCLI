@@ -743,7 +743,7 @@ input, or the start of the next input or scheduled task):
 Starting one emits `system/subtask` with `status: started`, and the model
 hears of it with the next prompt.
 
-**Stopping.** `/tasks` lists subtasks; `/tasks stop <id>` interrupts one,
+**Stopping.** `/tasks` lists subtasks, running and (the last 20) handed back; `/tasks stop <id>` interrupts one,
 which is handed back as interrupted. `/clear` and `/resume` stop running
 subtasks and pass no report on (their spend still counts); `/branch`, `/cd`
 and the reloads keep them. Session end gives them 3 s, then aborts them.

@@ -408,7 +408,7 @@ fn tasks(d: &Driver, args: &str) -> Exec {
     }
     let list = shells.list();
     let scheduled = super::looping::listing(d);
-    if list.is_empty() && scheduled.is_empty() && d.subtasks.is_empty() {
+    if list.is_empty() && scheduled.is_empty() && d.subtasks.is_empty() && d.subtasks.finished().is_empty() {
         return ok("No background tasks.");
     }
     let mut s = String::from("Background tasks:\n");
@@ -421,6 +421,17 @@ fn tasks(d: &Driver, args: &str) -> Exec {
             duration(t.started.elapsed()),
             t.tool_calls(),
             t.task.chars().take(100).collect::<String>()
+        );
+    }
+    for f in d.subtasks.finished() {
+        let _ = writeln!(
+            s,
+            "  {} [subtask, {}, took {}, {} tool calls] {}",
+            f.id,
+            f.status,
+            duration(f.duration),
+            f.tool_calls,
+            f.task.chars().take(100).collect::<String>()
         );
     }
     for sh in list {
