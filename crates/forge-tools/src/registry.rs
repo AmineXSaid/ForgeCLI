@@ -25,7 +25,7 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.iter().find(|t| t.name() == name).cloned()
+        self.tools.iter().find(|t| t.name() == name && t.is_enabled()).cloned()
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -58,5 +58,52 @@ impl ToolRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Tool>> {
         self.tools.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use serde_json::{json, Value};
+
+    use super::*;
+    use crate::{Tool, ToolContext, ToolOutput};
+
+    struct Switchable(Arc<AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl Tool for Switchable {
+        fn name(&self) -> &str {
+            "Switchable"
+        }
+
+        fn description(&self) -> String {
+            "on or off".into()
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn is_enabled(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+
+        async fn call(&self, _input: Value, _ctx: &ToolContext) -> ToolOutput {
+            ToolOutput::text("ran")
+        }
+    }
+
+    #[test]
+    fn disabled_tools_are_hidden_and_cannot_be_called() {
+        let on = Arc::new(AtomicBool::new(true));
+        let mut r = ToolRegistry::new();
+        r.register(Arc::new(Switchable(on.clone())));
+        assert!(r.get("Switchable").is_some());
+        assert_eq!(r.specs().len(), 1);
+        on.store(false, Ordering::SeqCst);
+        assert!(r.get("Switchable").is_none(), "a hidden tool can't be called by name");
+        assert!(r.specs().is_empty() && r.names().is_empty());
     }
 }
