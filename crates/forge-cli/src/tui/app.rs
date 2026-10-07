@@ -51,6 +51,8 @@ pub enum UiEvent {
     },
     Status(StatusView),
     Commands(Vec<CommandInfo>),
+    /// The session started work by itself (a scheduled task).
+    Busy,
     /// The session is ready for the next input.
     Idle,
     /// The session ended (`/exit`).
@@ -215,6 +217,18 @@ impl App {
         self.pending.push(line);
     }
 
+    /// The unfinished answer line as it will look in scrollback.
+    pub fn live_line(&self) -> Option<Line<'static>> {
+        if self.live.is_empty() {
+            return None;
+        }
+        let t = self.theme;
+        let mut line = self.md.clone().line(&self.live, &t);
+        let marker = if self.first_line { Span::styled("⏺ ", t.accent()) } else { Span::raw("  ") };
+        line.spans.insert(0, marker);
+        Some(line)
+    }
+
     fn flush_live(&mut self) {
         if !self.live.is_empty() {
             let rest = std::mem::take(&mut self.live);
@@ -268,6 +282,14 @@ impl App {
             }
             UiEvent::Status(s) => self.status = s,
             UiEvent::Commands(c) => self.commands = c,
+            UiEvent::Busy => {
+                if !self.busy {
+                    self.busy = true;
+                    self.busy_since = Some(Instant::now());
+                    self.activity = "Running a scheduled task".into();
+                    self.first_line = true;
+                }
+            }
             UiEvent::Idle => {
                 self.flush_live();
                 self.busy = false;
@@ -804,7 +826,8 @@ impl App {
         vec![]
     }
 
-    fn submit(&mut self, text: String) -> Vec<Action> {
+    /// Send `text` as if typed (queued while a turn runs).
+    pub fn submit(&mut self, text: String) -> Vec<Action> {
         self.menu_selected = 0;
         self.menu_dismissed = false;
         if self.busy {

@@ -70,3 +70,24 @@ printf 'from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n' > 
     - A bundle appears in `<state>/feedback/`.
     - Its transcript has no API keys: `grep -r sk- <bundle>` finds nothing.
 18. `/code-review high` on a branch with a planted bug (`return a - b`). The report names `calc.py:2` with a failing input.
+
+## Terminal UI
+
+Run these in a real terminal emulator (not through a pipe).
+
+19. `forge`: the prompt box and the status line appear at the bottom. `hello`
+    streams an answer, and scrolling up with the mouse or Shift+PageUp shows
+    the whole conversation.
+20. During a long answer, press Esc. The turn stops and
+    `[Request interrupted by user]` is in the transcript (`/export`).
+21. Type a second message while a turn runs. It shows as queued and is sent
+    when the turn ends.
+22. Ask for a shell command in default mode. The permission dialog appears;
+    option 2 adds the rule (`/permissions` lists it).
+23. Shift+Tab twice shows plan mode. Asking for a change ends with the plan
+    dialog, and option 1 switches to accept-edits.
+24. `NO_COLOR=1 forge` uses no colours. A 40-column terminal wraps without
+    breaking the box.
+25. Leave with `/exit`, with Ctrl-D and with Ctrl-C twice. Each time the
+    shell works normally afterwards: typed text echoes, and `stty -a` shows
+    `icanon echo`.

@@ -547,6 +547,7 @@ dependencies = [
  "forge-test-host",
  "forge-tools",
  "forge-types",
+ "futures",
  "ratatui",
  "serde_json",
  "tempfile",

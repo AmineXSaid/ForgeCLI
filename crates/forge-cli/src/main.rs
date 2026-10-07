@@ -547,6 +547,14 @@ async fn sleep_unless(d: Duration, interrupted: &std::sync::atomic::AtomicBool) 
     }
 }
 
+/// The terminal UI, unless `--no-tui` or `FORGE_TUI=0|false|off`, or stdout isn't a terminal.
+fn use_tui(o: &Opts, t: term::Term) -> bool {
+    let env_off = std::env::var("FORGE_TUI")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"))
+        .unwrap_or(false);
+    t.stdin_tty && t.stdout_tty && !o.no_tui && !env_off
+}
+
 fn run_doctor() -> Result<i32, Fail> {
     let cwd = std::env::current_dir().map_err(|e| Fail::config(e.to_string()))?;
     outln!("ForgeCLI {}", forge_core::VERSION);
@@ -647,6 +655,8 @@ fn main() {
                     Err(Fail::usage("interactive mode needs a terminal on stdin").with_hint(
                         "For scripts and pipes use print mode: forge -p \"<prompt>\", or: echo \"<prompt>\" | forge -p",
                     ))
+                } else if use_tui(&cli.opts, t) {
+                    tui::run(cli.prompt, cli.opts).await
                 } else {
                     repl::run(cli.prompt, cli.opts).await
                 }

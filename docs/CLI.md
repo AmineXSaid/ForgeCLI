@@ -15,6 +15,7 @@ a note in `CHANGELOG.md`.
 | Machine output | `--output-format json` writes exactly one JSON document; `--output-format stream-json` writes NDJSON. Neither ever contains banners, colors or logs. |
 | Color | Color is on when stdout and stderr are terminals and `TERM` isn't `dumb`. `NO_COLOR` (non-empty) turns it off, and `FORCE_COLOR` / `CLICOLOR_FORCE` turn it on. `--color auto\|always\|never` overrides all of these. Machine output is never colored. |
 | Quiet and verbose | `-q/--quiet`: errors only on stderr. `--verbose`: adds informational diagnostics. Both affect stderr only, never stdout. `-d/--debug` and `--debug-file <path>` turn on debug logs. |
+| No terminal UI | `--no-tui` (or `FORGE_TUI=0`): interactive mode uses the line-based prompt. |
 | No input | `--no-input` (or `FORGE_NO_INPUT=1`): Forge never waits for a person. Permission prompts are denied, and interactive mode refuses to start. |
 | Confirmations | Forge has no `--yes`. Tool permissions are granted only by `--permission-mode`, `--allowedTools` or settings rules, never by a blanket yes. |
 | Secrets | Values whose key looks secret (`*key*`, `*token*`, `*secret*`, `*password*`, `*auth*`, ...) and values that look like credentials (`sk-…`, `Bearer …`) are printed as `<redacted>` in `config` output and diagnostics. |
@@ -36,18 +37,42 @@ a note in `CHANGELOG.md`.
 
 - **Purpose:** work with the agent in a project, in conversation.
 - **Example:** `forge "add a --dry-run flag to the export command"`
-- **Input:** the optional first prompt, then lines typed at the terminal.
-  Slash commands work here and in `-p` (see "Slash commands" below); `/exit`
-  quits.
-- **Output:** the conversation, on stdout. Warnings go to stderr.
+- **Input:** the optional first prompt, then what you type. Slash commands
+  work here and in `-p` (see "Slash commands" below); `/exit` quits.
 - **Needs a terminal on stdin.** Without one, or with `--no-input`, Forge exits
   with status `2` and suggests `-p`.
-- **Interrupting:** Ctrl-C interrupts the current turn without killing the
-  process; `/exit` or end-of-file quits.
 - **Side effects:**
   - files change as the agent's tools allow;
   - a session transcript and file checkpoints are written to the state
-    directory.
+    directory;
+  - each prompt you send is added to `<state>/history.jsonl` (mode 0600),
+    which Up and Down browse, per project directory.
+
+**The terminal UI** opens when stdin and stdout are both terminals. Finished
+output (your prompts, answers, tool calls) goes into the terminal's own
+scrollback, so scrolling and search work as in any shell. A small region at
+the bottom shows the answer being written, a spinner, dialogs, queued
+messages, the input box, the `/` menu and a status line (permission mode,
+model, context used, cost). Design and key table: `docs/TUI.md`.
+
+| Key | Does |
+| --- | --- |
+| Enter | Send. While a turn runs, the message is queued and sent when it ends |
+| Shift+Enter, Alt+Enter, Ctrl+J, `\` then Enter | New line |
+| Esc | Interrupt the turn; close the menu; cancel a dialog. Twice on an empty prompt: `/rewind` |
+| Ctrl+C | Clear the input; interrupt the turn; twice on an empty prompt: exit |
+| Ctrl+D | Exit (empty prompt) |
+| Shift+Tab | Cycle the permission mode: default, accept edits, plan |
+| Up / Down | Move between lines; earlier prompts from the first or last line; move in menus and dialogs |
+| Tab | Complete the highlighted command |
+| Ctrl+L | Redraw |
+
+When you leave, Forge prints `Resume this conversation with: forge --resume <id>`.
+
+**The line REPL** (`--no-tui`, or `FORGE_TUI=0`, or when stdout isn't a
+terminal) reads one line at a time and prints the conversation on stdout;
+warnings go to stderr. Ctrl-C interrupts the current turn without killing
+the process; `/exit` or end-of-file quits.
 
 ### `forge -p [prompt]`: print mode, for scripts and CI
 
@@ -242,6 +267,7 @@ them.
 | `FORGE_DISABLE_CRON` | `1` turns scheduled prompts off (`/loop`, `CronCreate`, ...) |
 | `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT` | MCP connect and call timeouts, in milliseconds (30 s, 10 min) |
 | `FORGE_NO_INPUT` | Same as `--no-input` |
+| `FORGE_TUI` | `0`, `false`, `off` or `no`: interactive mode uses the line REPL (same as `--no-tui`) |
 | `FORGE_LOG` | Log filter, with `--debug` (`/debug` turns logging on partway through a session) |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |
 

@@ -11,20 +11,18 @@ terminals. `--no-tui` (or `FORGE_TUI=0`) keeps the line REPL
 | Prompt editor: multiline text, word moves, kill commands, history | done, tested | `crates/forge-cli/src/tui/editor.rs` |
 | Theme, one-line markdown, wrapping by display width | done, tested | `crates/forge-cli/src/tui/text.rs` |
 | UI state machine: keys, streaming into scrollback, tool lines, `/` menu, permission/question/plan dialogs, queued input, Esc/Ctrl-C/Shift+Tab | done, tested | `crates/forge-cli/src/tui/app.rs` |
-| Session task (owns the Driver), `TuiSink`, `TuiPrompter` | to do (phase 1) | `crates/forge-cli/src/tui/session.rs` |
-| Renderer for the live region (`LiveView`) | to do (phase 1) | `crates/forge-cli/src/tui/render.rs` |
-| Terminal loop, inline viewport, scrollback writes, panic-safe restore | to do (phase 1) | `crates/forge-cli/src/tui/mod.rs` |
-| Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | to do (phase 1) | `crates/forge-cli/src/main.rs`, `args.rs` |
+| Session task (owns the Driver), `TuiSink`, `TuiPrompter` | done, tested | `crates/forge-cli/src/tui/session.rs` |
+| Renderer for the live region (`LiveView`) | done, tested | `crates/forge-cli/src/tui/render.rs` |
+| Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/forge-cli/src/tui/mod.rs` |
+| Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | done | `crates/forge-cli/src/main.rs`, `args.rs` |
 | Pickers, Ctrl+R search, `@file` completion | to do (phase 2) | |
 | UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | to do (phase 3) | |
 
 Dependencies are in `crates/forge-cli/Cargo.toml`:
 - `ratatui` 0.29 (MIT);
 - `crossterm` 0.28 with `event-stream` (MIT);
-- `unicode-width` 0.2 (MIT or Apache-2.0).
-
-`tui/mod.rs` declares the modules with `#![allow(dead_code)]` until the loop
-uses them. Remove that attribute when phase 1 is wired in.
+- `unicode-width` 0.2 (MIT or Apache-2.0);
+- `futures` (the workspace's), for `EventStream`.
 
 ## Decision
 
@@ -48,7 +46,7 @@ output behind. The live region grows and shrinks with what it shows.
                            Screen: live viewport draw + insert_before(scrollback)
 ```
 
-### Session task (`tui/session.rs`, to do)
+### Session task (`tui/session.rs`)
 
 ```rust
 pub enum ToSession { Input(String), Exit }
@@ -69,7 +67,8 @@ pub async fn run(mut driver: forge_core::Driver,
     - if that returns `Flow::Exit`, send `UiEvent::Exit` and break;
     - `Exit` or a closed channel breaks.
   - `sleep(driver.next_wait())` when it is `Some`: run `driver.run_due(&mut report)` if `driver.task_due()`.
-    A due task makes the session busy too, so the UI gets no `Idle` until it ends.
+    A due task makes the session busy too: the task sends `UiEvent::Busy` first, so the
+    spinner shows, and the UI gets no `Idle` until it ends.
   - `finished.changed()`: continue (the next idle pass hands the subtask back).
 - After the loop, `driver.shutdown("prompt_input_exit").await`.
 
@@ -77,6 +76,7 @@ pub async fn run(mut driver: forge_core::Driver,
 - a local command result (`num_turns == 0 && stop_reason.is_none()`) becomes
   `UiEvent::Reply { text: result, is_error }`;
 - a blocked prompt (`prompt_blocked`) becomes `Reply { is_error: true }`;
+- an interrupted turn becomes `Reply { text: "Interrupted · What should Forge do instead?" }`;
 - a model turn that errored becomes `Reply { text: errors or result, is_error: true }`;
 - a successful model turn sends nothing: its text already streamed.
 
@@ -138,7 +138,7 @@ Public surface the loop uses:
 | `SetMode(m)` | `live.handle().set_permission_mode(m)` |
 | `Exit` | `to_session.send(ToSession::Exit)`, then wait (at most 5 s) for the session task to end |
 
-### Renderer (`tui/render.rs`, to do)
+### Renderer (`tui/render.rs`)
 
 ```rust
 pub struct LiveView { pub lines: Vec<Line<'static>>, pub cursor: Option<(u16, u16)> }
@@ -176,7 +176,7 @@ The live region, top to bottom (each part only when present):
 If the lines exceed `max_height` (the terminal height minus 1), drop rows
 from part 1, then part 4, never from the dialog or the input.
 
-### Terminal (`tui/mod.rs`, to do)
+### Terminal (`tui/mod.rs`)
 
 ```rust
 pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail>
@@ -192,8 +192,9 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail>
 - restore the same way on every exit path, through a guard whose `Drop`
   restores.
 
-**`Screen`** wraps `Terminal<CrosstermBackend<Stdout>>` with
-`Viewport::Inline(h)`:
+**`Screen<B: Backend>`** wraps a `Terminal<B>` with `Viewport::Inline(h)`
+and a function that makes a fresh backend (so tests run it on a
+`TestBackend`):
 - `set_height(h)`: when `h` differs, call `terminal.clear()` (the cursor
   goes to the viewport's top and everything below is cleared), drop the
   terminal, and create a new one with `Viewport::Inline(h)`. ratatui 0.29
@@ -203,7 +204,8 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail>
   `terminal.insert_before(n, |buf| Paragraph::new(lines).render(buf.area, buf))`
   in chunks of at most 100 rows.
 - `draw(&LiveView)`: render the lines with a `Paragraph` into the frame and
-  set the cursor.
+  set the cursor. A view shorter than the viewport (it hasn't shrunk yet) is
+  drawn at its bottom, so the input box doesn't jump.
 
 **The loop**, with frames drawn at most every 16 ms:
 
@@ -287,7 +289,7 @@ with `{"text", "cwd"}`:
 | Alt+B / Alt+F, Ctrl+Left / Ctrl+Right | Word left / right |
 | 1-9 in a dialog | Choose that option |
 | Space in a multi-select question | Toggle the option |
-| Ctrl+L | Redraw (loop, to do) |
+| Ctrl+L | Redraw |
 
 Pasted text (bracketed paste) is inserted as typed, newlines included.
 
@@ -305,9 +307,9 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
 
 ## Testing
 
-- **Unit tests, done (9):** `tui::editor`, `tui::text` and `tui::app`.
+- **Unit tests, done:** `tui::editor`, `tui::text` and `tui::app`.
   Run them with `cargo test -p forge-cli --bin forge tui`.
-- **Renderer (to do):** `ratatui::backend::TestBackend` snapshot tests of
+- **Renderer (done, `tui::render::tests`):** `ratatui::backend::TestBackend` snapshot tests of
   `live_view` drawn into a fixed area:
   - idle;
   - busy with a spinner and queued input;
@@ -316,7 +318,7 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
   - a narrow width (20 columns);
   - `Theme { color: false }`.
   Compare `buffer` text rows; colours are checked through a few cells.
-- **Session (to do):** build a session with `MockProvider` (as
+- **Session (done, `tui::session::tests`):** build a session with `MockProvider` (as
   `crates/forge-core/src/driver_tests.rs` does in `driver_with`), run
   `session::run` on a task, and drive it through the channels:
   - a text turn ends with `Idle`, and `Engine` events carry the text;
@@ -325,7 +327,7 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
     tool;
   - a queued input is sent after `Idle`;
   - `/exit` gives `Exit`.
-- **Terminal (to do):** keep `mod.rs` thin. Test `Screen::commit`'s chunking
+- **Terminal (done, `tui::tests`):** keep `mod.rs` thin. Test `Screen::commit`'s chunking
   and wrapping through a `TestBackend` with `Viewport::Inline`; `insert_before`
   works on it. Check by hand in a real terminal (the checklist below).
 
@@ -370,21 +372,7 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
    Register them in `BUILTINS` with `Surfaces` set to the TUI only, so
    `/help` in other modes leaves them out.
 
-## Manual checks (add to docs/CHECKLIST.md when phase 1 lands)
+## Manual checks
 
-1. `forge` in a real terminal: the prompt box and the status line appear at
-   the bottom. `hello` streams an answer, and scrolling up with the mouse or
-   Shift+PageUp shows the whole conversation.
-2. During a long answer, press Esc. The turn stops and
-   `[Request interrupted by user]` is in the transcript (`/export`).
-3. Type a second message while a turn runs. It shows as queued and is sent
-   when the turn ends.
-4. Ask for a shell command in default mode. The permission dialog appears;
-   option 2 adds the rule (`/permissions` lists it).
-5. Shift+Tab twice shows plan mode. Asking for a change ends with the plan
-   dialog, and option 1 switches to accept-edits.
-6. `NO_COLOR=1 forge` uses no colours. A 40-column terminal wraps without
-   breaking the box.
-7. Leave with `/exit`, with Ctrl-D and with Ctrl-C twice. Each time the
-   shell works normally afterwards: typed text echoes, and `stty -a` shows
-   `icanon echo`.
+The terminal itself (raw mode, the keyboard protocol, scrollback in a real
+emulator) is checked by hand: `docs/CHECKLIST.md`, "Terminal UI".

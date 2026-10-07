@@ -220,8 +220,9 @@ and aliases are unique, sorted and never shadow each other.
 Prefix `cmds::` is `crates/forge-cli/tests/commands.rs`.
 
 **Modes:** **P** is `-p` (text, json, stream-json), **R** the line REPL, **T**
-the full-screen UI (M8). The REPL and `-p` share one driver
-(`forge_core::Driver`), so a command tested in `-p` behaves the same in R.
+the terminal UI (M8). The REPL, the TUI and `-p` share one driver
+(`forge_core::Driver`), so a command tested in `-p` behaves the same in R
+and T; every command marked R also runs in T.
 
 | Command (aliases) | Status | Modes | Test | Notes |
 | --- | --- | --- | --- | --- |
@@ -278,4 +279,23 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 
 ## TUI (M8)
 
-The rows are added when M8 starts.
+The design is in `docs/TUI.md`. Prefix `tui::` is
+`crates/forge-cli/src/tui/` (run with `cargo test -p forge-cli --bin forge tui`).
+The manual checks are in `docs/CHECKLIST.md`, "Terminal UI".
+
+| Feature | Status | Test | Notes |
+| --- | --- | --- | --- |
+| Inline viewport: output in the terminal's scrollback, a live region at the bottom | done | `tui::tests::commit_wraps_into_scrollback_above_the_viewport`, `tui::tests::commit_writes_long_output_in_chunks` | Not an alternate screen. The region grows at once and shrinks when idle or when a dialog closes |
+| Streaming answers, one-line markdown, tool calls and results | done | `tui::app::tests::streamed_text_moves_to_scrollback_line_by_line` | Headings, bold, inline code and fences. No syntax highlighting or tables yet |
+| Spinner with activity and elapsed time | done | `tui::render::tests::busy_shows_the_answer_line_spinner_and_queue` | Forge's own frames and wording |
+| Input box: multiline, word moves, kill commands, history, paste | done | `tui::editor::tests::*`, `tui::render::tests::narrow_terminals_wrap_the_input_and_keep_the_box` | Bracketed paste; Shift+Enter needs the keyboard protocol, else Alt+Enter, Ctrl+J or `\` Enter |
+| Prompt history across sessions | done | `tui::tests::history_is_per_directory_and_private` | `<state>/history.jsonl`, per directory, last 500, mode 0600 |
+| `/` command menu | done | `tui::app::tests::slash_menu_filters_completes_and_runs`, `tui::render::tests::the_menu_lists_matching_commands` | Prefix matches first, then substring matches |
+| Permission, AskUserQuestion and plan dialogs | done | `tui::app::tests::dialogs_answer_permissions_questions_and_plans`, `tui::render::tests::dialogs_draw_in_a_box_without_the_input`, `tui::session::tests::turns_commands_questions_and_exit_go_through_the_channels` | "Don't ask again" adds the suggested rule |
+| Queued messages while a turn runs | done | `tui::app::tests::enter_sends_and_queues_while_busy`, `tui::session::tests::turns_commands_questions_and_exit_go_through_the_channels` | |
+| Esc / Ctrl-C / Ctrl-D / Shift+Tab | done | `tui::app::tests::esc_ctrl_c_and_shift_tab` | Esc twice opens `/rewind` |
+| Status line: mode, model, context, cost | done | `tui::render::tests::idle_shows_the_placeholder_and_status`, `tui::render::tests::plan_mode_and_hints_show_in_the_status_line` | |
+| Scheduled tasks and subtasks while idle | done | `tui::session` (same loop as the REPL) | A firing task shows the spinner |
+| Terminal restored on exit and on panic | done | manual (CHECKLIST) | A Drop guard and a panic hook |
+| `--no-tui`, `FORGE_TUI=0` | done | manual | The line REPL |
+| No colour (`NO_COLOR`, `--color never`) | done | `tui::render::tests::dialogs_draw_in_a_box_without_the_input` | Bold, dim and reverse only |

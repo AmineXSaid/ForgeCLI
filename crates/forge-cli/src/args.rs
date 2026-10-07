@@ -71,6 +71,9 @@ pub struct Opts {
     /// Never ask for input: permission prompts are denied and interactive mode refuses to start
     #[arg(long = "no-input", env = "FORGE_NO_INPUT", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true", default_value = "false")]
     pub no_input: bool,
+    /// Interactive mode: use the line-based prompt instead of the terminal UI (also FORGE_TUI=0)
+    #[arg(long = "no-tui")]
+    pub no_tui: bool,
     /// When to use color on stderr: auto (default; honours NO_COLOR and FORCE_COLOR), always, never
     #[arg(long, value_enum, default_value = "auto")]
     pub color: crate::term::ColorChoice,

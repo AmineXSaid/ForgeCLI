@@ -208,6 +208,7 @@ fn spans_of(cells: &[(char, Style)]) -> Line<'static> {
 }
 
 /// A line's text without styles (tests, copying).
+#[cfg(test)]
 pub fn plain(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }

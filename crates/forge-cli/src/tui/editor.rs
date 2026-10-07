@@ -30,6 +30,7 @@ impl Editor {
         self.text.is_empty()
     }
 
+    #[cfg(test)]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -54,6 +55,7 @@ impl Editor {
         t
     }
 
+    #[cfg(test)]
     pub fn history(&self) -> &[String] {
         &self.history
     }

@@ -2,6 +2,17 @@
 
 ## 0.1.0 (unreleased)
 
+### Terminal UI
+- `forge` opens a terminal UI when stdin and stdout are terminals: answers
+  stream into the terminal's own scrollback, and a live region at the bottom
+  holds the spinner, dialogs, queued messages, a multiline input box, the
+  `/` command menu and a status line (mode, model, context, cost).
+- Permission, question and plan-approval dialogs; Esc and Ctrl-C interrupt;
+  Shift+Tab cycles the permission mode; messages typed during a turn are
+  queued.
+- Prompt history per project directory in `<state>/history.jsonl`.
+- `--no-tui` or `FORGE_TUI=0` keeps the line REPL.
+
 ### Slash commands
 - One command registry for every mode: `/help`, `/status`, `/usage` (`/cost`,
   `/stats`), `/doctor`, `/hooks`, `/memory`, `/skills`, `/agents`,
