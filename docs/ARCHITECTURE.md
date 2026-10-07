@@ -529,8 +529,8 @@ are all generated from it.
 3. a skill, or a chain of up to six (`/a /b text`);
 4. an MCP prompt (`/mcp__server__prompt`).
 
-A name containing `/` or `\`, or one that is an existing root path, is an
-ordinary prompt. Anything else is `Unknown command: /name`. Commands the
+A name containing `/` or `\`, a name with a `.` (a file name), or one that
+is an existing root path, is an ordinary prompt when no command has that name. Anything else is `Unknown command: /name`. Commands the
 reference ties to its vendor's account or cloud are not registered, so they
 get the same answer.
 

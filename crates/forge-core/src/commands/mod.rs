@@ -6,8 +6,9 @@
 //! 3. a skill, or a chain of up to six (`/a /b text`);
 //! 4. an MCP prompt (`/mcp__server__prompt`).
 //!
-//! A name containing `/`, or matching an existing root path (`/tmp is full`),
-//! is an ordinary prompt. Anything else is `Unknown command: /name`.
+//! A name containing `/`, a file name (`/package.json is stale`) or an
+//! existing root path (`/tmp is full`) that names no command is an ordinary
+//! prompt. Anything else is `Unknown command: /name`.
 //!
 //! [`BUILTINS`] is the only list of built-ins. `/help`, `system/init`
 //! `slash_commands` and the stream-json `initialize` `commands` are all
@@ -419,8 +420,8 @@ pub fn parse<'a>(text: &'a str, cat: &'a Catalog) -> Invocation<'a> {
     if cat.mcp_prompts().iter().any(|p| p == name) {
         return Invocation::McpPrompt { name, args };
     }
-    // "/tmp is full": a path, not a command.
-    if Path::new(&format!("/{name}")).exists() {
+    // "/tmp is full" and "/package.json is stale": a path or a file name, not a command.
+    if name.contains('.') || Path::new(&format!("/{name}")).exists() {
         return Invocation::NotACommand;
     }
     Invocation::Unknown(name)
@@ -489,6 +490,9 @@ mod tests {
         assert_eq!(parse("hello /help", &cat), Invocation::NotACommand, "only at the start");
         assert_eq!(parse("/usr/bin/env python", &cat), Invocation::NotACommand);
         assert_eq!(parse("/tmp is full", &cat), Invocation::NotACommand, "an existing root path");
+        assert_eq!(parse("/package.json has the wrong version", &cat), Invocation::NotACommand, "a file name");
+        assert_eq!(parse("/.env is missing", &cat), Invocation::NotACommand);
+        assert_eq!(parse("/compact.", &cat), Invocation::NotACommand, "not /compact");
         assert!(
             matches!(parse("  /compact keep the API", &cat), Invocation::Builtin { spec, args: "keep the API" } if spec.id == Builtin::Compact)
         );

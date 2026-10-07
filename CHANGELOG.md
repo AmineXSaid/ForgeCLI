@@ -62,6 +62,10 @@
 - Fast mode on models that offer it (`fastMode` setting, `/fast`).
 - Custom commands, skills, output styles and plugins (`--plugin-dir`).
 
+### Fixes from the front-end review
+- A prompt that starts with a file name (`/package.json has the wrong
+  version`) is a prompt, not `Unknown command`.
+
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving
   changes; the scheduler follows the wall clock after the machine sleeps;

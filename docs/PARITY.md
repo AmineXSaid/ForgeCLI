@@ -241,7 +241,7 @@ and T; every command marked R also runs in T.
 | `/plugin` | partial | PR | `cmds::bad_commands_fail_with_exit_1` | `list` only. Marketplaces are out (vendor service) |
 | `/memory` | partial | PR | `cmds::info_commands_answer_locally` | Lists the files; opening one in `$EDITOR` comes with R/T editing |
 | `/tasks` (`/bashes`) | partial | PR | `cmds::info_commands_answer_locally`, `cmds::bad_commands_fail_with_exit_1` | Background shells and `stop <id>`; subagents join in phase 6 |
-| Unknown and out-of-scope names | done | PR | `cmds::bad_commands_fail_with_exit_1` | `Unknown command: /name`, exit 1; a path or `a/b` is a prompt |
+| Unknown and out-of-scope names | done | PR | `cmds::bad_commands_fail_with_exit_1` | `Unknown command: /name`, exit 1; a path, a file name (`/package.json ...`) or `a/b` is a prompt |
 | Skill chaining `/a /b text` | done | PR | `core::commands::tests::parses_commands_skills_paths_and_unknowns` | Up to 6 skills; the text goes to each |
 | `/context [all]` | done | PR | `core::driver_tests::rename_export_context_and_diff` | Estimates (4 chars a token) per part against the window, the last measured request, suggestions. The colour grid is T (M8) |
 | `/model [model]` | done | PRT | `core::driver_tests::model_effort_and_fast_reach_the_request`, `core::driver_tests::interactive_surfaces_save_defaults`, `cmds::settings_commands_persist_and_reach_the_api` | Text list in P and R, a picker in T; saves `model` in R, session-only in P. Warns when effort or fast mode stop applying |
