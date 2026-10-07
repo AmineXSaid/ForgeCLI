@@ -470,6 +470,12 @@ Tests:
 - An unapproved server shows as `disabled` in `system/init`, with a warning
   on stderr.
 
+**The same rule for the endpoint:** `baseUrl`, `openai.baseUrl`,
+`apiKeyHelper` and `openai.apiKeyHelper` in the project's checked-in settings
+are ignored with a warning (`forge-core/src/endpoint.rs`). Otherwise cloning a
+repository could send the user's key to another host, or run a command at
+startup without approval.
+
 **Startup:**
 - All servers connect concurrently before the first turn: `initialize`,
   then `notifications/initialized`, then `tools/list` (paged).

@@ -111,11 +111,11 @@ async fn print_errors() {
     assert!(err.contains("invalid --permission-mode"), "{err}");
     let api = MockApi::start(vec![MockTurn::http_error(401, "authentication_error")]).await;
     let (code, out, err) = run(&e, &api, &["-p", "--output-format", "json", "x"], None).await;
-    assert_eq!(code, 1);
+    assert_eq!(code, 3, "a refused key is a configuration problem");
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(v["type"], "result");
     assert_eq!(v["subtype"], "error_during_execution");
-    assert_eq!(v["exit_code"], 1);
+    assert_eq!(v["exit_code"], 3);
     let msg = v["errors"][0].as_str().unwrap();
     assert!(msg.contains("401") && msg.contains("FORGE_API_KEY"), "the error names the next step: {msg}");
     assert!(!err.contains("{"), "stderr carries no JSON: {err}");

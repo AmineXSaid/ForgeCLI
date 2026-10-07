@@ -54,7 +54,7 @@ impl From<forge_core::CoreError> for Fail {
     fn from(e: forge_core::CoreError) -> Self {
         use forge_core::CoreError::*;
         match e {
-            Auth(m) => Fail { code: CONFIG, message: m, hint: None },
+            Auth(m) => Fail::config(m).with_hint("Run `forge doctor` to see which endpoint and key Forge found."),
             Config(m) => Fail::config(m),
             Engine(e) => Fail::config(e.to_string()),
             Session(forge_session::SessionError::NotFound(id)) => Fail::config(format!("no session {id}"))
@@ -63,7 +63,9 @@ impl From<forge_core::CoreError> for Fail {
                 Fail::usage(format!("invalid session id {id:?}: session ids are UUIDs"))
             }
             Session(e) => Fail::config(e.to_string()),
-            Api(e) => Fail { code: FAILED, message: e.to_string(), hint: e.hint().map(str::to_string) },
+            Api(e) => {
+                Fail { code: if e.is_auth_failure() { CONFIG } else { FAILED }, message: e.to_string(), hint: e.hint() }
+            }
         }
     }
 }
@@ -75,6 +77,9 @@ pub fn for_result(r: &forge_engine::TurnResult) -> i32 {
     use forge_types::sdk::ResultSubtype::*;
     if r.prompt_blocked.is_some() {
         return FAILED;
+    }
+    if r.auth_failed {
+        return CONFIG;
     }
     match r.subtype {
         Success => OK,

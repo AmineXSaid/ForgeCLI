@@ -568,10 +568,13 @@ fn use_tui(o: &Opts, t: term::Term) -> bool {
     t.stdin_tty && t.stdout_tty && !o.no_tui && !env_off
 }
 
-fn run_doctor() -> Result<i32, Fail> {
+async fn run_doctor(probe: bool) -> Result<i32, Fail> {
     let cwd = std::env::current_dir().map_err(|e| Fail::config(e.to_string()))?;
     outln!("ForgeCLI {}", forge_core::VERSION);
-    let checks = forge_core::doctor::checks(&cwd);
+    let mut checks = forge_core::doctor::checks(&cwd);
+    if probe {
+        checks.push(forge_core::doctor::probe(&cwd).await);
+    }
     for c in &checks {
         let mark = if c.ok { term::paint("32", "ok  ") } else { term::red("FAIL") };
         outln!("{mark} {:<12} {}", c.name, c.detail);
@@ -649,7 +652,7 @@ fn main() {
     };
     let result = rt.block_on(async move {
         match cli.command {
-            Some(Command::Doctor) => run_doctor(),
+            Some(Command::Doctor { probe }) => run_doctor(probe).await,
             Some(Command::Config { action }) => run_config(action),
             Some(Command::Completion { shell }) => {
                 let mut script = vec![];

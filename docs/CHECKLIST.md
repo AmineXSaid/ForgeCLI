@@ -322,6 +322,10 @@ the shell search, the no-shell message, `forge doctor` and paths without
     command stops at once (Task Manager shows no leftover `PING.EXE`).
 60. (new) A deny rule `Read(./secrets/**)`: reading `.\Secrets\key.txt` or
     `/c/.../secrets/key.txt` is denied too.
+61. (new) An OpenAI-compatible gateway with only `FORGE_API_KEY` set: `forge`
+    warns that `FORGE_OPENAI_API_KEY` is not set at startup; the 401 names
+    `FORGE_OPENAI_API_KEY`; `forge doctor` fails the `credentials` row;
+    `forge doctor --probe` with the right key says the key works.
 
 ## Results
 

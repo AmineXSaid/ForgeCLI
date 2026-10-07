@@ -276,7 +276,7 @@ impl Driver {
         let (list, failure) = match self.engine.provider().list_models().await {
             None => (vec![], None),
             Some(Ok(ids)) => (ids, None),
-            Some(Err(e)) => (vec![], Some(format!("could not list the endpoint's models: {e}"))),
+            Some(Err(e)) => (vec![], Some(format!("could not list the endpoint's models: {}", e.describe()))),
         };
         // A failed listing is asked again next time.
         if failure.is_none() {

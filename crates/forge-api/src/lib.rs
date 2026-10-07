@@ -6,6 +6,7 @@
 //! translate into that sequence, so the agent loop sees one protocol.
 
 pub mod accumulate;
+pub mod auth;
 pub mod messages;
 pub mod mock;
 pub mod models;
@@ -29,10 +30,19 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ApiError>> 
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    #[error("API error {status} ({kind}): {message}")]
-    Http { status: u16, kind: String, message: String, retry_after: Option<Duration> },
-    #[error("network error: {0}")]
-    Network(String),
+    #[error("API error {status} ({kind}){}: {message}", from_url(url))]
+    Http {
+        status: u16,
+        kind: String,
+        message: String,
+        retry_after: Option<Duration>,
+        /// The URL that answered (no credentials or query), or empty.
+        url: String,
+        /// Which endpoint and key the request used, for the hint.
+        origin: Option<Box<auth::Origin>>,
+    },
+    #[error("network error: {message}")]
+    Network { message: String, origin: Option<Box<auth::Origin>> },
     #[error("stream error ({kind}): {message}")]
     Stream { kind: String, message: String },
     #[error("could not parse API response: {0}")]
@@ -43,12 +53,45 @@ pub enum ApiError {
     MissingCredentials,
 }
 
+fn from_url(url: &str) -> String {
+    if url.is_empty() {
+        String::new()
+    } else {
+        format!(" from {url}")
+    }
+}
+
 impl ApiError {
+    /// A transport failure.
+    pub fn network(message: impl Into<String>) -> Self {
+        ApiError::Network { message: message.into(), origin: None }
+    }
+
+    /// Attach the endpoint a request went to, so the hint names the right variable.
+    pub fn with_origin(mut self, o: auth::Origin) -> Self {
+        match &mut self {
+            ApiError::Http { origin, .. } | ApiError::Network { origin, .. } => *origin = Some(Box::new(o)),
+            _ => {}
+        }
+        self
+    }
+
+    /// The endpoint refused the credentials (or none were set): the user must fix a key.
+    pub fn is_auth_failure(&self) -> bool {
+        match self {
+            ApiError::MissingCredentials => true,
+            ApiError::Http { status, kind, .. } => {
+                matches!(status, 401 | 403) || matches!(kind.as_str(), "authentication_error" | "permission_error")
+            }
+            _ => false,
+        }
+    }
+
     /// Whether retrying the same request may succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
             ApiError::Http { status, .. } => matches!(status, 408 | 409 | 429 | 500..=599),
-            ApiError::Network(_) => true,
+            ApiError::Network { .. } => true,
             ApiError::Stream { kind, .. } => kind == "overloaded_error" || kind == "api_error",
             _ => false,
         }
@@ -77,19 +120,34 @@ impl ApiError {
     }
 
     /// The next useful action for a person reading this error.
-    pub fn hint(&self) -> Option<&'static str> {
+    pub fn hint(&self) -> Option<String> {
+        let origin = match self {
+            ApiError::Http { origin, .. } | ApiError::Network { origin, .. } => origin.as_deref().copied(),
+            _ => None,
+        };
         Some(match self {
-            ApiError::Http { status: 401 | 403, .. } => {
-                "Check FORGE_API_KEY (or FORGE_AUTH_TOKEN for a gateway); `forge doctor` shows what is configured."
+            ApiError::Http { status: 401 | 403, .. } => match origin {
+                Some(o) => o.auth_hint(),
+                None => "Check the endpoint's key; `forge doctor` shows what is configured.".into(),
+            },
+            ApiError::Http { status: 404, .. } => match origin {
+                Some(o) => o.not_found_hint(),
+                None => "Check the model name (--model or FORGE_MODEL) and the endpoint URL.".into(),
+            },
+            ApiError::Http { status: 413, .. } => {
+                "The request is too large: run /compact or start a new session.".into()
             }
-            ApiError::Http { status: 404, .. } => "Check the model name (--model or FORGE_MODEL) and FORGE_BASE_URL.",
-            ApiError::Http { status: 413, .. } => "The request is too large: run /compact or start a new session.",
-            ApiError::Http { status: 429, .. } => "Rate limited: wait a moment and retry, or lower parallel runs.",
-            e if e.is_overloaded() => "The API is overloaded: retry later, or pass --fallback-model.",
-            e if e.is_prompt_too_long() => "The conversation is too long: run /compact or start a new session.",
-            ApiError::Http { status: 500..=599, .. } => "The API failed on its side: retry in a moment.",
-            ApiError::Network(_) => "Check FORGE_BASE_URL, your network connection and proxy settings.",
-            ApiError::MissingCredentials => "Run `forge doctor` to see what is configured.",
+            ApiError::Http { status: 429, .. } => {
+                "Rate limited: wait a moment and retry, or lower maxConcurrentRequests.".into()
+            }
+            e if e.is_overloaded() => "The API is overloaded: retry later, or pass --fallback-model.".into(),
+            e if e.is_prompt_too_long() => "The conversation is too long: run /compact or start a new session.".into(),
+            ApiError::Http { status: 500..=599, .. } => "The API failed on its side: retry in a moment.".into(),
+            ApiError::Network { .. } => match origin {
+                Some(o) => o.network_hint(),
+                None => "Check the endpoint URL, your network connection and proxy settings.".into(),
+            },
+            ApiError::MissingCredentials => "Run `forge doctor` to see what is configured.".into(),
             _ => return None,
         })
     }
@@ -156,6 +214,22 @@ pub trait Provider: Send + Sync {
 
     /// The models this endpoint offers, for `/model`. `None`: it doesn't
     /// list them (any model id can still be set by hand).
+    /// `forge doctor --probe`: one authenticated request that changes nothing
+    /// (the model list); `Some(Ok(n))` with the number of models listed.
+    async fn probe(&self) -> Option<Result<usize, ApiError>> {
+        self.list_models().await.map(|r| r.map(|m| m.len()))
+    }
+
+    /// The endpoint and where its key came from (`None` for test providers).
+    fn origin(&self) -> Option<auth::Origin> {
+        None
+    }
+
+    /// The base URL requests go to, when it isn't the provider's default.
+    fn base_url(&self) -> Option<String> {
+        None
+    }
+
     async fn list_models(&self) -> Option<Result<Vec<String>, ApiError>> {
         None
     }

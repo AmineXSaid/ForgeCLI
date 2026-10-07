@@ -226,7 +226,14 @@ impl Provider for MockProvider {
         self.requests.lock().unwrap().push(request.clone());
         let (message, delay) = match turn {
             MockTurn::HttpError { status, kind, message } => {
-                return Err(ApiError::Http { status, kind, message, retry_after: None })
+                return Err(ApiError::Http {
+                    status,
+                    kind,
+                    message,
+                    retry_after: None,
+                    url: String::new(),
+                    origin: None,
+                })
             }
             MockTurn::StreamError { kind, message } => {
                 let start = events_for(&MockTurn::text("").into_message().0).remove(0);

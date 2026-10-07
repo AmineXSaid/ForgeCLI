@@ -27,7 +27,7 @@ a note in `CHANGELOG.md`.
 | `0` | Success. This includes a turn interrupted by an IDE host over the control channel. |
 | `1` | The run failed: an API error, a tool or agent failure, or a prompt blocked by a hook. Also `config get` on a key that isn't set. |
 | `2` | Usage error: an unknown flag, an invalid value, a missing prompt, or a command that needs a terminal (or input) and has none. |
-| `3` | Configuration or credentials are missing or invalid: no API key, an unreadable `--settings`, a session that doesn't exist, or an unknown model with a budget. Also `doctor` when it finds a problem. |
+| `3` | Configuration or credentials are missing or invalid: no API key, a key the endpoint refuses (HTTP 401 or 403, also mid-run), an invalid endpoint URL, a key helper that fails, an unreadable `--settings`, a session that doesn't exist, or an unknown model with a budget. Also `doctor` when it finds a problem. |
 | `4` | A limit ended the run: `--max-turns` or `--max-budget-usd`. |
 | `130` | Interrupted by Ctrl-C (SIGINT). The current turn's result is still written. |
 
@@ -202,17 +202,46 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
   later without that field. `/btw`'s cost and `/mcp`'s effect on the system
   prompt and `system/init` are applied when the turn ends.
 
-### `forge doctor`
+### `forge doctor [--probe]`
 
 Checks the local setup:
 - settings files;
-- credentials (whether they're present, never their value);
-- the endpoint;
-- git;
-- the config and state directories.
+- `provider`: the Messages API or an OpenAI-compatible endpoint, and what chose it;
+- `endpoint`: the URL and the variable or settings file it came from;
+- `credentials`: which variable or helper supplies the key and how it is sent,
+  masked to its last four characters; a key set for the other provider is
+  named as the likely mistake;
+- git, and the shell commands will run in;
+- the sandbox, and the config and state directories.
 
 Prints one line per check to stdout. Exits `0` when everything passes and `3`
-when anything fails. It never makes network calls.
+when anything fails. Without `--probe` it makes no network calls and runs no
+key helper. `--probe` adds one authenticated request that changes nothing
+(the endpoint's model list), running the key helper first if there is one, to
+check that the URL and key work.
+
+### Which key goes where
+
+| Endpoint | Chosen by | Key | Sent as |
+| --- | --- | --- | --- |
+| OpenAI-compatible | `FORGE_OPENAI_BASE_URL`, else `openai.baseUrl` | `FORGE_OPENAI_API_KEY`, else `openai.apiKeyHelper` | `Authorization: Bearer` |
+| Messages API | `FORGE_BASE_URL`, else `baseUrl`, else the default host | `FORGE_API_KEY` and/or `FORGE_AUTH_TOKEN`, else `apiKeyHelper` | `x-api-key` / `Authorization: Bearer` |
+
+- A key is never sent to the other kind of endpoint. With an OpenAI-compatible
+  endpoint and only `FORGE_API_KEY` set, Forge warns at startup, and a 401
+  names `FORGE_OPENAI_API_KEY`.
+- The OpenAI-compatible endpoint may need no key (a local server): Forge
+  starts without one, silently for `localhost` and private addresses, with a
+  warning otherwise. The Messages API always needs one.
+- Values wrapped in quotes (what `set X="..."` leaves in cmd.exe) are
+  unquoted, with a warning. A key with spaces or control characters, or a URL
+  that isn't `http(s)://`, stops startup with exit `3`.
+- `baseUrl`, `openai.baseUrl`, `apiKeyHelper` and `openai.apiKeyHelper` are
+  read from your user, local, `--settings` and managed settings only. In a
+  project's checked-in `.forge/settings.json` they are ignored with a warning:
+  a repository can't choose where your key goes or run a command for it.
+- A key helper must print the key and nothing else on one line; any failure
+  (exit status, stderr, empty or extra output) is reported and stops startup.
 
 ### `forge config list [--origin] | get <key> | paths`
 

@@ -23,6 +23,23 @@ pub struct OpenAiConfig {
     pub extra_headers: Vec<(String, String)>,
     pub max_retries: u32,
     pub timeout: Duration,
+    /// The variable or setting that chose `base_url`.
+    pub url_from: Option<&'static str>,
+    /// Set when `api_key` came from a helper command (its setting name).
+    pub key_helper: Option<&'static str>,
+}
+
+impl OpenAiConfig {
+    /// The endpoint and where its key came from, for error hints.
+    pub fn origin(&self) -> crate::auth::Origin {
+        use crate::auth::KeyFrom;
+        let key_from = match (self.api_key.is_some(), self.key_helper) {
+            (false, _) => KeyFrom::None,
+            (true, Some(h)) => KeyFrom::Helper(h),
+            (true, None) => KeyFrom::OpenAiKey,
+        };
+        crate::auth::Origin { backend: crate::auth::Backend::OpenAi, url_from: self.url_from, key_from }
+    }
 }
 
 impl Default for OpenAiConfig {
@@ -33,6 +50,8 @@ impl Default for OpenAiConfig {
             extra_headers: vec![],
             max_retries: 2,
             timeout: Duration::from_secs(300),
+            url_from: None,
+            key_helper: None,
         }
     }
 }
@@ -48,7 +67,7 @@ impl OpenAiProvider {
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(config.timeout)
             .build()
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(|e| ApiError::network(e.to_string()))?;
         Ok(OpenAiProvider { config, http })
     }
 }
@@ -308,6 +327,14 @@ impl Provider for OpenAiProvider {
         "openai"
     }
 
+    fn origin(&self) -> Option<crate::auth::Origin> {
+        Some(self.config.origin())
+    }
+
+    fn base_url(&self) -> Option<String> {
+        Some(crate::auth::display_url(&self.config.base_url))
+    }
+
     async fn list_models(&self) -> Option<Result<Vec<String>, ApiError>> {
         let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
         let mut rb = self.http.get(&url).timeout(Duration::from_secs(15));
@@ -326,7 +353,7 @@ impl Provider for OpenAiProvider {
             Ok(model_ids(&body))
         }
         .await;
-        Some(r)
+        Some(r.map_err(|e| e.with_origin(self.config.origin())))
     }
 
     async fn stream(&self, request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {
@@ -356,7 +383,7 @@ impl Provider for OpenAiProvider {
                     tokio::time::sleep(backoff_delay(attempt, None)).await;
                     attempt += 1;
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.with_origin(self.config.origin())),
             }
         };
         let mut tr = ChunkTranslator::new(&request.model);

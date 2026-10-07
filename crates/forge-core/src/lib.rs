@@ -5,6 +5,7 @@ pub mod commands;
 pub mod debug;
 pub mod doctor;
 pub mod driver;
+pub mod endpoint;
 pub mod glyphs;
 pub mod goal;
 pub mod import;
@@ -262,58 +263,91 @@ fn env_nonempty(k: &str) -> Option<String> {
 }
 
 /// The provider for this session: an OpenAI-compatible endpoint when one is
-/// configured, the Messages API otherwise.
+/// configured, the Messages API otherwise (see [`endpoint`] for the rules).
 pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<dyn Provider>, CoreError> {
-    make_provider_with_shell(settings, betas, &session_shell(settings))
+    make_provider_with_shell(settings, betas, &session_shell(settings), &mut vec![])
 }
 
 fn make_provider_with_shell(
     settings: &LoadedSettings,
     betas: &[String],
     shell: &forge_platform::shell::ShellChoice,
+    warnings: &mut Vec<String>,
 ) -> Result<Arc<dyn Provider>, CoreError> {
-    let openai_url =
-        env_nonempty("FORGE_OPENAI_BASE_URL").or_else(|| settings.str("/openai/baseUrl").map(str::to_string));
-    if let Some(url) = openai_url {
-        let cfg = OpenAiConfig { base_url: url, api_key: env_nonempty("FORGE_OPENAI_API_KEY"), ..Default::default() };
-        return Ok(Arc::new(OpenAiProvider::new(cfg)?));
+    let r = endpoint::resolve(settings, &|k| std::env::var(k).ok());
+    if let Some(p) = r.problems.first() {
+        // The session won't start, so its warnings would never show: they may be the cause.
+        let notes: String = r.warnings.iter().map(|w| format!("\n  note: {w}")).collect();
+        return Err(CoreError::Auth(format!("{p}{notes}")));
     }
-    let mut cfg = MessagesConfig::from_env();
-    if cfg.base_url == forge_api::messages::DEFAULT_BASE_URL {
-        if let Some(u) = settings.str("/baseUrl") {
-            cfg.base_url = u.to_string();
+    warnings.extend(r.warnings.iter().cloned());
+    let mut key = r.key.clone();
+    let mut helper_name = None;
+    if key.is_none() && r.token.is_none() {
+        if let Some((cmd, setting, _)) = &r.helper {
+            key = Some(run_key_helper(cmd, setting, shell).map_err(CoreError::Auth)?);
+            helper_name = Some(*setting);
         }
     }
-    if !cfg.has_credentials() {
-        if let Some(helper) = settings.str("/apiKeyHelper") {
-            cfg.api_key = run_key_helper(helper, shell).map_err(|why| {
-                CoreError::Auth(format!("no API credentials found: apiKeyHelper `{helper}` could not run: {why}"))
-            })?;
+    match r.backend() {
+        forge_api::auth::Backend::OpenAi => {
+            let cfg = OpenAiConfig {
+                base_url: r.url.clone().unwrap_or_default(),
+                api_key: key,
+                url_from: r.url_from,
+                key_helper: helper_name,
+                ..Default::default()
+            };
+            Ok(Arc::new(OpenAiProvider::new(cfg)?))
+        }
+        forge_api::auth::Backend::Messages => {
+            let mut cfg = MessagesConfig::from_env();
+            if let Some(u) = &r.url {
+                cfg.base_url = u.clone();
+            }
+            cfg.url_from = r.url_from;
+            cfg.api_key = key;
+            cfg.auth_token = r.token.clone();
+            cfg.key_helper = helper_name;
+            cfg.betas = betas.to_vec();
+            Ok(Arc::new(MessagesProvider::new(cfg)?))
         }
     }
-    if !cfg.has_credentials() {
-        return Err(CoreError::Auth(
-            "no API credentials found. Set FORGE_API_KEY (or FORGE_AUTH_TOKEN for a gateway), or \
-             FORGE_OPENAI_BASE_URL for an OpenAI-compatible endpoint; `forge doctor` shows the current setup"
-                .into(),
-        ));
-    }
-    cfg.betas = betas.to_vec();
-    Ok(Arc::new(MessagesProvider::new(cfg)?))
 }
 
-/// `apiKeyHelper`: a command whose stdout is the key. `Err` when it could not
-/// start at all; `Ok(None)` when it ran but printed no key.
-fn run_key_helper(cmd: &str, shell: &forge_platform::shell::ShellChoice) -> Result<Option<String>, String> {
-    let shell = shell.as_ref().map_err(|m| m.to_string())?;
-    let (mut c, _script) = shell.command(&shell.script(cmd, None)).map_err(|e| e.to_string())?;
-    forge_platform::process::no_window(&mut c);
-    let out = c
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("could not start {}: {e}", shell.program.display()))?;
-    let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok((out.status.success() && !key.is_empty()).then_some(key))
+/// A key helper (`apiKeyHelper`, `openai.apiKeyHelper`): a command that prints
+/// the key. Every way it can fail is named, with the command redacted.
+fn run_key_helper(cmd: &str, setting: &str, shell: &forge_platform::shell::ShellChoice) -> Result<String, String> {
+    let c = forge_config::redact_text(cmd);
+    let fail = |why: String| format!("{setting} failed: {why}; run the command yourself to see what it prints");
+    let shell = shell.as_ref().map_err(|m| fail(format!("could not run `{c}`: {m}")))?;
+    let (mut command, _script) =
+        shell.command(&shell.script(cmd, None)).map_err(|e| fail(format!("could not run `{c}`: {e}")))?;
+    forge_platform::process::no_window(&mut command);
+    let out =
+        command.stdin(std::process::Stdio::null()).output().map_err(|e| fail(format!("could not run `{c}`: {e}")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let first = err.lines().map(str::trim).find(|l| !l.is_empty()).map(forge_config::redact_text);
+        let status = match out.status.code() {
+            Some(n) => format!("exited with status {n}"),
+            None => "was stopped by a signal".into(),
+        };
+        return Err(fail(match first {
+            Some(l) => format!("`{c}` {status}: {l}"),
+            None => format!("`{c}` {status}"),
+        }));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    match lines.as_slice() {
+        [] => Err(fail(format!("`{c}` printed nothing; it must print the key"))),
+        [key] if key.chars().all(|ch| ch.is_ascii_graphic()) => Ok(key.to_string()),
+        [_] => Err(fail(format!(
+            "what `{c}` printed contains a space or a control character, so it can't be sent as a key"
+        ))),
+        more => Err(fail(format!("`{c}` printed {} lines; it must print only the key", more.len()))),
+    }
 }
 
 /// The shell for a session: `FORGE_SHELL` from the environment, else from the
@@ -401,7 +435,7 @@ pub fn build_session(
 
     let provider = match opts.provider.clone() {
         Some(p) => p,
-        None => make_provider_with_shell(&settings, &opts.betas, &shell)?,
+        None => make_provider_with_shell(&settings, &opts.betas, &shell, &mut warnings)?,
     };
 
     // Plugins, commands, skills and output styles (M5).
@@ -819,7 +853,7 @@ pub fn build_session(
             ..Default::default()
         }
         .names(commands::Surface::Stream),
-        api_key_source: if opts.provider.is_some() { "none".into() } else { key_source(&settings) },
+        api_key_source: provider.origin().map(|o| o.api_key_source()).unwrap_or("none").into(),
         forge_version: VERSION.into(),
         output_style: style.name.clone(),
         agents: agents.iter().map(|a| a.name.clone()).collect(),
@@ -862,19 +896,6 @@ pub fn parse_autocompact(v: &str) -> Result<Option<u64>, CoreError> {
     match n {
         Some(n) if (100_000..=1_000_000).contains(&n) => Ok(Some(n)),
         _ => Err(CoreError::Config(format!("--autocompact must be auto or 100k-1M tokens, got {v:?}"))),
-    }
-}
-
-fn key_source(settings: &LoadedSettings) -> String {
-    let c = MessagesConfig::from_env();
-    if env_nonempty("FORGE_OPENAI_BASE_URL").is_some() {
-        "FORGE_OPENAI_API_KEY".into()
-    } else if c.has_credentials() {
-        c.key_source().into()
-    } else if settings.str("/apiKeyHelper").is_some() {
-        "apiKeyHelper".into()
-    } else {
-        "none".into()
     }
 }
 

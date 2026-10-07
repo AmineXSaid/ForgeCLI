@@ -211,7 +211,11 @@ pub struct Opts {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Check the health of the installation
-    Doctor,
+    Doctor {
+        /// Also contact the endpoint (its model list) and run the key helper, to check the URL and key
+        #[arg(long)]
+        probe: bool,
+    },
     /// Inspect settings: merged values (secrets redacted), where they came from, and file locations
     Config {
         #[command(subcommand)]

@@ -16,6 +16,22 @@
   permission rules accept Git Bash paths and compare paths without regard to
   case, as the filesystem does. `forge doctor` finds `git.exe`.
 
+### Auth
+- Each endpoint gets only its own key: `FORGE_API_KEY` and `FORGE_AUTH_TOKEN`
+  never reach an OpenAI-compatible endpoint, and `FORGE_OPENAI_API_KEY` never
+  reaches the Messages API. A key set for the wrong one is named at startup.
+- Errors name the URL that answered and the variable the active endpoint
+  reads: a 401 from an OpenAI-compatible endpoint points at
+  `FORGE_OPENAI_API_KEY`, a 404 or connection failure at the URL variable in
+  use.
+- A refused key (401/403) exits with `3`, also mid-run and in JSON modes.
+- `forge doctor` reports the provider, the URL and where it came from, and
+  the key's source, masked; `forge doctor --probe` checks them with one
+  request. `/status` shows the same.
+- Quoted values are unquoted; an invalid URL or key, or a failing key helper,
+  stops startup with a clear message. `openai.apiKeyHelper` is new.
+- Project settings can no longer choose the endpoint or run a key helper.
+
 ### Terminal UI
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom

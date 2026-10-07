@@ -298,3 +298,114 @@ fn closed_stdout_ends_quietly() {
     assert!(o.status.success(), "status {:?}: {err}", o.status);
     assert!(!err.contains("panicked") && !err.contains("Broken pipe"), "{err}");
 }
+
+/// An OpenAI-compatible endpoint that refuses: exit 3, and the hint names the
+/// variable that endpoint reads, never FORGE_API_KEY, which is not sent there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn openai_endpoint_401_names_the_right_variable_and_exits_3() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::http_error(401, "invalid_request_error")]).await;
+    let mut c = forge(&e, &["-p", "hello"]);
+    c.env("FORGE_OPENAI_BASE_URL", format!("{}/v1", api.url))
+        .env("FORGE_API_KEY", "sk-messages-0123456789abcdef")
+        .env("FORGE_MAX_RETRIES", "0");
+    let (code, out, err) = tokio::task::spawn_blocking(move || run(c)).await.unwrap();
+    assert_eq!(code, 3, "{err}");
+    assert!(out.is_empty());
+    assert!(err.contains("set FORGE_OPENAI_API_KEY") && err.contains("/v1/chat/completions"), "{err}");
+    assert!(!err.contains("Check FORGE_API_KEY"), "{err}");
+    let head = &api.headers()[0];
+    assert!(head.starts_with("post /v1/chat/completions"), "{head}");
+    assert!(!head.contains("authorization") && !head.contains("sk-messages"), "no key crosses providers: {head}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn openai_endpoint_sends_only_its_own_key() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::http_error(401, "invalid_request_error")]).await;
+    let mut c = forge(&e, &["-p", "--output-format", "json", "hello"]);
+    c.env("FORGE_OPENAI_BASE_URL", format!("{}/v1", api.url))
+        .env("FORGE_OPENAI_API_KEY", "sk-openai-0123456789")
+        .env("FORGE_API_KEY", "sk-messages-0123456789");
+    let (code, out, _) = tokio::task::spawn_blocking(move || run(c)).await.unwrap();
+    assert_eq!(code, 3);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["exit_code"], 3);
+    let head = &api.headers()[0];
+    assert!(head.contains("authorization: bearer sk-openai-0123456789") && !head.contains("sk-messages"), "{head}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_settings_cannot_redirect_the_key() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("leaked")]).await;
+    std::fs::create_dir_all(e.cwd.join(".forge")).unwrap();
+    std::fs::write(
+        e.cwd.join(".forge/settings.json"),
+        serde_json::json!({"openai": {"baseUrl": format!("{}/v1", api.url)}, "apiKeyHelper": "touch ran"}).to_string(),
+    )
+    .unwrap();
+    let mut c = forge(&e, &["-p", "hello"]);
+    c.env("FORGE_OPENAI_API_KEY", "sk-openai-0123456789");
+    let (code, _, err) = tokio::task::spawn_blocking(move || run(c)).await.unwrap();
+    assert_eq!(code, 3, "{err}");
+    assert!(err.contains("Ignored openai.baseUrl") && err.contains("Ignored apiKeyHelper"), "{err}");
+    assert!(api.requests().is_empty(), "nothing was sent to the project's URL");
+    assert!(!e.cwd.join("ran").exists(), "the project's key helper did not run");
+}
+
+#[cfg(unix)]
+#[test]
+fn key_helper_failure_is_named() {
+    let e = env();
+    std::fs::create_dir_all(e.home.join(".forge")).unwrap();
+    std::fs::write(e.home.join(".forge/settings.json"), r#"{"apiKeyHelper": "echo nope >&2; exit 3"}"#).unwrap();
+    let (code, _, err) = run(forge(&e, &["-p", "hello"]).env("FORGE_BASE_URL", "http://127.0.0.1:9"));
+    assert_eq!(code, 3);
+    assert!(err.contains("apiKeyHelper failed") && err.contains("exited with status 3: nope"), "{err}");
+}
+
+#[test]
+fn doctor_reports_provider_endpoint_and_masked_key() {
+    let e = env();
+    let (code, out, _) =
+        run(forge(&e, &["doctor"]).env("FORGE_OPENAI_BASE_URL", "https://gw.example.com/v1").env("FORGE_API_KEY", "x"));
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("OpenAI-compatible") && out.contains("FAIL credentials"), "{out}");
+    assert!(out.contains("FORGE_OPENAI_API_KEY") && out.contains("never sent"), "{out}");
+    let (code, out, _) = run(forge(&e, &["doctor"])
+        .env("FORGE_OPENAI_BASE_URL", "https://gw.example.com/v1")
+        .env("FORGE_OPENAI_API_KEY", "sk-0123456789abwxyz"));
+    assert!(out.contains("...wxyz") && !out.contains("sk-0123"), "{out}");
+    assert!(out.contains("https://gw.example.com/v1 (from FORGE_OPENAI_BASE_URL)"), "{out}");
+    assert!(!out.contains("FAIL credentials") && !out.contains("FAIL endpoint"), "{out}");
+    let _ = code;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_probe_checks_the_key() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::http_error(401, "invalid_request_error")]).await;
+    let url = format!("{}/v1", api.url);
+    let (u, cwd, home) = (url.clone(), e.cwd.clone(), e.home.clone());
+    let plain = move |probe: bool| {
+        let mut c = Command::new(forge_bin());
+        c.args(if probe { vec!["doctor", "--probe"] } else { vec!["doctor"] })
+            .current_dir(&cwd)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &home)
+            .env("FORGE_HOME", home.join(".forge"))
+            .env("FORGE_OPENAI_BASE_URL", &u)
+            .env("FORGE_OPENAI_API_KEY", "sk-wrong-0123456789")
+            .stdin(Stdio::null());
+        run(c)
+    };
+    let p = plain.clone();
+    let (_, out, _) = tokio::task::spawn_blocking(move || p(false)).await.unwrap();
+    assert!(api.headers().is_empty(), "plain doctor makes no request: {out}");
+    let (code, out, _) = tokio::task::spawn_blocking(move || plain(true)).await.unwrap();
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("FAIL probe") && out.contains("401"), "{out}");
+    assert!(api.headers()[0].starts_with("get /v1/models"), "{:?}", api.headers());
+}

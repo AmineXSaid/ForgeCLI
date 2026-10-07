@@ -131,7 +131,25 @@ fn status(v: &SessionView) -> String {
         Err(m) => format!("none ({m})"),
     };
     let _ = writeln!(s, "Shell:          {shell}");
-    let _ = writeln!(s, "API:            {} via {}", d.init.api_key_source, d.provider.name());
+    let api = match (d.provider.origin(), d.provider.base_url()) {
+        (Some(o), url) => {
+            let kind = match o.backend {
+                forge_api::auth::Backend::OpenAi => "OpenAI-compatible endpoint",
+                forge_api::auth::Backend::Messages => "Messages API",
+            };
+            let at = match url {
+                Some(u) => format!(" {u} ({})", o.url_var()),
+                None => ", default host".into(),
+            };
+            let key = match o.api_key_source() {
+                "none" => "no key".to_string(),
+                k => format!("key from {k}"),
+            };
+            format!("{kind}{at} · {key}")
+        }
+        (None, _) => format!("{} via {}", d.init.api_key_source, d.provider.name()),
+    };
+    let _ = writeln!(s, "API:            {api}");
     let files: Vec<String> = d
         .settings
         .layers

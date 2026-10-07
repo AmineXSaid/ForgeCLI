@@ -724,6 +724,7 @@ mod tests {
             structured_output: None,
             prompt_blocked: None,
             fatal: false,
+            auth_failed: false,
             tool_calls: 0,
         };
         assert!(matches!(reply_for(&base), Some(UiEvent::Reply { text, is_error: false }) if text == "ok"));

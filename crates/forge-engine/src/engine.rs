@@ -273,6 +273,9 @@ pub struct TurnResult {
     /// The turn failed in a way the next turn would too: credentials, billing,
     /// a missing model, or a conversation too long even after compaction.
     pub fatal: bool,
+    /// The endpoint refused the credentials (401/403) or none were set: print
+    /// mode exits with the configuration status.
+    pub auth_failed: bool,
     /// Tool calls the model made in this turn.
     pub tool_calls: u32,
 }
@@ -1089,6 +1092,7 @@ impl Engine {
             structured_output: None,
             prompt_blocked: None,
             fatal: false,
+            auth_failed: false,
             tool_calls: 0,
         }
     }
@@ -1409,6 +1413,7 @@ impl Engine {
                     );
                     // Still too long after compacting: the next turn would fail the same way.
                     r.fatal = e.is_unrecoverable() || (e.is_prompt_too_long() && compacted_for_length);
+                    r.auth_failed = e.is_auth_failure();
                     return r;
                 }
             };
@@ -1746,6 +1751,7 @@ impl Engine {
             structured_output,
             prompt_blocked,
             fatal: false,
+            auth_failed: false,
             tool_calls: turn.tool_calls,
         }
     }

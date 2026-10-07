@@ -344,6 +344,18 @@ async fn non_overload_errors_fail_the_turn() {
 }
 
 #[tokio::test]
+async fn auth_failures_mark_the_turn() {
+    let h =
+        Harness::new(vec![MockTurn::http_error(401, "authentication_error"), MockTurn::http_error(500, "api_error")]);
+    let mut e =
+        h.engine_with(EngineConfig::default(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("hi")).await;
+    assert!(r.auth_failed && r.fatal, "{r:?}");
+    let r = e.submit(prompt("again")).await;
+    assert!(!r.auth_failed && r.is_error);
+}
+
+#[tokio::test]
 async fn c7_unknown_model_budget_fails_closed() {
     let h = Harness::new(vec![]);
     let cwd = h.cwd();
