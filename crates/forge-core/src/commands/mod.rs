@@ -16,6 +16,7 @@
 mod feedback;
 mod importing;
 mod looping;
+mod mcp;
 mod run;
 mod session;
 mod settings;
@@ -166,7 +167,15 @@ builtins! {
         "[interval] [prompt]",
         "Run a prompt on a schedule, or let Forge pace it; /tasks lists them"
     ),
-    (Mcp, "mcp", [], "", "Show MCP server status", Surfaces::ALL, true),
+    (
+        Mcp,
+        "mcp",
+        [],
+        "[reconnect|enable|disable <server|all>]",
+        "Show MCP server status, or reconnect, enable or disable a server",
+        Surfaces::ALL,
+        true
+    ),
     (Memory, "memory", [], "", "List the memory files in use (FORGE.md, AGENTS.md)"),
     (Model, "model", [], "[model]", "Show the models, or switch to one"),
     (OutputStyle, "output-style", [], "[style]", "Show the output styles, or switch to one"),

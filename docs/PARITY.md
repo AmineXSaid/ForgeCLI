@@ -46,6 +46,8 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `control_request` `set_model` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
 | `control_request` `set_max_thinking_tokens` | done | inferred | `e2e::host_sets_thinking_tokens` |  |
 | `control_request` `mcp_status` | done | inferred | `mcp::session_uses_mcp_tools_and_reports_status` | `{mcpServers: [{name, status, scope, serverInfo, tools, error}]}` |
+| `control_request` `mcp_reconnect` | done | inferred | `client::servers_turn_off_on_and_reconnect` | `{serverName}`; answered when the restart ends (success with no body, or an error saying why), while other control requests keep being answered |
+| `control_request` `mcp_toggle` | done | inferred | `client::servers_turn_off_on_and_reconnect` | `{serverName, enabled}`; the same as `/mcp enable` / `disable`, saved the same way |
 | `control_request` `rewind_files` | done | inferred | `e2e::replay_uuid_drives_rewind_files` | Contract C4 |
 | `system/compact_boundary` | done | inferred | `engine::c9_auto_triggers_at_threshold` | `compact_metadata: {trigger, pre_tokens}` |
 | `system/model_fallback` | done | inferred | `engine::c6_fallback_on_overload_for_this_turn_only` | Contract C6 |
@@ -232,7 +234,7 @@ the full-screen UI (M8). The REPL and `-p` share one driver
 | `/doctor` (`/checkup`) | done | PR | `cmds::info_commands_answer_locally` | `forge doctor`'s checks plus session warnings, MCP failures and model pricing |
 | `/release-notes` | done | PR | `cmds::info_commands_answer_locally` | `CHANGELOG.md`, embedded at build time |
 | `/hooks` | partial | PR | `cmds::info_commands_answer_locally` | Read-only list per event and matcher; the reference's editor dialog is T (M8) |
-| `/mcp` | partial | PR | `cmds::info_commands_answer_locally` | Status list. `reconnect`, `enable`, `disable` are todo |
+| `/mcp [reconnect\|enable\|disable <server\|all>]` | done | PR | `cmds::info_commands_answer_locally`, `core::driver_tests::mcp_servers_turn_off_and_on_through_the_driver`, `client::servers_turn_off_on_and_reconnect` | Status list. `reconnect` restarts a server from the config it started with; `disable` stops it and hides its tools, prompts, resources and instructions at once, and saves it in `disabledMcpjsonServers` (local settings); `enable` reverses both. Tools a server didn't list when the session was built join after `/reload-plugins`. `--mcp-config` and plugin servers change for the session only |
 | `/skills` | done | PR | `cmds::info_commands_answer_locally` | Source, who can invoke it, token estimate |
 | `/agents` | partial | PR | `cmds::info_commands_answer_locally` | List plus how to add one; the creation wizard is T (M8) |
 | `/plugin` | partial | PR | `cmds::bad_commands_fail_with_exit_1` | `list` only. Marketplaces are out (vendor service) |

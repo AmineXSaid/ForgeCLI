@@ -332,6 +332,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     });
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Input>();
+    let mut control: Option<Arc<ControlContext>> = None;
     if stream_in {
         let models: Vec<Value> = forge_api::models::MODELS
             .iter()
@@ -352,7 +353,9 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                 "models": models,
                 "pid": std::process::id(),
             }),
+            tasks: Mutex::new(vec![]),
         });
+        control = Some(ctx.clone());
         tokio::spawn(host::read_stdin(ctx, tx));
     } else {
         let _ = tx.send(Input::User(MessageContent::Text(first_prompt.unwrap_or_default())));
@@ -411,6 +414,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     }
                 }
                 Some(Input::SystemPrompt { replace, append }) => driver.set_system_prompt(replace, append),
+                Some(Input::McpChanged) => driver.refresh_mcp(),
                 Some(Input::Eof) | None => closed = true,
             }
         }
@@ -425,6 +429,10 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         }
     }
     let code = rep.code;
+    // MCP restarts a host asked for answer before Forge exits.
+    if let Some(c) = &control {
+        c.finish_tasks().await;
+    }
     driver.shutdown("other").await;
     if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(exit::INTERRUPTED);

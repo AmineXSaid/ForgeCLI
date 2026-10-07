@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use forge_engine::{PermissionAnswer, PermissionPrompt, PermissionPrompter};
+use forge_mcp::{Outcome, ServerAction, Status};
 use forge_permissions::PermissionMode;
 use forge_types::sdk::{ControlRequest, ControlRequestBody, PermissionResult, SdkMessage};
 use forge_types::MessageContent;
@@ -106,6 +107,8 @@ pub enum Input {
         replace: Option<String>,
         append: Option<String>,
     },
+    /// An MCP server was reconnected, enabled or disabled: refresh what the session derives from them.
+    McpChanged,
     Eof,
 }
 
@@ -117,9 +120,19 @@ pub struct ControlContext {
     pub live: forge_core::driver::Live,
     pub mcp: Option<Arc<forge_mcp::McpManager>>,
     pub init_response: Value,
+    /// `mcp_reconnect` and `mcp_toggle` still running; awaited before exit.
+    pub tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl ControlContext {
+    /// Wait for MCP restarts still running, so their answers are written before exit.
+    pub async fn finish_tasks(&self) {
+        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+        for t in tasks {
+            let _ = t.await;
+        }
+    }
+
     fn answer(&self, id: &str, r: Result<Option<Value>, String>) {
         let msg = match r {
             Ok(v) => SdkMessage::success(id, v),
@@ -179,8 +192,53 @@ impl ControlContext {
                     Err(e) => self.answer(id, Ok(Some(json!({"canRewind": false, "error": e})))),
                 }
             }
+            "mcp_reconnect" | "mcp_toggle" => {
+                let Some(m) = self.mcp.clone() else {
+                    return self.answer(id, Err("no MCP servers are configured".into()));
+                };
+                let Some(server) = b.get_str("serverName").map(str::to_string) else {
+                    return self.answer(id, Err("serverName is required".into()));
+                };
+                let action = match (b.subtype.as_str(), b.data.get("enabled").and_then(Value::as_bool)) {
+                    ("mcp_reconnect", _) => ServerAction::Reconnect,
+                    (_, Some(true)) => ServerAction::Enable,
+                    (_, Some(false)) => ServerAction::Disable,
+                    (_, None) => return self.answer(id, Err("enabled (true or false) is required".into())),
+                };
+                // Starting a server can take a while: answer from a task, so this reader
+                // keeps handling interrupts and permission answers meanwhile.
+                let (out, tx, id) = (self.out.clone(), tx.clone(), id.to_string());
+                let task = tokio::spawn(async move {
+                    let r = control_result(m.apply(action, &server).await);
+                    let _ = tx.send(Input::McpChanged);
+                    out.line(&match r {
+                        Ok(()) => SdkMessage::success(&id, None),
+                        Err(e) => SdkMessage::error(&id, e),
+                    });
+                });
+                self.tasks.lock().unwrap().push(task);
+            }
             other => self.answer(id, Err(format!("unsupported control request: {other}"))),
         }
+    }
+}
+
+/// An MCP action's control answer: an error names every server that refused or failed.
+fn control_result(r: Result<Vec<Result<Outcome, String>>, String>) -> Result<(), String> {
+    let errors: Vec<String> = r?
+        .into_iter()
+        .filter_map(|o| match o {
+            Ok(Outcome { status: Status::Failed(why), server, .. }) => {
+                Some(format!("MCP server {server} failed to start: {why}"))
+            }
+            Ok(_) => None,
+            Err(e) => Some(e),
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
 }
 

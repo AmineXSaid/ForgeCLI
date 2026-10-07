@@ -159,19 +159,16 @@ async fn list(cwd: &std::path::Path, opts: &Opts) -> Result<i32, Fail> {
     let m = forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(cwd)).await;
     let mut failed = false;
     for s in &m.servers {
-        let summary = resolved
-            .servers
-            .iter()
-            .find(|n| n.name == s.name)
-            .map(|n| n.config.summary())
-            .unwrap_or_else(|| ".mcp.json".into());
-        let status = match &s.status {
-            forge_mcp::Status::Connected => term::green(&format!("connected, {} tools", s.tools.len())),
+        // From the entry's own config: a disabled settings server isn't in `resolved.servers`.
+        let summary = s.config.as_ref().map(|n| n.config.summary()).unwrap_or_else(|| ".mcp.json".into());
+        let status = match s.status() {
+            forge_mcp::Status::Connected => term::green(&format!("connected, {} tools", s.tools().len())),
             forge_mcp::Status::Failed(e) => {
                 failed = true;
                 term::red(&format!("failed: {e}"))
             }
-            forge_mcp::Status::Skipped(r) => term::yellow(r),
+            forge_mcp::Status::Skipped(r) => term::yellow(&r),
+            forge_mcp::Status::Pending => term::yellow("pending"),
         };
         outln!("{}: {summary} - {status}", s.name);
     }
@@ -183,7 +180,15 @@ async fn get(cwd: &std::path::Path, opts: &Opts, name: &str) -> Result<i32, Fail
     let lo = launch(cwd, opts);
     let mut resolved = forge_core::resolve_mcp(&lo);
     if let Some(s) = resolved.skipped.iter().find(|s| s.name == name) {
-        outln!("{name}:\n  Scope: project (.mcp.json)\n  Status: {}", s.reason);
+        match &s.config {
+            Some(c) => outln!(
+                "{name}:\n  Scope: {}\n  Config: {}\n  Status: {}",
+                c.scope.as_str(),
+                serde_json::to_string(&redacted(&c.config)).unwrap_or_default(),
+                s.reason
+            ),
+            None => outln!("{name}:\n  Scope: project (.mcp.json)\n  Status: {}", s.reason),
+        }
         return Ok(exit::OK);
     }
     let Some(server) = resolved.servers.iter().find(|s| s.name == name).cloned() else {
@@ -196,15 +201,16 @@ async fn get(cwd: &std::path::Path, opts: &Opts, name: &str) -> Result<i32, Fail
     outln!("{name}:");
     outln!("  Scope: {}", server.scope.as_str());
     outln!("  Config: {}", serde_json::to_string(&redacted(&server.config)).unwrap_or_default());
-    match &entry.status {
+    match entry.status() {
         forge_mcp::Status::Connected => {
             outln!("  Status: connected");
-            if let Some(c) = &entry.client {
+            if let Some(c) = entry.client() {
                 outln!("  Server: {}", c.server_info);
                 outln!("  Protocol: {}", c.protocol_version);
             }
-            outln!("  Tools ({}):", entry.tools.len());
-            for t in &entry.tools {
+            let tools = entry.tools();
+            outln!("  Tools ({}):", tools.len());
+            for t in &tools {
                 outln!(
                     "    {} - {}",
                     forge_mcp::tools::tool_name(name, &t.name),
@@ -214,6 +220,7 @@ async fn get(cwd: &std::path::Path, opts: &Opts, name: &str) -> Result<i32, Fail
         }
         forge_mcp::Status::Failed(e) => outln!("  Status: failed: {e}"),
         forge_mcp::Status::Skipped(r) => outln!("  Status: {r}"),
+        forge_mcp::Status::Pending => outln!("  Status: pending"),
     }
     m.shutdown().await;
     Ok(exit::OK)

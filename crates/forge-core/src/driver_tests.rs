@@ -35,8 +35,9 @@ fn driver_with(f: impl FnOnce(&Path, &mut LaunchOptions)) -> T {
     };
     f(dir.path(), &mut o);
     let rebuild = o.clone();
+    let mcp = o.mcp.clone();
     let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
-    let mut d = Driver::new(s, Surface::Print, None);
+    let mut d = Driver::new(s, Surface::Print, mcp);
     d.set_rebuild(rebuild, Arc::new(NullSink), Arc::new(DenyPrompter));
     T { _dir: dir, proj, p, d }
 }
@@ -1126,4 +1127,75 @@ async fn a_self_paced_iteration_that_fails_at_once_still_gets_its_fallback() {
     assert_eq!(sched.tasks.len(), 1, "a fallback check is scheduled");
     assert_eq!(t.d.fallback_pending.as_deref(), Some(sched.tasks[0].id.as_str()));
     assert!(t.d.self_paced.is_none(), "nothing stale is left for the next turn");
+}
+
+/// A stdio MCP server with one tool, one prompt and instructions.
+const NOTES_SERVER: &str = r#"
+import json, sys
+def send(m):
+    sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line: break
+    m = json.loads(line); mid = m.get("id"); method = m.get("method")
+    if mid is None: continue
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": m["params"]["protocolVersion"],
+              "capabilities": {"tools": {}, "prompts": {}}, "serverInfo": {"name": "notes", "version": "1"},
+              "instructions": "Notes keeps the team's notes."}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"tools": [{"name": "add", "inputSchema": {"type": "object"}}]}})
+    elif method == "prompts/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"prompts": [{"name": "summary"}]}})
+    else:
+        send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "nope"}})
+"#;
+
+#[tokio::test]
+async fn mcp_servers_turn_off_and_on_through_the_driver() {
+    if std::process::Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped: python3 not found");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("notes.py");
+    std::fs::write(&script, NOTES_SERVER).unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let resolved = forge_mcp::Resolved {
+        servers: vec![forge_mcp::NamedServer {
+            name: "notes".into(),
+            scope: forge_mcp::Scope::Settings,
+            config: forge_mcp::ServerConfig::Stdio {
+                command: "python3".into(),
+                args: vec![script.display().to_string()],
+                env: Default::default(),
+            },
+        }],
+        ..Default::default()
+    };
+    let m = Arc::new(forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(&proj)).await);
+    let mut t = driver_with(|_, o| o.mcp = Some(m.clone()));
+    let has_tool = |d: &Driver| d.engine.tools().names().iter().any(|n| n == "mcp__notes__add");
+    assert!(has_tool(&t.d));
+    assert!(t.d.engine.system().iter().any(|b| b.text.contains("Notes keeps the team's notes.")));
+    assert!(local(&mut t.d, "/mcp").await.contains("notes [settings, stdio] connected, 1 tools, 1 prompts"));
+
+    let out = local(&mut t.d, "/mcp disable notes").await;
+    assert!(out.starts_with("Disabled notes: its tools and prompts are hidden. Saved in"), "{out}");
+    assert!(!has_tool(&t.d), "hidden at once");
+    assert!(!t.d.engine.system().iter().any(|b| b.text.contains("Notes keeps")), "its instructions leave the prompt");
+    assert_eq!(t.d.info.init.mcp_servers[0].status, "disabled");
+    assert!(local(&mut t.d, "/mcp").await.contains("notes [settings, stdio] disabled"));
+    assert!(fails(&mut t.d, "/mcp reconnect notes").await.contains("enable it first"));
+
+    let out = local(&mut t.d, "/mcp enable notes").await;
+    assert!(out.starts_with("Enabled notes: connected, 1 tools, 1 prompts."), "{out}");
+    assert!(has_tool(&t.d));
+    assert!(t.d.engine.system().iter().any(|b| b.text.contains("Notes keeps the team's notes.")));
+    assert!(local(&mut t.d, "/mcp reconnect all").await.starts_with("Reconnected notes"));
+
+    assert!(fails(&mut t.d, "/mcp disable nope").await.contains("No MCP server named \"nope\". Servers: notes."));
+    assert!(fails(&mut t.d, "/mcp restart notes").await.starts_with("Usage: /mcp"));
+    m.shutdown().await;
 }

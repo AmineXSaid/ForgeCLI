@@ -734,6 +734,21 @@ impl Driver {
         self.engine.set_system(self.prompt.build().0);
     }
 
+    /// After `/mcp` (or an `mcp_toggle` / `mcp_reconnect` control request)
+    /// changed a server: its instructions leave or rejoin the system prompt,
+    /// and the `system/init` facts follow the servers.
+    pub fn refresh_mcp(&mut self) {
+        let Some(m) = self.catalog.mcp.clone() else { return };
+        let instructions = m.instructions();
+        if instructions != self.prompt.mcp_instructions {
+            self.prompt.mcp_instructions = instructions;
+            self.rebuild_system();
+        }
+        self.info.init.mcp_servers =
+            m.status().into_iter().map(|(name, status)| forge_types::sdk::McpServerStatus { name, status }).collect();
+        self.info.init.tools = self.engine.tools().names();
+    }
+
     /// An SDK host's `initialize` `systemPrompt` / `appendSystemPrompt`.
     pub fn set_system_prompt(&mut self, replace: Option<String>, append: Option<String>) {
         if replace.is_some() {

@@ -12,13 +12,24 @@
 //! commands Forge would run) are trusted only when the user's own settings
 //! say so: `enableAllProjectMcpServers` or `enabledMcpjsonServers` in the user
 //! or local layer. The project's checked-in settings can't approve them.
-//! `disabledMcpjsonServers` always wins.
+//!
+//! `disabledMcpjsonServers` in the user or local layer (`/mcp disable` writes
+//! the local one) always wins: it turns off `.mcp.json` servers and servers
+//! from `mcpServers` in settings. `--mcp-config` and plugin servers are chosen
+//! per run and aren't affected. A server turned off this way stays in
+//! [`Resolved::skipped`] with its config (a `.mcp.json` one only when the user
+//! also trusts it), so `/mcp enable` can start it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use forge_config::{LoadedSettings, SettingSource};
 use serde_json::{json, Map, Value};
+
+/// The settings key listing servers the user turned off.
+pub const DISABLED_KEY: &str = "disabledMcpjsonServers";
+/// [`Skipped::reason`] for a server the user turned off.
+pub const DISABLED: &str = "disabled";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerConfig {
@@ -199,6 +210,9 @@ pub struct NamedServer {
 pub struct Skipped {
     pub name: String,
     pub reason: String,
+    /// The config of a server the user turned off, so this session can turn it
+    /// back on; `None` while a `.mcp.json` server needs approval.
+    pub config: Option<NamedServer>,
 }
 
 #[derive(Debug, Default)]
@@ -212,30 +226,43 @@ pub fn project_file(project: &Path) -> PathBuf {
     project.join(".mcp.json")
 }
 
+/// The layers the user controls: user and local settings.
+fn user_layers(settings: &LoadedSettings) -> impl Iterator<Item = &forge_config::SettingsLayer> {
+    settings.layers.iter().filter(|l| matches!(l.source, SettingSource::User | SettingSource::Local))
+}
+
+fn lists(layer: &forge_config::SettingsLayer, key: &str, name: &str) -> bool {
+    layer.value.get(key).and_then(Value::as_array).is_some_and(|a| a.iter().any(|v| v.as_str() == Some(name)))
+}
+
+/// The user or local layers whose `disabledMcpjsonServers` names `name`.
+pub fn disabled_in<'a>(settings: &'a LoadedSettings, name: &str) -> Vec<&'a forge_config::SettingsLayer> {
+    user_layers(settings).filter(|l| lists(l, DISABLED_KEY, name)).collect()
+}
+
+/// The user's own settings trust this `.mcp.json` server (disabled or not).
+fn project_trusted(settings: &LoadedSettings, name: &str) -> bool {
+    user_layers(settings).any(|l| {
+        lists(l, "enabledMcpjsonServers", name) || l.value.get("enableAllProjectMcpServers") == Some(&json!(true))
+    })
+}
+
 /// The user's decision about one `.mcp.json` server, from user and local settings only.
 pub fn project_server_approved(settings: &LoadedSettings, name: &str) -> Option<bool> {
-    let trusted = settings.layers.iter().filter(|l| matches!(l.source, SettingSource::User | SettingSource::Local));
-    let mut decision = None;
-    for layer in trusted {
-        let list = |k: &str| {
-            layer.value.get(k).and_then(Value::as_array).is_some_and(|a| a.iter().any(|v| v.as_str() == Some(name)))
-        };
-        if list("disabledMcpjsonServers") {
-            return Some(false);
-        }
-        if list("enabledMcpjsonServers") || layer.value.get("enableAllProjectMcpServers") == Some(&json!(true)) {
-            decision = Some(true);
-        }
+    if !disabled_in(settings, name).is_empty() {
+        return Some(false);
     }
-    decision
+    project_trusted(settings, name).then_some(true)
 }
 
 /// Every server to start, by the precedence above.
 pub fn resolve(settings: &LoadedSettings, project: &Path, flag_configs: &[String], strict: bool) -> Resolved {
     let mut r = Resolved::default();
     let mut by_name: Vec<NamedServer> = vec![];
-    let put = |s: NamedServer, list: &mut Vec<NamedServer>| {
+    // A later source replaces an earlier server of the same name, started or skipped.
+    let put = |s: NamedServer, list: &mut Vec<NamedServer>, skipped: &mut Vec<Skipped>| {
         list.retain(|o| o.name != s.name);
+        skipped.retain(|o| o.name != s.name);
         list.push(s);
     };
     if !strict {
@@ -245,14 +272,19 @@ pub fn resolve(settings: &LoadedSettings, project: &Path, flag_configs: &[String
                     let (servers, errs) = parse_servers(&v);
                     r.warnings.extend(errs.into_iter().map(|e| format!(".mcp.json: {e}")));
                     for (name, config) in servers {
+                        let server = NamedServer { name: name.clone(), scope: Scope::Project, config };
                         match project_server_approved(settings, &name) {
-                            Some(true) => put(NamedServer { name, scope: Scope::Project, config }, &mut by_name),
-                            Some(false) => r.skipped.push(Skipped { name, reason: "disabled".into() }),
+                            Some(true) => put(server, &mut by_name, &mut r.skipped),
+                            Some(false) => {
+                                let config = project_trusted(settings, &name).then_some(server);
+                                r.skipped.push(Skipped { name, reason: DISABLED.into(), config });
+                            }
                             None => r.skipped.push(Skipped {
                                 name,
                                 reason: "needs approval: run `forge mcp approve <name>` to trust this project's \
                                          server"
                                     .into(),
+                                config: None,
                             }),
                         }
                     }
@@ -264,7 +296,15 @@ pub fn resolve(settings: &LoadedSettings, project: &Path, flag_configs: &[String
             let (servers, errs) = parse_servers(v);
             r.warnings.extend(errs.into_iter().map(|e| format!("settings: {e}")));
             for (name, config) in servers {
-                put(NamedServer { name, scope: Scope::Settings, config }, &mut by_name);
+                let server = NamedServer { name: name.clone(), scope: Scope::Settings, config };
+                if disabled_in(settings, &name).is_empty() {
+                    put(server, &mut by_name, &mut r.skipped);
+                } else {
+                    // Off (`/mcp disable`); kept with its config so `/mcp enable` can start it.
+                    by_name.retain(|o| o.name != name);
+                    r.skipped.retain(|o| o.name != name);
+                    r.skipped.push(Skipped { name, reason: DISABLED.into(), config: Some(server) });
+                }
             }
         }
     }
@@ -285,7 +325,7 @@ pub fn resolve(settings: &LoadedSettings, project: &Path, flag_configs: &[String
                 let (servers, errs) = parse_servers(&v);
                 r.warnings.extend(errs.into_iter().map(|e| format!("--mcp-config: {e}")));
                 for (name, config) in servers {
-                    put(NamedServer { name, scope: Scope::Flag, config }, &mut by_name);
+                    put(NamedServer { name, scope: Scope::Flag, config }, &mut by_name, &mut r.skipped);
                 }
             }
             Err(e) => r.warnings.push(format!("--mcp-config {raw}: {e}")),
@@ -293,6 +333,38 @@ pub fn resolve(settings: &LoadedSettings, project: &Path, flag_configs: &[String
     }
     r.servers = by_name;
     r
+}
+
+/// Put `name` on (or take it off) the `disabledMcpjsonServers` list in one
+/// settings file, keeping every other key. Returns whether the file changed.
+/// A file that isn't a JSON object is an error, never replaced.
+pub fn set_disabled(path: &Path, name: &str, disabled: bool) -> std::io::Result<bool> {
+    let current: Vec<Value> = match std::fs::read_to_string(path) {
+        Ok(text) if text.trim().is_empty() => vec![],
+        Ok(text) => {
+            let v = serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is not a JSON object", path.display()))
+            })?;
+            v.get(DISABLED_KEY).and_then(Value::as_array).cloned().unwrap_or_default()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(e) => return Err(e),
+    };
+    if current.iter().any(|v| v.as_str() == Some(name)) == disabled {
+        return Ok(false);
+    }
+    let mut list = current;
+    if disabled {
+        list.push(json!(name));
+    } else {
+        list.retain(|v| v.as_str() != Some(name));
+    }
+    if list.is_empty() {
+        forge_config::remove_setting(path, &[DISABLED_KEY])?;
+    } else {
+        forge_config::write_setting(path, &[DISABLED_KEY], Value::Array(list))?;
+    }
+    Ok(true)
 }
 
 /// Add or replace a server in a JSON file holding `mcpServers` (settings or `.mcp.json`).
@@ -406,7 +478,13 @@ mod tests {
         ]);
         let r = resolve(&s, d.path(), &[], false);
         assert_eq!(r.servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["docs"]);
-        assert_eq!(r.skipped, vec![Skipped { name: "repo-tool".into(), reason: "disabled".into() }]);
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!((r.skipped[0].name.as_str(), r.skipped[0].reason.as_str()), ("repo-tool", DISABLED));
+        assert_eq!(
+            r.skipped[0].config.as_ref().map(|c| c.scope),
+            Some(Scope::Project),
+            "trusted by the user, so /mcp enable can start it"
+        );
 
         let s = settings(vec![(SettingSource::Local, json!({"enabledMcpjsonServers": ["repo-tool"]}))]);
         let names: Vec<String> = resolve(&s, d.path(), &[], false).servers.into_iter().map(|s| s.name).collect();
@@ -439,5 +517,62 @@ mod tests {
         assert_eq!(v["mcpServers"]["s"]["command"], "srv");
         assert!(write_server(&f, "s", None).unwrap());
         assert!(!write_server(&f, "s", None).unwrap(), "removing a missing server reports false");
+    }
+
+    #[test]
+    fn the_disable_list_turns_off_settings_servers_but_not_flag_ones() {
+        let d = tempfile::tempdir().unwrap();
+        let s = settings(vec![
+            (
+                SettingSource::User,
+                json!({"mcpServers": {"docs": {"command": "docs-mcp"}, "web": {"url": "https://w/mcp"}}}),
+            ),
+            (SettingSource::Local, json!({"disabledMcpjsonServers": ["docs", "cli"]})),
+        ]);
+        let flag = r#"{"mcpServers": {"cli": {"command": "from-flag"}}}"#.to_string();
+        let r = resolve(&s, d.path(), std::slice::from_ref(&flag), false);
+        let started: Vec<&str> = r.servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(started, ["web", "cli"], "--mcp-config servers are chosen per run");
+        assert_eq!(r.skipped.len(), 1);
+        assert_eq!((r.skipped[0].name.as_str(), r.skipped[0].reason.as_str()), ("docs", DISABLED));
+        assert_eq!(
+            r.skipped[0].config.as_ref().map(|c| (c.scope, c.config.summary())),
+            Some((Scope::Settings, "docs-mcp (stdio)".to_string())),
+            "kept so /mcp enable can start it"
+        );
+        // The project's checked-in settings can't turn the user's servers off.
+        let s = settings(vec![
+            (SettingSource::User, json!({"mcpServers": {"docs": {"command": "docs-mcp"}}})),
+            (SettingSource::Project, json!({"disabledMcpjsonServers": ["docs"]})),
+        ]);
+        assert_eq!(resolve(&s, d.path(), &[], false).servers.len(), 1);
+    }
+
+    #[test]
+    fn a_later_source_replaces_a_skipped_server_of_the_same_name() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(".mcp.json"), r#"{"mcpServers": {"x": {"command": "./repo-x"}}}"#).unwrap();
+        let s = settings(vec![(SettingSource::User, json!({"mcpServers": {"x": {"command": "my-x"}}}))]);
+        let r = resolve(&s, d.path(), &[], false);
+        assert_eq!(r.servers.iter().map(|s| s.config.summary()).collect::<Vec<_>>(), ["my-x (stdio)"]);
+        assert!(r.skipped.is_empty(), "one server per name: {:?}", r.skipped);
+    }
+
+    #[test]
+    fn set_disabled_edits_one_list_and_keeps_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join(".forge/settings.local.json");
+        assert!(set_disabled(&f, "docs", true).unwrap(), "creates the file");
+        assert!(!set_disabled(&f, "docs", true).unwrap(), "already there");
+        forge_config::write_setting(&f, &["model"], json!("x")).unwrap();
+        assert!(set_disabled(&f, "web", true).unwrap());
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!((v["model"].clone(), v[DISABLED_KEY].clone()), (json!("x"), json!(["docs", "web"])));
+        assert!(set_disabled(&f, "docs", false).unwrap() && set_disabled(&f, "web", false).unwrap());
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(v, json!({"model": "x"}), "an empty list is removed");
+        std::fs::write(&f, "{not json").unwrap();
+        assert!(set_disabled(&f, "docs", true).is_err(), "a broken file is left for the person to fix");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{not json");
     }
 }

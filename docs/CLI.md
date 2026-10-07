@@ -96,7 +96,8 @@ a note in `CHANGELOG.md`.
   - `user` messages;
   - `control_request` messages: `initialize`, `interrupt`,
     `set_permission_mode`, `set_model`, `set_max_thinking_tokens`,
-    `mcp_status`, `rewind_files`;
+    `mcp_status`, `mcp_reconnect` (`serverName`), `mcp_toggle`
+    (`serverName`, `enabled`), `rewind_files`;
   - `control_response` answers to Forge's `can_use_tool` requests.
 - **Output:** NDJSON on stdout, as in print mode, plus `control_request` and
   `control_response` lines.
@@ -257,7 +258,8 @@ them all. The built-ins so far:
 | `/compact [what to keep]` | Summarizes the conversation now |
 | `/clear [name]` (`/reset`, `/new`) | Starts a new conversation (a new session id); the old one stays resumable, under `name` if given |
 | `/doctor` (`/checkup`) | `forge doctor` plus this session's MCP, model and warnings |
-| `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin`, `/mcp` | What is loaded, and from where |
+| `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin` | What is loaded, and from where |
+| `/mcp [reconnect\|enable\|disable <server\|all>]` | Each MCP server's status. `reconnect` restarts a server from the config it started with; `disable` stops it, hides its tools and prompts, and saves that in `.forge/settings.local.json` (`disabledMcpjsonServers`); `enable` reverses it. Tools a server didn't offer when the session started join after `/reload-plugins`. `--mcp-config` and plugin servers change for the session only |
 | `/tasks [stop <id>]` (`/bashes`) | Background shells; `stop` ends one |
 | `/model [model]` | Lists the models, or switches (an alias such as `sonnet`, or an id) |
 | `/effort [low\|medium\|high\|xhigh\|max\|auto]` | Shows or sets reasoning effort; `max` lasts for the session only |

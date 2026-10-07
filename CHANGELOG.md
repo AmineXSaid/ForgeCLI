@@ -25,6 +25,10 @@
 - `/import`: MCP servers and instructions from Codex, Gemini CLI and
   Cursor, planned first and applied with `--yes`, following the MCP trust
   rules.
+- `/mcp reconnect|enable|disable <server|all>`: restart a server, or turn it
+  off and on. Disabling hides its tools and prompts at once and is saved in
+  local settings; stream-json hosts get the same through `mcp_reconnect` and
+  `mcp_toggle`.
 - `/feedback` (`/bug`, `/share`): a private bug-report bundle on this
   machine, with secrets masked, including those inside free text. Nothing
   is uploaded.

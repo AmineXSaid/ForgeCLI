@@ -8,6 +8,7 @@ use forge_types::{ContentBlock, MediaSource};
 use serde_json::{json, Value};
 
 use crate::client::{McpClient, ToolInfo};
+use crate::manager::ServerEntry;
 
 /// Tool names the Messages API accepts: `[A-Za-z0-9_-]{1,64}`.
 const MAX_NAME: usize = 64;
@@ -91,17 +92,24 @@ pub fn convert_content(result: &Value) -> ToolOutput {
     out
 }
 
-/// One server tool.
+/// One server tool. It reads its server's live state at each use, so a
+/// reconnect, enable or disable reaches tool objects the session and its
+/// sub-agents already hold: hidden while the server is off or no longer lists
+/// the tool, with the description and schema the server gives now.
 pub struct McpTool {
     pub full_name: String,
-    pub server: String,
+    pub server: Arc<ServerEntry>,
+    /// The tool as listed when this object was made.
     pub info: ToolInfo,
-    pub client: Arc<McpClient>,
 }
 
 impl McpTool {
-    pub fn new(server: &str, info: ToolInfo, client: Arc<McpClient>) -> Self {
-        McpTool { full_name: tool_name(server, &info.name), server: server.to_string(), info, client }
+    pub fn new(server: Arc<ServerEntry>, info: ToolInfo) -> Self {
+        McpTool { full_name: tool_name(&server.name, &info.name), server, info }
+    }
+
+    fn current(&self) -> ToolInfo {
+        self.server.tool(&self.info.name).unwrap_or_else(|| self.info.clone())
     }
 }
 
@@ -112,16 +120,17 @@ impl Tool for McpTool {
     }
 
     fn description(&self) -> String {
-        let d = if self.info.description.trim().is_empty() {
-            format!("Tool {} from the MCP server {}.", self.info.name, self.server)
+        let info = self.current();
+        let d = if info.description.trim().is_empty() {
+            format!("Tool {} from the MCP server {}.", info.name, self.server.name)
         } else {
-            self.info.description.clone()
+            info.description
         };
         d.chars().take(2048).collect()
     }
 
     fn input_schema(&self) -> Value {
-        let mut s = self.info.input_schema.clone();
+        let mut s = self.current().input_schema;
         if s.get("type").is_none() {
             s["type"] = json!("object");
         }
@@ -129,7 +138,12 @@ impl Tool for McpTool {
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
-        self.info.read_only_hint
+        self.current().read_only_hint
+    }
+
+    /// Hidden while the server is off, failed or restarting, or no longer lists the tool.
+    fn is_enabled(&self) -> bool {
+        self.server.tool(&self.info.name).is_some()
     }
 
     fn permission_subject(&self, _input: &Value, _ctx: &ToolContext) -> Subject {
@@ -137,22 +151,35 @@ impl Tool for McpTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> ToolOutput {
+        let Some(client) = self.server.client() else {
+            return ToolOutput::error(format!(
+                "MCP server {} isn't connected ({}), so {} didn't run.",
+                self.server.name,
+                self.server.status().as_str(),
+                self.info.name
+            ));
+        };
         tokio::select! {
-            r = self.client.call_tool(&self.info.name, input) => match r {
+            r = client.call_tool(&self.info.name, input) => match r {
                 Ok(v) => convert_content(&v),
-                Err(e) => ToolOutput::error(format!("MCP server {} failed to run {}: {e}", self.server, self.info.name)),
+                Err(e) => ToolOutput::error(format!("MCP server {} failed to run {}: {e}", self.server.name, self.info.name)),
             },
             _ = ctx.cancel.cancelled() => {
-                self.client.cancelled("interrupted by the user").await;
+                client.cancelled("interrupted by the user").await;
                 ToolOutput::error(INTERRUPTED)
             }
         }
     }
 }
 
+/// The connected servers among `servers` that offer resources, read at each call.
+fn resource_clients(servers: &[Arc<ServerEntry>]) -> Vec<Arc<McpClient>> {
+    servers.iter().filter_map(|s| s.client()).filter(|c| c.has("resources")).collect()
+}
+
 /// `ListMcpResourcesTool`: resources across servers.
 pub struct ListResources {
-    pub clients: Vec<Arc<McpClient>>,
+    pub servers: Vec<Arc<ServerEntry>>,
 }
 
 #[async_trait::async_trait]
@@ -179,17 +206,23 @@ impl Tool for ListResources {
         true
     }
 
+    /// Hidden while no connected server offers resources.
+    fn is_enabled(&self) -> bool {
+        !resource_clients(&self.servers).is_empty()
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolContext) -> ToolOutput {
+        let clients = resource_clients(&self.servers);
         let only = input.get("server").and_then(Value::as_str);
         if let Some(s) = only {
-            if !self.clients.iter().any(|c| c.name == s) {
-                let names: Vec<&str> = self.clients.iter().map(|c| c.name.as_str()).collect();
+            if !clients.iter().any(|c| c.name == s) {
+                let names: Vec<&str> = clients.iter().map(|c| c.name.as_str()).collect();
                 return ToolOutput::error(format!("No MCP server named {s:?}. Connected: {}", names.join(", ")));
             }
         }
         let mut out = vec![];
         let mut errors = vec![];
-        for c in self.clients.iter().filter(|c| only.is_none_or(|s| s == c.name)) {
+        for c in clients.iter().filter(|c| only.is_none_or(|s| s == c.name)) {
             match c.list_resources().await {
                 Ok(list) => out.extend(list.into_iter().map(|mut r| {
                     r["server"] = json!(c.name);
@@ -212,7 +245,7 @@ impl Tool for ListResources {
 
 /// `ReadMcpResourceTool`: one resource by server and URI.
 pub struct ReadResource {
-    pub clients: Vec<Arc<McpClient>>,
+    pub servers: Vec<Arc<ServerEntry>>,
 }
 
 #[async_trait::async_trait]
@@ -241,6 +274,11 @@ impl Tool for ReadResource {
         true
     }
 
+    /// Hidden while no connected server offers resources.
+    fn is_enabled(&self) -> bool {
+        !resource_clients(&self.servers).is_empty()
+    }
+
     fn permission_subject(&self, input: &Value, _ctx: &ToolContext) -> Subject {
         Subject::Name(input.get("server").and_then(Value::as_str).unwrap_or_default().to_string())
     }
@@ -248,7 +286,8 @@ impl Tool for ReadResource {
     async fn call(&self, input: Value, _ctx: &ToolContext) -> ToolOutput {
         let server = input.get("server").and_then(Value::as_str).unwrap_or_default();
         let uri = input.get("uri").and_then(Value::as_str).unwrap_or_default();
-        let Some(c) = self.clients.iter().find(|c| c.name == server) else {
+        let clients = resource_clients(&self.servers);
+        let Some(c) = clients.iter().find(|c| c.name == server) else {
             return ToolOutput::error(format!("No MCP server named {server:?}."));
         };
         match c.read_resource(uri).await {

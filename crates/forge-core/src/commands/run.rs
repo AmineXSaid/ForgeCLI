@@ -75,10 +75,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             "" | "list" => ok(plugins(d)),
             _ => err("Plugin marketplaces aren't supported. Load a plugin directory with --plugin-dir or the pluginDirs setting."),
         },
-        Builtin::Mcp => match args {
-            "" => ok(mcp(d)),
-            _ => err("Usage: /mcp"),
-        },
+        Builtin::Mcp => super::mcp::run(d, args).await,
         Builtin::Tasks => tasks(d, args),
         Builtin::Model => super::settings::model(d, args),
         Builtin::Effort => super::settings::effort(d, args),
@@ -377,30 +374,6 @@ fn plugins(d: &Driver) -> String {
     for p in &d.catalog.plugins {
         let version = p.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
         let _ = writeln!(s, "  {}{version} - {} ({})", p.name, p.description, p.dir.display());
-    }
-    s.trim_end().to_string()
-}
-
-fn mcp(d: &Driver) -> String {
-    let Some(m) = &d.catalog.mcp else { return "No MCP servers configured.".into() };
-    if m.servers.is_empty() {
-        return "No MCP servers configured. Add one with `forge mcp add`.".into();
-    }
-    let mut s = String::from("MCP servers:\n");
-    for e in &m.servers {
-        let detail = match &e.status {
-            forge_mcp::Status::Connected => format!("connected, {} tools, {} prompts", e.tools.len(), e.prompts.len()),
-            forge_mcp::Status::Failed(why) => format!("failed: {why}"),
-            forge_mcp::Status::Skipped(why) => why.clone(),
-        };
-        let _ = writeln!(
-            s,
-            "  {} [{}{}] {}",
-            e.name,
-            e.scope,
-            if e.transport.is_empty() { String::new() } else { format!(", {}", e.transport) },
-            detail
-        );
     }
     s.trim_end().to_string()
 }

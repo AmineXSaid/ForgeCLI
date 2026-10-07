@@ -462,7 +462,9 @@ Tests:
 - It starts only when the user's own settings trust it: the user or local
   layer, via `enableAllProjectMcpServers` or `enabledMcpjsonServers`
   (`forge mcp approve`).
-- `disabledMcpjsonServers` wins over both.
+- `disabledMcpjsonServers` (user or local layer) wins over both, and also
+  turns off servers from `mcpServers` in settings. `--mcp-config` and plugin
+  servers are chosen per run and aren't affected.
 - The project's checked-in settings cannot approve it.
 - An unapproved server shows as `disabled` in `system/init`, with a warning
   on stderr.
@@ -493,6 +495,22 @@ not found".
   `~/.cursor`) go to user settings;
 - servers shipped in the repository (`.cursor/mcp.json`) go to `.mcp.json`
   and still need approval.
+
+**Turning servers off and on** (`/mcp reconnect|enable|disable <server|all>`,
+and the stream-json `mcp_reconnect` / `mcp_toggle` requests):
+- Each server's live state (status, client, tool and prompt lists) sits
+  behind its own lock, shared with the tool objects made from it. Disabling
+  stops the server and hides its tools, prompts, resources and instructions
+  at once, in the session and in sub-agents. Enabling or reconnecting starts
+  it from the config it was resolved with; the same tool objects work again.
+- A tool the server no longer lists is hidden at once. A tool name it didn't
+  list when the session was built has no tool object until the session is
+  rebuilt (`/reload-plugins`, `/clear`, a new run).
+- `disable` saves the name in `disabledMcpjsonServers` in the launch
+  project's `.forge/settings.local.json`; `enable` takes it out. A server
+  waiting for approval stays off: `enable` never grants trust.
+- A restart stops the old process before starting the new one, so calls in
+  flight to that server fail. Changes to one server run one at a time.
 
 **`forge mcp serve`** exposes the built-in tools without prompts, since the
 client approves, but refuses commands matching dangerous-command patterns.
@@ -587,9 +605,12 @@ the model names it. Showing or hiding one changes the tool list, which
 costs one cache miss on the next request.
 
 **Immediate commands** (`/status`, `/usage`, `/tasks`, `/mcp`, `/context`) only read
-state. They are marked in the registry so the TUI and stream-json hosts
-can run them while a turn is in progress; today every command still waits
-for the turn to finish.
+state, except `/mcp reconnect|enable|disable`, which is safe mid-turn because
+each server's changes are serialized and tool calls see a consistent state.
+They are marked in the registry so the TUI and stream-json hosts can run them
+while a turn is in progress; today every command still waits for the turn to
+finish, and stream-json hosts can use `mcp_reconnect` / `mcp_toggle`, which
+don't wait.
 
 ### C18. Goals
 

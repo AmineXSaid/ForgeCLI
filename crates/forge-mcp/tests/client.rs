@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use forge_mcp::config::{NamedServer, Resolved, Scope, ServerConfig};
-use forge_mcp::{ConnectOptions, McpClient, McpManager, Status};
+use forge_mcp::{ConnectOptions, McpClient, McpManager, ServerAction, Status};
 use forge_tools::ToolContext;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -150,16 +150,20 @@ async fn failures_are_reported_not_fatal() {
                 config: ServerConfig::Http { url: "${FORGE_TEST_SURELY_UNSET_VAR}".into(), headers: BTreeMap::new() },
             },
         ],
-        skipped: vec![forge_mcp::config::Skipped { name: "repo".into(), reason: "needs approval".into() }],
+        skipped: vec![forge_mcp::config::Skipped {
+            name: "repo".into(),
+            reason: "needs approval".into(),
+            config: None,
+        }],
         warnings: vec![],
     };
     let m = McpManager::connect(&resolved, &opts).await;
-    let st: Vec<(&str, &Status)> = m.servers.iter().map(|s| (s.name.as_str(), &s.status)).collect();
-    assert!(matches!(st[0].1, Status::Failed(e) if e.contains("could not start `/no/such/binary`")), "{st:?}");
-    assert!(matches!(st[1].1, Status::Failed(e) if e.contains("fatal: bad token")), "stderr is shown: {st:?}");
-    assert!(matches!(st[2].1, Status::Failed(e) if e.contains("FORGE_TEST_SURELY_UNSET_VAR")), "{st:?}");
-    assert_eq!(st[3].1, &Status::Skipped("needs approval".into()));
-    assert!(m.tools().is_empty());
+    let st: Vec<(&str, Status)> = m.servers.iter().map(|s| (s.name.as_str(), s.status())).collect();
+    assert!(matches!(&st[0].1, Status::Failed(e) if e.contains("could not start `/no/such/binary`")), "{st:?}");
+    assert!(matches!(&st[1].1, Status::Failed(e) if e.contains("fatal: bad token")), "stderr is shown: {st:?}");
+    assert!(matches!(&st[2].1, Status::Failed(e) if e.contains("FORGE_TEST_SURELY_UNSET_VAR")), "{st:?}");
+    assert_eq!(st[3].1, Status::Skipped("needs approval".into()));
+    assert!(m.tools().iter().all(|t| !forge_tools::Tool::is_enabled(t.as_ref())), "nothing to offer");
     assert_eq!(m.warnings().len(), 4);
     assert_eq!(m.status_json()[3]["status"], "disabled");
 }
@@ -322,4 +326,99 @@ async fn forge_serves_its_tools() {
     cw.write_all(b"{not json\n").await.unwrap();
     let bad: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
     assert_eq!(bad["error"]["code"], -32700);
+}
+
+/// A stdio server whose tools come from `tools.txt` in its directory and
+/// whose serverInfo version is its pid, so a restart and a changed tool list show.
+const FLIP_SERVER: &str = r#"
+import json, os, sys
+names = open("tools.txt").read().split()
+def send(m):
+    sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line: break
+    m = json.loads(line); mid = m.get("id"); method = m.get("method")
+    if mid is None: continue
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": m["params"]["protocolVersion"],
+              "capabilities": {"tools": {}, "prompts": {}}, "serverInfo": {"name": "flip", "version": str(os.getpid())},
+              "instructions": "Flip knows " + " ".join(names) + "."}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"tools": [{"name": n, "inputSchema": {"type": "object"}} for n in names]}})
+    elif method == "tools/call":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": m["params"]["name"] + " from " + str(os.getpid())}]}})
+    elif method == "prompts/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"prompts": [{"name": "brief"}]}})
+    else:
+        send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "nope"}})
+"#;
+
+#[tokio::test]
+async fn servers_turn_off_on_and_reconnect() {
+    let d = tempfile::tempdir().unwrap();
+    let Some(py) = python() else {
+        eprintln!("skipped: python3 not found");
+        return;
+    };
+    std::fs::write(d.path().join("tools.txt"), "alpha beta").unwrap();
+    let script = d.path().join("flip.py");
+    std::fs::write(&script, FLIP_SERVER).unwrap();
+    let cfg =
+        ServerConfig::Stdio { command: py.into(), args: vec![script.display().to_string()], env: BTreeMap::new() };
+    let resolved = Resolved {
+        servers: vec![NamedServer { name: "flip".into(), scope: Scope::Settings, config: cfg }],
+        ..Default::default()
+    };
+    let m = McpManager::connect(&resolved, &ConnectOptions::new(d.path())).await;
+    let tools = m.tools();
+    let ctx = ToolContext::new(d.path());
+    let visible = |tools: &[Arc<dyn forge_tools::Tool>]| {
+        tools.iter().filter(|t| t.is_enabled()).map(|t| t.name().to_string()).collect::<Vec<_>>()
+    };
+    let pid = |mm: &McpManager| mm.servers[0].client().unwrap().server_info["version"].as_str().unwrap().to_string();
+    assert_eq!(visible(&tools), ["mcp__flip__alpha", "mcp__flip__beta"]);
+    let first = pid(&m);
+
+    // Off: hidden at once, the process stops, and the choice is saved for the next session.
+    let local = d.path().join(".forge/settings.local.json");
+    let r = m.apply(ServerAction::Disable, "flip").await.unwrap();
+    assert_eq!(r[0].as_ref().unwrap().saved.as_deref(), Some(local.as_path()));
+    assert!(visible(&tools).is_empty() && m.prompt_names().is_empty() && m.instructions().is_none());
+    assert_eq!(m.status(), vec![("flip".to_string(), "disabled".to_string())]);
+    let out = tools[0].call(json!({}), &ctx).await;
+    assert!(out.is_error && out.text_content().contains("isn't connected"), "{}", out.text_content());
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
+    assert_eq!(saved["disabledMcpjsonServers"], json!(["flip"]));
+    assert!(m.apply(ServerAction::Disable, "flip").await.unwrap()[0].as_ref().unwrap().unchanged);
+    assert!(m.apply(ServerAction::Reconnect, "flip").await.unwrap()[0].as_ref().unwrap_err().contains("disabled"));
+
+    // On again: a new process, the same tool objects work, and the setting is gone.
+    let r = m.apply(ServerAction::Enable, "flip").await.unwrap();
+    let o = r[0].as_ref().unwrap();
+    assert_eq!((o.status.clone(), o.tools, o.prompts), (Status::Connected, 2, 1));
+    assert!(o.new_tools.is_empty() && o.gone_tools.is_empty());
+    assert_ne!(pid(&m), first);
+    assert_eq!(visible(&tools).len(), 2);
+    assert_eq!(m.prompt_names(), ["mcp__flip__brief"]);
+    assert!(tools[0].call(json!({}), &ctx).await.text_content().starts_with("alpha from "));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&local).unwrap()).unwrap();
+    assert!(saved.get("disabledMcpjsonServers").is_none());
+
+    // Reconnect after the server's tools changed: beta is hidden now, gamma waits for a rebuilt session.
+    std::fs::write(d.path().join("tools.txt"), "alpha gamma").unwrap();
+    let before = pid(&m);
+    let r = m.apply(ServerAction::Reconnect, "all").await.unwrap();
+    let o = r[0].as_ref().unwrap();
+    assert_eq!(o.gone_tools, ["mcp__flip__beta"]);
+    assert_eq!(o.new_tools, ["mcp__flip__gamma"]);
+    assert_ne!(pid(&m), before);
+    assert_eq!(visible(&tools), ["mcp__flip__alpha"]);
+    assert!(m.instructions().unwrap().contains("Flip knows alpha gamma."));
+    let names: Vec<String> =
+        m.tools().iter().filter(|t| t.name().starts_with("mcp__")).map(|t| t.name().to_string()).collect();
+    assert_eq!(names, ["mcp__flip__alpha", "mcp__flip__gamma"], "a rebuilt session offers the new tool");
+
+    assert!(m.apply(ServerAction::Enable, "nope").await.unwrap_err().contains("No MCP server named \"nope\""));
+    m.shutdown().await;
 }
