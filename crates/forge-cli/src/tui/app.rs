@@ -1,0 +1,1051 @@
+//! The UI's state: what is being typed, what streams in, the dialog that is
+//! open, and the lines waiting to go into the terminal's scrollback. Keys and
+//! session events change it; the screen is drawn from it.
+
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use forge_engine::{EngineEvent, NoticeLevel, PermissionAnswer, PermissionPrompt};
+use forge_permissions::{PermissionMode, Suggestion};
+use forge_types::{ContentBlock, Delta, StreamEvent};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use serde_json::{json, Value};
+use tokio::sync::oneshot;
+
+use super::editor::Editor;
+use super::text::{Markdown, Theme};
+
+/// A slash command for the `/` menu.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandInfo {
+    pub name: String,
+    pub args: String,
+    pub description: String,
+}
+
+/// What the status line shows.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StatusView {
+    pub model: String,
+    pub mode: String,
+    pub cwd: String,
+    pub cost: f64,
+    /// Context used, in percent of the model's window.
+    pub context_pct: Option<u8>,
+}
+
+/// From the session task to the UI.
+pub enum UiEvent {
+    Engine(EngineEvent),
+    /// A question for the person (permission, AskUserQuestion, plan approval).
+    Ask {
+        prompt: PermissionPrompt,
+        reply: oneshot::Sender<PermissionAnswer>,
+    },
+    /// A local answer (a slash command) or an error to show.
+    Reply {
+        text: String,
+        is_error: bool,
+    },
+    Status(StatusView),
+    Commands(Vec<CommandInfo>),
+    /// The session is ready for the next input.
+    Idle,
+    /// The session ended (`/exit`).
+    Exit,
+}
+
+/// What the UI loop does for the app.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    Send(String),
+    Interrupt,
+    SetMode(PermissionMode),
+    Exit,
+}
+
+/// One AskUserQuestion question.
+#[derive(Debug, Clone)]
+struct Question {
+    question: String,
+    options: Vec<(String, String)>,
+    multi: bool,
+}
+
+#[derive(Debug)]
+enum DialogKind {
+    Permission { always: Option<String> },
+    Plan,
+    Questions { questions: Vec<Question>, at: usize, answers: serde_json::Map<String, Value>, picked: Vec<bool> },
+}
+
+/// An open question for the person.
+pub struct Dialog {
+    prompt: PermissionPrompt,
+    reply: Option<oneshot::Sender<PermissionAnswer>>,
+    kind: DialogKind,
+    selected: usize,
+    /// "Type an answer" in a question.
+    typing: Option<Editor>,
+}
+
+/// Two presses of Esc or Ctrl-C within this make the second one count.
+const DOUBLE_PRESS: Duration = Duration::from_millis(800);
+
+pub struct App {
+    pub theme: Theme,
+    pub editor: Editor,
+    pub status: StatusView,
+    pub busy: bool,
+    pub busy_since: Option<Instant>,
+    /// What the session is doing, for the spinner: "Thinking", "Running Bash", ...
+    pub activity: String,
+    pub queued: VecDeque<String>,
+    /// Lines waiting to be written into scrollback.
+    pub pending: Vec<Line<'static>>,
+    /// The current answer's unfinished last line.
+    pub live: String,
+    md: Markdown,
+    /// The next answer line is the first of its block (it gets the marker).
+    first_line: bool,
+    /// Text streamed for the current message (its complete copy isn't written again).
+    streamed: bool,
+    pub dialog: Option<Dialog>,
+    commands: Vec<CommandInfo>,
+    pub menu_selected: usize,
+    menu_dismissed: bool,
+    last_esc: Option<Instant>,
+    last_ctrl_c: Option<Instant>,
+    /// A short hint in the status line ("Press Ctrl-C again to exit").
+    pub hint: Option<(String, Instant)>,
+    pub exit: bool,
+    pub dirty: bool,
+}
+
+/// The main argument of a tool call, for one line.
+pub fn summarize(tool: &str, input: &Value) -> String {
+    let key = match tool {
+        "Bash" => "command",
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => "file_path",
+        "Glob" | "Grep" => "pattern",
+        "LS" => "path",
+        "WebFetch" => "url",
+        "WebSearch" => "query",
+        "Task" => "description",
+        "Skill" => "skill",
+        _ => "",
+    };
+    let v = input.get(key).and_then(Value::as_str).map(str::to_string).or_else(|| match tool {
+        "TodoWrite" => input["todos"].as_array().map(|a| format!("{} todos", a.len())),
+        _ => input.as_object().and_then(|o| o.values().find_map(Value::as_str).map(str::to_string)),
+    });
+    let v = v.unwrap_or_default();
+    let one = v.lines().next().unwrap_or("");
+    if one.chars().count() > 100 {
+        format!("{}…", one.chars().take(100).collect::<String>())
+    } else {
+        one.to_string()
+    }
+}
+
+fn rule_text(s: &Suggestion) -> Option<String> {
+    match s {
+        Suggestion::AddRules { rules, .. } => {
+            Some(rules.iter().map(|r| r.to_rule_string()).collect::<Vec<_>>().join(", "))
+        }
+        Suggestion::AddDirectories { directories, .. } => Some(directories.join(", ")),
+        Suggestion::SetMode { mode, .. } => Some(format!("{mode} mode")),
+    }
+}
+
+const MODES: [PermissionMode; 3] = [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::Plan];
+
+impl App {
+    pub fn new(theme: Theme, history: Vec<String>) -> Self {
+        App {
+            theme,
+            editor: Editor::with_history(history),
+            status: StatusView::default(),
+            busy: false,
+            busy_since: None,
+            activity: String::new(),
+            queued: VecDeque::new(),
+            pending: vec![],
+            live: String::new(),
+            md: Markdown::default(),
+            first_line: true,
+            streamed: false,
+            dialog: None,
+            commands: vec![],
+            menu_selected: 0,
+            menu_dismissed: false,
+            last_esc: None,
+            last_ctrl_c: None,
+            hint: None,
+            exit: false,
+            dirty: true,
+        }
+    }
+
+    // ---- scrollback ----
+
+    /// A blank line between items, unless one is already there.
+    fn gap(&mut self) {
+        let blank = |l: &Line| l.spans.iter().all(|s| s.content.trim().is_empty());
+        if self.pending.last().is_none_or(|l| !blank(l)) {
+            self.pending.push(Line::default());
+        }
+    }
+
+    pub fn take_pending(&mut self) -> Vec<Line<'static>> {
+        std::mem::take(&mut self.pending)
+    }
+
+    fn commit_text_line(&mut self, raw: &str) {
+        let t = self.theme;
+        let mut line = self.md.line(raw, &t);
+        let marker = if self.first_line { Span::styled("⏺ ", t.accent()) } else { Span::raw("  ") };
+        if self.first_line {
+            self.gap();
+        }
+        self.first_line = false;
+        line.spans.insert(0, marker);
+        self.pending.push(line);
+    }
+
+    fn flush_live(&mut self) {
+        if !self.live.is_empty() {
+            let rest = std::mem::take(&mut self.live);
+            self.commit_text_line(&rest);
+        }
+    }
+
+    /// Write the person's prompt into scrollback.
+    pub fn echo_prompt(&mut self, text: &str) {
+        self.gap();
+        let st = self.theme.user();
+        for (i, l) in text.lines().enumerate() {
+            let marker = if i == 0 { "> " } else { "  " };
+            self.pending.push(Line::from(Span::styled(format!("{marker}{l} "), st)));
+        }
+    }
+
+    fn reply_lines(&mut self, text: &str, is_error: bool) {
+        let st = if is_error { self.theme.error() } else { Style::default() };
+        self.gap();
+        for (i, l) in text.lines().enumerate() {
+            let marker = if i == 0 { "  ⎿  " } else { "     " };
+            self.pending
+                .push(Line::from(vec![Span::styled(marker, self.theme.dim()), Span::styled(l.to_string(), st)]));
+        }
+    }
+
+    fn notice(&mut self, level: NoticeLevel, text: &str) {
+        let st = match level {
+            NoticeLevel::Info => self.theme.dim(),
+            NoticeLevel::Warning => self.theme.warning(),
+            NoticeLevel::Error => self.theme.error(),
+        };
+        self.gap();
+        for l in text.lines() {
+            self.pending.push(Line::from(Span::styled(format!("  {l}"), st)));
+        }
+    }
+
+    // ---- session events ----
+
+    pub fn on_event(&mut self, ev: UiEvent) {
+        self.dirty = true;
+        match ev {
+            UiEvent::Engine(e) => self.on_engine(e),
+            UiEvent::Ask { prompt, reply } => self.open_dialog(prompt, reply),
+            UiEvent::Reply { text, is_error } => {
+                if !text.trim().is_empty() {
+                    self.reply_lines(&text, is_error);
+                }
+            }
+            UiEvent::Status(s) => self.status = s,
+            UiEvent::Commands(c) => self.commands = c,
+            UiEvent::Idle => {
+                self.flush_live();
+                self.busy = false;
+                self.busy_since = None;
+                self.activity.clear();
+            }
+            UiEvent::Exit => self.exit = true,
+        }
+    }
+
+    /// The next queued message, once the session is idle.
+    pub fn next_queued(&mut self) -> Option<String> {
+        if self.busy {
+            return None;
+        }
+        let text = self.queued.pop_front()?;
+        Some(self.start(text))
+    }
+
+    /// A message goes to the session: echo it and mark the session busy.
+    fn start(&mut self, text: String) -> String {
+        self.echo_prompt(&text);
+        self.busy = true;
+        self.busy_since = Some(Instant::now());
+        self.activity = "Working".into();
+        self.first_line = true;
+        text
+    }
+
+    fn on_engine(&mut self, e: EngineEvent) {
+        match e {
+            // Sub-agents' own messages stay in their transcripts.
+            EngineEvent::Stream { parent_tool_use_id: Some(_), .. }
+            | EngineEvent::Assistant { parent_tool_use_id: Some(_), .. }
+            | EngineEvent::User { parent_tool_use_id: Some(_), .. } => {}
+            EngineEvent::Stream { event, .. } => match event {
+                StreamEvent::MessageStart { .. } => self.streamed = false,
+                StreamEvent::ContentBlockStart { content_block: ContentBlock::Text { .. }, .. } => {
+                    self.flush_live();
+                    self.first_line = true;
+                    self.md.reset();
+                    self.activity = "Writing".into();
+                }
+                StreamEvent::ContentBlockDelta { delta: Delta::TextDelta { text }, .. } => {
+                    self.streamed = true;
+                    self.live.push_str(&text);
+                    while let Some(i) = self.live.find('\n') {
+                        let line: String = self.live[..i].to_string();
+                        self.live.drain(..=i);
+                        self.commit_text_line(&line);
+                    }
+                }
+                StreamEvent::ContentBlockDelta { delta: Delta::ThinkingDelta { .. }, .. } => {
+                    self.activity = "Thinking".into();
+                }
+                StreamEvent::ContentBlockStop { .. } | StreamEvent::MessageStop => self.flush_live(),
+                _ => {}
+            },
+            EngineEvent::Assistant { message, .. } => {
+                self.flush_live();
+                for b in &message.content {
+                    match b {
+                        ContentBlock::Text { text, .. } if !self.streamed && !text.trim().is_empty() => {
+                            self.first_line = true;
+                            self.md.reset();
+                            for l in text.lines() {
+                                self.commit_text_line(l);
+                            }
+                        }
+                        ContentBlock::ToolUse { name, input, .. } => {
+                            self.gap();
+                            let t = self.theme;
+                            self.pending.push(Line::from(vec![
+                                Span::styled("⏺ ", t.success()),
+                                Span::styled(name.clone(), t.bold()),
+                                Span::raw(format!("({})", summarize(name, input))),
+                            ]));
+                            self.activity = format!("Running {name}");
+                        }
+                        _ => {}
+                    }
+                }
+                self.streamed = false;
+            }
+            EngineEvent::User { message, is_meta: false, .. } => {
+                for b in &message.content {
+                    if let ContentBlock::ToolResult { content, is_error, .. } = b {
+                        let text = content.to_text();
+                        let first: String = text.lines().next().unwrap_or("").chars().take(160).collect();
+                        let more = text.lines().count().saturating_sub(1);
+                        let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
+                        let st = if *is_error == Some(true) { self.theme.error() } else { self.theme.dim() };
+                        self.pending.push(Line::from(vec![
+                            Span::styled("  ⎿  ", self.theme.dim()),
+                            Span::styled(format!("{first}{more}"), st),
+                        ]));
+                        self.activity = "Working".into();
+                    }
+                }
+            }
+            EngineEvent::Notice { level, text } => self.notice(level, &text),
+            EngineEvent::System { subtype, data } => match subtype.as_str() {
+                "compact_boundary" => self.notice(NoticeLevel::Info, "Conversation compacted."),
+                "model_fallback" => self.notice(
+                    NoticeLevel::Warning,
+                    &format!(
+                        "Switched to {} for this turn.",
+                        data.get("to").and_then(Value::as_str).unwrap_or("another model")
+                    ),
+                ),
+                _ => {}
+            },
+            EngineEvent::ToolProgress { tool_name, elapsed_secs, .. } => {
+                self.activity = format!("Running {tool_name} ({}s)", elapsed_secs as u64);
+            }
+            _ => {}
+        }
+    }
+
+    // ---- dialogs ----
+
+    fn open_dialog(&mut self, prompt: PermissionPrompt, reply: oneshot::Sender<PermissionAnswer>) {
+        self.flush_live();
+        let kind = match prompt.tool_name.as_str() {
+            "AskUserQuestion" => {
+                let questions: Vec<Question> = prompt.input["questions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|q| Question {
+                        question: q["question"].as_str().unwrap_or("").to_string(),
+                        options: q["options"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|o| {
+                                (
+                                    o["label"].as_str().unwrap_or("").to_string(),
+                                    o["description"].as_str().unwrap_or("").to_string(),
+                                )
+                            })
+                            .collect(),
+                        multi: q["multiSelect"].as_bool().unwrap_or(false),
+                    })
+                    .collect();
+                let picked = vec![false; questions.first().map(|q| q.options.len()).unwrap_or(0)];
+                DialogKind::Questions { questions, at: 0, answers: serde_json::Map::new(), picked }
+            }
+            "ExitPlanMode" => {
+                // The plan goes into scrollback, so the dialog stays small.
+                self.gap();
+                self.pending.push(Line::from(Span::styled("Here is the plan:", self.theme.bold())));
+                let plan = prompt.input["plan"].as_str().unwrap_or("").to_string();
+                let mut md = Markdown::default();
+                for l in plan.lines() {
+                    let mut line = md.line(l, &self.theme);
+                    line.spans.insert(0, Span::raw("  "));
+                    self.pending.push(line);
+                }
+                DialogKind::Plan
+            }
+            _ => DialogKind::Permission { always: prompt.suggestions.first().and_then(rule_text) },
+        };
+        self.dialog = Some(Dialog { prompt, reply: Some(reply), kind, selected: 0, typing: None });
+    }
+
+    fn answer(&mut self, a: PermissionAnswer) {
+        if let Some(mut d) = self.dialog.take() {
+            if let Some(tx) = d.reply.take() {
+                let _ = tx.send(a);
+            }
+        }
+    }
+
+    /// The rows of the open dialog: (label, description).
+    pub fn dialog_options(&self) -> Vec<(String, String)> {
+        let Some(d) = &self.dialog else { return vec![] };
+        match &d.kind {
+            DialogKind::Permission { always } => {
+                let mut v = vec![("Yes".to_string(), String::new())];
+                if let Some(r) = always {
+                    v.push((format!("Yes, and don't ask again for {r}"), String::new()));
+                }
+                v.push(("No, and tell Forge what to do instead".to_string(), "esc".to_string()));
+                v
+            }
+            DialogKind::Plan => vec![
+                ("Yes, and accept edits without asking".into(), String::new()),
+                ("Yes, and ask before each edit".into(), String::new()),
+                ("No, keep planning".into(), "esc".into()),
+            ],
+            DialogKind::Questions { questions, at, picked, .. } => {
+                let q = &questions[*at];
+                let mut v: Vec<(String, String)> = q
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (l, desc))| {
+                        let label =
+                            if q.multi { format!("[{}] {l}", if picked[i] { "x" } else { " " }) } else { l.clone() };
+                        (label, desc.clone())
+                    })
+                    .collect();
+                v.push(("Type an answer".into(), String::new()));
+                v
+            }
+        }
+    }
+
+    /// The dialog's title and body lines.
+    pub fn dialog_text(&self) -> (String, Vec<String>) {
+        let Some(d) = &self.dialog else { return (String::new(), vec![]) };
+        match &d.kind {
+            DialogKind::Permission { .. } => {
+                let p = &d.prompt;
+                let arg = summarize(&p.tool_name, &p.input);
+                let mut body = vec![];
+                if p.tool_name == "Bash" {
+                    body.extend(p.input["command"].as_str().unwrap_or("").lines().take(6).map(|l| format!("  {l}")));
+                } else if !arg.is_empty() {
+                    body.push(format!("  {arg}"));
+                }
+                if !p.reason.is_empty() {
+                    body.push(p.reason.clone());
+                }
+                (format!("Allow {}?", p.tool_name), body)
+            }
+            DialogKind::Plan => ("Go ahead with this plan?".into(), vec![]),
+            DialogKind::Questions { questions, at, .. } => {
+                let q = &questions[*at];
+                let n = questions.len();
+                let title = if n > 1 { format!("{} ({}/{n})", q.question, at + 1) } else { q.question.clone() };
+                let mut body = vec![];
+                if let Some(e) = &d.typing {
+                    body.push(format!("> {}", e.text()));
+                }
+                (title, body)
+            }
+        }
+    }
+
+    pub fn dialog_selected(&self) -> usize {
+        self.dialog.as_ref().map(|d| d.selected).unwrap_or(0)
+    }
+
+    fn dialog_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let n = self.dialog_options().len();
+        let Some(d) = self.dialog.as_mut() else { return vec![] };
+        // Typing a free-form answer.
+        if let Some(e) = d.typing.as_mut() {
+            match key.code {
+                KeyCode::Enter => {
+                    let text = e.text();
+                    d.typing = None;
+                    if !text.trim().is_empty() {
+                        self.answer_question(text);
+                    }
+                }
+                KeyCode::Esc => d.typing = None,
+                KeyCode::Backspace => e.backspace(),
+                KeyCode::Left => e.left(),
+                KeyCode::Right => e.right(),
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => e.insert(&c.to_string()),
+                _ => {}
+            }
+            return vec![];
+        }
+        match key.code {
+            KeyCode::Up => d.selected = d.selected.checked_sub(1).unwrap_or(n.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Tab => d.selected = (d.selected + 1) % n.max(1),
+            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                let i = c as usize - '1' as usize;
+                if i < n {
+                    d.selected = i;
+                    return self.choose(i);
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let DialogKind::Questions { questions, at, picked, .. } = &mut d.kind {
+                    if questions[*at].multi && d.selected < picked.len() {
+                        picked[d.selected] = !picked[d.selected];
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let i = d.selected;
+                return self.choose(i);
+            }
+            KeyCode::Esc => return self.choose(n.saturating_sub(1)),
+            _ => {}
+        }
+        vec![]
+    }
+
+    fn choose(&mut self, i: usize) -> Vec<Action> {
+        let n = self.dialog_options().len();
+        let Some(d) = self.dialog.as_mut() else { return vec![] };
+        let allow = |updated_permissions| PermissionAnswer::Allow { updated_input: None, updated_permissions };
+        let stop = |message: &str| PermissionAnswer::Deny { message: message.to_string(), interrupt: true };
+        match &mut d.kind {
+            DialogKind::Permission { always } => {
+                let always_row = always.is_some();
+                let a = match (i, always_row) {
+                    (0, _) => allow(vec![]),
+                    (1, true) => {
+                        allow(d.prompt.suggestions.iter().filter_map(|s| serde_json::to_value(s).ok()).collect())
+                    }
+                    _ => stop("The user said no. Wait for them to say what to do instead."),
+                };
+                self.answer(a);
+            }
+            DialogKind::Plan => {
+                let a = match i {
+                    0 => allow(vec![json!({"type": "setMode", "mode": "acceptEdits", "destination": "session"})]),
+                    1 => allow(vec![]),
+                    _ => stop("The user wants to keep planning. Wait for their feedback on the plan."),
+                };
+                self.answer(a);
+            }
+            DialogKind::Questions { questions, at, picked, .. } => {
+                if i + 1 == n {
+                    // "Type an answer"; Esc on it declines.
+                    if d.selected + 1 == n && d.typing.is_none() {
+                        d.typing = Some(Editor::default());
+                    }
+                    return vec![];
+                }
+                let q = &questions[*at];
+                let answer = if q.multi {
+                    let mut chosen: Vec<String> =
+                        q.options.iter().zip(picked.iter()).filter(|(_, p)| **p).map(|(o, _)| o.0.clone()).collect();
+                    if chosen.is_empty() {
+                        chosen.push(q.options[i].0.clone());
+                    }
+                    chosen.join(", ")
+                } else {
+                    q.options[i].0.clone()
+                };
+                self.answer_question(answer);
+            }
+        }
+        vec![]
+    }
+
+    fn answer_question(&mut self, answer: String) {
+        let Some(d) = self.dialog.as_mut() else { return };
+        let DialogKind::Questions { questions, at, answers, picked } = &mut d.kind else { return };
+        answers.insert(questions[*at].question.clone(), json!(answer));
+        if *at + 1 < questions.len() {
+            *at += 1;
+            *picked = vec![false; questions[*at].options.len()];
+            d.selected = 0;
+            return;
+        }
+        let mut input = d.prompt.input.clone();
+        input["answers"] = Value::Object(std::mem::take(answers));
+        self.answer(PermissionAnswer::Allow { updated_input: Some(input), updated_permissions: vec![] });
+    }
+
+    /// Esc on a dialog that the reply can't reach any more (the turn was interrupted).
+    pub fn close_dialog_if_stale(&mut self) {
+        if self.dialog.as_ref().is_some_and(|d| d.reply.as_ref().is_some_and(|r| r.is_closed())) {
+            self.dialog = None;
+            self.dirty = true;
+        }
+    }
+
+    // ---- the `/` menu ----
+
+    /// Commands matching what is typed, while it is a bare `/word`.
+    pub fn menu(&self) -> Vec<&CommandInfo> {
+        if self.menu_dismissed || self.dialog.is_some() {
+            return vec![];
+        }
+        let text = self.editor.text();
+        let Some(word) = text.strip_prefix('/') else { return vec![] };
+        if word.contains(char::is_whitespace) {
+            return vec![];
+        }
+        let word = word.to_lowercase();
+        let mut starts: Vec<&CommandInfo> = self.commands.iter().filter(|c| c.name.starts_with(&word)).collect();
+        let contains = self.commands.iter().filter(|c| !c.name.starts_with(&word) && c.name.contains(&word));
+        starts.extend(contains);
+        starts
+    }
+
+    // ---- keys ----
+
+    pub fn on_term_event(&mut self, ev: Event) -> Vec<Action> {
+        self.dirty = true;
+        match ev {
+            Event::Key(k) if k.kind != KeyEventKind::Release => self.on_key(k),
+            Event::Paste(text) => {
+                if let Some(e) = self.dialog.as_mut().and_then(|d| d.typing.as_mut()) {
+                    e.insert(&text);
+                } else if self.dialog.is_none() {
+                    self.editor.insert(&text);
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    fn set_hint(&mut self, text: &str) {
+        self.hint = Some((text.to_string(), Instant::now()));
+    }
+
+    pub fn on_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let now = Instant::now();
+        // Ctrl-C: clear, interrupt, or (twice) exit; it works in dialogs too.
+        if ctrl && key.code == KeyCode::Char('c') {
+            if self.dialog.is_some() {
+                self.answer(PermissionAnswer::Deny { message: "The user interrupted.".into(), interrupt: true });
+                return vec![Action::Interrupt];
+            }
+            if !self.editor.is_empty() {
+                self.editor.clear();
+                return vec![];
+            }
+            if self.busy {
+                return vec![Action::Interrupt];
+            }
+            if self.last_ctrl_c.is_some_and(|t| now.duration_since(t) < DOUBLE_PRESS) {
+                return vec![Action::Exit];
+            }
+            self.last_ctrl_c = Some(now);
+            self.set_hint("Press Ctrl-C again to exit");
+            return vec![];
+        }
+        if self.dialog.is_some() {
+            return self.dialog_key(key);
+        }
+        if ctrl && key.code == KeyCode::Char('d') && self.editor.is_empty() {
+            return vec![Action::Exit];
+        }
+        if key.code == KeyCode::BackTab {
+            let cur = MODES.iter().position(|m| m.as_str() == self.status.mode).unwrap_or(0);
+            let next = MODES[(cur + 1) % MODES.len()];
+            self.status.mode = next.as_str().to_string();
+            return vec![Action::SetMode(next)];
+        }
+        let menu_len = self.menu().len();
+        match key.code {
+            KeyCode::Esc => {
+                if menu_len > 0 {
+                    self.menu_dismissed = true;
+                    return vec![];
+                }
+                if self.busy {
+                    return vec![Action::Interrupt];
+                }
+                if self.editor.is_empty() && self.last_esc.is_some_and(|t| now.duration_since(t) < DOUBLE_PRESS) {
+                    self.last_esc = None;
+                    return self.submit("/rewind".into());
+                }
+                self.last_esc = Some(now);
+                if !self.editor.is_empty() {
+                    self.set_hint("Esc again on an empty prompt opens /rewind");
+                }
+                return vec![];
+            }
+            KeyCode::Enter if key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) => {
+                self.editor.insert("\n")
+            }
+            KeyCode::Char('j') if ctrl => self.editor.insert("\n"),
+            KeyCode::Enter => {
+                if menu_len > 0 {
+                    let c = self.menu()[self.menu_selected.min(menu_len - 1)].clone();
+                    // A command that takes arguments waits for them; one that doesn't runs now.
+                    let typed = self.editor.text();
+                    if c.args.is_empty() || typed == format!("/{}", c.name) && c.args.starts_with('[') {
+                        self.editor.set(&format!("/{}", c.name));
+                    } else {
+                        self.editor.set(&format!("/{} ", c.name));
+                        return vec![];
+                    }
+                }
+                let text = self.editor.text();
+                if let Some(stripped) = text.strip_suffix('\\') {
+                    self.editor.set(&format!("{stripped}\n"));
+                    return vec![];
+                }
+                if text.trim().is_empty() {
+                    return vec![];
+                }
+                let text = self.editor.take();
+                return self.submit(text);
+            }
+            KeyCode::Tab if menu_len > 0 => {
+                let c = self.menu()[self.menu_selected.min(menu_len - 1)].clone();
+                self.editor.set(&format!("/{} ", c.name));
+            }
+            KeyCode::Up if menu_len > 0 => {
+                self.menu_selected = self.menu_selected.checked_sub(1).unwrap_or(menu_len - 1);
+                return vec![];
+            }
+            KeyCode::Down if menu_len > 0 => {
+                self.menu_selected = (self.menu_selected + 1) % menu_len;
+                return vec![];
+            }
+            KeyCode::Up => {
+                self.editor.up();
+            }
+            KeyCode::Down => {
+                self.editor.down();
+            }
+            KeyCode::Left if ctrl => self.editor.word_left(),
+            KeyCode::Right if ctrl => self.editor.word_right(),
+            KeyCode::Left => self.editor.left(),
+            KeyCode::Right => self.editor.right(),
+            KeyCode::Home => self.editor.home(),
+            KeyCode::End => self.editor.end(),
+            KeyCode::Backspace if alt || ctrl => self.editor.delete_word(),
+            KeyCode::Backspace => self.editor.backspace(),
+            KeyCode::Delete => self.editor.delete(),
+            KeyCode::Char('a') if ctrl => self.editor.home(),
+            KeyCode::Char('e') if ctrl => self.editor.end(),
+            KeyCode::Char('w') if ctrl => self.editor.delete_word(),
+            KeyCode::Char('u') if ctrl => self.editor.kill_to_start(),
+            KeyCode::Char('k') if ctrl => self.editor.kill_to_end(),
+            KeyCode::Char('b') if alt => self.editor.word_left(),
+            KeyCode::Char('f') if alt => self.editor.word_right(),
+            KeyCode::Char(c) if !ctrl => self.editor.insert(&c.to_string()),
+            _ => {}
+        }
+        // Typing changes the menu: show it again from the top.
+        self.menu_dismissed = false;
+        if self.menu().len() != menu_len {
+            self.menu_selected = 0;
+        }
+        vec![]
+    }
+
+    fn submit(&mut self, text: String) -> Vec<Action> {
+        self.menu_selected = 0;
+        self.menu_dismissed = false;
+        if self.busy {
+            self.queued.push_back(text);
+            return vec![];
+        }
+        vec![Action::Send(self.start(text))]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::text::plain;
+    use forge_types::{ApiMessage, MessageContent, Role, StopReason, Usage};
+
+    fn app() -> App {
+        let mut a = App::new(Theme { color: false }, vec![]);
+        a.commands = vec![
+            CommandInfo { name: "clear".into(), args: "[name]".into(), description: "Start a new conversation".into() },
+            CommandInfo { name: "compact".into(), args: "[instructions]".into(), description: "Summarize".into() },
+            CommandInfo { name: "model".into(), args: "[model]".into(), description: "Switch models".into() },
+            CommandInfo { name: "status".into(), args: String::new(), description: "Show status".into() },
+        ];
+        a
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn typed(a: &mut App, s: &str) {
+        for c in s.chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn texts(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(plain).collect()
+    }
+
+    fn delta(text: &str) -> UiEvent {
+        UiEvent::Engine(EngineEvent::Stream {
+            event: StreamEvent::ContentBlockDelta { index: 0, delta: Delta::TextDelta { text: text.into() } },
+            parent_tool_use_id: None,
+        })
+    }
+
+    #[test]
+    fn enter_sends_and_queues_while_busy() {
+        let mut a = app();
+        typed(&mut a, "hello");
+        assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("hello".into())]);
+        assert!(a.busy);
+        assert_eq!(texts(&a.take_pending()), ["", "> hello "]);
+        typed(&mut a, "next");
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "queued while a turn runs");
+        assert_eq!(a.queued.len(), 1);
+        assert_eq!(a.next_queued(), None, "still busy");
+        a.on_event(UiEvent::Idle);
+        assert_eq!(a.next_queued().as_deref(), Some("next"));
+        // A trailing backslash, Shift+Enter or Ctrl+J start a new line instead.
+        a.on_event(UiEvent::Idle);
+        typed(&mut a, "one\\");
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty());
+        typed(&mut a, "two");
+        a.on_key(ctrl('j'));
+        assert_eq!(a.editor.text(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn streamed_text_moves_to_scrollback_line_by_line() {
+        let mut a = app();
+        a.on_event(UiEvent::Engine(EngineEvent::Stream {
+            event: StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlock::text("") },
+            parent_tool_use_id: None,
+        }));
+        a.on_event(delta("Here is **the** plan:\n- step"));
+        assert_eq!(texts(&a.pending), ["", "⏺ Here is the plan:"]);
+        assert_eq!(a.live, "- step");
+        a.on_event(delta(" one\n```sh\nls\n"));
+        a.on_event(UiEvent::Engine(EngineEvent::Stream {
+            event: StreamEvent::ContentBlockStop { index: 0 },
+            parent_tool_use_id: None,
+        }));
+        assert_eq!(texts(&a.take_pending())[2..], ["  - step one", "  ```sh", "    ls"]);
+        // The complete message adds its tool call, not its text again.
+        let msg = ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: Role::Assistant,
+            model: "x".into(),
+            content: vec![
+                ContentBlock::text("Here is the plan"),
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "Bash".into(),
+                    input: json!({"command": "cargo test"}),
+                    cache_control: None,
+                },
+            ],
+            stop_reason: Some(StopReason::ToolUse),
+            stop_sequence: None,
+            usage: Usage::default(),
+        };
+        a.on_event(UiEvent::Engine(EngineEvent::Assistant {
+            message: msg,
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        assert_eq!(texts(&a.take_pending()), ["", "⏺ Bash(cargo test)"]);
+        a.on_event(UiEvent::Engine(EngineEvent::User {
+            message: forge_types::Message::user(vec![ContentBlock::tool_result("t1", "ok\n2 passed", false)]),
+            uuid: "u2".into(),
+            tool_use_result: None,
+            is_meta: false,
+            parent_tool_use_id: None,
+        }));
+        assert_eq!(texts(&a.take_pending()), ["  ⎿  ok (+1 lines)"]);
+        let _ = MessageContent::Text(String::new());
+    }
+
+    #[test]
+    fn slash_menu_filters_completes_and_runs() {
+        let mut a = app();
+        typed(&mut a, "/c");
+        let names: Vec<&str> = a.menu().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["clear", "compact"]);
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Tab));
+        assert_eq!(a.editor.text(), "/compact ");
+        assert!(a.menu().is_empty(), "the menu closes after the name");
+        a.editor.clear();
+        typed(&mut a, "/stat");
+        assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/status".into())]);
+        a.on_event(UiEvent::Idle);
+        typed(&mut a, "/mo");
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "a command with arguments waits for them");
+        assert_eq!(a.editor.text(), "/model ");
+        a.editor.clear();
+        typed(&mut a, "/zz");
+        assert!(a.menu().is_empty());
+        typed(&mut a, "\u{8}");
+        a.editor.clear();
+        typed(&mut a, "/cl");
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.menu().is_empty(), "Esc hides the menu");
+    }
+
+    #[test]
+    fn esc_ctrl_c_and_shift_tab() {
+        let mut a = app();
+        a.status.mode = "default".into();
+        assert_eq!(
+            a.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            vec![Action::SetMode(PermissionMode::AcceptEdits)]
+        );
+        assert_eq!(a.status.mode, "acceptEdits");
+        typed(&mut a, "x");
+        a.on_key(ctrl('c'));
+        assert!(a.editor.is_empty(), "Ctrl-C clears first");
+        assert!(a.on_key(ctrl('c')).is_empty());
+        assert_eq!(a.on_key(ctrl('c')), vec![Action::Exit], "twice exits");
+        a.busy = true;
+        assert_eq!(a.on_key(key(KeyCode::Esc)), vec![Action::Interrupt]);
+        a.busy = false;
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(a.on_key(key(KeyCode::Esc)), vec![Action::Send("/rewind".into())]);
+    }
+
+    fn prompt(tool: &str, input: Value) -> PermissionPrompt {
+        PermissionPrompt {
+            tool_name: tool.into(),
+            tool_use_id: "t".into(),
+            input,
+            reason: String::new(),
+            suggestions: vec![],
+            blocked_path: None,
+        }
+    }
+
+    #[test]
+    fn dialogs_answer_permissions_questions_and_plans() {
+        let mut a = app();
+        let (tx, mut rx) = oneshot::channel();
+        let mut p = prompt("Bash", json!({"command": "npm test"}));
+        p.suggestions = vec![Suggestion::AddRules {
+            rules: vec![serde_json::from_value(json!({"toolName": "Bash", "ruleContent": "npm test"})).unwrap()],
+            behavior: forge_permissions::Behavior::Allow,
+            destination: "localSettings".into(),
+        }];
+        a.on_event(UiEvent::Ask { prompt: p, reply: tx });
+        assert_eq!(a.dialog_text().0, "Allow Bash?");
+        assert_eq!(a.dialog_options()[1].0, "Yes, and don't ask again for Bash(npm test)");
+        a.on_key(key(KeyCode::Char('2')));
+        match rx.try_recv().unwrap() {
+            PermissionAnswer::Allow { updated_permissions, .. } => assert_eq!(updated_permissions.len(), 1),
+            other => panic!("{other:?}"),
+        }
+        assert!(a.dialog.is_none());
+
+        let (tx, mut rx) = oneshot::channel();
+        a.on_event(UiEvent::Ask { prompt: prompt("Write", json!({"file_path": "a.txt"})), reply: tx });
+        a.on_key(key(KeyCode::Esc));
+        assert!(matches!(rx.try_recv().unwrap(), PermissionAnswer::Deny { interrupt: true, .. }));
+
+        // Two questions: a pick, then a typed answer.
+        let (tx, mut rx) = oneshot::channel();
+        let q = json!({"questions": [
+            {"question": "Which db?", "options": [{"label": "sqlite"}, {"label": "postgres"}]},
+            {"question": "Name?", "options": [{"label": "app"}]}
+        ]});
+        a.on_event(UiEvent::Ask { prompt: prompt("AskUserQuestion", q), reply: tx });
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.dialog_text().0, "Name? (2/2)");
+        a.on_key(key(KeyCode::Char('2')));
+        typed(&mut a, "forge");
+        a.on_key(key(KeyCode::Enter));
+        match rx.try_recv().unwrap() {
+            PermissionAnswer::Allow { updated_input: Some(v), .. } => {
+                assert_eq!(v["answers"], json!({"Which db?": "postgres", "Name?": "forge"}))
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // A plan: written to scrollback; "Yes, and accept edits" switches the mode.
+        let (tx, mut rx) = oneshot::channel();
+        a.take_pending();
+        a.on_event(UiEvent::Ask { prompt: prompt("ExitPlanMode", json!({"plan": "1. Edit a\n2. Test"})), reply: tx });
+        assert_eq!(texts(&a.take_pending())[1..], ["Here is the plan:", "  1. Edit a", "  2. Test"]);
+        a.on_key(key(KeyCode::Enter));
+        match rx.try_recv().unwrap() {
+            PermissionAnswer::Allow { updated_permissions, .. } => {
+                assert_eq!(updated_permissions[0]["mode"], "acceptEdits")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}

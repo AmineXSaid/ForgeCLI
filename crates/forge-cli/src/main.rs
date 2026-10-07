@@ -19,6 +19,7 @@ mod mcp_cmd;
 mod output;
 mod repl;
 mod term;
+mod tui;
 
 use std::io::Read;
 use std::path::PathBuf;

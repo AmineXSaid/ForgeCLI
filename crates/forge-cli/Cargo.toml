@@ -30,6 +30,10 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+# The interactive UI (docs/TUI.md).
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
