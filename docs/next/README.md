@@ -5,12 +5,16 @@ priority 7). Hand each one to a fresh agent session as its whole prompt. They
 all work on the same branch, **one session at a time, in this order**: each
 prompt starts from the previous one's pushed work.
 
-| # | Prompt | Size | Why this position |
-| --- | --- | --- | --- |
-| 1 | [`@file` attachments](1-at-file-attachments.md) | small | Used on every prompt; self-contained; closes the one "partial" TUI row in PARITY |
-| 2 | [Immediate commands mid-turn](2-immediate-commands.md) | large | Reworks the driver and the session loops (TUI, stream-json). Done before 3 so the TUI screens build on its read-only session view instead of being reworked |
-| 3 | [TUI editor-style screens](3-tui-screens.md) | large | `/diff`, `/context`, `/hooks`, `/agents` screens, key rebinding; needs 2's session view for live data |
-| 4 | [Real-API check pass](4-real-api-check-pass.md) | small | No features: makes the manual checks complete and quick to run, so it comes after everything it checks |
+| # | Prompt | Size | Why this position | Status |
+| --- | --- | --- | --- | --- |
+| 1 | [`@file` attachments](1-at-file-attachments.md) | small | Used on every prompt; self-contained; closes the one "partial" TUI row in PARITY | Done: `0d427cb`, `6c96651` |
+| 2 | [Immediate commands mid-turn](2-immediate-commands.md) | large | Reworks the driver and the session loops (TUI, stream-json). Done before 3 so the TUI screens build on its read-only session view instead of being reworked | Done: `95a2fe9`, `d8e209d` |
+| 3 | [TUI editor-style screens](3-tui-screens.md) | large | `/diff`, `/context`, `/hooks`, `/agents` screens, key rebinding; needs 2's session view for live data | Done: `6e9b9c6`, `f03302b`, `b0fa230`, `dd6b0d3`, `9da0d69` |
+| 4 | [Real-API check pass](4-real-api-check-pass.md) | small | No features: makes the manual checks complete and quick to run, so it comes after everything it checks | Done: the commit "Manual check run ..." after `9da0d69` |
+
+All four are done. What is left needs a real key and a real terminal: the
+run in `docs/CHECKLIST.md` and the first `forge-eval` baseline
+(`docs/BASELINE.md`).
 
 ## The branch
 

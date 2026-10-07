@@ -76,6 +76,17 @@
 - TUI: completion quotes paths with spaces, and a dim `(attached: ...)` line
   follows the prompt.
 
+### The manual check run
+- `docs/CHECKLIST.md` is one ordered run of 55 checks in three parts (print
+  mode, interactive, special setups), with exact commands, what to see,
+  where to look and a results table. The old numbers stay in brackets.
+- `scripts/check-setup.sh [dir] [--force]` builds the scratch repository it
+  uses.
+- Tests keep it honest: every `forge ...` command in it parses, every slash
+  command exists, and the print-mode checks a mock can stand in for are run.
+- `docs/BASELINE.md` explains how to record the first real `forge-eval`
+  baseline; a test checks its commands.
+
 ### TUI screens
 - Screens: a command typed without arguments can open a scrolling viewer in
   the live region (still an inline viewport, no alternate screen). Up/Down,

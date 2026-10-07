@@ -119,7 +119,9 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 1. `forge-eval`: the task suite, the runner and A/B reports. **Done.** There
    are 13 validated tasks across the pillars, plus `validate`, `run` and
    `compare`. No measured baseline exists yet: the first `forge-eval run` with
-   a real API key sets it.
+   a real API key sets it. How to record it, what to commit and how to read
+   the A/B report: docs/BASELINE.md, "Recording the first real baseline"
+   (its commands are checked against `forge-eval` by a test).
 2. Sub-agents (the Task tool, built-in Explore and Plan agents), to isolate
    context.
 3. The verification loop. **Done**, without LSP feedback.
@@ -140,6 +142,10 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
      `/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`.
      Checked against mocks and in a pseudo-terminal; the real-terminal checks
      are in docs/CHECKLIST.md.
+   - **Checks:** the real-API and real-terminal checks are one ordered run of
+     55 (docs/CHECKLIST.md: print mode, interactive, special setups), set up
+     by `scripts/check-setup.sh`; a test keeps every command in it valid.
+     They haven't been run with a real key yet.
    - **Done since:** the editor-style screens (`/diff` viewer, `/context`
      grid, `/hooks` editor, `/agents` wizard), key rebinding
      (`keybindings.json`), `/color` and `/focus`. `/tui` and `/scroll-speed`

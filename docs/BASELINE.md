@@ -75,3 +75,70 @@ ForgeCLI is a terminal coding agent written in Rust.
 - The stream-json protocol and the flag names that the reference CLI's IDE
   hosts depend on. They are public interfaces.
 - The engine contracts C1–C11, the settings layers, and the session format.
+
+## Recording the first real baseline
+
+No measured baseline exists yet (docs/GOALS.md, priority 1). It takes a real
+API key and about an hour of model time. From the repository root:
+
+1. **Build** the binaries under test:
+
+   ```sh
+   cargo build --release
+   ```
+
+2. **Check the suite** (no key needed). `validate` runs each task's check on
+   its starting files (it must fail) and after its reference solution (it
+   must pass); `list` shows the tasks and their pillars:
+
+   ```sh
+   target/release/forge-eval validate
+   target/release/forge-eval list
+   ```
+
+3. **Run the baseline**: three runs per task, one fixed model (`--model
+   sonnet`), edits and commands allowed without prompts (each task runs in its own scratch copy
+   under the output directory, never in this repository):
+
+   ```sh
+   export FORGE_API_KEY=...
+   target/release/forge-eval run --label baseline --repeat 3 -- --model sonnet --dangerously-skip-permissions
+   ```
+
+   `--only <id|tag|pillar>` runs part of the suite, `-j` sets how many tasks
+   run at once (default 2), and `--forge` points at another `forge` binary
+   (default `target/release/forge`).
+
+4. **Read the results** in `evals/results/baseline/` (git ignores
+   `evals/results/`):
+   - `report.md`: pass rate, cost and turns per task, false-finish,
+     invalid-call and recovery rates, then a row per pillar and per run;
+   - `report.json`: the same, for `compare`;
+   - `<task>-<n>/`: each run's `workspace/`, `transcript.jsonl` and
+     `stderr.txt`, for finding out why a run failed.
+
+5. **Commit the summary, not the runs.** Copy `report.md` and `report.json`
+   to `evals/baselines/<yyyy-mm-dd>-baseline/` and commit them, with the
+   Forge commit and the model in the commit message. Never commit:
+   - API keys (check `grep -rn "sk-" evals/baselines/` finds nothing);
+   - `transcript.jsonl`, `stderr.txt` or `workspace/`: they hold full model
+     traffic, environment details and paths from your machine.
+
+6. **Compare a change** against it: rebuild with the change, run with another
+   label, then compare (B relative to A; each argument is a results
+   directory or a `report.json`):
+
+   ```sh
+   target/release/forge-eval run --label my-change --repeat 3 -- --model sonnet --dangerously-skip-permissions
+   target/release/forge-eval compare evals/results/baseline evals/results/my-change
+   ```
+
+**Reading the A/B report.** `compare` prints one table: pass rate, cost per
+task, turns per task, wall time, false-finish rate (the agent said it was
+done but the check failed), invalid-call rate (tool calls that errored) and
+recovery rate, each for A and B, with "B better", "A better" or "=". With 13
+tasks and 3 runs (39 runs a side), a difference of one or two runs is noise:
+treat a pass-rate change under about 5 points as no change, and raise
+`--repeat` before believing it. A change is a win when the pass rate rises
+without the false-finish rate rising, or the cost falls at the same pass
+rate.

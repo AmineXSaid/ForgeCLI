@@ -553,6 +553,7 @@ dependencies = [
  "ignore",
  "ratatui",
  "serde_json",
+ "shlex 1.3.0",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -644,6 +645,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "shlex 1.3.0",
  "tempfile",
  "tokio",
 ]
