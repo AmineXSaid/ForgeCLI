@@ -105,6 +105,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         },
         Builtin::Plan => super::session::plan(d, args),
         Builtin::Loop => super::looping::run(d, args).await,
+        Builtin::Feedback => super::feedback::run(d, args),
         Builtin::Rewind => super::switching::rewind(d, args).await,
         Builtin::Resume => super::switching::resume(d, args).await,
         Builtin::Branch => super::switching::branch(d, args).await,
@@ -327,6 +328,13 @@ fn memory(d: &Driver) -> String {
 }
 
 fn doctor(d: &Driver) -> Exec {
+    let checks = doctor_checks(d);
+    let failed = checks.iter().any(|c| !c.ok);
+    Exec::Local { text: crate::doctor::render(&checks), is_error: failed }
+}
+
+/// `forge doctor`'s checks plus this session's: warnings, MCP servers, model pricing.
+pub(super) fn doctor_checks(d: &Driver) -> Vec<crate::doctor::Check> {
     let mut checks = crate::doctor::checks(&d.info.cwd);
     checks.push(crate::doctor::Check {
         ok: d.info.warnings.is_empty(),
@@ -352,8 +360,7 @@ fn doctor(d: &Driver) -> Exec {
             format!("{model}: unknown pricing; costs show as $0 and --max-budget-usd refuses it")
         },
     });
-    let failed = checks.iter().any(|c| !c.ok);
-    Exec::Local { text: crate::doctor::render(&checks), is_error: failed }
+    checks
 }
 
 fn release_notes() -> String {

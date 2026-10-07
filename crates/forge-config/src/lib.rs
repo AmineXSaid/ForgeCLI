@@ -4,7 +4,7 @@ mod memory;
 mod settings;
 
 pub use memory::{load_memory, MemoryFile, MemoryKind};
-pub use redact::{is_secret_key, redact};
+pub use redact::{is_secret_key, redact, redact_deep, redact_text};
 
 mod redact;
 pub use settings::{

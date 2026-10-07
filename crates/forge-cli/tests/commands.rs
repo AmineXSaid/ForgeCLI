@@ -377,3 +377,45 @@ async fn print_mode_keeps_running_for_scheduled_tasks() {
     assert_eq!(code, 1);
     assert!(err.contains("Scheduling is off"), "{err}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feedback_writes_a_local_bundle_with_secrets_masked() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("noted")]).await;
+    let mut c = command(
+        &forge_bin(),
+        &e.cwd,
+        &e.home,
+        &api.url,
+        &["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+    );
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().unwrap();
+        for text in ["deploy with key sk-abcdefghijklmnopqrstu and password=hunter2", "/bug it hangs"] {
+            let line = serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
+            stdin.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+        }
+    }
+    let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output()).await.unwrap().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Saved a feedback bundle in ") && stdout.contains("Nothing was sent anywhere"), "{stdout}");
+    let root = e.home.join(".forge/state/feedback");
+    let dirs: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|d| d.path()).collect();
+    assert_eq!(dirs.len(), 1);
+    let dir = &dirs[0];
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(dir).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+    let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+    assert!(report.starts_with("Description:\nit hangs") && report.contains("ForgeCLI:"), "{report}");
+    assert!(std::fs::read_to_string(dir.join("doctor.txt")).unwrap().contains("credentials"));
+    let transcript = std::fs::read_to_string(dir.join("transcript.jsonl")).unwrap();
+    assert!(transcript.contains("deploy with key <redacted> and password=<redacted>"), "{transcript}");
+    assert!(!transcript.contains("hunter2") && !transcript.contains("sk-abcdefghijklmnopqrstu"));
+    assert_eq!(api.requests().len(), 1, "no model call for /feedback");
+}

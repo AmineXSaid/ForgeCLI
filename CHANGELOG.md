@@ -20,6 +20,9 @@
   summarize part of the conversation), `/branch`, `/resume`, `/cd`,
   `/reload-skills`, `/reload-plugins`; `/clear` now starts a new session
   and keeps the old one resumable.
+- `/feedback` (`/bug`, `/share`): a private bug-report bundle on this
+  machine, with secrets masked, including those inside free text. Nothing
+  is uploaded.
 - Bundled skills, in Forge's own words: `/init`, `/code-review` (`/review`),
   `/security-review`, `/simplify`, `/verify`, `/run`, `/run-skill-generator`,
   `/batch`, `/fewer-permission-prompts`, `/update-config`.

@@ -13,6 +13,7 @@
 //! `slash_commands` and the stream-json `initialize` `commands` are all
 //! generated from it.
 
+mod feedback;
 mod looping;
 mod run;
 mod session;
@@ -83,6 +84,7 @@ pub enum Builtin {
     Exit,
     Export,
     Fast,
+    Feedback,
     Goal,
     Help,
     Hooks,
@@ -171,6 +173,13 @@ pub static BUILTINS: &[CommandSpec] = &[
     cmd!(Exit, "exit", ["quit"], "", "Exit Forge"),
     cmd!(Export, "export", [], "[file]", "Export the conversation as plain text"),
     cmd!(Fast, "fast", [], "[on|off]", "Turn fast mode on or off, where the model offers it"),
+    cmd!(
+        Feedback,
+        "feedback",
+        ["bug", "share"],
+        "[description]",
+        "Save a bug-report bundle on this machine (nothing is uploaded)"
+    ),
     cmd!(Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
     cmd!(Help, "help", [], "", "Show help and the available commands"),
     cmd!(Hooks, "hooks", [], "", "View the configured hooks"),
