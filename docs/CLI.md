@@ -321,6 +321,8 @@ them all. The built-ins so far:
 | `/clear [name]` (`/reset`, `/new`) | Starts a new conversation (a new session id); the old one stays resumable, under `name` if given |
 | `/doctor` (`/checkup`) | `forge doctor` plus this session's MCP, model and warnings |
 | `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin` | What is loaded, and from where |
+| `/hooks add <Event> <matcher> <command> [--scope local\|project\|user] [--timeout <s>]` | Adds a command hook to that scope's settings file (default `local`, `.forge/settings.local.json`) and reloads the session so it applies at once. `''` or `*` as the matcher matches everything; the words after the matcher are the command |
+| `/hooks remove <Event> <n>` | Removes hook `n` of that event, as `/hooks` numbers it (each line shows its source: user, project, local, flag, managed or plugin). Only user, project and local hooks can be removed |
 | `/mcp [reconnect\|enable\|disable <server\|all>]` | Each MCP server's status. `reconnect` restarts a server from the config it started with; `disable` stops it, hides its tools and prompts, and saves that in `.forge/settings.local.json` (`disabledMcpjsonServers`); `enable` reverses it. Tools a server didn't offer when the session started join after `/reload-plugins`. `--mcp-config` and plugin servers change for the session only |
 | `/tasks [stop <id>]` (`/bashes`) | Background shells, scheduled tasks and subtasks; `stop` ends one |
 | `/subtask <task>` | Hands the task to a background agent that starts from this conversation; you keep going. Its report reaches the model with your next prompt (and is shown when it finishes). In `-p`, Forge waits for it, then runs one more turn with the report |

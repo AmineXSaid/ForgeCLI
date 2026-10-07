@@ -362,6 +362,11 @@ The screens:
   memory, messages, free; a used part shows at least one cell), then the
   legend with the numbers of the text `/context` (same `ContextData`), the
   auto-compact point and suggestions. `/context all` stays text.
+- **`/hooks`:** "+ Add hook…" (a form: event, matcher, command, scope, which
+  runs `/hooks add ...`), then every event with its hooks, numbered as
+  `/hooks` numbers them, each with its source and timeout. Enter on a user,
+  project or local hook asks, then runs `/hooks remove <Event> <n>`. The
+  session reloads after a change, so the hook applies at once.
 
 ## Testing
 

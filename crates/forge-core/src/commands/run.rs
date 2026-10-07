@@ -73,7 +73,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         }
         Builtin::Skills => ok(skills(d)),
         Builtin::Agents => ok(agents(d)),
-        Builtin::Hooks => ok(hooks(d)),
+        Builtin::Hooks => super::hooks::run(d, args).await,
         Builtin::Memory => ok(memory(d)),
         Builtin::Doctor => doctor(d),
         Builtin::ReleaseNotes => ok(release_notes()),
@@ -190,33 +190,6 @@ fn agents(d: &Driver) -> String {
          description and optional tools and model, then its instructions).",
     );
     s
-}
-
-fn hooks(d: &Driver) -> String {
-    let h = d.engine.hooks();
-    if h.disabled {
-        return "Hooks are disabled (--bare, --safe-mode or disableAllHooks).".into();
-    }
-    if h.config.is_empty() {
-        return "No hooks configured. Add them under \"hooks\" in a settings file.".into();
-    }
-    let mut s = String::new();
-    for event in forge_hooks::HookEvent::ALL {
-        let Some(matchers) = h.config.events.get(&event).filter(|m| !m.is_empty()) else { continue };
-        let _ = writeln!(s, "{}:", event.as_str());
-        for m in matchers {
-            for cmd in &m.hooks {
-                let _ = writeln!(
-                    s,
-                    "  [{}] {} (timeout {}s)",
-                    m.pattern.as_deref().unwrap_or("*"),
-                    cmd.command,
-                    cmd.timeout.as_secs()
-                );
-            }
-        }
-    }
-    s.trim_end().to_string()
 }
 
 fn memory(d: &Driver) -> String {

@@ -15,6 +15,7 @@
 //! generated from it.
 
 mod feedback;
+mod hooks;
 mod immediate;
 mod importing;
 mod looping;
@@ -167,7 +168,13 @@ builtins! {
     ),
     (Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
     (Help, "help", [], "", "Show help and the available commands"),
-    (Hooks, "hooks", [], "", "View the configured hooks"),
+    (
+        Hooks,
+        "hooks",
+        [],
+        "[add <Event> <matcher> <command> | remove <Event> <n>]",
+        "View the configured hooks, or add or remove one"
+    ),
     (
         Import,
         "import",

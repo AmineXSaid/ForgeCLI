@@ -84,6 +84,10 @@
   file's hunks, coloured by side.
 - `/context` is a 10×10 grid coloured by what fills the window, with the
   same numbers as the text form; it opens mid-turn too.
+- `/hooks add <Event> <matcher> <command> [--scope ..]` and
+  `/hooks remove <Event> <n>` change hooks in settings and reload the
+  session; `/hooks` numbers each event's hooks and names their source. The
+  TUI's hooks screen adds (a form) and removes (Enter, then confirm).
 
 ### Immediate commands mid-turn
 - `/status`, `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp` and

@@ -1646,3 +1646,55 @@ async fn context_screen_and_text_share_their_numbers() {
     assert!(crate::commands::screens::screen(&t.d, "/context all").is_none(), "with an argument: text");
     assert!(crate::commands::screens::screen(&t.d, "/status").is_none());
 }
+
+#[tokio::test]
+async fn hooks_add_list_and_remove_through_settings() {
+    let mut t = driver();
+    t.d.info.user_settings = t._dir.path().join("home/settings.json");
+    let out = local(&mut t.d, "/hooks add PreToolUse Bash echo before-bash").await;
+    assert!(
+        out.starts_with("Added a PreToolUse hook for Bash: echo before-bash. Saved in local project settings"),
+        "{out}"
+    );
+    assert!(out.ends_with("It applies now."), "{out}");
+    let local_file = std::fs::read_to_string(t.proj.join(".forge/settings.local.json")).unwrap();
+    assert!(local_file.contains("echo before-bash") && local_file.contains("\"matcher\": \"Bash\""), "{local_file}");
+    assert!(t.d.engine.hooks().config.has(forge_hooks::HookEvent::PreToolUse), "the session reloaded");
+
+    let out = local(&mut t.d, "/hooks add Stop '' 'echo done' --scope project --timeout 5").await;
+    assert!(out.contains("Added a Stop hook: echo done. Saved in project settings"), "{out}");
+    local(&mut t.d, "/hooks add Stop * echo second --scope user").await;
+    assert!(std::fs::read_to_string(t._dir.path().join("home/settings.json")).unwrap().contains("echo second"));
+
+    let list = local(&mut t.d, "/hooks").await;
+    assert!(list.contains("PreToolUse:\n  1. [Bash] echo before-bash (timeout 60s, local)"), "{list}");
+    assert!(list.contains("  1. [*] echo done (timeout 5s, project)"), "{list}");
+
+    // The editor screen: an add form, and Enter on a hook asks before removing it.
+    let screen = crate::commands::screens::screen(&t.d, "/hooks").unwrap();
+    assert!(
+        matches!(&screen.rows[0].action, Some(crate::commands::screens::RowAction::Form(f)) if f.template.starts_with("/hooks add"))
+    );
+    let remove = screen.rows.iter().find_map(|r| match &r.action {
+        Some(crate::commands::screens::RowAction::Confirm { command, .. })
+            if command.starts_with("/hooks remove Stop") =>
+        {
+            Some(command.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(remove.as_deref(), Some("/hooks remove Stop 1"));
+
+    let out = local(&mut t.d, "/hooks remove PreToolUse 1").await;
+    assert!(out.starts_with("Removed the PreToolUse hook echo before-bash."), "{out}");
+    let local_file = std::fs::read_to_string(t.proj.join(".forge/settings.local.json")).unwrap();
+    assert!(!local_file.contains("PreToolUse"), "{local_file}");
+    assert!(!local(&mut t.d, "/hooks").await.contains("PreToolUse"));
+    assert!(!t.d.engine.hooks().config.has(forge_hooks::HookEvent::PreToolUse));
+
+    assert!(fails(&mut t.d, "/hooks add Nope x y").await.contains("Unknown hook event \"Nope\""));
+    assert!(fails(&mut t.d, "/hooks add PreToolUse Bash").await.starts_with("Usage: /hooks"));
+    assert!(fails(&mut t.d, "/hooks remove Stop 9").await.contains("No Stop hook 9"));
+    assert!(fails(&mut t.d, "/hooks add Stop x y --scope everywhere").await.contains("--scope takes"));
+    assert!(fails(&mut t.d, "/hooks frob").await.starts_with("Usage: /hooks"));
+}
