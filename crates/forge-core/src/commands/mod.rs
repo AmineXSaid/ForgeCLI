@@ -66,53 +66,6 @@ impl Surfaces {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Builtin {
-    AddDir,
-    Advisor,
-    Agents,
-    Autocompact,
-    Branch,
-    Btw,
-    Cd,
-    Clear,
-    Compact,
-    Config,
-    Context,
-    Debug,
-    Diff,
-    Doctor,
-    Effort,
-    Exit,
-    Export,
-    Fast,
-    Feedback,
-    Goal,
-    Help,
-    Hooks,
-    Import,
-    Loop,
-    Mcp,
-    Memory,
-    Model,
-    OutputStyle,
-    Permissions,
-    Plan,
-    Plugin,
-    Recap,
-    ReleaseNotes,
-    ReloadPlugins,
-    ReloadSkills,
-    Rename,
-    Resume,
-    Rewind,
-    Sandbox,
-    Skills,
-    Status,
-    Tasks,
-    Usage,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CommandSpec {
     pub id: Builtin,
@@ -124,6 +77,19 @@ pub struct CommandSpec {
     pub surfaces: Surfaces,
     /// Runs at once, even while a turn is in progress (TUI and stream-json).
     pub immediate: bool,
+}
+
+/// The command table and the `Builtin` enum, from one list, so a command
+/// can't be in one and missing from the other.
+macro_rules! builtins {
+    ($( ($id:ident, $($rest:tt)*) ),* $(,)?) => {
+        /// A built-in command.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Builtin { $($id),* }
+
+        /// Every built-in command, alphabetically.
+        pub static BUILTINS: &[CommandSpec] = &[ $( cmd!($id, $($rest)*) ),* ];
+    };
 }
 
 macro_rules! cmd {
@@ -143,20 +109,19 @@ macro_rules! cmd {
     };
 }
 
-/// Every built-in command, alphabetically.
-pub static BUILTINS: &[CommandSpec] = &[
-    cmd!(AddDir, "add-dir", [], "<path> [--save]", "Add a working directory for this session"),
-    cmd!(Advisor, "advisor", [], "[model|off]", "Let Forge consult a second model for advice at key moments"),
-    cmd!(Agents, "agents", [], "", "List subagents, and how to add your own"),
-    cmd!(
+builtins! {
+    (AddDir, "add-dir", [], "<path> [--save]", "Add a working directory for this session"),
+    (Advisor, "advisor", [], "[model|off]", "Let Forge consult a second model for advice at key moments"),
+    (Agents, "agents", [], "", "List subagents, and how to add your own"),
+    (
         Autocompact,
         "autocompact",
         [],
         "[on|off|auto|<tokens>]",
         "Show or set when the conversation is compacted automatically"
     ),
-    cmd!(Branch, "branch", [], "[name]", "Branch the conversation into a new session; the original stays as it was"),
-    cmd!(
+    (Branch, "branch", [], "[name]", "Branch the conversation into a new session; the original stays as it was"),
+    (
         Btw,
         "btw",
         [],
@@ -165,78 +130,78 @@ pub static BUILTINS: &[CommandSpec] = &[
         Surfaces::ALL,
         true
     ),
-    cmd!(Cd, "cd", [], "<directory>", "Move this conversation to another directory"),
-    cmd!(Clear, "clear", ["reset", "new"], "[name]", "Start a new conversation; the current one stays resumable"),
-    cmd!(Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
-    cmd!(Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
-    cmd!(Context, "context", [], "[all]", "Show what fills the context window", Surfaces::ALL, true),
-    cmd!(Debug, "debug", [], "[description]", "Turn on debug logging, and have Forge read the log to find a problem"),
-    cmd!(Diff, "diff", [], "", "Show uncommitted changes, and the files each prompt changed"),
-    cmd!(Doctor, "doctor", ["checkup"], "", "Check the installation and this session's setup"),
-    cmd!(Effort, "effort", [], "[low|medium|high|xhigh|max|auto]", "Show or set the model's reasoning effort"),
-    cmd!(Exit, "exit", ["quit"], "", "Exit Forge"),
-    cmd!(Export, "export", [], "[file]", "Export the conversation as plain text"),
-    cmd!(Fast, "fast", [], "[on|off]", "Turn fast mode on or off, where the model offers it"),
-    cmd!(
+    (Cd, "cd", [], "<directory>", "Move this conversation to another directory"),
+    (Clear, "clear", ["reset", "new"], "[name]", "Start a new conversation; the current one stays resumable"),
+    (Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
+    (Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
+    (Context, "context", [], "[all]", "Show what fills the context window", Surfaces::ALL, true),
+    (Debug, "debug", [], "[description]", "Turn on debug logging, and have Forge read the log to find a problem"),
+    (Diff, "diff", [], "", "Show uncommitted changes, and the files each prompt changed"),
+    (Doctor, "doctor", ["checkup"], "", "Check the installation and this session's setup"),
+    (Effort, "effort", [], "[low|medium|high|xhigh|max|auto]", "Show or set the model's reasoning effort"),
+    (Exit, "exit", ["quit"], "", "Exit Forge"),
+    (Export, "export", [], "[file]", "Export the conversation as plain text"),
+    (Fast, "fast", [], "[on|off]", "Turn fast mode on or off, where the model offers it"),
+    (
         Feedback,
         "feedback",
         ["bug", "share"],
         "[description]",
         "Save a bug-report bundle on this machine (nothing is uploaded)"
     ),
-    cmd!(Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
-    cmd!(Help, "help", [], "", "Show help and the available commands"),
-    cmd!(Hooks, "hooks", [], "", "View the configured hooks"),
-    cmd!(
+    (Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
+    (Help, "help", [], "", "Show help and the available commands"),
+    (Hooks, "hooks", [], "", "View the configured hooks"),
+    (
         Import,
         "import",
         [],
         "[codex|gemini|cursor] [--yes]",
         "Bring MCP servers and instructions over from other coding agents"
     ),
-    cmd!(
+    (
         Loop,
         "loop",
         [],
         "[interval] [prompt]",
         "Run a prompt on a schedule, or let Forge pace it; /tasks lists them"
     ),
-    cmd!(Mcp, "mcp", [], "", "Show MCP server status", Surfaces::ALL, true),
-    cmd!(Memory, "memory", [], "", "List the memory files in use (FORGE.md, AGENTS.md)"),
-    cmd!(Model, "model", [], "[model]", "Show the models, or switch to one"),
-    cmd!(OutputStyle, "output-style", [], "[style]", "Show the output styles, or switch to one"),
-    cmd!(
+    (Mcp, "mcp", [], "", "Show MCP server status", Surfaces::ALL, true),
+    (Memory, "memory", [], "", "List the memory files in use (FORGE.md, AGENTS.md)"),
+    (Model, "model", [], "[model]", "Show the models, or switch to one"),
+    (OutputStyle, "output-style", [], "[style]", "Show the output styles, or switch to one"),
+    (
         Permissions,
         "permissions",
         ["allowed-tools"],
         "[add|remove ...]",
         "Show the permission rules and working directories, or change the rules"
     ),
-    cmd!(Plan, "plan", [], "[description]", "Enter plan mode; with a description, start planning it"),
-    cmd!(Plugin, "plugin", [], "[list]", "List loaded plugins"),
-    cmd!(Recap, "recap", [], "", "Summarize the session in one line"),
-    cmd!(ReleaseNotes, "release-notes", [], "", "Show what changed in each version"),
-    cmd!(ReloadPlugins, "reload-plugins", [], "", "Reload plugins without restarting"),
-    cmd!(ReloadSkills, "reload-skills", [], "", "Reload skills, commands and agents without restarting"),
-    cmd!(Rename, "rename", [], "[name]", "Rename this session (Forge suggests a name when you give none)"),
-    cmd!(Resume, "resume", ["continue"], "[session]", "Resume another conversation from this directory"),
-    cmd!(
+    (Plan, "plan", [], "[description]", "Enter plan mode; with a description, start planning it"),
+    (Plugin, "plugin", [], "[list]", "List loaded plugins"),
+    (Recap, "recap", [], "", "Summarize the session in one line"),
+    (ReleaseNotes, "release-notes", [], "", "Show what changed in each version"),
+    (ReloadPlugins, "reload-plugins", [], "", "Reload plugins without restarting"),
+    (ReloadSkills, "reload-skills", [], "", "Reload skills, commands and agents without restarting"),
+    (Rename, "rename", [], "[name]", "Rename this session (Forge suggests a name when you give none)"),
+    (Resume, "resume", ["continue"], "[session]", "Resume another conversation from this directory"),
+    (
         Rewind,
         "rewind",
         ["checkpoint", "undo"],
         "[<n> <both|conversation|code|summarize-from|summarize-to>]",
         "Go back to an earlier prompt: restore code, conversation or both, or summarize"
     ),
-    cmd!(
+    (
         Sandbox,
         "sandbox",
         [],
         "[on|off|read-only|workspace-write]",
         "Show or change the OS sandbox for shell commands"
     ),
-    cmd!(Skills, "skills", [], "", "List available skills"),
-    cmd!(Status, "status", [], "", "Show version, model, session and setup status", Surfaces::ALL, true),
-    cmd!(
+    (Skills, "skills", [], "", "List available skills"),
+    (Status, "status", [], "", "Show version, model, session and setup status", Surfaces::ALL, true),
+    (
         Tasks,
         "tasks",
         ["bashes"],
@@ -245,7 +210,7 @@ pub static BUILTINS: &[CommandSpec] = &[
         Surfaces::ALL,
         true
     ),
-    cmd!(
+    (
         Usage,
         "usage",
         ["cost", "stats"],
@@ -254,7 +219,7 @@ pub static BUILTINS: &[CommandSpec] = &[
         Surfaces::ALL,
         true
     ),
-];
+}
 
 /// The built-in called `name` (or one of its aliases).
 pub fn lookup(name: &str) -> Option<&'static CommandSpec> {
