@@ -74,6 +74,11 @@
 - The REPL said nothing when `--max-turns`, `--max-budget-usd` or a failed
   compaction stopped a turn: these now arrive as error notices, like API
   errors (print mode still reports them once, with the result).
+- Secret masking (`forge config`, `/feedback`) now also catches a bearer
+  token inside a value whose key looks harmless (custom headers), quoted
+  keys in JSON or YAML text (`"api_key": "..."`), private key blocks, and
+  more token shapes (Google, npm, GitLab, Stripe, Slack). The `/feedback`
+  report and doctor files are masked too.
 
 ### Fixes from the slash-command review
 - Scheduling: cron times no longer hang or skip a day across daylight-saving

@@ -80,8 +80,10 @@ pub(super) fn run(d: &Driver, args: &str) -> Exec {
     let write = || -> std::io::Result<Vec<&'static str>> {
         private_dir(&dir)?;
         let mut files = vec!["report.txt", "doctor.txt", "settings.json"];
-        std::fs::write(dir.join("report.txt"), report(d, &description))?;
-        std::fs::write(dir.join("doctor.txt"), crate::doctor::render(&doctor_checks(d)) + "\n")?;
+        // Warnings and checks can quote command lines and URLs: mask those too.
+        std::fs::write(dir.join("report.txt"), forge_config::redact_text(&report(d, &description)))?;
+        let doctor = crate::doctor::render(&doctor_checks(d)) + "\n";
+        std::fs::write(dir.join("doctor.txt"), forge_config::redact_text(&doctor))?;
         let settings = forge_config::redact_deep(&d.info.settings.merged);
         std::fs::write(dir.join("settings.json"), serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n")?;
         if let Some(t) = d.engine.transcript().path() {

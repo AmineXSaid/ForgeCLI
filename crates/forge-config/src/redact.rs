@@ -28,30 +28,43 @@ pub fn redact(v: &Value) -> Value {
         ),
         Value::Array(a) => Value::Array(a.iter().map(redact).collect()),
         Value::String(s) if looks_like_secret(s) => Value::String("<redacted>".into()),
+        // A secret inside a value whose key says nothing ("Authorization: Bearer ..." in custom headers).
+        Value::String(s) => Value::String(redact_text(s)),
         other => other.clone(),
     }
 }
 
 /// Mask secrets inside free text (a shell command, a tool result, a log line):
-/// well-known key prefixes, bearer tokens, and `key=value` assignments whose
-/// name says it is a secret.
+/// private key blocks, well-known key prefixes, bearer tokens, and `key=value`
+/// (or `"key": "value"`) assignments whose name says it is a secret.
 pub fn redact_text(s: &str) -> String {
     use std::sync::OnceLock;
-    static RES: OnceLock<[regex::Regex; 3]> = OnceLock::new();
+    static RES: OnceLock<[regex::Regex; 4]> = OnceLock::new();
     let res = RES.get_or_init(|| {
         [
-            regex::Regex::new(r"\b(sk-[A-Za-z0-9_\-]{16,}|gh[po]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[bp]-[A-Za-z0-9\-]{10,}|AKIA[A-Z0-9]{16})")
-                .unwrap(),
+            regex::Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----").unwrap(),
+            regex::Regex::new(
+                r"\b(sk-[A-Za-z0-9_\-]{16,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_\-]{20,}|xox[abpr]-[A-Za-z0-9\-]{10,}|AKIA[A-Z0-9]{16}|AIza[A-Za-z0-9_\-]{35}|npm_[A-Za-z0-9]{36})",
+            )
+            .unwrap(),
             regex::Regex::new(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=\-]{8,}").unwrap(),
             regex::Regex::new(
-                r#"(?i)\b([A-Z0-9_]*(?:api[_-]?key|token|secret|password|passwd|credential)[A-Z0-9_]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"',;]+)"#,
+                r#"(?i)\b([A-Z0-9_]*(?:api[_-]?key|token|secret|password|passwd|credential)[A-Z0-9_]*)(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"',;]+)"#,
             )
             .unwrap(),
         ]
     });
-    let s = res[0].replace_all(s, "<redacted>");
-    let s = res[1].replace_all(&s, "$1 <redacted>");
-    res[2].replace_all(&s, "$1$2<redacted>").into_owned()
+    let s = res[0].replace_all(s, "<redacted private key>");
+    let s = res[1].replace_all(&s, "<redacted>");
+    let s = res[2].replace_all(&s, "$1 <redacted>");
+    res[3]
+        .replace_all(&s, |c: &regex::Captures| {
+            // Keep the quotes around a quoted value, so JSON stays readable.
+            let v = &c[3];
+            let q = if v.starts_with('"') && c[2].starts_with('"') { "\"" } else { "" };
+            format!("{}{}{q}<redacted>{q}", &c[1], &c[2])
+        })
+        .into_owned()
 }
 
 /// [`redact`], and [`redact_text`] on every string: for copies of transcripts
@@ -108,5 +121,31 @@ mod tests {
         assert_eq!(r["env"]["PATH"], "/bin");
         assert_eq!(r["apiKeyHelper"], "cat ~/.key", "the helper command is not itself a secret");
         assert_eq!(r["headers"][1], "<redacted>");
+    }
+
+    #[test]
+    fn redacts_headers_quoted_keys_and_private_keys() {
+        // A secret inside a value whose key says nothing (custom headers).
+        let v = json!({"env": {"FORGE_CUSTOM_HEADERS": "Authorization: Bearer abcdefgh12345\nX-Team: core"}});
+        assert_eq!(redact(&v)["env"]["FORGE_CUSTOM_HEADERS"], "Authorization: Bearer <redacted>\nX-Team: core");
+        // JSON or YAML text quoting the key name.
+        assert_eq!(
+            redact_text(r#"{"api_key": "abc123", "region": "eu"}"#),
+            r#"{"api_key": "<redacted>", "region": "eu"}"#
+        );
+        assert_eq!(redact_text("client_secret: 'xyz'"), "client_secret: <redacted>");
+        // A private key someone's tool read.
+        let pem =
+            "id:\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA\n-----END OPENSSH PRIVATE KEY-----\nend";
+        assert_eq!(redact_text(pem), "id:\n<redacted private key>\nend");
+        // More well-known token shapes.
+        for t in [
+            "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            "npm_abcdefghijklmnopqrstuvwxyz0123456789",
+            "glpat-abcdefghij0123456789",
+            "sk_live_abcdefghijklmnop1234",
+        ] {
+            assert_eq!(redact_text(&format!("token {t} here")), "token <redacted> here", "{t}");
+        }
     }
 }
