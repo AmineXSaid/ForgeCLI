@@ -14,6 +14,7 @@
 //! generated from it.
 
 mod feedback;
+mod importing;
 mod looping;
 mod run;
 mod session;
@@ -88,6 +89,7 @@ pub enum Builtin {
     Goal,
     Help,
     Hooks,
+    Import,
     Loop,
     Mcp,
     Memory,
@@ -183,6 +185,13 @@ pub static BUILTINS: &[CommandSpec] = &[
     cmd!(Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
     cmd!(Help, "help", [], "", "Show help and the available commands"),
     cmd!(Hooks, "hooks", [], "", "View the configured hooks"),
+    cmd!(
+        Import,
+        "import",
+        [],
+        "[codex|gemini|cursor] [--yes]",
+        "Bring MCP servers and instructions over from other coding agents"
+    ),
     cmd!(
         Loop,
         "loop",

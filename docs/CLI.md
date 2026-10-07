@@ -283,6 +283,7 @@ them all. The built-ins so far:
 | `/btw [question]` | A side question, answered from the conversation without tools; it doesn't enter the conversation |
 | `/recap` | One line: what was asked, what's done, what's open |
 | `!command` | Runs `command` in the shell as you (no prompt, no sandbox) and gives the model the command and its output; the model answers unless `respondToBashCommands` is `false` |
+| `/import [codex\|gemini\|cursor] [--yes]` | Shows what it would bring over from other coding agents (their MCP servers, GEMINI.md, Cursor rules); `--yes` applies it. Servers from your own configs go to your user settings; servers shipped in the repository go to `.mcp.json` and still need `forge mcp approve` |
 | `/feedback [description]` (`/bug`, `/share`) | Saves a bug-report bundle in `<state>/feedback/` (report, doctor checks, this session's transcript and settings, with secrets masked). Nothing is uploaded |
 | `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, Forge reads the log and diagnoses it |
 | `/release-notes` | The changelog |

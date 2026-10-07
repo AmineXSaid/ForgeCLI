@@ -5,6 +5,7 @@ pub mod debug;
 pub mod doctor;
 pub mod driver;
 pub mod goal;
+pub mod import;
 pub mod prompt;
 pub mod schedule;
 pub mod schedule_tools;

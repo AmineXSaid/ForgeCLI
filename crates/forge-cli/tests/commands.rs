@@ -419,3 +419,33 @@ async fn feedback_writes_a_local_bundle_with_secrets_masked() {
     assert!(!transcript.contains("hunter2") && !transcript.contains("sk-abcdefghijklmnopqrstu"));
     assert_eq!(api.requests().len(), 1, "no model call for /feedback");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn import_shows_a_plan_then_applies_it() {
+    let e = env();
+    write(e.home.join(".codex/config.toml"), "[mcp_servers.docs]\ncommand = \"docs-mcp\"\nargs = [\"--stdio\"]\n");
+    write(e.cwd.join("GEMINI.md"), "Run pnpm test before committing.");
+    let api = MockApi::start(vec![]).await;
+    let (code, out, err) = forge(&e, &api.url, &["-p", "/import"]).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("MCP server docs from Codex: docs-mcp --stdio -> your user settings"), "{out}");
+    assert!(
+        out.contains("Imported from Gemini CLI (project instructions)") && out.contains("Run /import --yes to apply.")
+    );
+    assert!(!e.home.join(".forge/settings.json").exists(), "the plan alone changes nothing");
+
+    let (code, out, _) = forge(&e, &api.url, &["-p", "/import codex gemini --yes"]).await;
+    assert_eq!(code, 0);
+    assert!(out.contains("Added MCP server docs (stdio)") && out.contains("next session"), "{out}");
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(e.home.join(".forge/settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["mcpServers"]["docs"]["args"], serde_json::json!(["--stdio"]));
+    assert!(std::fs::read_to_string(e.cwd.join("FORGE.md")).unwrap().contains("Run pnpm test before committing."));
+
+    let (_, out, _) = forge(&e, &api.url, &["-p", "/import"]).await;
+    assert!(out.starts_with("Nothing to import"), "{out}");
+    let (code, _, err) = forge(&e, &api.url, &["-p", "/import vscode"]).await;
+    assert_eq!(code, 1);
+    assert!(err.contains("Unknown source \"vscode\""), "{err}");
+    assert!(api.requests().is_empty());
+}
