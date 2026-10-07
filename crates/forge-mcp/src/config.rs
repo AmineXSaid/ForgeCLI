@@ -297,11 +297,22 @@ pub fn resolve(settings: &LoadedSettings, project: &Path, flag_configs: &[String
 
 /// Add or replace a server in a JSON file holding `mcpServers` (settings or `.mcp.json`).
 pub fn write_server(path: &Path, name: &str, config: Option<&ServerConfig>) -> std::io::Result<bool> {
-    let mut root: Value = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Map::new()));
+    use std::io::{Error, ErrorKind};
+    // A file that exists but can't be read as a JSON object is left alone.
+    let mut root: Value = match std::fs::read_to_string(path) {
+        Ok(t) if t.trim().is_empty() => Value::Object(Map::new()),
+        Ok(t) => match serde_json::from_str::<Value>(&t) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("{} is not a JSON object; fix it, then try again", path.display()),
+                ))
+            }
+        },
+        Err(e) if e.kind() == ErrorKind::NotFound => Value::Object(Map::new()),
+        Err(e) => return Err(e),
+    };
     if !root.get("mcpServers").is_some_and(Value::is_object) {
         root["mcpServers"] = Value::Object(Map::new());
     }

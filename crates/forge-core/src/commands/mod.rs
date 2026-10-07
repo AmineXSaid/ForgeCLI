@@ -23,7 +23,7 @@ mod switching;
 
 pub(crate) use looping::scheduled_prompt;
 pub use run::{execute, Exec};
-pub(crate) use session::side_request;
+pub(crate) use session::side_request_with;
 pub use session::{clean_title, render_conversation};
 pub use settings::Scope;
 

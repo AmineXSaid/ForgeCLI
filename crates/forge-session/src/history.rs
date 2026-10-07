@@ -20,12 +20,39 @@ struct Record {
 #[derive(Debug, Default)]
 struct State {
     turns: Vec<String>,
+    /// Turns written to the index (by a record or a marker line).
+    on_disk: HashSet<String>,
     current: Option<String>,
     versions: HashMap<PathBuf, u32>,
     this_turn: HashSet<PathBuf>,
     /// Every write this turn, in order (repeats included), for the verification loop.
     writes: Vec<PathBuf>,
     records: Vec<Record>,
+}
+
+/// A turn that changed no files (yet), kept for its place in the order.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct Marker {
+    turn: String,
+    marker: bool,
+}
+
+/// Copy a session's checkpoints to another session (a fork), linking the
+/// snapshot files where the file system allows.
+pub fn copy_history(from: &Path, to: &Path) {
+    let Ok(rd) = std::fs::read_dir(from) else { return };
+    if std::fs::create_dir_all(to).is_err() {
+        return;
+    }
+    for e in rd.flatten() {
+        let dest = to.join(e.file_name());
+        if dest.exists() {
+            continue;
+        }
+        if e.file_name() == "index.jsonl" || std::fs::hard_link(e.path(), &dest).is_err() {
+            let _ = std::fs::copy(e.path(), &dest);
+        }
+    }
 }
 
 /// What a rewind would do.
@@ -51,10 +78,20 @@ impl FileHistory {
     pub fn new(dir: PathBuf) -> Self {
         let mut st = State::default();
         if let Ok(text) = std::fs::read_to_string(dir.join("index.jsonl")) {
-            for r in text.lines().filter_map(|l| serde_json::from_str::<Record>(l).ok()) {
+            for line in text.lines() {
+                // A marker line keeps the order of a turn that changed no files.
+                if let Ok(m) = serde_json::from_str::<Marker>(line) {
+                    if !st.turns.contains(&m.turn) {
+                        st.turns.push(m.turn.clone());
+                    }
+                    st.on_disk.insert(m.turn);
+                    continue;
+                }
+                let Ok(r) = serde_json::from_str::<Record>(line) else { continue };
                 if !st.turns.contains(&r.turn) {
                     st.turns.push(r.turn.clone());
                 }
+                st.on_disk.insert(r.turn.clone());
                 if let Some(v) = r.version {
                     let e = st.versions.entry(r.path.clone()).or_insert(0);
                     *e = (*e).max(v);
@@ -121,12 +158,24 @@ impl FileHistory {
         } else {
             None
         };
-        let rec = Record { turn, path: path.to_path_buf(), version };
-        if let Ok(line) = serde_json::to_string(&rec) {
+        let rec = Record { turn: turn.clone(), path: path.to_path_buf(), version };
+        // Earlier turns that changed nothing go first, so a restart knows the order.
+        let mut lines: Vec<String> = vec![];
+        let pending: Vec<String> =
+            st.turns.iter().filter(|t| !st.on_disk.contains(*t) && **t != turn).cloned().collect();
+        for t in pending {
+            lines.extend(serde_json::to_string(&Marker { turn: t.clone(), marker: true }).ok());
+            st.on_disk.insert(t);
+        }
+        lines.extend(serde_json::to_string(&rec).ok());
+        st.on_disk.insert(turn);
+        {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("index.jsonl"))
             {
-                let _ = writeln!(f, "{line}");
+                for line in &lines {
+                    let _ = writeln!(f, "{line}");
+                }
             }
         }
         st.records.push(rec);
@@ -212,6 +261,11 @@ impl FileHistory {
         out
     }
 
+    /// Whether `turn` started a user turn here.
+    pub fn knows(&self, turn: &str) -> bool {
+        self.state.lock().unwrap().turns.iter().any(|t| t == turn)
+    }
+
     /// Files checkpointed at or after `turn` (for the rewind confirmation).
     pub fn changed_since(&self, turn: &str) -> Vec<PathBuf> {
         self.rewind(turn, true).map(|p| p.restore.into_iter().chain(p.delete).collect()).unwrap_or_default()
@@ -275,6 +329,31 @@ mod tests {
         // Survives a restart.
         let h2 = FileHistory::new(d.path().join("hist"));
         h2.rewind("t1", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "v0");
+    }
+
+    #[test]
+    fn turn_order_survives_a_restart_and_a_fork() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("hist");
+        let a = d.path().join("a.txt");
+        std::fs::write(&a, "v0").unwrap();
+        let h = FileHistory::new(dir.clone());
+        h.begin_turn("t1"); // a question: no files change
+        h.begin_turn("t2");
+        h.snapshot(&a);
+        std::fs::write(&a, "v1").unwrap();
+        drop(h);
+        // After a restart, rewinding to the first prompt still undoes the second one's edit.
+        let h = FileHistory::new(dir.clone());
+        assert!(h.knows("t1") && h.knows("t2"));
+        assert_eq!(h.changed_since("t1"), vec![a.clone()]);
+
+        // A fork gets the checkpoints of the prompts it copied.
+        let forked = d.path().join("fork");
+        copy_history(&dir, &forked);
+        let f = FileHistory::new(forked);
+        f.rewind("t1", false).unwrap();
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "v0");
     }
 }

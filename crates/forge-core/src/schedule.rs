@@ -8,7 +8,9 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Duration as CDuration, Local, TimeZone, Timelike};
+use chrono::{
+    DateTime, Datelike, Duration as CDuration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike,
+};
 use serde_json::{json, Value};
 
 /// At most this many tasks per session.
@@ -92,7 +94,7 @@ impl Cron {
         Ok(Cron { minute, hour, dom, month, dow, dom_any, dow_any })
     }
 
-    fn day_matches(&self, t: &DateTime<Local>) -> bool {
+    fn day_matches(&self, t: &NaiveDateTime) -> bool {
         let dom = self.dom.contains(&t.day());
         let dow = self.dow.contains(&t.weekday().num_days_from_sunday());
         // The vixie rule: when both are restricted, either one matching is enough.
@@ -105,37 +107,47 @@ impl Cron {
     }
 
     /// The first matching minute strictly after `t`, within about five years.
-    pub fn next_after(&self, t: DateTime<Local>) -> Option<DateTime<Local>> {
-        let mut c = t.with_second(0)?.with_nanosecond(0)? + CDuration::minutes(1);
-        let limit = t + CDuration::days(366 * 5);
+    ///
+    /// The search steps through wall-clock (naive local) time, so DST changes
+    /// can't stall it. A minute the clocks skip runs at the same minute after
+    /// the change (02:30 on a spring-forward night runs at 03:30). In the hour
+    /// that repeats in autumn, a minute runs once, at its first occurrence after `t`.
+    pub fn next_after<Tz: TimeZone>(&self, t: DateTime<Tz>) -> Option<DateTime<Tz>> {
+        let tz = t.timezone();
+        let start = t.naive_local();
+        let mut c = start.date().and_hms_opt(start.hour(), start.minute(), 0)? + CDuration::minutes(1);
+        let limit = start + CDuration::days(366 * 5);
         while c <= limit {
             if !self.month.contains(&c.month()) {
                 // The first minute of the next month.
                 let (y, m) = if c.month() == 12 { (c.year() + 1, 1) } else { (c.year(), c.month() + 1) };
-                c = local(y, m, 1, 0, 0)?;
+                c = NaiveDate::from_ymd_opt(y, m, 1)?.and_hms_opt(0, 0, 0)?;
                 continue;
             }
             if !self.day_matches(&c) {
-                c = local(c.year(), c.month(), c.day(), 0, 0)? + CDuration::days(1);
+                c = c.date().succ_opt()?.and_hms_opt(0, 0, 0)?;
                 continue;
             }
             if !self.hour.contains(&c.hour()) {
-                c = local(c.year(), c.month(), c.day(), c.hour(), 0)? + CDuration::hours(1);
+                c = c.date().and_hms_opt(c.hour(), 0, 0)? + CDuration::hours(1);
                 continue;
             }
             if !self.minute.contains(&c.minute()) {
                 c += CDuration::minutes(1);
                 continue;
             }
-            return Some(c);
+            let at = match tz.from_local_datetime(&c) {
+                LocalResult::Single(x) => Some(x),
+                LocalResult::Ambiguous(a, b) => Some(if a > t { a } else { b }),
+                LocalResult::None => tz.from_local_datetime(&(c + CDuration::hours(1))).earliest(),
+            };
+            match at {
+                Some(x) if x > t => return Some(x),
+                _ => c += CDuration::minutes(1),
+            }
         }
         None
     }
-}
-
-/// A local time, taking the earliest one around DST changes.
-fn local(y: i32, m: u32, d: u32, h: u32, min: u32) -> Option<DateTime<Local>> {
-    Local.with_ymd_and_hms(y, m, d, h, min, 0).earliest()
 }
 
 /// A plain-words cadence for common expressions, else the expression.
@@ -180,7 +192,8 @@ pub fn interval_to_cron(count: u32, unit: char) -> Result<Interval, String> {
         u => (count, u),
     };
     let cron = match unit {
-        'm' if count < 60 => {
+        // 45 minutes and up are nearer an hour than half an hour.
+        'm' if count < 45 => {
             let n = nearest(count, &[1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]);
             if n != count {
                 rounded = Some(format!("every {n} minutes"));
@@ -199,7 +212,8 @@ pub fn interval_to_cron(count: u32, unit: char) -> Result<Interval, String> {
             }
             i.cron
         }
-        'h' if count < 24 => {
+        // 18 hours and up are nearer a day than half a day.
+        'h' if count < 18 => {
             let n = nearest(count, &[1, 2, 3, 4, 6, 8, 12]);
             if n != count {
                 rounded = Some(format!("every {n} hours"));
@@ -341,27 +355,38 @@ impl Task {
     }
 }
 
-/// The time source: real, or sped up for tests (`FORGE_TEST_TIME_SCALE`).
+/// The time source: the wall clock, or a clock sped up for tests (`FORGE_TEST_TIME_SCALE`).
 #[derive(Debug, Clone)]
 pub struct Clock {
     start_real: std::time::Instant,
     start: DateTime<Local>,
     scale: f64,
+    /// Read the wall clock. A monotonic clock stops while the machine sleeps,
+    /// which would put every task late by the time spent asleep.
+    wall: bool,
 }
 
 impl Clock {
     pub fn system() -> Clock {
         let scale =
             std::env::var("FORGE_TEST_TIME_SCALE").ok().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0);
-        Clock { start_real: std::time::Instant::now(), start: Local::now(), scale: scale.unwrap_or(1.0) }
+        Clock {
+            start_real: std::time::Instant::now(),
+            start: Local::now(),
+            scale: scale.unwrap_or(1.0),
+            wall: scale.is_none(),
+        }
     }
 
     /// A clock that starts at `start` and runs `scale` times faster than real time.
     pub fn scaled(start: DateTime<Local>, scale: f64) -> Clock {
-        Clock { start_real: std::time::Instant::now(), start, scale }
+        Clock { start_real: std::time::Instant::now(), start, scale, wall: false }
     }
 
     pub fn now(&self) -> DateTime<Local> {
+        if self.wall {
+            return Local::now();
+        }
         let elapsed = self.start_real.elapsed().as_secs_f64() * self.scale;
         self.start + CDuration::milliseconds((elapsed * 1000.0) as i64)
     }
@@ -524,7 +549,7 @@ mod tests {
     use super::*;
 
     fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Local> {
-        local(y, m, d, h, min).unwrap()
+        Local.with_ymd_and_hms(y, m, d, h, min, 0).earliest().unwrap()
     }
 
     #[test]
@@ -640,5 +665,98 @@ mod tests {
         // Ten minutes of clock time is a second of real time.
         let wait = c.until(at(2026, 10, 9, 10, 10));
         assert!(wait <= Duration::from_millis(1001) && wait > Duration::from_millis(900), "{wait:?}");
+    }
+
+    /// US Eastern time in 2026: clocks go forward at 02:00 on 8 March and back
+    /// at 02:00 on 1 November.
+    #[derive(Debug, Clone, Copy)]
+    struct NewYork2026;
+
+    impl NewYork2026 {
+        fn offset_at_utc(utc: &chrono::NaiveDateTime) -> chrono::FixedOffset {
+            let starts = NaiveDate::from_ymd_opt(2026, 3, 8).unwrap().and_hms_opt(7, 0, 0).unwrap();
+            let ends = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap().and_hms_opt(6, 0, 0).unwrap();
+            let hours = if *utc >= starts && *utc < ends { -4 } else { -5 };
+            chrono::FixedOffset::east_opt(hours * 3600).unwrap()
+        }
+    }
+
+    impl TimeZone for NewYork2026 {
+        type Offset = chrono::FixedOffset;
+        fn from_offset(_: &chrono::FixedOffset) -> Self {
+            NewYork2026
+        }
+        fn offset_from_local_date(&self, local: &NaiveDate) -> LocalResult<chrono::FixedOffset> {
+            self.offset_from_local_datetime(&local.and_hms_opt(0, 0, 0).unwrap())
+        }
+        fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<chrono::FixedOffset> {
+            let fits: Vec<chrono::FixedOffset> = [-4, -5]
+                .into_iter()
+                .map(|h| chrono::FixedOffset::east_opt(h * 3600).unwrap())
+                .filter(|o| Self::offset_at_utc(&(*local - CDuration::seconds(o.local_minus_utc() as i64))) == *o)
+                .collect();
+            match fits.as_slice() {
+                [] => LocalResult::None,
+                [o] => LocalResult::Single(*o),
+                // The earlier instant is the one with the larger offset (summer time).
+                [a, b] => LocalResult::Ambiguous(*a, *b),
+                _ => unreachable!(),
+            }
+        }
+        fn offset_from_utc_date(&self, utc: &NaiveDate) -> chrono::FixedOffset {
+            Self::offset_at_utc(&utc.and_hms_opt(0, 0, 0).unwrap())
+        }
+        fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> chrono::FixedOffset {
+            Self::offset_at_utc(utc)
+        }
+    }
+
+    fn ny(m: u32, d: u32, h: u32, min: u32) -> DateTime<NewYork2026> {
+        NewYork2026.with_ymd_and_hms(2026, m, d, h, min, 0).earliest().unwrap()
+    }
+
+    #[test]
+    fn cron_survives_daylight_saving_changes() {
+        let show = |t: Option<DateTime<NewYork2026>>| t.map(|t| t.to_rfc3339()).unwrap_or_default();
+        // Across the 25-hour autumn day (this used to loop forever).
+        let weekdays = Cron::parse("30 9 * * 1-5").unwrap();
+        assert_eq!(show(weekdays.next_after(ny(10, 30, 9, 30))), "2026-11-02T09:30:00-05:00");
+        // An hour list without the repeated hour (this used to loop forever too).
+        let two_hourly = Cron::parse("0 */2 * * *").unwrap();
+        assert_eq!(show(two_hourly.next_after(ny(11, 1, 0, 0))), "2026-11-01T02:00:00-05:00");
+        let daily = Cron::parse("0 0 * * *").unwrap();
+        assert_eq!(show(daily.next_after(ny(10, 31, 9, 0))), "2026-11-01T00:00:00-04:00");
+        // Inside the repeated hour: each occurrence goes on from itself.
+        let every5 = Cron::parse("*/5 * * * *").unwrap();
+        let first = ny(11, 1, 1, 20);
+        assert_eq!(show(every5.next_after(first)), "2026-11-01T01:25:00-04:00");
+        let second = first + CDuration::hours(1);
+        assert_eq!(second.to_rfc3339(), "2026-11-01T01:20:00-05:00");
+        assert_eq!(show(every5.next_after(second)), "2026-11-01T01:25:00-05:00");
+        // Spring forward: a skipped minute runs just after the change; no day is skipped.
+        let at_230 = Cron::parse("30 2 * * *").unwrap();
+        assert_eq!(show(at_230.next_after(ny(3, 7, 12, 0))), "2026-03-08T03:30:00-04:00");
+        let odd_days = Cron::parse("0 0 */2 * *").unwrap();
+        assert_eq!(show(odd_days.next_after(ny(3, 7, 12, 0))), "2026-03-09T00:00:00-04:00");
+    }
+
+    #[test]
+    fn rounds_to_hours_and_days_when_nearer() {
+        let p = |s: &str| parse_loop(s).unwrap().0.unwrap();
+        let fifty = p("50m x");
+        assert_eq!((fifty.cron.as_str(), fifty.rounded.as_deref()), ("0 * * * *", Some("every hour")));
+        assert_eq!(p("40m x").cron, "*/30 * * * *");
+        let twenty = p("20h x");
+        assert_eq!((twenty.cron.as_str(), twenty.rounded.as_deref()), ("0 0 * * *", Some("every 1 day(s)")));
+        assert_eq!(p("15h x").cron, "0 */12 * * *");
+    }
+
+    #[test]
+    fn the_real_clock_reads_the_wall_clock() {
+        if std::env::var_os("FORGE_TEST_TIME_SCALE").is_some() {
+            return;
+        }
+        let c = Clock::system();
+        assert!((c.now() - Local::now()).num_seconds().abs() <= 1);
     }
 }

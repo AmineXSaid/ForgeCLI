@@ -93,8 +93,8 @@ pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
         None => {
             let mark = sched.lock().unwrap().wakeups;
             let input = args.trim().to_string();
-            d.self_paced =
-                Some(SelfPaced { input: input.clone(), mark, fallback: std::mem::take(&mut d.fallback_pending) });
+            // `run_due` marks the iteration that a fallback wakeup started.
+            d.self_paced = Some(SelfPaced { input: input.clone(), mark, fallback: false });
             let body = match scheduled_prompt(d, &prompt).await {
                 MessageContent::Text(t) => t,
                 other => return Exec::Submit(other),

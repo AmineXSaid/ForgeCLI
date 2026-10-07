@@ -66,6 +66,9 @@ impl Scope {
 /// any, overrides it.
 pub(super) fn save(d: &mut Driver, scope: Scope, keys: &[&str], value: Option<Value>) -> Result<String, String> {
     let path = scope.path(&d.info);
+    if matches!(scope, Scope::Local) {
+        crate::ignore_local_settings(&d.info.cwd);
+    }
     let written = match &value {
         Some(v) => forge_config::write_setting(&path, keys, v.clone()),
         None => forge_config::remove_setting(&path, keys).map(|_| ()),
@@ -454,8 +457,13 @@ fn apply_key(d: &mut Driver, name: &str, value: &Option<Value>) -> Result<Option
             Ok(None)
         }
         "verification.enabled" => {
-            d.engine.cfg.verify =
-                if b == Some(false) { None } else { crate::verify_config(&d.info.settings, &d.info.cwd) };
+            // The settings in memory still hold the old value: judge by the new one.
+            let mut settings = d.info.settings.clone();
+            settings.apply(SettingSource::Flag, std::path::Path::new(""), &["verification", "enabled"], value.clone());
+            d.engine.cfg.verify = if b == Some(false) { None } else { crate::verify_config(&settings, &d.info.cwd) };
+            // The prompt's "run these checks" line follows.
+            d.prompt.env.checks = d.engine.cfg.verify.as_ref().map(|v| v.commands.clone()).unwrap_or_default();
+            d.rebuild_system();
             Ok(None)
         }
         "permissions.defaultMode" => {
@@ -509,14 +517,16 @@ pub(super) fn config(d: &mut Driver, args: &str) -> Exec {
     }
     let mut out = vec![];
     for (k, value) in changes {
-        if let Err(e) = apply_key(d, k.name, &value) {
-            return err(format!("{}: {e}", k.name));
-        }
+        let applied = match apply_key(d, k.name, &value) {
+            Ok(note) => note,
+            Err(e) => return err(format!("{}: {e}", k.name)),
+        };
         let keys: Vec<&str> = k.name.split('.').collect();
         match save(d, scope.unwrap_or(k.scope), &keys, value.clone()) {
             Ok(note) => {
                 let shown = value.map(|v| v.to_string()).unwrap_or_else(|| "(default)".into());
-                out.push(format!("{} = {shown}. {note}", k.name));
+                let applied = applied.map(|a| format!(" {a}")).unwrap_or_default();
+                out.push(format!("{} = {shown}. {note}{applied}", k.name));
             }
             Err(e) => return err(e),
         }
@@ -629,11 +639,26 @@ pub(super) fn sandbox(d: &mut Driver, args: &str) -> Exec {
     }));
     let name = mode.map(|m| m.as_str()).unwrap_or("off");
     let saved = save_default(d, Scope::Local, &["sandbox", "mode"], Some(json!(name)));
+    // Background shells keep the sandbox they started with.
+    let running: Vec<String> = ctx
+        .shells
+        .list()
+        .into_iter()
+        .filter(|s| matches!(s.status(), forge_tools::shells::ShellStatus::Running))
+        .map(|s| s.id.clone())
+        .collect();
+    let earlier = (!running.is_empty() && mode.is_some()).then(|| {
+        format!(
+            "Background shells started earlier keep running as they were ({}); /tasks stop <id> ends one.",
+            running.join(", ")
+        )
+    });
     ok(join(&[
         match mode {
-            Some(_) => format!("Sandbox {name}: shell commands run confined."),
+            Some(_) => format!("Sandbox {name}: shell commands run confined from now on."),
             None => "Sandbox off: shell commands run unconfined (and ask for approval as usual).".into(),
         },
+        earlier.unwrap_or_default(),
         saved,
     ]))
 }

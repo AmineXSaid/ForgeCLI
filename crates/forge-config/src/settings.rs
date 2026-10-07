@@ -276,30 +276,57 @@ fn set_path(root: &mut Value, keys: &[&str], value: Option<Value>) {
     }
 }
 
+/// A settings file, read for editing. A missing or empty file is `{}`; a file
+/// that isn't a JSON object is an error, so a save never wipes what it can't read.
+fn read_for_edit(path: &Path) -> std::io::Result<Value> {
+    use std::io::{Error, ErrorKind};
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Value::Object(Map::new())),
+        Err(e) => return Err(e),
+    };
+    if text.trim().is_empty() {
+        return Ok(Value::Object(Map::new()));
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(v) if v.is_object() => Ok(v),
+        Ok(_) => Err(Error::new(ErrorKind::InvalidData, format!("{} is not a JSON object", path.display()))),
+        Err(e) => Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("{} is not valid JSON ({e}); fix it, then try again", path.display()),
+        )),
+    }
+}
+
+/// Write a settings file whole: a temporary file renamed over it, so a crash
+/// or a second writer never leaves it half written. A symlink is followed.
+fn write_whole(path: &Path, root: &Value) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = target.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_string_pretty(root)? + "\n")?;
+    std::fs::rename(&tmp, &target).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 /// Remove the key at `pointer` from a settings file. Returns whether it was there.
 pub fn remove_setting(path: &Path, pointer: &[&str]) -> std::io::Result<bool> {
-    let Some(mut root) = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .filter(Value::is_object)
-    else {
-        return Ok(false);
-    };
+    let mut root = read_for_edit(path)?;
     let ptr = format!("/{}", pointer.join("/"));
     if root.pointer(&ptr).is_none() {
         return Ok(false);
     }
     set_path(&mut root, pointer, None);
-    std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
+    write_whole(path, &root)?;
     Ok(true)
 }
 
 pub fn write_setting(path: &Path, pointer: &[&str], value: Value) -> std::io::Result<()> {
-    let mut root: Value = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Map::new()));
+    let mut root = read_for_edit(path)?;
     let mut cur = &mut root;
     for (i, key) in pointer.iter().enumerate() {
         if i + 1 == pointer.len() {
@@ -311,10 +338,7 @@ pub fn write_setting(path: &Path, pointer: &[&str], value: Value) -> std::io::Re
             cur = cur.get_mut(*key).unwrap();
         }
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")
+    write_whole(path, &root)
 }
 
 #[cfg(test)]
@@ -394,5 +418,39 @@ mod tests {
         write_setting(&f, &["permissions", "defaultMode"], json!("plan")).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(v, json!({"model":"x","permissions":{"defaultMode":"plan"}}));
+    }
+
+    #[test]
+    fn never_overwrites_a_file_it_cannot_read() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("s.json");
+        let broken = "{\"hooks\": {}, // a comment\n \"model\": \"opus\",}\n";
+        std::fs::write(&f, broken).unwrap();
+        let e = write_setting(&f, &["model"], json!("sonnet")).unwrap_err();
+        assert!(e.to_string().contains("not valid JSON"), "{e}");
+        assert!(remove_setting(&f, &["model"]).is_err());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), broken, "left as it was");
+        std::fs::write(&f, "[1]").unwrap();
+        assert!(write_setting(&f, &["model"], json!("x")).unwrap_err().to_string().contains("not a JSON object"));
+        // Empty and missing files start from {}; no temporary file is left behind.
+        std::fs::write(&f, "").unwrap();
+        write_setting(&f, &["model"], json!("x")).unwrap();
+        write_setting(&d.path().join("new/s.json"), &["model"], json!("y")).unwrap();
+        let names: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+        #[cfg(unix)]
+        {
+            // A symlinked settings file (dotfiles) stays a symlink; its target gets the change.
+            let real = d.path().join("real.json");
+            std::fs::write(&real, "{}").unwrap();
+            let link = d.path().join("link.json");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            write_setting(&link, &["model"], json!("z")).unwrap();
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert!(std::fs::read_to_string(&real).unwrap().contains("\"z\""));
+        }
     }
 }

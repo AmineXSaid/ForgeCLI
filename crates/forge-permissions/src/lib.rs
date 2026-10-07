@@ -230,6 +230,9 @@ pub struct Engine {
     pub working_dirs: Vec<PathBuf>,
     /// Extra directories that may be read without a prompt (saved tool output).
     pub read_dirs: Vec<PathBuf>,
+    /// Rules added while the session runs (prompt answers, `/permissions add`),
+    /// so a rebuilt session (`/clear`, `/reload-*`) keeps them.
+    pub added: RuleSet,
 }
 
 impl Engine {
@@ -242,7 +245,13 @@ impl Engine {
                 working_dirs.push(d);
             }
         }
-        Engine { mode, rules, cwd, working_dirs, read_dirs: vec![] }
+        Engine { mode, rules, cwd, working_dirs, read_dirs: vec![], added: RuleSet::default() }
+    }
+
+    /// Add a rule while the session runs; it is remembered in [`Engine::added`].
+    pub fn add_rule(&mut self, behavior: Behavior, rule: Rule) {
+        self.added.add(behavior, rule.clone());
+        self.rules.add(behavior, rule);
     }
 
     /// Allow reading (not writing) `dir` without a prompt.

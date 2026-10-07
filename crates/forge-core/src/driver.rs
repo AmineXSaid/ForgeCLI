@@ -114,8 +114,8 @@ pub struct Driver {
     pub scheduler: Option<crate::schedule_tools::SharedScheduler>,
     /// The self-paced `/loop` iteration in progress, if any.
     pub(crate) self_paced: Option<SelfPaced>,
-    /// The pending wakeup is a fallback check.
-    pub(crate) fallback_pending: bool,
+    /// The id of the pending wakeup when it is a fallback check.
+    pub(crate) fallback_pending: Option<String>,
     /// The advisor model, while one is set (`/advisor`).
     pub advisor: crate::advisor::AdvisorCell,
 }
@@ -147,6 +147,8 @@ pub type Report<'a> = dyn FnMut(&TurnResult) + Send + 'a;
 /// Longest `!command` output kept, in characters.
 const SHELL_OUTPUT_CHARS: usize = 30_000;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
+/// The longest [`Driver::next_wait`].
+const MAX_WAIT: Duration = Duration::from_secs(60);
 
 impl Driver {
     pub fn new(s: Session, surface: Surface, mcp: Option<Arc<forge_mcp::McpManager>>) -> Self {
@@ -182,7 +184,7 @@ impl Driver {
             rebuild: None,
             scheduler: s.scheduler,
             self_paced: None,
-            fallback_pending: false,
+            fallback_pending: None,
             advisor: s.advisor,
         }
     }
@@ -210,6 +212,14 @@ impl Driver {
         self.rebuild.is_some()
     }
 
+    /// `--allowedTools` and `--disallowedTools` as launched.
+    pub(crate) fn launch_rules(&self) -> Vec<String> {
+        self.rebuild
+            .as_ref()
+            .map(|r| r.opts.allowed_tools.iter().chain(&r.opts.disallowed_tools).cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Where sessions are stored, when the launch options set it.
     pub(crate) fn rebuild_store(&self) -> Option<PathBuf> {
         self.rebuild.as_ref().and_then(|r| r.opts.store_root.clone())
@@ -226,9 +236,10 @@ impl Driver {
                 .uuids
                 .iter()
                 .zip(&st.messages)
-                .map(|(u, m)| Entry { uuid: u.clone(), message: m.clone(), is_meta: false })
+                .map(|(u, m)| Entry { uuid: u.clone(), message: m.clone(), is_meta: st.meta.contains(u) })
                 .collect(),
-            additional_dirs: self.prompt.env.additional_dirs.clone(),
+            // Directories added by /add-dir and by permission answers alike.
+            additional_dirs: self.engine.tool_ctx().working_dirs.read().unwrap().iter().skip(1).cloned().collect(),
             microcompacted: st.microcompacted.clone(),
             title: t.title(),
             last_uuid: t.last_uuid(),
@@ -264,6 +275,19 @@ impl Driver {
             }
             Switch::Resume(id) => {
                 opts.resume = Resume::Id(id.clone());
+                // A session from another directory (a worktree) resumes in its own directory.
+                let store = forge_session::SessionStore::new(
+                    opts.store_root.clone().unwrap_or_else(|| forge_session::forge_home().join("projects")),
+                );
+                if let Some(dir) = store
+                    .find(id)
+                    .ok()
+                    .and_then(|p| LoadedSession::load(&p, None).ok())
+                    .map(|l| l.cwd)
+                    .filter(|d| d.is_dir())
+                {
+                    opts.cwd = dir;
+                }
                 ("resume", Some("resume"))
             }
             Switch::Branch => {
@@ -279,9 +303,12 @@ impl Driver {
             }
             Switch::Reload => {
                 opts.resume = Resume::Loaded(Box::new(self.snapshot()));
+                // Nothing ends: background shells keep running in the rebuilt session.
+                opts.shells = Some(self.engine.tool_ctx().shells.clone());
                 ("resume", None)
             }
         };
+        let continues = matches!(to, Switch::Branch | Switch::Cd(_) | Switch::Reload);
         let s = build_session(opts, rb.sink.clone(), rb.prompter.clone()).map_err(|e| e.to_string())?;
         if let Some(reason) = ends {
             self.engine.end_session(reason).await;
@@ -292,6 +319,43 @@ impl Driver {
         let h = next.engine.handle();
         h.set_fast(rt.fast);
         h.set_max_thinking_tokens(rt.max_thinking_tokens);
+        next.engine.tool_ctx().set_sandbox(self.engine.tool_ctx().sandbox_policy().map(|p| (*p).clone()));
+        {
+            let old = self.engine.handle().permissions.read().unwrap().added.clone();
+            let mut perm = h.permissions.write().unwrap();
+            for (b, list) in [
+                (forge_permissions::Behavior::Allow, old.allow),
+                (forge_permissions::Behavior::Ask, old.ask),
+                (forge_permissions::Behavior::Deny, old.deny),
+            ] {
+                for rule in list {
+                    perm.add_rule(b, rule);
+                }
+            }
+        }
+        if continues {
+            // The same conversation goes on: keep the goal, scheduled tasks and loop state
+            // as they are in memory (restoring from records would reset them).
+            next.goal = self.goal.clone();
+            if let (Some(old), Some(new)) = (&self.scheduler, &next.scheduler) {
+                let tasks = old.lock().unwrap().clone();
+                *new.lock().unwrap() = tasks;
+            }
+            next.self_paced = self.self_paced.take();
+            next.fallback_pending = self.fallback_pending.take();
+            next.side_questions = std::mem::take(&mut self.side_questions);
+            if let Some(g) = &next.goal {
+                next.engine.transcript().set_goal(g.record());
+            }
+            next.save_schedule();
+        }
+        if matches!(to, Switch::Reload) {
+            next.engine.skip_session_start();
+        }
+        if matches!(to, Switch::Cd(_)) {
+            // The new directory's FORGE.md and friends reach the model with the next prompt.
+            next.engine.reattach_context();
+        }
         let old = &self.engine.state;
         let st = &mut next.engine.state;
         st.total_cost_usd += old.total_cost_usd;
@@ -323,14 +387,17 @@ impl Driver {
 
     /// Run one input. `report` gets each turn's result as it finishes.
     pub async fn input(&mut self, content: MessageContent, report: &mut Report<'_>) -> Flow {
-        let result = if let Some(cmd) = shell_command(&content) {
+        // Shell mode is for a person at the keyboard: on print and stream surfaces the
+        // prompt usually comes from a program, so `!...` is an ordinary prompt there.
+        let shell = shell_command(&content).filter(|_| matches!(self.surface, Surface::Repl | Surface::Tui));
+        let (result, engine_turn) = if let Some(cmd) = shell {
             self.shell(&cmd).await
         } else {
             match commands::command_text(&content) {
-                None => self.engine.submit(content).await,
+                None => (self.engine.submit(content).await, true),
                 Some(text) => match commands::execute(self, &text).await {
-                    commands::Exec::Submit(prompt) => self.engine.submit(prompt).await,
-                    commands::Exec::Local { text, is_error } => self.engine.local_result(text, is_error),
+                    commands::Exec::Submit(prompt) => (self.engine.submit(prompt).await, true),
+                    commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
                     commands::Exec::Exit => return Flow::Exit,
                 },
             }
@@ -343,16 +410,34 @@ impl Driver {
                 g.paused = None;
                 g.idle = 0;
             }
-            let interrupted = result.stop_reason.as_deref() == Some("interrupted");
-            self.pursue_goal(result, report).await;
-            self.after_loop_iteration(interrupted);
         }
+        self.after_turn(result, engine_turn, report).await;
         Flow::Continue
     }
 
+    /// After a turn: check an active goal, then settle a self-paced loop iteration.
+    async fn after_turn(&mut self, result: TurnResult, engine_turn: bool, report: &mut Report<'_>) {
+        let mut interrupted = result.stop_reason.as_deref() == Some("interrupted");
+        // A turn that failed or was blocked before its first model call still counts for the goal.
+        if engine_turn && (result.num_turns > 0 || result.is_error || result.prompt_blocked.is_some() || interrupted) {
+            interrupted |= self.pursue_goal(result, report).await;
+        }
+        if self.self_paced.is_some() {
+            self.after_loop_iteration(interrupted);
+        }
+    }
+
     /// Real time until the next scheduled task is due.
+    ///
+    /// Capped at a minute: a timer stops while the machine sleeps, so long
+    /// waits are re-checked against the wall clock.
     pub fn next_wait(&self) -> Option<Duration> {
-        self.scheduler.as_ref().and_then(|s| s.lock().unwrap().next_wait())
+        self.scheduler.as_ref().and_then(|s| s.lock().unwrap().next_wait()).map(|w| w.min(MAX_WAIT))
+    }
+
+    /// Is a scheduled task due now?
+    pub fn task_due(&self) -> bool {
+        self.scheduler.as_ref().and_then(|s| s.lock().unwrap().next_wait()) == Some(Duration::ZERO)
     }
 
     /// Are scheduled tasks waiting? (`-p` keeps running while they are.)
@@ -375,23 +460,26 @@ impl Driver {
             serde_json::json!({"id": task.id, "prompt": task.prompt, "schedule": task.describe()}),
         );
         self.notice(NoticeLevel::Info, format!("Running scheduled task {}: {}", task.id, task.prompt));
-        let result = if task.prompt.trim_start().starts_with("/loop") {
+        let is_fallback = self.fallback_pending.as_deref() == Some(task.id.as_str());
+        if is_fallback {
+            self.fallback_pending = None;
+        }
+        let (result, engine_turn) = if task.prompt.trim_start().starts_with("/loop") {
             match commands::execute(self, task.prompt.trim()).await {
-                commands::Exec::Submit(p) => self.engine.submit(p).await,
-                commands::Exec::Local { text, is_error } => self.engine.local_result(text, is_error),
+                commands::Exec::Submit(p) => (self.engine.submit(p).await, true),
+                commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
                 commands::Exec::Exit => return true,
             }
         } else {
             let prompt = commands::scheduled_prompt(self, &task.prompt).await;
-            self.engine.submit(prompt).await
+            (self.engine.submit(prompt).await, true)
         };
+        if let Some(it) = self.self_paced.as_mut() {
+            it.fallback = is_fallback;
+        }
         self.record(&result, false);
         report(&result);
-        if result.num_turns > 0 {
-            let interrupted = result.stop_reason.as_deref() == Some("interrupted");
-            self.pursue_goal(result, report).await;
-            self.after_loop_iteration(interrupted);
-        }
+        self.after_turn(result, engine_turn, report).await;
         true
     }
 
@@ -426,11 +514,11 @@ impl Driver {
         }
         let secs = crate::schedule::FALLBACK_WAKEUP.as_secs();
         let input = format!("/loop {}", it.input);
-        let fallback = s.wakeup(secs, &input, "fallback check: the last iteration didn't reschedule").is_ok();
+        let fallback = s.wakeup(secs, &input, "fallback check: the last iteration didn't reschedule").ok();
         drop(s);
-        if fallback {
+        if let Some(task) = fallback {
             self.save_schedule();
-            self.fallback_pending = true;
+            self.fallback_pending = Some(task.id);
         }
     }
 
@@ -456,24 +544,30 @@ impl Driver {
     }
 
     /// Keep working on an active goal: check each finished turn, and start
-    /// another while the goal isn't met.
-    async fn pursue_goal(&mut self, mut last: TurnResult, report: &mut Report<'_>) {
+    /// another while the goal isn't met. True when a turn it ran, or the
+    /// check, was interrupted.
+    async fn pursue_goal(&mut self, mut last: TurnResult, report: &mut Report<'_>) -> bool {
         let max_turns = self.engine.cfg.max_turns;
         let mut used = last.num_turns;
+        let mut ran_any = false;
         loop {
-            let Some(g) = self.goal.as_ref() else { return };
+            let Some(g) = self.goal.as_ref() else { return false };
             if !g.is_active() || g.paused.is_some() {
-                return;
+                return false;
             }
             let condition = g.condition.clone();
             // Errors and interrupts stop the loop; some end the goal.
             if last.stop_reason.as_deref() == Some("interrupted") {
                 self.pause("interrupted", "Goal paused: the turn was interrupted. Send a message to continue.");
-                return;
+                return ran_any;
             }
             if last.prompt_blocked.is_some() {
                 self.pause("prompt blocked", "Goal paused: a hook blocked the prompt.");
-                return;
+                return false;
+            }
+            if last.stop_reason.as_deref() == Some("hook_stopped") {
+                self.pause("hook stopped", "Goal paused: a hook stopped the run. Send a message to continue.");
+                return false;
             }
             if last.is_error {
                 let why = last.errors.first().cloned().or_else(|| last.result.clone()).unwrap_or_default();
@@ -492,21 +586,27 @@ impl Driver {
                 } else {
                     self.pause("error", format!("Goal paused after an error: {why}. Send a message to continue."));
                 }
-                return;
+                return false;
             }
-            // A turn with one model call used no tools.
             if let Some(g) = self.goal.as_mut() {
-                g.idle = if last.num_turns <= 1 { g.idle + 1 } else { 0 };
+                g.idle = if last.tool_calls == 0 { g.idle + 1 } else { 0 };
             }
 
+            // The turn that just ended is not interrupted, so its token is still
+            // the one Ctrl-C and a host's `interrupt` cancel until the next turn starts.
+            let cancel = self.engine.handle().turn_token();
             let transcript = goal::evaluator_transcript(&self.engine.state.messages);
             let user = format!("Goal: {condition}\n\nTranscript:\n{transcript}");
-            let answer = commands::side_request(self, goal::EVALUATOR_PROMPT, user, 400).await;
+            let answer = commands::side_request_with(self, goal::EVALUATOR_PROMPT, user, 400, &cancel).await;
+            if cancel.is_cancelled() {
+                self.pause("interrupted", "Goal paused: interrupted. Send a message to continue.");
+                return true;
+            }
             let (verdict, reason) = match answer {
                 Ok(text) => goal::parse_verdict(&text),
                 Err(e) => {
                     self.pause("check failed", format!("Goal paused: the goal check failed ({e})."));
-                    return;
+                    return false;
                 }
             };
             let g = self.goal.as_mut().expect("goal checked above");
@@ -517,13 +617,13 @@ impl Driver {
                     g.status = Status::Achieved;
                     self.goal_changed();
                     self.notice(NoticeLevel::Info, format!("Goal achieved: {reason}"));
-                    return;
+                    return false;
                 }
                 Verdict::Impossible => {
                     g.status = Status::Failed(reason.clone());
                     self.goal_changed();
                     self.notice(NoticeLevel::Warning, format!("Goal can't be met: {reason}"));
-                    return;
+                    return false;
                 }
                 Verdict::NotMet => {
                     if g.idle >= goal::MAX_IDLE_TURNS {
@@ -535,18 +635,34 @@ impl Driver {
                                 goal::MAX_IDLE_TURNS
                             ),
                         );
-                        return;
+                        return false;
                     }
                     if max_turns.is_some_and(|m| used >= m) {
                         self.pause("limit", "Goal paused: --max-turns reached.");
-                        return;
+                        return false;
+                    }
+                    if let Some(budget) = self.engine.cfg.max_budget_usd {
+                        if self.engine.state.total_cost_usd >= budget {
+                            self.pause("limit", "Goal paused: --max-budget-usd reached.");
+                            return false;
+                        }
                     }
                     self.engine.announce(
                         "goal",
                         serde_json::json!({"condition": condition, "status": "active", "reason": reason}),
                     );
+                    // An interrupt between the check and the next turn would be lost
+                    // when `submit` starts a new turn token.
+                    if cancel.is_cancelled() {
+                        self.pause("interrupted", "Goal paused: interrupted. Send a message to continue.");
+                        return true;
+                    }
+                    // --max-turns counts across the whole goal loop, not per turn.
+                    self.engine.cfg.max_turns = max_turns.map(|m| m - used);
                     let next =
                         self.engine.submit(MessageContent::Text(goal::continue_prompt(&condition, &reason))).await;
+                    self.engine.cfg.max_turns = max_turns;
+                    ran_any = true;
                     used += next.num_turns;
                     self.record(&next, false);
                     report(&next);
@@ -557,48 +673,60 @@ impl Driver {
     }
 
     fn pause(&mut self, why: &str, text: impl Into<String>) {
+        let text = text.into();
         if let Some(g) = self.goal.as_mut() {
             g.paused = Some(why.to_string());
+            // Hosts follow the goal through `system/goal`: say it stopped.
+            self.engine.announce(
+                "goal",
+                serde_json::json!({"condition": g.condition, "status": "active", "paused": why, "reason": text}),
+            );
         }
         self.notice(NoticeLevel::Warning, text);
     }
 
     /// `!command`: run it in the shell, as the user, and put the command and
     /// its output in the conversation. The model answers it unless
-    /// `respondToBashCommands` is false.
-    async fn shell(&mut self, cmd: &str) -> TurnResult {
+    /// `respondToBashCommands` is false. The bool says whether a model turn ran.
+    async fn shell(&mut self, cmd: &str) -> (TurnResult, bool) {
         let ctx = self.engine.tool_ctx().clone();
-        let shell = if std::path::Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" };
-        let mut c = tokio::process::Command::new(shell);
-        c.arg("-c").arg(cmd).current_dir(ctx.shell_cwd()).envs(ctx.env.iter()).kill_on_drop(true);
-        c.stdin(std::process::Stdio::null());
-        let (code, output) = match tokio::time::timeout(SHELL_TIMEOUT, c.output()).await {
-            Ok(Ok(out)) => {
-                let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-                let err = String::from_utf8_lossy(&out.stderr);
-                if !err.trim().is_empty() {
+        let cancel = self.engine.handle().new_token();
+        let run = forge_tools::shells::run_command(cmd, &ctx.shell_cwd(), &ctx.env, SHELL_TIMEOUT, &cancel, None).await;
+        let (code, output) = match run {
+            Ok(r) if r.interrupted => return (self.engine.local_result("Interrupted.", true), false),
+            Ok(r) => {
+                let mut text = r.stdout;
+                if !r.stderr.trim().is_empty() {
                     if !text.is_empty() && !text.ends_with('\n') {
                         text.push('\n');
                     }
-                    text.push_str(&err);
+                    text.push_str(&r.stderr);
                 }
-                (out.status.code().unwrap_or(-1), text)
+                if r.timed_out {
+                    text.push_str(&format!("\n(timed out after {}s)", SHELL_TIMEOUT.as_secs()));
+                }
+                (r.code.unwrap_or(-1), text)
             }
-            Ok(Err(e)) => (-1, format!("could not run {shell}: {e}")),
-            Err(_) => (-1, format!("timed out after {}s", SHELL_TIMEOUT.as_secs())),
+            Err(e) => (-1, format!("could not start the shell: {e}")),
         };
         let output = forge_tools::truncate_middle(output.trim_end(), SHELL_OUTPUT_CHARS);
+        // The output can't close its wrapper early and pass as the user's own words.
+        let safe = |t: &str| {
+            t.replace("</shell-output>", "<\\/shell-output>").replace("</shell-command>", "<\\/shell-command>")
+        };
         let note = format!(
-            "The user ran a shell command:\n<shell-command>{cmd}</shell-command>\n<shell-output exit-code=\"{code}\">\n{output}\n</shell-output>"
+            "The user ran a shell command:\n<shell-command>{}</shell-command>\n<shell-output exit-code=\"{code}\">\n{}\n</shell-output>",
+            safe(cmd),
+            safe(&output)
         );
         if self.info.settings.bool("/respondToBashCommands") == Some(false) {
             self.engine.add_user_note(note);
-            return self.engine.local_result(output, code != 0);
+            return (self.engine.local_result(output, code != 0), false);
         }
         if !output.is_empty() {
             self.notice(NoticeLevel::Info, format!("$ {cmd}\n{output}"));
         }
-        self.engine.submit(MessageContent::Text(note)).await
+        (self.engine.submit(MessageContent::Text(note)).await, true)
     }
 
     /// Rebuild the system prompt from [`Driver::prompt`] after changing it.

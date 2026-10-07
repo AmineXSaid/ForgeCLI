@@ -351,7 +351,8 @@ async fn print_mode_keeps_running_for_scheduled_tasks() {
     let api = MockApi::start(vec![MockTurn::text("hi 1"), MockTurn::text("hi 2"), MockTurn::text("hi 3")]).await;
     let started = std::time::Instant::now();
     let (code, out, err) = forge_env(&e, &api.url, &["-p", "/loop 1m say hi", "--max-turns", "3"], &fast).await;
-    assert_eq!((code, out.as_str()), (0, "hi 1\nhi 2\nhi 3\n"), "{err}");
+    // The task was still scheduled when --max-turns ended the run: exit 4.
+    assert_eq!((code, out.as_str()), (4, "hi 1\nhi 2\nhi 3\n"), "{err}");
     assert!(started.elapsed() < Duration::from_secs(30));
     let reqs = api.requests();
     assert_eq!(reqs.len(), 3, "it stops at --max-turns");
@@ -366,7 +367,7 @@ async fn print_mode_keeps_running_for_scheduled_tasks() {
         &fast,
     )
     .await;
-    assert_eq!(code, 0);
+    assert_eq!(code, 4);
     let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(lines.iter().filter(|l| l["type"] == "result").count(), 2);
     assert!(lines.iter().any(|l| l["subtype"] == "scheduled" && l["cron"] == "*/2 * * * *"), "{out}");

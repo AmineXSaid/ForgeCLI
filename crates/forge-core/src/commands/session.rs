@@ -25,10 +25,27 @@ fn small_model(d: &Driver) -> String {
         .unwrap_or_else(|| forge_api::models::SMALL_FAST_MODEL.to_string())
 }
 
-/// A one-off request with no tools, outside the conversation.
-pub(crate) async fn side_request(d: &Driver, system: &str, user: String, max_tokens: u32) -> Result<String, String> {
+/// A one-off request with no tools, outside the conversation. Its cost counts toward the session.
+pub(crate) async fn side_request(
+    d: &mut Driver,
+    system: &str,
+    user: String,
+    max_tokens: u32,
+) -> Result<String, String> {
+    side_request_with(d, system, user, max_tokens, &tokio_util::sync::CancellationToken::new()).await
+}
+
+/// [`side_request`] that stops when `cancel` is cancelled.
+pub(crate) async fn side_request_with(
+    d: &mut Driver,
+    system: &str,
+    user: String,
+    max_tokens: u32,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<String, String> {
+    let model = small_model(d);
     let req = MessagesRequest {
-        model: small_model(d),
+        model: model.clone(),
         max_tokens,
         messages: vec![Message::user(vec![ContentBlock::text(user)])],
         system: vec![SystemBlock::text(system)],
@@ -43,9 +60,8 @@ pub(crate) async fn side_request(d: &Driver, system: &str, user: String, max_tok
         betas: vec![],
     };
     let provider = d.engine.provider();
-    let msg = forge_api::complete(provider.as_ref(), req, &tokio_util::sync::CancellationToken::new())
-        .await
-        .map_err(|e| e.to_string())?;
+    let msg = forge_api::complete(provider.as_ref(), req, cancel).await.map_err(|e| e.to_string())?;
+    d.engine.record_side_usage(&model, &msg.usage);
     Ok(msg.content.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("").trim().to_string())
 }
 
@@ -354,6 +370,11 @@ that it does.";
 pub(super) fn debug(d: &mut Driver, args: &str) -> Exec {
     let path = crate::debug::log_path(&d.info.session_id);
     let log = match crate::debug::active() {
+        // Logging to the terminal: there is no file to read.
+        Some(to) if to == "stderr" => {
+            return err("Debug logging goes to stderr (--debug), so Forge can't read it. Restart with \
+                        --debug-file <path>, or without --debug and run /debug again.");
+        }
         Some(to) => to,
         None => {
             if let Err(e) = crate::debug::enable(&path) {
@@ -362,9 +383,8 @@ pub(super) fn debug(d: &mut Driver, args: &str) -> Exec {
             path.display().to_string()
         }
     };
-    if let Some(dir) = path.parent() {
-        d.engine.handle().permissions.write().unwrap().add_read_dir(dir);
-    }
+    // Reading this log needs no prompt; other sessions' logs still do.
+    d.engine.handle().permissions.write().unwrap().add_read_dir(Path::new(&log));
     if args.is_empty() {
         return ok(format!(
             "Debug logging is on, writing to {log}. Reproduce the problem, then run /debug <what went wrong> and \
@@ -391,6 +411,31 @@ fn rule_source(d: &Driver, behavior: &str, rule: &str) -> String {
         })
         .map(|l| l.source.as_str().to_string())
         .unwrap_or_else(|| "session".into())
+}
+
+/// Where a rule comes from when it isn't the person's to remove: managed
+/// policy, `--settings`, or `--allowedTools` / `--disallowedTools`.
+fn fixed_rule_source(d: &Driver, rule: &str) -> Option<&'static str> {
+    let in_list = |list: Option<&Value>| {
+        list.and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|v| v.as_str().and_then(normalize_rule).as_deref() == Some(rule)))
+    };
+    for layer in &d.info.settings.layers {
+        let source = match layer.source {
+            forge_config::SettingSource::Managed => "managed policy settings",
+            forge_config::SettingSource::Flag => "--settings",
+            _ => continue,
+        };
+        if BEHAVIORS.iter().any(|b| in_list(layer.value.pointer(&format!("/permissions/{b}")))) {
+            return Some(source);
+        }
+    }
+    let flags = d.launch_rules();
+    flags
+        .iter()
+        .flat_map(|s| forge_permissions::split_rule_list(s))
+        .any(|r| normalize_rule(&r).as_deref() == Some(rule))
+        .then_some("--allowedTools or --disallowedTools")
 }
 
 fn normalize_rule(s: &str) -> Option<String> {
@@ -445,11 +490,16 @@ fn take_scope(args: &str) -> Result<(String, Option<String>), String> {
 }
 
 fn rules_in(d: &Driver, scope: Scope, behavior: &str) -> Vec<Value> {
+    list_in(d, scope, &format!("/permissions/{behavior}"))
+}
+
+/// A list in a settings file as it is on disk now (other sessions may have changed it).
+fn list_in(d: &Driver, scope: Scope, pointer: &str) -> Vec<Value> {
     let path = scope.path(&d.info);
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.pointer(&format!("/permissions/{behavior}")).and_then(Value::as_array).cloned())
+        .and_then(|v| v.pointer(pointer).and_then(Value::as_array).cloned())
         .unwrap_or_default()
 }
 
@@ -484,7 +534,7 @@ pub(super) fn permissions(d: &mut Driver, args: &str) -> Exec {
                     None => return err("--scope takes one of local, project, user or session."),
                 },
             };
-            d.engine.handle().permissions.write().unwrap().rules.add(b, parsed);
+            // Saved first: a rule that couldn't be saved doesn't quietly apply anyway.
             let saved = match scope {
                 None => "(This session only.)".to_string(),
                 Some(sc) => {
@@ -494,10 +544,11 @@ pub(super) fn permissions(d: &mut Driver, args: &str) -> Exec {
                     }
                     match save(d, sc, &["permissions", behavior], Some(Value::Array(list))) {
                         Ok(note) => note,
-                        Err(e) => return err(e),
+                        Err(e) => return err(format!("{e}. The rule was not added.")),
                     }
                 }
             };
+            d.engine.handle().permissions.write().unwrap().add_rule(b, parsed);
             ok(format!("Added {behavior} rule {text}. {saved}"))
         }
         "remove" | "rm" => {
@@ -505,6 +556,9 @@ pub(super) fn permissions(d: &mut Driver, args: &str) -> Exec {
             let Some(text) = normalize_rule(rule) else {
                 return err("Usage: /permissions remove <rule>");
             };
+            if let Some(source) = fixed_rule_source(d, &text) {
+                return err(format!("{text} is set by {source}, which /permissions can't change."));
+            }
             let mut removed = vec![];
             {
                 let h = d.engine.handle();
@@ -516,6 +570,10 @@ pub(super) fn permissions(d: &mut Driver, args: &str) -> Exec {
                     if list.len() != before {
                         removed.push(format!("{name} (session)"));
                     }
+                }
+                let added = &mut guard.added;
+                for list in [&mut added.allow, &mut added.ask, &mut added.deny] {
+                    list.retain(|r| r.to_string() != text);
                 }
             }
             for sc in [Scope::User, Scope::Project, Scope::Local] {
@@ -564,21 +622,14 @@ pub(super) fn add_dir(d: &mut Driver, args: &str) -> Exec {
     ctx.working_dirs.write().unwrap().push(dir.clone());
     d.engine.handle().permissions.write().unwrap().add_directory(&dir);
     d.prompt.env.additional_dirs.push(dir.clone());
-    let dirs = d.prompt.env.additional_dirs.clone();
+    let dirs: Vec<PathBuf> = ctx.working_dirs.read().unwrap().iter().skip(1).cloned().collect();
     d.engine.transcript().append_meta(json!({"additionalDirectories": dirs}));
     d.engine.remind(format!(
         "The user added a working directory: {}. You can read and edit files there too.",
         dir.display()
     ));
     let saved = if save_it {
-        let mut list: Vec<Value> = d
-            .info
-            .settings
-            .layers
-            .iter()
-            .find(|l| l.source == forge_config::SettingSource::Local)
-            .and_then(|l| l.value.pointer("/permissions/additionalDirectories").and_then(Value::as_array).cloned())
-            .unwrap_or_default();
+        let mut list = list_in(d, Scope::Local, "/permissions/additionalDirectories");
         let entry = json!(dir.display().to_string());
         if !list.contains(&entry) {
             list.push(entry);
@@ -667,7 +718,7 @@ pub(super) async fn btw(d: &mut Driver, args: &str) -> Exec {
 const RECAP_PROMPT: &str = "You summarize coding sessions. Given a conversation between a user and a coding agent, \
 reply with one line (at most 30 words): what was asked, what has been done, and what is still open. No preamble.";
 
-pub(super) async fn recap(d: &Driver) -> Exec {
+pub(super) async fn recap(d: &mut Driver) -> Exec {
     let text = crate::goal::evaluator_transcript(&d.engine.state.messages);
     if text.is_empty() {
         return err("Nothing to recap yet.");

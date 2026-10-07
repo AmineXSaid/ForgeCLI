@@ -140,6 +140,7 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
         mcp_configs: o.mcp_config.clone(),
         strict_mcp_config: o.strict_mcp_config,
         mcp: None,
+        shells: None,
         provider: None,
         store_root: None,
     })
@@ -358,18 +359,33 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         let _ = tx.send(Input::Eof);
     }
 
-    let mut rep =
-        Reporter { format: o.output_format, out: out.clone(), live: live.clone(), code: exit::OK, last_json: None };
+    let mut rep = Reporter {
+        format: o.output_format,
+        out: out.clone(),
+        live: live.clone(),
+        code: exit::OK,
+        last_json: None,
+        limit_hit: false,
+    };
     let mut closed = false;
     loop {
         // Scheduled tasks (C19) fire while idle. After the input ends, print mode keeps
         // running while any are pending: until they finish, Ctrl-C, or a turn or budget limit.
         let wait = driver.next_wait();
         if closed {
-            let limited = rep.code == exit::LIMIT || o.max_turns.is_some_and(|m| driver.activity.turns >= m);
-            let Some(w) = wait.filter(|_| !limited) else { break };
+            let turns_out = o.max_turns.is_some_and(|m| driver.activity.turns >= m);
+            if (rep.limit_hit || turns_out) && wait.is_some() {
+                // Tasks were still scheduled when a limit stopped the run.
+                rep.fail(exit::LIMIT);
+                break;
+            }
+            let Some(w) = wait else { break };
             if !sleep_unless(w, &interrupted).await {
                 break;
+            }
+            // --max-turns counts across the whole run: a scheduled run gets what is left.
+            if let Some(m) = o.max_turns {
+                driver.engine.cfg.max_turns = Some(m - driver.activity.turns);
             }
             driver.run_due(&mut |r| rep.report(r)).await;
         } else {
@@ -425,11 +441,16 @@ struct Reporter {
     live: forge_core::driver::Live,
     code: i32,
     last_json: Option<Value>,
+    /// A turn or budget limit ended a turn (whatever the exit status already was).
+    limit_hit: bool,
 }
 
 impl Reporter {
     fn report(&mut self, r: &forge_engine::TurnResult) {
         let c = exit::for_result(r);
+        if c == exit::LIMIT {
+            self.limit_hit = true;
+        }
         if self.code == exit::OK {
             self.code = c;
         }

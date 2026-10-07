@@ -282,7 +282,7 @@ them all. The built-ins so far:
 | `/plan [description]` | Plan mode; with a description, starts planning it |
 | `/btw [question]` | A side question, answered from the conversation without tools; it doesn't enter the conversation |
 | `/recap` | One line: what was asked, what's done, what's open |
-| `!command` | Runs `command` in the shell as you (no prompt, no sandbox) and gives the model the command and its output; the model answers unless `respondToBashCommands` is `false` |
+| `!command` | In the interactive session, runs `command` in the shell as you (no prompt, no sandbox) and gives the model the command and its output; the model answers unless `respondToBashCommands` is `false`. In `-p`, `!...` is an ordinary prompt |
 | `/advisor [model\|off]` | Lets Forge consult a second model (the `Advisor` tool) before risky changes, when stuck, and before calling work done. Its cost counts toward the session |
 | `/import [codex\|gemini\|cursor] [--yes]` | Shows what it would bring over from other coding agents (their MCP servers, GEMINI.md, Cursor rules); `--yes` applies it. Servers from your own configs go to your user settings; servers shipped in the repository go to `.mcp.json` and still need `forge mcp approve` |
 | `/feedback [description]` (`/bug`, `/share`) | Saves a bug-report bundle in `<state>/feedback/` (report, doctor checks, this session's transcript and settings, with secrets masked). Nothing is uploaded |
@@ -299,7 +299,8 @@ commands.
 **Scheduled prompts:** `/loop` and the `CronCreate` tool schedule prompts in
 the session. They run only between turns, recurring ones expire after
 seven days, and `-p` keeps running until they are done. It stops on Ctrl-C,
-at `--max-turns` (counted across the whole run) or when the budget is spent.
+at `--max-turns` (counted across the whole run) or when the budget is spent;
+a limit that stops it while tasks are still scheduled exits with status 4.
 Contract C19 has the details.
 
 **Goals:** `/goal <condition>` sends the condition as the prompt. After each

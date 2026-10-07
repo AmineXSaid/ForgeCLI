@@ -137,11 +137,26 @@ impl MessagesProvider {
             h.insert(reqwest::header::AUTHORIZATION, header_value(&format!("Bearer {t}"))?);
         }
         let mut betas = self.config.betas.clone();
-        betas.extend(extra_betas.iter().filter(|b| !self.config.betas.contains(b)).cloned());
+        let mut add = |b: &str| {
+            let b = b.trim();
+            if !b.is_empty() && !betas.iter().any(|x| x == b) {
+                betas.push(b.to_string());
+            }
+        };
+        extra_betas.iter().for_each(|b| add(b));
+        // A custom beta header joins the list instead of replacing it (fast mode needs its beta).
+        for (k, v) in &self.config.extra_headers {
+            if k.eq_ignore_ascii_case(BETA_HEADER) {
+                v.split(',').for_each(&mut add);
+            }
+        }
         if !betas.is_empty() {
             h.insert(BETA_HEADER, header_value(&betas.join(","))?);
         }
         for (k, v) in &self.config.extra_headers {
+            if k.eq_ignore_ascii_case(BETA_HEADER) {
+                continue;
+            }
             let name = HeaderName::from_bytes(k.as_bytes()).map_err(|e| ApiError::Parse(e.to_string()))?;
             h.insert(name, header_value(v)?);
         }
@@ -346,5 +361,22 @@ mod tests {
     fn custom_headers_parse() {
         let h = parse_header_lines("X-A: 1\nbad line\nX-B:two");
         assert_eq!(h, vec![("X-A".into(), "1".into()), ("X-B".into(), "two".into())]);
+    }
+
+    #[test]
+    fn a_custom_beta_header_joins_the_beta_list() {
+        let p = MessagesProvider::new(MessagesConfig {
+            betas: vec!["from-flag".into()],
+            extra_headers: vec![
+                ("Anthropic-Beta".into(), "long-context, from-flag".into()),
+                ("X-A".into(), "1".into()),
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+        let h = p.headers(&["fast-mode-2026-02-01".into()]).unwrap();
+        assert_eq!(h.get(BETA_HEADER).unwrap(), "from-flag,fast-mode-2026-02-01,long-context");
+        assert_eq!(h.get_all(BETA_HEADER).iter().count(), 1);
+        assert_eq!(h.get("x-a").unwrap(), "1");
     }
 }

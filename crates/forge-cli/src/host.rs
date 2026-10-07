@@ -15,7 +15,27 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::output::Out;
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
+type Pending = Arc<Mutex<Waiters>>;
+
+/// Permission requests waiting for the host's answer.
+#[derive(Default)]
+pub struct Waiters {
+    map: HashMap<String, oneshot::Sender<Result<Value, String>>>,
+    /// The host's input has ended: nothing can answer a new request.
+    closed: bool,
+}
+
+impl Waiters {
+    fn remove(&mut self, id: &str) -> Option<oneshot::Sender<Result<Value, String>>> {
+        self.map.remove(id)
+    }
+
+    /// End of input: drop the waiters (their requests are denied) and refuse new ones.
+    fn close(&mut self) {
+        self.closed = true;
+        self.map.clear();
+    }
+}
 
 /// Sends `can_use_tool` requests to the host and waits for its answer (contract C1).
 pub struct HostPrompter {
@@ -35,7 +55,17 @@ impl PermissionPrompter for HostPrompter {
     async fn ask(&self, p: PermissionPrompt) -> PermissionAnswer {
         let id = format!("forge-req-{}", self.counter.fetch_add(1, Ordering::SeqCst) + 1);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id.clone(), tx);
+        {
+            let mut w = self.pending.lock().unwrap();
+            if w.closed {
+                // A scheduled turn after stdin ended: nobody is left to answer.
+                return PermissionAnswer::Deny {
+                    message: "The host's input has ended, so nobody can approve this; it was not run.".into(),
+                    interrupt: false,
+                };
+            }
+            w.map.insert(id.clone(), tx);
+        }
         let mut body = json!({
             "tool_name": p.tool_name,
             "input": p.input,
@@ -191,7 +221,7 @@ pub async fn read_stdin(ctx: Arc<ControlContext>, tx: mpsc::UnboundedSender<Inpu
             _ => {}
         }
     }
-    // Unanswered prompts can never be answered now.
-    ctx.pending.lock().unwrap().clear();
+    // Unanswered prompts can never be answered now, and new ones are refused.
+    ctx.pending.lock().unwrap().close();
     let _ = tx.send(Input::Eof);
 }

@@ -375,7 +375,7 @@ pub(crate) fn apply_permission_update(shared: &Shared, upd: &Value) {
             let mut perm = shared.permissions.write().unwrap();
             for r in rules {
                 if let Ok(rule) = Rule::parse(&r.to_rule_string()) {
-                    perm.rules.add(*behavior, rule);
+                    perm.add_rule(*behavior, rule);
                 }
             }
             destination.clone()

@@ -85,9 +85,11 @@ impl Transcript {
     }
 
     /// Continue writing after a loaded session (same file), or into a fork.
+    /// A fork keeps the leaf [`Transcript::write_fork_of`] set: the loaded
+    /// session's leaf may be an entry the fork never copied.
     pub fn continue_from(&self, loaded: &LoadedSession) {
-        *self.last_uuid.lock().unwrap() = loaded.last_uuid.clone();
         if self.session_id == loaded.session_id {
+            *self.last_uuid.lock().unwrap() = loaded.last_uuid.clone();
             *self.title.lock().unwrap() = loaded.title.clone();
         }
     }
@@ -109,6 +111,9 @@ impl Transcript {
         let Some(path) = &self.path else { return };
         let mut guard = self.file.lock().unwrap();
         if guard.is_none() {
+            // A crash can leave a torn last line. The loader skips it while it is
+            // last; cut it off before appending, or the file would stop loading.
+            drop_torn_tail(path);
             match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(f) => *guard = Some(f),
                 Err(e) => {
@@ -140,13 +145,15 @@ impl Transcript {
     }
 
     /// Append a chained entry; returns its uuid.
+    /// The leaf lock is held from reading the parent to moving the leaf, so two
+    /// writers (the engine and a host's control request) can't share a parent.
     fn chained(&self, kind: &str, fields: Value) -> String {
         let uuid = new_uuid();
-        let parent = self.last_uuid.lock().unwrap().clone();
-        let mut v = self.base(kind, &uuid, parent);
+        let mut leaf = self.last_uuid.lock().unwrap();
+        let mut v = self.base(kind, &uuid, leaf.clone());
         merge(&mut v, fields);
         self.write_line(&v);
-        *self.last_uuid.lock().unwrap() = Some(uuid.clone());
+        *leaf = Some(uuid.clone());
         uuid
     }
 
@@ -174,24 +181,24 @@ impl Transcript {
     /// newest entry for a uuid, so the chain follows the copy.
     pub fn rewrite(&self, uuid: &str, msg: &Message, is_meta: bool) {
         let kind = if msg.role == forge_types::Role::Assistant { "assistant" } else { "user" };
-        let parent = self.last_uuid.lock().unwrap().clone();
-        let mut v = self.base(kind, uuid, parent);
+        let mut leaf = self.last_uuid.lock().unwrap();
+        let mut v = self.base(kind, uuid, leaf.clone());
         merge(&mut v, json!({"message": msg}));
         if is_meta {
             v["isMeta"] = json!(true);
         }
         self.write_line(&v);
-        *self.last_uuid.lock().unwrap() = Some(uuid.to_string());
+        *leaf = Some(uuid.to_string());
     }
 
     /// Start a new chain after compaction; earlier messages are not loaded on resume.
     pub fn append_compact_boundary(&self, data: Value) -> String {
         let uuid = new_uuid();
-        let logical = self.last_uuid.lock().unwrap().clone();
+        let mut leaf = self.last_uuid.lock().unwrap();
         let mut v = self.base("system", &uuid, None);
-        merge(&mut v, json!({"subtype": "compact_boundary", "logicalParentUuid": logical, "compactMetadata": data}));
+        merge(&mut v, json!({"subtype": "compact_boundary", "logicalParentUuid": *leaf, "compactMetadata": data}));
         self.write_line(&v);
-        *self.last_uuid.lock().unwrap() = Some(uuid.clone());
+        *leaf = Some(uuid.clone());
         uuid
     }
 
@@ -257,6 +264,22 @@ impl Transcript {
             self.append_meta(json!({"additionalDirectories": loaded.additional_dirs}));
         }
         *self.last_uuid.lock().unwrap() = parent;
+    }
+}
+
+/// Cut an unfinished last line (a crash mid-write) off a transcript.
+fn drop_torn_tail(path: &Path) {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let Ok(mut f) = File::open(path) else { return };
+    let mut last = [0u8; 1];
+    let torn = f.seek(SeekFrom::End(-1)).is_ok() && f.read_exact(&mut last).is_ok() && last[0] != b'\n';
+    if !torn {
+        return;
+    }
+    let Ok(bytes) = std::fs::read(path) else { return };
+    let keep = bytes.iter().rposition(|b| *b == b'\n').map(|i| i + 1).unwrap_or(0);
+    if let Ok(f) = OpenOptions::new().write(true).open(path) {
+        let _ = f.set_len(keep as u64);
     }
 }
 
@@ -500,5 +523,35 @@ mod tests {
         let t = Transcript::create(&store, Path::new("/w"), ID, None, false).unwrap();
         t.append_user(&Message::user_text("q"), false, json!({}));
         assert!(!d.path().join("p").exists());
+    }
+
+    #[test]
+    fn a_fork_keeps_its_own_leaf_and_survives_a_torn_line() {
+        let d = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(d.path().join("projects"));
+        let cwd = PathBuf::from("/w");
+        let t = Transcript::create(&store, &cwd, ID, None, true).unwrap();
+        t.append_user(&Message::user_text("one"), false, json!({}));
+        t.append_assistant(&assistant("two"));
+        // The leaf is a system entry the fork doesn't copy.
+        t.append_system("rewind", json!({"to": null}));
+        let loaded = load(&store.session_path(&cwd, ID).unwrap(), None).unwrap();
+        let fork = Transcript::create(&store, &cwd, ID2, None, true).unwrap();
+        fork.write_fork_of(&loaded);
+        fork.continue_from(&loaded);
+        fork.append_user(&Message::user_text("three"), false, json!({}));
+        let path = store.session_path(&cwd, ID2).unwrap();
+        let texts: Vec<String> = load(&path, None).unwrap().messages.iter().map(|e| e.message.text()).collect();
+        assert_eq!(texts, vec!["one", "two", "three"], "the copied history stays on the chain");
+
+        // A crash left half a line; the next write starts on a new line, and the file still loads.
+        use std::io::Write as _;
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(br#"{"type":"user","uu"#).unwrap();
+        assert_eq!(load(&path, None).unwrap().messages.len(), 3, "a torn last line is skipped");
+        let again = Transcript::create(&store, &cwd, ID2, None, true).unwrap();
+        again.continue_from(&load(&path, None).unwrap());
+        again.append_user(&Message::user_text("four"), false, json!({}));
+        let texts: Vec<String> = load(&path, None).unwrap().messages.iter().map(|e| e.message.text()).collect();
+        assert_eq!(texts, vec!["one", "two", "three", "four"]);
     }
 }

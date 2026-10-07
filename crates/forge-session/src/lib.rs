@@ -4,7 +4,7 @@ mod history;
 mod store;
 mod transcript;
 
-pub use history::{FileHistory, RewindPlan};
+pub use history::{copy_history, FileHistory, RewindPlan};
 pub use store::{forge_home, project_key, SessionStore, SessionSummary};
 pub use transcript::{Entry, LoadedSession, Transcript};
 

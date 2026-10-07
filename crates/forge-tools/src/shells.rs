@@ -92,10 +92,49 @@ pub fn kill_tree(child_pid: Option<u32>) {
     let _ = child_pid;
 }
 
+/// Output kept from each stream: the first and the last this many bytes.
+const KEEP_BYTES: usize = 4 << 20;
+
+/// Read a stream to its end, keeping its start and end: a command that prints
+/// gigabytes can't fill memory.
 async fn read_all<R: AsyncRead + Unpin>(mut r: R) -> String {
-    let mut buf = Vec::new();
-    let _ = r.read_to_end(&mut buf).await;
-    String::from_utf8_lossy(&buf).into_owned()
+    read_capped(&mut r, KEEP_BYTES).await
+}
+
+async fn read_capped<R: AsyncRead + Unpin>(r: &mut R, keep: usize) -> String {
+    let mut head: Vec<u8> = Vec::new();
+    let mut tail: Vec<u8> = Vec::new();
+    let mut dropped: u64 = 0;
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let n = match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let mut data = &chunk[..n];
+        if head.len() < keep {
+            let take = data.len().min(keep - head.len());
+            head.extend_from_slice(&data[..take]);
+            data = &data[take..];
+        }
+        tail.extend_from_slice(data);
+        if tail.len() > 2 * keep {
+            let cut = tail.len() - keep;
+            dropped += cut as u64;
+            tail.drain(..cut);
+        }
+    }
+    if tail.len() > keep {
+        let cut = tail.len() - keep;
+        dropped += cut as u64;
+        tail.drain(..cut);
+    }
+    let mut out = String::from_utf8_lossy(&head).into_owned();
+    if dropped > 0 {
+        out.push_str(&format!("\n[... {dropped} bytes of output omitted ...]\n"));
+    }
+    out.push_str(&String::from_utf8_lossy(&tail));
+    out
 }
 
 /// Run a command to completion, honouring timeout and cancellation.
@@ -258,5 +297,21 @@ impl ShellManager {
         for s in self.list() {
             s.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn long_output_keeps_its_start_and_end() {
+        let data: Vec<u8> = (0..1000u32).flat_map(|i| format!("{i:04}\n").into_bytes()).collect();
+        let out = read_capped(&mut data.as_slice(), 100).await;
+        assert!(out.starts_with("0000\n0001\n"), "{out}");
+        assert!(out.ends_with("0998\n0999\n"), "{out}");
+        assert!(out.contains("[... 4800 bytes of output omitted ...]"), "{out}");
+        let short = read_capped(&mut b"hi\n".as_slice(), 100).await;
+        assert_eq!(short, "hi\n");
     }
 }

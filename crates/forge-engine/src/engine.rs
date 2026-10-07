@@ -127,6 +127,8 @@ becomes part of the main conversation.\n</system-reminder>";
 
 /// The beta flag fast mode needs.
 pub const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
+/// Fast mode's price over the model's standard rates (input and output alike).
+pub const FAST_PRICE_MULTIPLIER: f64 = 2.0;
 
 /// Settings a host may change while the engine runs.
 #[derive(Debug, Clone)]
@@ -151,6 +153,20 @@ impl EngineHandle {
     /// Interrupt the running turn (contract C3).
     pub fn interrupt(&self) {
         self.cancel.lock().unwrap().cancel();
+    }
+
+    /// Start interruptible work outside a turn (a `!command`): Ctrl-C and a
+    /// host's `interrupt` cancel the returned token until the next turn starts.
+    pub fn new_token(&self) -> CancellationToken {
+        let t = CancellationToken::new();
+        *self.cancel.lock().unwrap() = t.clone();
+        t
+    }
+
+    /// The current turn's token. [`EngineHandle::interrupt`] cancels it until the
+    /// next turn starts, so work between turns (a goal check) can watch it too.
+    pub fn turn_token(&self) -> CancellationToken {
+        self.cancel.lock().unwrap().clone()
     }
 
     pub fn set_permission_mode(&self, mode: forge_permissions::PermissionMode) {
@@ -223,6 +239,8 @@ pub struct TurnState {
     pub messages: Vec<Message>,
     /// Transcript uuid of each message (same index as `messages`).
     pub uuids: Vec<String>,
+    /// Uuids of synthetic user messages (reminders, interrupt markers, summaries).
+    pub meta: HashSet<String>,
     pub microcompacted: HashSet<String>,
     pub total_usage: Usage,
     pub total_cost_usd: f64,
@@ -251,6 +269,8 @@ pub struct TurnResult {
     /// The turn failed in a way the next turn would too: credentials, billing,
     /// a missing model, or a conversation too long even after compaction.
     pub fatal: bool,
+    /// Tool calls the model made in this turn.
+    pub tool_calls: u32,
 }
 
 pub struct Engine {
@@ -298,6 +318,7 @@ pub struct CompactInfo {
 #[derive(Default)]
 pub(crate) struct TurnAcc {
     pub api_calls: u32,
+    pub tool_calls: u32,
     pub api_ms: u64,
     pub usage: Usage,
     pub denials: Vec<PermissionDenial>,
@@ -383,6 +404,17 @@ impl Engine {
         self.push_user(Message::user_text(text.into()), false, None, true);
     }
 
+    /// The session goes on in a rebuilt engine (`/reload-*`): no SessionStart.
+    pub fn skip_session_start(&mut self) {
+        self.session_started = true;
+    }
+
+    /// Attach the memory and environment context to the next prompt again
+    /// (the session moved to another directory).
+    pub fn reattach_context(&mut self) {
+        self.reattach_context = self.session_context.is_some();
+    }
+
     /// What SessionStart hooks see as the `source` (`startup`, `resume`, `clear`).
     pub fn set_start_source(&mut self, source: &str) {
         self.start_source = source.to_string();
@@ -445,8 +477,13 @@ impl Engine {
     pub fn restore(&mut self, loaded: &forge_session::LoadedSession) {
         self.state.messages = loaded.messages.iter().map(|e| e.message.clone()).collect();
         self.state.uuids = loaded.messages.iter().map(|e| e.uuid.clone()).collect();
+        self.state.meta = loaded.messages.iter().filter(|e| e.is_meta).map(|e| e.uuid.clone()).collect();
         self.state.microcompacted = loaded.microcompacted.clone();
-        self.session_started = !self.state.messages.is_empty();
+        // A resumed session still gets SessionStart (source "resume") with its next
+        // prompt; a sub-agent's context is already in its messages.
+        if self.cfg.is_subagent {
+            self.session_started = !self.state.messages.is_empty();
+        }
         self.shared.transcript.continue_from(loaded);
         // The plan survives a resume: the last TodoWrite list becomes the current one.
         let last_todos = self.state.messages.iter().rev().flat_map(|m| m.tool_uses().collect::<Vec<_>>()).find_map(
@@ -519,6 +556,9 @@ impl Engine {
                 parent_tool_use_id: None,
             });
         }
+        if is_meta {
+            self.state.meta.insert(uuid.clone());
+        }
         self.state.messages.push(msg);
         self.state.uuids.push(uuid.clone());
         uuid
@@ -557,7 +597,7 @@ impl Engine {
             oc["format"] = json!({"type": "json_schema", "schema": schema});
         }
         // Fast mode only where the model offers it; elsewhere the flag is ignored.
-        let fast = rt.fast && info.supports_fast_mode && self.shared.provider.name() != "openai";
+        let fast = self.sends_fast(model);
         let mut messages = normalize(&self.state.messages, &self.state.microcompacted);
         apply_cache_breakpoints(&mut messages);
         let mut tools = self.shared.tools.specs();
@@ -646,11 +686,21 @@ impl Engine {
         }
     }
 
+    /// Requests for `model` go out in fast mode: it's on and the model offers it.
+    fn sends_fast(&self, model: &str) -> bool {
+        self.handle.runtime().fast
+            && model_info(model).is_some_and(|m| m.supports_fast_mode)
+            && self.shared.provider.name() != "openai"
+    }
+
     fn record_usage(&mut self, model: &str, usage: &Usage, turn: &mut TurnAcc) {
         turn.usage.add(usage);
         self.state.total_usage.add(usage);
         self.state.context_tokens = usage.context_tokens();
-        let cost = self.pricing_for(model).map(|p| p.cost(usage)).unwrap_or(0.0);
+        let mut cost = self.pricing_for(model).map(|p| p.cost(usage)).unwrap_or(0.0);
+        if self.sends_fast(model) {
+            cost *= FAST_PRICE_MULTIPLIER;
+        }
         self.state.total_cost_usd += cost;
         let window = model_info(model).map(|m| m.context_window).unwrap_or(0);
         let e = self.state.model_usage.entry(model.to_string()).or_insert_with(|| {
@@ -804,15 +854,21 @@ impl Engine {
             {
                 continue;
             }
+            let uuid = self.state.uuids.get(i).cloned().unwrap_or_default();
+            if self.state.meta.contains(&uuid) {
+                continue;
+            }
             let Some(text) =
                 m.content.iter().filter_map(|b| b.as_text()).find(|t| !t.trim_start().starts_with("<system-reminder>"))
             else {
                 continue;
             };
-            let uuid = self.state.uuids.get(i).cloned().unwrap_or_default();
             out.push(PromptPoint {
                 index: i,
-                changed_files: self.shared.history.changed_since(&uuid),
+                changed_files: self
+                    .checkpoint_turn(i)
+                    .map(|t| self.shared.history.changed_since(t))
+                    .unwrap_or_default(),
                 uuid,
                 text: text.trim().to_string(),
             });
@@ -833,13 +889,55 @@ impl Engine {
         self.shared.tool_ctx.files.forget_all_views();
         self.shared.transcript.set_leaf(self.state.uuids.last().cloned());
         self.shared.transcript.append_system("rewind", json!({"to": to}));
+        self.settle_after_rewrite();
         Ok(())
+    }
+
+    /// After the conversation was cut or rewritten: keep what the transcript
+    /// would rebuild on resume in step with memory. Cleared tool results that
+    /// are still in the conversation are recorded again on the new chain, and
+    /// the task list is the last TodoWrite's that remains.
+    fn settle_after_rewrite(&mut self) {
+        let present: HashSet<String> = self
+            .state
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_uses().map(|(id, _, _)| id.to_string()).collect::<Vec<_>>())
+            .collect();
+        self.state.microcompacted.retain(|id| present.contains(id));
+        if !self.state.microcompacted.is_empty() {
+            let mut ids: Vec<&String> = self.state.microcompacted.iter().collect();
+            ids.sort();
+            self.shared.transcript.append_system("microcompact", json!({"toolUseIds": ids}));
+        }
+        let todos = self
+            .state
+            .messages
+            .iter()
+            .rev()
+            .flat_map(|m| m.tool_uses().collect::<Vec<_>>())
+            .find_map(|(_, name, input)| {
+                (name == "TodoWrite").then(|| input.get("todos").and_then(Value::as_array).cloned()).flatten()
+            })
+            .unwrap_or_default();
+        *self.shared.tool_ctx.todos.lock().unwrap() = todos;
     }
 
     /// `/rewind` with code: restore files to how they were before the prompt at `index`.
     pub fn rewind_code(&self, index: usize) -> Result<forge_session::RewindPlan, String> {
-        let uuid = self.state.uuids.get(index).ok_or("no such message")?;
-        self.shared.history.rewind(uuid, false)
+        if index >= self.state.uuids.len() {
+            return Err("no such message".into());
+        }
+        match self.checkpoint_turn(index) {
+            Some(turn) => self.shared.history.rewind(turn, false),
+            None => Ok(forge_session::RewindPlan::default()),
+        }
+    }
+
+    /// The first checkpointed user turn at or after message `index`: a message
+    /// that started no turn of its own (a `!command` note) rewinds the turns after it.
+    fn checkpoint_turn(&self, index: usize) -> Option<&String> {
+        self.state.uuids.iter().skip(index).find(|u| self.shared.history.knows(u))
     }
 
     /// `/rewind` summarize: replace messages `from..to` (prompt boundaries, or
@@ -899,13 +997,14 @@ impl Engine {
         } else {
             t.append_compact_boundary(json!({"trigger": "partial", "preTokens": pre_tokens}));
             for (u, m) in &before {
-                t.rewrite(u, m, false);
+                t.rewrite(u, m, self.state.meta.contains(u));
             }
         }
         let note_uuid = t.append_user(&note, true, json!({}));
         for (u, m) in &after {
-            t.rewrite(u, m, false);
+            t.rewrite(u, m, self.state.meta.contains(u));
         }
+        self.state.meta.insert(note_uuid.clone());
         let (mut uuids, mut messages): (Vec<String>, Vec<Message>) = before.into_iter().unzip();
         uuids.push(note_uuid);
         messages.push(note);
@@ -916,6 +1015,7 @@ impl Engine {
         self.state.messages = messages;
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
         self.shared.tool_ctx.files.forget_all_views();
+        self.settle_after_rewrite();
         Ok(CompactInfo { trigger: "partial".into(), pre_tokens, summary })
     }
 
@@ -952,6 +1052,7 @@ impl Engine {
             structured_output: None,
             prompt_blocked: None,
             fatal: false,
+            tool_calls: 0,
         }
     }
 
@@ -984,6 +1085,14 @@ impl Engine {
     /// A fresh cancellation token for this turn.
     /// `/btw`: answer a side question with the conversation as context, but no
     /// tools, and without adding to the conversation. Earlier side exchanges
+    /// Count a request made beside the conversation (a goal check, a title)
+    /// toward the session's cost, without changing the context size.
+    pub fn record_side_usage(&mut self, model: &str, usage: &Usage) {
+        let context = self.state.context_tokens;
+        self.record_usage(model, usage, &mut TurnAcc::default());
+        self.state.context_tokens = context;
+    }
+
     /// ride along. The request keeps the conversation's system prompt and
     /// tools, so the cached prefix is reused; its cost counts toward the session.
     pub async fn side_question(&mut self, question: &str, earlier: &[(String, String)]) -> Result<String, String> {
@@ -1056,11 +1165,12 @@ impl Engine {
                 self.notice(NoticeLevel::Warning, m.clone());
             }
             let mut context = vec![];
-            if let Some(c) = self.cfg.initial_context.take() {
+            // A resumed conversation already starts with the memory context.
+            if let Some(c) = self.cfg.initial_context.take().filter(|_| self.state.messages.is_empty()) {
                 context.push(c);
             }
             context.extend(o.additional_context);
-            if !context.is_empty() && self.state.messages.is_empty() {
+            if !context.is_empty() {
                 blocks.insert(
                     0,
                     ContentBlock::text(format!("<system-reminder>\n{}\n</system-reminder>", context.join("\n\n"))),
@@ -1262,7 +1372,8 @@ impl Engine {
                         Some("api_error".into()),
                         None,
                     );
-                    r.fatal = e.is_unrecoverable();
+                    // Still too long after compacting: the next turn would fail the same way.
+                    r.fatal = e.is_unrecoverable() || (e.is_prompt_too_long() && compacted_for_length);
                     return r;
                 }
             };
@@ -1330,6 +1441,7 @@ impl Engine {
             }
 
             if !tool_uses.is_empty() {
+                turn.tool_calls += tool_uses.len() as u32;
                 let results = crate::exec::run_tools(&self.shared, &tool_uses, &cancel, self.mode_str()).await;
                 if self.verifying() {
                     self.track_verification(&tool_uses, &results).await;
@@ -1427,6 +1539,19 @@ impl Engine {
                     self.push_user(Message::user_text(format!("Stop hook feedback:\n{feedback}")), true, None, true);
                     continue;
                 }
+            }
+            // `continue: false` from a Stop hook: the run stops here, nothing follows it.
+            if let Some(reason) = o.stop.clone() {
+                self.notice(NoticeLevel::Info, format!("Stopped by hook: {reason}"));
+                turn.stop = Some(reason);
+                return self.finish(
+                    started,
+                    turn,
+                    ResultSubtype::Success,
+                    last_text,
+                    Some("hook_stopped".into()),
+                    None,
+                );
             }
             let reason = match stop_reason {
                 Some(StopReason::EndTurn) | None => "end_turn",
@@ -1574,6 +1699,7 @@ impl Engine {
             structured_output,
             prompt_blocked,
             fatal: false,
+            tool_calls: turn.tool_calls,
         }
     }
 

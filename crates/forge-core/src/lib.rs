@@ -105,6 +105,8 @@ pub struct LaunchOptions {
     pub strict_mcp_config: bool,
     /// Connected MCP servers (from [`connect_mcp`]); their tools join the session.
     pub mcp: Option<Arc<forge_mcp::McpManager>>,
+    /// Background shells to keep (`/reload-*` rebuilds the session around them).
+    pub shells: Option<Arc<forge_tools::shells::ShellManager>>,
     /// Replace the provider (tests, embedding).
     pub provider: Option<Arc<dyn Provider>>,
     /// Where sessions live (default `~/.forge/projects`).
@@ -416,7 +418,23 @@ pub fn build_session(
                 None
             }
         },
-        Resume::Id(id) => Some(LoadedSession::load(&store.find(id)?, None)?),
+        Resume::Id(id) => {
+            let path = store.find(id)?;
+            let loaded = LoadedSession::load(&path, None)?;
+            // Its file and tools belong to its own directory; writing it from here
+            // would split it into two files with the same id.
+            if !opts.fork_session && path.parent() != Some(store.project_dir(&cwd).as_path()) {
+                let home = if loaded.cwd.as_os_str().is_empty() {
+                    "another directory".to_string()
+                } else {
+                    loaded.cwd.display().to_string()
+                };
+                return Err(CoreError::Config(format!(
+                    "session {id} belongs to {home}: resume it from there, or add --fork-session to continue a copy here"
+                )));
+            }
+            Some(loaded)
+        }
         Resume::Loaded(l) => Some((**l).clone()),
     };
     let session_id = match (&resumed, opts.fork_session, &opts.session_id) {
@@ -532,6 +550,9 @@ pub fn build_session(
     tools.retain(|n| !removed.iter().any(|r| Rule::parse(r).map(|rule| rule.covers_tool(n)).unwrap_or(false)));
 
     let mut tool_ctx = ToolContext::new(&cwd);
+    if let Some(shells) = &opts.shells {
+        tool_ctx.shells = shells.clone();
+    }
     tool_ctx.session_id = session_id.clone();
     tool_ctx.spill_dir = Some(spill_dir);
     tool_ctx.transcript_path = transcript.path().map(Path::to_path_buf);
@@ -712,9 +733,16 @@ pub fn build_session(
         prompter,
         sink,
         transcript: transcript.clone(),
-        history: Arc::new(match &opts.store_root {
-            Some(root) => FileHistory::new(root.with_file_name("file-history").join(&session_id)),
-            None => FileHistory::for_session(&session_id),
+        history: Arc::new({
+            let dir_of = |id: &str| match &opts.store_root {
+                Some(root) => root.with_file_name("file-history").join(id),
+                None => forge_session::forge_home().join("file-history").join(id),
+            };
+            // A fork keeps the checkpoints of the prompts it copied.
+            if let Some(r) = resumed.as_ref().filter(|r| r.session_id != session_id) {
+                forge_session::copy_history(&dir_of(&r.session_id), &dir_of(&session_id));
+            }
+            FileHistory::new(dir_of(&session_id))
         }),
         system,
     };
@@ -811,13 +839,24 @@ fn key_source(settings: &LoadedSettings) -> String {
     }
 }
 
+/// Keep the per-person `.forge/settings.local.json` out of git (as worktrees are),
+/// so its rules and paths aren't committed and shared by accident.
+pub fn ignore_local_settings(project: &Path) {
+    if let Some(root) = forge_git::repo_root(project) {
+        let _ = forge_git::exclude(&root, "**/.forge/settings.local.json");
+    }
+}
+
 /// Write an accepted `addRules` / `setMode` / `addDirectories` update to its settings file.
 pub fn persist_permission_update(cwd: &Path, upd: &Value) {
     let dest = upd.get("destination").and_then(Value::as_str).unwrap_or("session");
     let file = match dest {
         "userSettings" => forge_config::forge_home().join("settings.json"),
         "projectSettings" => cwd.join(".forge/settings.json"),
-        "localSettings" => cwd.join(".forge/settings.local.json"),
+        "localSettings" => {
+            ignore_local_settings(cwd);
+            cwd.join(".forge/settings.local.json")
+        }
         _ => return,
     };
     let current: Value =

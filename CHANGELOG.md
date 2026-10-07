@@ -40,6 +40,32 @@
 - Fast mode on models that offer it (`fastMode` setting, `/fast`).
 - Custom commands, skills, output styles and plugins (`--plugin-dir`).
 
+### Fixes from the slash-command review
+- Scheduling: cron times no longer hang or skip a day across daylight-saving
+  changes; the scheduler follows the wall clock after the machine sleeps;
+  `/loop 50m` rounds to hourly and `/loop 20h` to daily; a `-p` run stopped
+  by a limit while tasks are scheduled exits 4; after stdin ends, host
+  permission prompts are refused instead of hanging.
+- Goals: Ctrl-C during the goal check stops the loop; a hook's
+  `continue: false` pauses it; `--max-turns` and `--max-budget-usd` count
+  across the loop, and the check's cost is counted; a first-call credential
+  error clears the goal; pauses are reported as `system/goal` events.
+- Sessions: `/reload-*`, `/branch` and `/cd` keep the goal, scheduled tasks,
+  background shells and the sandbox; rules allowed for the session survive
+  `/clear`; `/cd` brings the new directory's memory files; forks keep their
+  file checkpoints; `/rewind` skips synthetic messages and finds checkpoints
+  for prompts that changed nothing; `--resume` of another directory's session
+  is refused (use `--fork-session`); a torn transcript line no longer makes a
+  session unresumable; SessionStart runs with source `resume`.
+- Settings: a settings file Forge can't parse is never overwritten, and
+  writes are atomic; `/permissions remove` can't drop managed or
+  command-line rules; `/config` reports its notes and applies
+  `verification.enabled` at once; `.forge/settings.local.json` is kept out
+  of git; a custom `anthropic-beta` header joins the beta list; fast mode is
+  priced at its rate.
+- `!command` runs only in the interactive session (on `-p` it is an ordinary
+  prompt), can be interrupted, and keeps at most 8 MB of output.
+
 ### Agent harness
 - Verification loop: changes don't end a turn until checks have run (C12).
 - Recovery:

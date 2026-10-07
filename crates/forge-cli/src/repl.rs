@@ -243,26 +243,31 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, crate::exit::Fa
         }
     };
     let mut next = prompt;
-    loop {
+    'session: loop {
         let text = match next.take() {
             Some(t) => t,
             None => {
                 eprint!("\n> ");
                 let _ = std::io::stderr().flush();
-                // Scheduled tasks (/loop, CronCreate) run while the prompt waits.
-                let wait = driver.next_wait();
-                let far = std::time::Duration::from_secs(365 * 86_400);
-                let mut rx = lines.lock().await;
-                tokio::select! {
-                    l = rx.recv() => match l {
-                        Some(l) => l,
-                        None => break,
-                    },
-                    _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
-                        drop(rx);
-                        eprintln!();
-                        driver.run_due(&mut report).await;
-                        continue;
+                // Scheduled tasks (/loop, CronCreate) run while the prompt waits. Waits are
+                // short and re-checked, so the prompt is drawn again only when a task runs.
+                loop {
+                    let wait = driver.next_wait();
+                    let far = std::time::Duration::from_secs(365 * 86_400);
+                    let mut rx = lines.lock().await;
+                    tokio::select! {
+                        l = rx.recv() => match l {
+                            Some(l) => break l,
+                            None => break 'session,
+                        },
+                        _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
+                            drop(rx);
+                            if driver.task_due() {
+                                eprintln!();
+                                driver.run_due(&mut report).await;
+                                continue 'session;
+                            }
+                        }
                     }
                 }
             }
