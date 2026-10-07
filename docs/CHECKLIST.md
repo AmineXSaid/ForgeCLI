@@ -54,7 +54,7 @@ use what an earlier one left.
 
 Where to look:
 - **The conversation:** `/export` (interactive) prints it as text: prompts,
-  answers and one line per tool call (`⏺ Read(...)`).
+  answers and one line per tool call (`› Read(...)`).
 - **Requests:** `/debug` turns on logging and prints the log's path; each
   request is a line with `"model request"`.
 - **Files:** `git diff`, `git status`, `cat`.
@@ -174,7 +174,7 @@ session open from one check to the next.
     summary. `/export` shows the summary note, then prompt 2.
 26. [26] `/clear`, then `explain @calc.py`.
     - It answers from the file without a Read call (`/export` has no
-      `⏺ Read` line).
+      `› Read` line).
     - A dim `(attached: calc.py)` line follows the prompt; `/rewind` lists the
       prompt as typed.
 
@@ -198,8 +198,8 @@ session open from one check to the next.
 30. [8] `/fast on` with the default model, then `/debug`, then a question.
     - The log (its path is in `/debug`'s answer) has `speed: fast` on the
       `"model request"` line.
-    - `/model haiku`, then `/fast on`: it refuses and names the models that
-      offer fast mode.
+    - `/model haiku`, then `/fast on`: it refuses with
+      `Fast mode isn't available for claude-haiku-4-5.`
 31. [9] `/effort low`, then a question.
     - The `/debug` log shows `output_config` with `"effort": "low"`.
     - `<config>/settings.json` (`forge config paths`) has
@@ -222,7 +222,7 @@ session open from one check to the next.
 36. [15] `/advisor opus`, then
     `refactor calc.py into a class and make sure nothing breaks`.
     - Forge calls the Advisor tool at least once before finishing (`/export`
-      shows `⏺ Advisor`).
+      shows `› Advisor`).
     - `/usage` shows the advisor model's cost.
 
 ### Screens

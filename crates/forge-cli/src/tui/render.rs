@@ -2,6 +2,7 @@
 //! the unfinished answer line, the spinner, a dialog, queued messages, the
 //! input box, the `/` menu and the status line (docs/TUI.md, "Renderer").
 
+use forge_core::glyphs;
 use std::time::{Duration, Instant};
 
 use ratatui::style::Style;
@@ -18,8 +19,8 @@ pub struct LiveView {
     pub cursor: Option<(u16, u16)>,
 }
 
-const SPINNER: [&str; 6] = ["·", "✢", "✳", "✶", "✻", "✽"];
-pub const SPINNER_STEP: Duration = Duration::from_millis(120);
+const SPINNER: [&str; 10] = forge_core::glyphs::SPINNER;
+pub const SPINNER_STEP: Duration = Duration::from_millis(80);
 /// How long a hint stays in the status line.
 pub const HINT_FOR: Duration = Duration::from_secs(2);
 const MENU_ROWS: usize = 8;
@@ -75,9 +76,9 @@ fn status_left(app: &App, now: Instant) -> (String, Style) {
     }
     let t = app.theme;
     match app.status.mode.as_str() {
-        "acceptEdits" => ("⏵⏵ accept edits on (shift+tab to cycle)".into(), t.warning()),
-        "plan" => ("⏸ plan mode on (shift+tab to cycle)".into(), t.success()),
-        "bypassPermissions" => ("⏵⏵ bypass permissions on".into(), t.error()),
+        "acceptEdits" => (format!("{} accept edits on (shift+tab to cycle)", glyphs::MODE_ACCEPT_EDITS), t.warning()),
+        "plan" => (format!("{} plan mode on (shift+tab to cycle)", glyphs::MODE_PLAN), t.success()),
+        "bypassPermissions" => (format!("{} bypass permissions on", glyphs::MODE_BYPASS), t.error()),
         "dontAsk" => ("don't ask mode on (shift+tab to cycle)".into(), t.dim()),
         _ => ("? for shortcuts".into(), t.dim()),
     }
@@ -516,9 +517,9 @@ mod tests {
         typed(&mut a, "ab");
         let v = live_view_at(&a, 50, 20, start + Duration::from_millis(1300));
         let (rows, _) = draw(&v, 50);
-        assert_eq!(rows[0], "⏺ partial answer");
+        assert_eq!(rows[0], "• partial answer");
         assert_eq!(rows[1], "");
-        assert_eq!(rows[2], "✻ Working… (1s · esc to interrupt)", "1.3 s is frame 10, the 5th of 6");
+        assert_eq!(rows[2], "⠦ Working… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
         assert_eq!(rows[3], "  ⏎ next");
         assert_eq!(rows[5], "> ab");
         assert_eq!(v.cursor, Some((4, 5)));
@@ -632,13 +633,13 @@ mod tests {
         let mut a = app(true);
         a.status.mode = "plan".into();
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
-        assert!(rows.last().unwrap().starts_with("  ⏸ plan mode on (shift+tab to cycle)"));
+        assert!(rows.last().unwrap().starts_with("  ‖ plan mode on (shift+tab to cycle)"));
         a.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
         assert!(rows.last().unwrap().starts_with("  Press Ctrl-C again to exit"));
         let later = Instant::now() + HINT_FOR;
         let (rows, _) = draw(&live_view_at(&a, 70, 10, later), 70);
-        assert!(rows.last().unwrap().starts_with("  ⏸ plan mode"));
+        assert!(rows.last().unwrap().starts_with("  ‖ plan mode"));
     }
 
     #[test]

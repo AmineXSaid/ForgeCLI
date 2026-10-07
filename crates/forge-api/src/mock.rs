@@ -98,16 +98,33 @@ pub struct MockProvider {
     queue: Mutex<VecDeque<MockTurn>>,
     responder: Option<Responder>,
     requests: Arc<Mutex<Vec<MessagesRequest>>>,
+    /// What `list_models` answers (`None`: the endpoint doesn't list models).
+    models: Mutex<Option<Vec<String>>>,
 }
 
 impl MockProvider {
     pub fn new(turns: impl IntoIterator<Item = MockTurn>) -> Self {
-        MockProvider { queue: Mutex::new(turns.into_iter().collect()), responder: None, requests: Default::default() }
+        MockProvider {
+            queue: Mutex::new(turns.into_iter().collect()),
+            responder: None,
+            requests: Default::default(),
+            models: Mutex::new(None),
+        }
+    }
+
+    /// Make `list_models` answer with these ids, as an endpoint that lists its models would.
+    pub fn set_models(&self, ids: &[&str]) {
+        *self.models.lock().unwrap() = Some(ids.iter().map(|s| s.to_string()).collect());
     }
 
     /// Answer each request with a function of it (used when the queue is empty).
     pub fn with_responder(f: impl Fn(&MessagesRequest) -> MockTurn + Send + Sync + 'static) -> Self {
-        MockProvider { queue: Mutex::new(VecDeque::new()), responder: Some(Box::new(f)), requests: Default::default() }
+        MockProvider {
+            queue: Mutex::new(VecDeque::new()),
+            responder: Some(Box::new(f)),
+            requests: Default::default(),
+            models: Mutex::new(None),
+        }
     }
 
     pub fn push(&self, turn: MockTurn) {
@@ -191,6 +208,10 @@ pub fn events_for(msg: &ApiMessage) -> Vec<StreamEvent> {
 impl Provider for MockProvider {
     fn name(&self) -> &str {
         "mock"
+    }
+
+    async fn list_models(&self) -> Option<Result<Vec<String>, ApiError>> {
+        self.models.lock().unwrap().clone().map(Ok)
     }
 
     async fn stream(&self, request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {

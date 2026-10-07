@@ -17,6 +17,12 @@
 - UI-only commands: `/theme` (dark, light, none), `/copy [n]` (OSC 52),
   `/keybindings` (also `?`), `/statusline <command>` and `/terminal-setup`.
 - `--no-tui` or `FORGE_TUI=0` keeps the line REPL.
+- Forge's own marks: a braille spinner (`⠋⠙⠹…`), `•` before answers, `›`
+  before tool calls, `↳` before results, `»` and `‖` for the accept-edits and
+  plan modes. `/export` and the line REPL use the same marks.
+- `/model` lists only the models your endpoint reports (an OpenAI-compatible
+  `/models` listing); with the default backend it shows the current model and
+  takes any id. Messages name models by id.
 
 ### Slash commands
 - One command registry for every mode: `/help`, `/status`, `/usage` (`/cost`,

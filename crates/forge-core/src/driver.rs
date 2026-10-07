@@ -124,6 +124,8 @@ pub struct Driver {
     pub(crate) agent_rt: Arc<forge_agents::AgentRuntime>,
     /// Background subtasks: running, or finished and not yet handed back.
     pub subtasks: crate::subtask::Subtasks,
+    /// The models the endpoint lists, once asked (`/model`); empty when it lists none.
+    models: Option<Vec<String>>,
 }
 
 /// Book-keeping for a self-paced loop: did the iteration reschedule or stop?
@@ -196,6 +198,7 @@ impl Driver {
             advisor: s.advisor,
             agent_rt: s.agent_rt,
             subtasks: Default::default(),
+            models: None,
         };
         d.sync_view();
         d
@@ -261,6 +264,36 @@ impl Driver {
 
     pub fn handle(&self) -> EngineHandle {
         self.engine.handle()
+    }
+
+    /// Ask the endpoint which models it offers (once per session). `/model`
+    /// lists only these: the provider's own catalogue, never a built-in one.
+    /// Returns why the listing failed, when it did.
+    pub async fn load_models(&mut self) -> Option<String> {
+        if self.models.is_some() {
+            return None;
+        }
+        let (list, failure) = match self.engine.provider().list_models().await {
+            None => (vec![], None),
+            Some(Ok(ids)) => (ids, None),
+            Some(Err(e)) => (vec![], Some(format!("could not list the endpoint's models: {e}"))),
+        };
+        // A failed listing is asked again next time.
+        if failure.is_none() {
+            self.models = Some(list);
+        }
+        failure
+    }
+
+    /// The models to choose from: the endpoint's list (after [`Driver::load_models`]),
+    /// with the current model first when the list leaves it out.
+    pub fn model_choices(&self) -> Vec<String> {
+        let current = self.engine.handle().model();
+        let mut out = self.models.clone().unwrap_or_default();
+        if !out.contains(&current) {
+            out.insert(0, current);
+        }
+        out
     }
 
     /// The current session, for Ctrl-C handlers and SDK control requests.

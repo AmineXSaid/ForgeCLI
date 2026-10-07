@@ -361,7 +361,7 @@ them all. The built-ins so far:
 | `/mcp [reconnect\|enable\|disable <server\|all>]` | Each MCP server's status. `reconnect` restarts a server from the config it started with; `disable` stops it, hides its tools and prompts, and saves that in `.forge/settings.local.json` (`disabledMcpjsonServers`); `enable` reverses it. Tools a server didn't offer when the session started join after `/reload-plugins`. `--mcp-config` and plugin servers change for the session only |
 | `/tasks [stop <id>]` (`/bashes`) | Background shells, scheduled tasks and subtasks; `stop` ends one |
 | `/subtask <task>` | Hands the task to a background agent that starts from this conversation; you keep going. Its report reaches the model with your next prompt (and is shown when it finishes). In `-p`, Forge waits for it, then runs one more turn with the report |
-| `/model [model]` | Lists the models, or switches (an alias such as `sonnet`, or an id) |
+| `/model [model]` | Shows the current model and the models your endpoint lists (`GET {baseUrl}/models` on an OpenAI-compatible endpoint; the default backend lists none), or switches to the given model id |
 | `/effort [low\|medium\|high\|xhigh\|max\|auto]` | Shows or sets reasoning effort; `max` lasts for the session only |
 | `/fast [on\|off]` | Fast mode, on models that offer it |
 | `/config [key=value ...] [--scope user\|project\|local]` (`/settings`) | Shows the settings Forge can change, or changes them; `key=` restores the default; `/config --help` lists the keys |

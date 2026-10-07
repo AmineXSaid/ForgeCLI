@@ -2,6 +2,7 @@
 //! open, and the lines waiting to go into the terminal's scrollback. Keys and
 //! session events change it; the screen is drawn from it.
 
+use forge_core::glyphs;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -19,6 +20,9 @@ use tokio::sync::oneshot;
 
 use super::editor::Editor;
 use super::text::{Markdown, Theme};
+
+/// Under a tool call or a command: its result.
+const RESULT_MARK: &str = "  ↳  ";
 
 /// A slash command for the `/` menu.
 #[derive(Debug, Clone, PartialEq)]
@@ -356,7 +360,8 @@ impl App {
     fn commit_text_line(&mut self, raw: &str) {
         let t = self.theme;
         let mut line = self.md.line(raw, &t);
-        let marker = if self.first_line { Span::styled("⏺ ", t.accent()) } else { Span::raw("  ") };
+        let marker =
+            if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.accent()) } else { Span::raw("  ") };
         if self.first_line {
             self.gap();
         }
@@ -372,7 +377,8 @@ impl App {
         }
         let t = self.theme;
         let mut line = self.md.clone().line(&self.live, &t);
-        let marker = if self.first_line { Span::styled("⏺ ", t.accent()) } else { Span::raw("  ") };
+        let marker =
+            if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.accent()) } else { Span::raw("  ") };
         line.spans.insert(0, marker);
         Some(line)
     }
@@ -398,7 +404,7 @@ impl App {
         let st = if is_error { self.theme.error() } else { Style::default() };
         self.gap();
         for (i, l) in text.lines().enumerate() {
-            let marker = if i == 0 { "  ⎿  " } else { "     " };
+            let marker = if i == 0 { RESULT_MARK } else { "     " };
             self.pending
                 .push(Line::from(vec![Span::styled(marker, self.theme.dim()), Span::styled(l.to_string(), st)]));
         }
@@ -523,7 +529,7 @@ impl App {
                             self.gap();
                             let t = self.theme;
                             self.pending.push(Line::from(vec![
-                                Span::styled("⏺ ", t.success()),
+                                Span::styled(format!("{} ", glyphs::TOOL), t.success()),
                                 Span::styled(name.clone(), t.bold()),
                                 Span::raw(format!("({})", summarize(name, input))),
                             ]));
@@ -547,7 +553,7 @@ impl App {
                         let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
                         let st = if *is_error == Some(true) { self.theme.error() } else { self.theme.dim() };
                         self.pending.push(Line::from(vec![
-                            Span::styled("  ⎿  ", self.theme.dim()),
+                            Span::styled(RESULT_MARK, self.theme.dim()),
                             Span::styled(format!("{first}{more}"), st),
                         ]));
                         self.activity = "Working".into();
@@ -1610,7 +1616,7 @@ mod tests {
             parent_tool_use_id: None,
         }));
         a.on_event(delta("Here is **the** plan:\n- step"));
-        assert_eq!(texts(&a.pending), ["", "⏺ Here is the plan:"]);
+        assert_eq!(texts(&a.pending), ["", "• Here is the plan:"]);
         assert_eq!(a.live, "- step");
         a.on_event(delta(" one\n```sh\nls\n"));
         a.on_event(UiEvent::Engine(EngineEvent::Stream {
@@ -1642,7 +1648,7 @@ mod tests {
             uuid: "u".into(),
             parent_tool_use_id: None,
         }));
-        assert_eq!(texts(&a.take_pending()), ["", "⏺ Bash(cargo test)"]);
+        assert_eq!(texts(&a.take_pending()), ["", "› Bash(cargo test)"]);
         a.on_event(UiEvent::Engine(EngineEvent::User {
             message: forge_types::Message::user(vec![ContentBlock::tool_result("t1", "ok\n2 passed", false)]),
             uuid: "u2".into(),
@@ -1650,7 +1656,7 @@ mod tests {
             is_meta: false,
             parent_tool_use_id: None,
         }));
-        assert_eq!(texts(&a.take_pending()), ["  ⎿  ok (+1 lines)"]);
+        assert_eq!(texts(&a.take_pending()), ["  ↳  ok (+1 lines)"]);
         let _ = MessageContent::Text(String::new());
     }
 

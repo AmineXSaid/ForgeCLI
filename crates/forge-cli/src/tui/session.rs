@@ -137,11 +137,10 @@ fn ui_command(d: &Driver, text: &str) -> Option<Vec<UiEvent>> {
 /// The session as JSON for the `statusLine` command's stdin.
 pub fn status_json(d: &Driver) -> serde_json::Value {
     let s = status(d);
-    let info = forge_api::models::model_info_or_default(&s.model);
     serde_json::json!({
         "session_id": d.info.session_id,
         "cwd": s.cwd,
-        "model": {"id": s.model, "display_name": info.display_name},
+        "model": {"id": s.model, "display_name": s.model},
         "workspace": {"current_dir": s.cwd},
         "cost": {"total_cost_usd": s.cost},
         "context": {"used_percentage": s.context_pct},
@@ -333,7 +332,7 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
             },
         };
         match msg {
-            Some(ToSession::Picker(text)) => match picker(&driver, &text) {
+            Some(ToSession::Picker(text)) => match ready_picker(&mut driver, &text).await {
                 Some(p) => {
                     let _ = ui.send(UiEvent::Picker(p));
                 }
@@ -344,6 +343,7 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
             Some(ToSession::Input(text)) => {
                 // A command typed without its choice opens a picker instead, and one with a
                 // screen (/diff, /context, /hooks, /agents) opens that.
+                ready_models(&mut driver, &text).await;
                 if let Some(p) = picker(&driver, &text) {
                     let _ = ui.send(UiEvent::Picker(p));
                 } else if let Some(screen) = forge_core::commands::screens::screen(&driver, &text) {
@@ -389,6 +389,22 @@ pub async fn build(
     let mut driver = Driver::new(session, Surface::Tui, Some(mcp));
     driver.set_rebuild(rebuild.0, rebuild.1, rebuild.2);
     Ok((driver, warnings))
+}
+
+/// `/model` and the agents wizard offer the endpoint's own models: ask it first (once).
+async fn ready_models(driver: &mut forge_core::Driver, text: &str) {
+    let t = text.trim_start();
+    if t.starts_with("/model") || t.starts_with("/agents") {
+        if let Some(why) = driver.load_models().await {
+            tracing::debug!(%why, "model list");
+        }
+    }
+}
+
+/// The picker for `text`, with the model list ready.
+async fn ready_picker(driver: &mut forge_core::Driver, text: &str) -> Option<forge_core::commands::picker::Picker> {
+    ready_models(driver, text).await;
+    picker(driver, text)
 }
 
 #[cfg(test)]

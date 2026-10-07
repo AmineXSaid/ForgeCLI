@@ -335,11 +335,16 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Input>();
     let mut control: Option<Arc<ControlContext>> = None;
     if stream_in {
-        let models: Vec<Value> = forge_api::models::MODELS
-            .iter()
-            .map(|m| {
-                json!({"value": m.id, "displayName": m.display_name, "supportsEffort": m.supports_effort(),
-                            "supportedEffortLevels": m.effort_levels})
+        // The endpoint's own models (none built in), with what Forge knows about each.
+        let _ = driver.load_models().await;
+        let models: Vec<Value> = driver
+            .model_choices()
+            .into_iter()
+            .map(|id| {
+                let m = forge_api::models::model_info(&id);
+                json!({"value": id, "displayName": id,
+                       "supportsEffort": m.is_some_and(|m| m.supports_effort()),
+                       "supportedEffortLevels": m.map(|m| m.effort_levels).unwrap_or_default()})
             })
             .collect();
         let ctx = Arc::new(ControlContext {

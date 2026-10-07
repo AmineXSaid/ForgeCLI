@@ -83,7 +83,7 @@ fn tool_call_line(name: &str, input: &Value) -> String {
             }
         })
         .unwrap_or_default();
-    format!("⏺ {name}({arg})")
+    format!("{} {name}({arg})", crate::glyphs::TOOL)
 }
 
 /// The conversation as plain text, as `/export` writes it.
@@ -106,7 +106,7 @@ pub fn render_conversation(messages: &[Message]) -> String {
                     let first = text.lines().next().unwrap_or_default().chars().take(100).collect::<String>();
                     let tag = if *is_error == Some(true) { "error: " } else { "" };
                     let more = if n > 1 { format!(" (+{} lines)", n - 1) } else { String::new() };
-                    let _ = writeln!(out, "  ⎿  {tag}{first}{more}\n");
+                    let _ = writeln!(out, "  {}  {tag}{first}{more}\n", crate::glyphs::RESULT);
                 }
                 (Role::Assistant, ContentBlock::Text { text, .. }) if !text.trim().is_empty() => {
                     let _ = writeln!(out, "{}\n", text.trim());

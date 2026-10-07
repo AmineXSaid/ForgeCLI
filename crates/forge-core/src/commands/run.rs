@@ -82,7 +82,7 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             _ => err("Plugin marketplaces aren't supported. Load a plugin directory with --plugin-dir or the pluginDirs setting."),
         },
         Builtin::Subtask => subtask(d, args),
-        Builtin::Model => super::settings::model(d, args),
+        Builtin::Model => super::settings::model(d, args).await,
         Builtin::Effort => super::settings::effort(d, args),
         Builtin::Fast => super::settings::fast(d, args),
         Builtin::Config => super::settings::config(d, args),

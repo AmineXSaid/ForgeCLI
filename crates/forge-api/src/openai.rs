@@ -293,10 +293,40 @@ impl ChunkTranslator {
     }
 }
 
+/// Model ids from an OpenAI-style `GET /models` answer (`{"data": [{"id": ...}]}`), sorted.
+pub fn model_ids(body: &Value) -> Vec<String> {
+    let mut ids: Vec<String> =
+        body["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
+    }
+
+    async fn list_models(&self) -> Option<Result<Vec<String>, ApiError>> {
+        let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
+        let mut rb = self.http.get(&url).timeout(Duration::from_secs(15));
+        if let Some(k) = &self.config.api_key {
+            rb = rb.bearer_auth(k);
+        }
+        for (k, v) in &self.config.extra_headers {
+            rb = rb.header(k, v);
+        }
+        let r = async {
+            let res = rb.send().await.map_err(crate::messages::network_error)?;
+            if !res.status().is_success() {
+                return Err(http_error(res).await);
+            }
+            let body: Value = res.json().await.map_err(|e| ApiError::Parse(e.to_string()))?;
+            Ok(model_ids(&body))
+        }
+        .await;
+        Some(r)
     }
 
     async fn stream(&self, request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {
@@ -341,6 +371,14 @@ impl Provider for OpenAiProvider {
 mod tests {
     use super::*;
     use crate::MessageAccumulator;
+
+    #[test]
+    fn reads_model_ids_from_a_models_listing() {
+        let body =
+            json!({"object": "list", "data": [{"id": "qwen3-coder"}, {"id": "llama-4"}, {"id": "llama-4"}, {"x": 1}]});
+        assert_eq!(model_ids(&body), ["llama-4", "qwen3-coder"]);
+        assert!(model_ids(&json!({})).is_empty());
+    }
     use forge_types::{SystemBlock, ToolSpec};
 
     #[test]

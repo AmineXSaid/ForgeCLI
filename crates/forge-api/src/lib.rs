@@ -153,6 +153,12 @@ pub trait Provider: Send + Sync {
     async fn count_tokens(&self, _request: &MessagesRequest) -> Option<u64> {
         None
     }
+
+    /// The models this endpoint offers, for `/model`. `None`: it doesn't
+    /// list them (any model id can still be set by hand).
+    async fn list_models(&self) -> Option<Result<Vec<String>, ApiError>> {
+        None
+    }
 }
 
 /// Exponential backoff with an upper bound; honours `retry-after` when given.

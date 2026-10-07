@@ -5,6 +5,7 @@ pub mod commands;
 pub mod debug;
 pub mod doctor;
 pub mod driver;
+pub mod glyphs;
 pub mod goal;
 pub mod import;
 pub mod prompt;

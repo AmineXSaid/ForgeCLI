@@ -66,25 +66,15 @@ pub fn picker(d: &Driver, text: &str) -> Option<Picker> {
     }
 }
 
+/// The endpoint's own models (after `Driver::load_models`), and any other by hand.
 fn models(d: &Driver) -> Picker {
     let current = d.engine.handle().model();
-    let choices = forge_api::models::MODELS
-        .iter()
-        .map(|m| Choice {
-            current: m.id == current,
-            ..choice(
-                m.display_name,
-                format!(
-                    "{} · {} context · ${}/${} per Mtok",
-                    m.id,
-                    super::settings::window_label(m.context_window),
-                    m.input_price,
-                    m.output_price
-                ),
-                Pick::Run(format!("/model {}", m.id)),
-            )
-        })
+    let mut choices: Vec<Choice> = d
+        .model_choices()
+        .into_iter()
+        .map(|m| Choice { current: m == current, ..choice(m.clone(), "", Pick::Run(format!("/model {m}"))) })
         .collect();
+    choices.push(choice("Another model…", "type its id", Pick::Edit("/model ".into())));
     Picker { title: "Select a model".into(), choices }
 }
 

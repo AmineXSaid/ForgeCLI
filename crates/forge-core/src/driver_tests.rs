@@ -79,8 +79,10 @@ fn read_json(path: &Path) -> Value {
 async fn model_effort_and_fast_reach_the_request() {
     let mut t = driver();
     let d = &mut t.d;
+    // No built-in catalogue: an endpoint that lists no models shows only the current one.
     let list = local(d, "/model").await;
-    assert!(list.contains("Current model: Opus 5.5") && list.contains("claude-haiku-4-5"), "{list}");
+    assert_eq!(list, "Current model: claude-opus-5-5\n\nSwitch with /model <model id>.");
+    assert!(!list.contains("haiku") && !list.contains("Opus"), "{list}");
 
     let out = local(d, "/effort low").await;
     assert_eq!(out, "Set effort to low. (This session only.)");
@@ -95,7 +97,7 @@ async fn model_effort_and_fast_reach_the_request() {
 
     // Haiku has neither effort nor fast mode: both stop applying, and both say so.
     let out = local(d, "/model haiku").await;
-    assert!(out.contains("Set model to Haiku 4.5 (claude-haiku-4-5)."), "{out}");
+    assert!(out.contains("Set model to claude-haiku-4-5."), "{out}");
     assert!(out.contains("Effort low isn't available") && out.contains("Fast mode isn't available"), "{out}");
     assert!(d.engine.system()[0].text.contains("Haiku 4.5"), "the environment names the new model");
     assert_eq!(d.info.init.model, "claude-haiku-4-5");
@@ -104,7 +106,7 @@ async fn model_effort_and_fast_reach_the_request() {
     let req = &t.p.requests()[1];
     assert_eq!(req.model, "claude-haiku-4-5");
     assert!(req.speed.is_none() && req.betas.is_empty() && req.output_config.is_none());
-    assert!(fails(d, "/fast on").await.contains("isn't available for Haiku 4.5"));
+    assert!(fails(d, "/fast on").await.contains("isn't available for claude-haiku-4-5"));
     assert!(fails(d, "/effort high").await.contains("doesn't support effort"));
 
     local(d, "/model opus").await;
@@ -112,7 +114,7 @@ async fn model_effort_and_fast_reach_the_request() {
     assert_eq!(local(d, "/effort max").await, "Set effort to max. (max lasts for this session only.)");
     assert!(local(d, "/effort").await.starts_with("Effort: max"));
     local(d, "/effort auto").await;
-    assert!(local(d, "/effort status").await.contains("auto (Opus 5.5's default: medium)"));
+    assert!(local(d, "/effort status").await.contains("auto (claude-opus-5-5's default: medium)"));
     assert_eq!(local(d, "/fast off").await, "Fast mode off. (This session only.)");
 }
 
@@ -868,7 +870,7 @@ async fn advisor_is_consulted_only_while_set() {
     assert!(!tool_names(&t.p.requests()[0]).contains(&"Advisor".to_string()), "hidden until set");
 
     let out = local(&mut t.d, "/advisor sonnet").await;
-    assert_eq!(out, "Advisor set to Sonnet 5.5 (claude-sonnet-5-5). Forge can now ask it for advice; each question is a request to that model. (This session only.)");
+    assert_eq!(out, "Advisor set to claude-sonnet-5-5. Forge can now ask it for advice; each question is a request to that model. (This session only.)");
     let cost_before = t.d.engine.state.total_cost_usd;
     t.p.push(MockTurn::tool("Advisor", serde_json::json!({"question": "Is splitting the lexer safe?"})));
     t.p.push(
@@ -1305,10 +1307,12 @@ async fn pickers_list_choices_that_are_command_text() {
     assert!(picker(&t.d, "/model opus").is_none() && picker(&t.d, "/status").is_none());
     assert!(picker(&t.d, "/resume").is_none(), "nothing to resume: the command says so");
 
+    // The model picker shows the endpoint's own list (none here), the current model, and "another".
     let m = picker(&t.d, "/model").unwrap();
-    assert_eq!(m.choices.len(), forge_api::models::MODELS.len());
+    assert_eq!(m.choices.len(), 2);
     let cur = m.choices.iter().find(|c| c.current).unwrap();
     assert_eq!(cur.pick, Pick::Run(format!("/model {}", t.d.engine.handle().model())));
+    assert_eq!(m.choices[1].pick, Pick::Edit("/model ".into()));
 
     // Rewind: newest first; the second step lists actions for that prompt number.
     let r = picker(&t.d, "/undo").unwrap();
@@ -1782,4 +1786,22 @@ async fn a_second_btw_in_the_same_turn_sees_the_first() {
     let second = serde_json::to_string(&t.p.requests()[2].messages).unwrap();
     assert!(second.contains("first?") && second.contains("First side answer."), "{second}");
     assert_eq!(t.d.side_questions.len(), 2);
+}
+
+#[tokio::test]
+async fn model_lists_only_what_the_endpoint_offers() {
+    let mut t = driver();
+    t.p.set_models(&["local-coder", "local-large"]);
+    let list = local(&mut t.d, "/model").await;
+    assert_eq!(
+        list,
+        "Current model: claude-opus-5-5\n\nModels this endpoint offers:\n* claude-opus-5-5\n  local-coder\n  local-large\n\nSwitch with /model <model id>."
+    );
+    let m = crate::commands::picker::picker(&t.d, "/model").unwrap();
+    let labels: Vec<&str> = m.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["claude-opus-5-5", "local-coder", "local-large", "Another model…"]);
+    assert!(local(&mut t.d, "/model local-coder").await.starts_with("Set model to local-coder."));
+    let m = crate::commands::picker::picker(&t.d, "/model").unwrap();
+    assert_eq!(m.choices.len(), 3, "the current model is in the list now");
+    assert!(m.choices[0].current);
 }

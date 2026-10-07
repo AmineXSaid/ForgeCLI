@@ -266,7 +266,6 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     app.keymap = keymap;
     let warnings: Vec<String> = warnings.into_iter().chain(key_warnings).collect();
     app.pending.push(Line::from(vec![
-        ratatui::text::Span::styled("✻ ", theme.accent()),
         ratatui::text::Span::styled(format!("ForgeCLI {}", forge_core::VERSION), theme.bold()),
         ratatui::text::Span::styled(format!("  {model} · {cwd}"), theme.dim()),
     ]));

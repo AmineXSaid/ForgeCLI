@@ -18,9 +18,6 @@ use crate::driver::Driver;
 
 const USAGE: &str = "Usage: /agents create <name> --description <text> [--prompt <text>] [--tools a,b] [--model <model|inherit>] [--scope project|user]";
 
-/// Model choices the wizard offers (any model id works in the argument form).
-const MODELS: &[&str] = &["inherit", "opus", "sonnet", "haiku"];
-
 fn listing(d: &Driver) -> String {
     let mut s = String::from("Subagents:\n");
     for a in &d.catalog.agents {
@@ -153,6 +150,7 @@ pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
 /// The wizard: name, description, instructions, tools, model, scope.
 fn create_form(d: &Driver) -> Form {
     let tools: Vec<String> = d.engine.tools().names().into_iter().filter(|n| !n.starts_with("mcp__")).collect();
+    let models: Vec<String> = std::iter::once("inherit".to_string()).chain(d.model_choices()).collect();
     Form {
         title: "Create an agent".into(),
         fields: vec![
@@ -160,7 +158,8 @@ fn create_form(d: &Driver) -> Form {
             Field::text("Description: when to use it", ""),
             Field::text("Instructions (empty: from the description)", ""),
             Field::multi("Tools (none picked: all)", tools),
-            Field::choice("Model", MODELS),
+            // "inherit", then the endpoint's own models (any model id works in the argument form).
+            Field::choice("Model", &models.iter().map(String::as_str).collect::<Vec<_>>()),
             Field::choice("Save in", &["project", "user"]),
         ],
         template: "/agents create {0} --description {1} --prompt {2} --tools {3} --model {4} --scope {5}".into(),

@@ -160,7 +160,8 @@ The live region, top to bottom (each part only when present):
 1. `app.live`, the unfinished answer line, rendered with
    `text::Markdown::line` and wrapped. At most 3 rows, the last ones.
 2. The spinner while `busy`:
-   - frames `· ✢ ✳ ✶ ✻ ✽`, advanced every 120 ms from `busy_since`;
+   - braille frames `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` (`forge_core::glyphs::SPINNER`),
+     advanced every 80 ms from `busy_since`;
    - then `{activity}… ({secs}s · esc to interrupt)`, in the accent style.
 3. A dialog: a rounded box (`Block::bordered().border_type(Rounded)`) with:
    - the title (`dialog_text().0`) and body lines;
@@ -179,8 +180,9 @@ The live region, top to bottom (each part only when present):
    then the description (dim). The selected row uses `theme.selected()`.
 7. The status line:
    - left: the hint if one is fresh (under 2 s), else the mode:
-     - `⏵⏵ accept edits on (shift+tab to cycle)`;
-     - `⏸ plan mode on (shift+tab to cycle)`;
+     - `» accept edits on (shift+tab to cycle)`;
+     - `‖ plan mode on (shift+tab to cycle)`;
+     - `! bypass permissions on`;
      - `? for shortcuts` for the default mode;
    - right: `{model} · {ctx}% context · ${cost:.2}`.
 
@@ -265,17 +267,20 @@ with `{"text", "cwd"}`:
 ## Rendering rules (implemented in `app.rs` and `text.rs`)
 
 - **Assistant text** streams into `app.live`. Each complete line moves to
-  scrollback. The first line of a text block gets `⏺ `, the others two
+  scrollback. The first line of a text block gets `• `, the others two
   spaces.
 - **Markdown**, one line at a time:
   - headings and `**bold**` are bold;
   - `` `code` `` uses the code style;
   - fence lines are dim, and fenced lines are indented and coloured as code.
-- **Tool calls**: `⏺ Name(main argument)` (`app::summarize`). Their results:
-  `  ⎿  first line (+N lines)`, red on error.
+- **Tool calls**: `› Name(main argument)` (`app::summarize`). Their results:
+  `  ↳  first line (+N lines)`, red on error.
 - Events of sub-agents (those with a `parent_tool_use_id`) are not shown.
 - **Your prompts**: `> text`, in the user style.
-- **Local command output**: `  ⎿  ` on the first line, then indented.
+- **Local command output**: `  ↳  ` on the first line, then indented.
+- **Glyphs** live in `forge_core::glyphs` (answer `•`, tool `›`, result `↳`,
+  the spinner, the mode marks), so `/export` and the line REPL use the same
+  marks.
 - **Notices**: dim, yellow (warning) or red (error).
 - **System events**: `compact_boundary` shows "Conversation compacted.", and
   `model_fallback` a warning.
@@ -435,7 +440,10 @@ The screens:
    - A `Step` is `ToSession::Picker(text)`, answered the same way.
 
    The pickers:
-   - `/model` with no argument: `forge_api::models::MODELS`;
+   - `/model` with no argument: `driver.model_choices()`, the models the
+     endpoint lists (`Provider::list_models`, asked once per session) with
+     the current one first, plus "Another model…" (puts `/model ` in the
+     input box). Forge shows no built-in catalogue;
    - `/resume`: `forge_session::SessionStore::list(cwd)`;
    - `/rewind`: `driver.engine.prompt_points()`, then a second step for the
      action (both, conversation, code, summarize from, summarize to);
