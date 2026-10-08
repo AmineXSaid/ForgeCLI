@@ -370,8 +370,15 @@ Denied calls are not counted.
 **Truncated output:**
 - A tool input that isn't valid JSON when its block stops (the `max_tokens`
   case) is kept, as `{"_truncated_input": ...}`, instead of failing the
-  stream. The call is answered with an error explaining how to split the
-  work.
+  stream, with its raw text (`_raw_input`, the last 16 KB).
+- The stop reason tells why. Stopped by `max_tokens`: the call is answered
+  with an error explaining how to split the work. Ended by the model: the
+  arguments were written invalid. A small, safe repair (a missing comma
+  between fields, a missing closing quote or bracket, raw control characters
+  in a string, stray closers after the object) is applied and the call runs,
+  with `system/tool_input_repaired`. Otherwise the call is answered with an
+  error saying the JSON was invalid and showing how it ended. Repairs are never
+  applied to a call cut off by `max_tokens`: its content is incomplete.
 - A text reply stopped by `max_tokens` is continued with a meta prompt, up
   to 3 times. The pieces join into one result.
 - After the first `max_tokens` stop, the turn's output cap rises to 64,000

@@ -834,6 +834,47 @@ async fn max_tokens_continues_text_and_answers_cut_off_calls() {
 }
 
 #[tokio::test]
+async fn invalid_tool_json_is_repaired_or_explained() {
+    use forge_types::StopReason;
+    let marked = |raw: &str| json!({ forge_api::TRUNCATED_INPUT: "incomplete JSON (x)", forge_api::RAW_INPUT: raw });
+    let call = |id: &str, raw: &str| ContentBlock::ToolUse {
+        id: id.into(),
+        name: "Write".into(),
+        input: marked(raw),
+        cache_control: None,
+    };
+    let h = Harness::new(vec![]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    let ok = h.cwd().join("ok.txt");
+    let bad = h.cwd().join("bad.txt");
+    // The model ended both calls itself: a missing comma is repaired and the call runs.
+    let fixable = format!(r#"{{"file_path": "{}" "content": "hi"}}"#, ok.display());
+    let broken = format!(r#"{{"file_path": "{}", "content": "a" x}}"#, bad.display());
+    h.provider
+        .push(MockTurn::blocks(vec![call("toolu_fix", &fixable), call("toolu_bad", &broken)], StopReason::ToolUse));
+    h.provider.push(MockTurn::text("done"));
+    let mut e = h.engine();
+    e.submit(prompt("write")).await;
+    assert_eq!(std::fs::read_to_string(&ok).unwrap(), "hi");
+    assert!(!bad.exists());
+    let results = tool_results(&e);
+    let (_, text, is_error) = results.iter().find(|(id, _, _)| id == "toolu_bad").unwrap();
+    assert!(*is_error && text.contains("not valid JSON") && text.contains("\"a\" x}"), "{text}");
+    assert!(!text.contains("smaller steps"), "not blamed on the output limit: {text}");
+    assert!(h.transcript_text().contains(r#""subtype":"tool_input_repaired""#));
+
+    // Cut off by max_tokens: never repaired, even when a fix would parse.
+    let cut = h.cwd().join("cut.txt");
+    let raw = format!(r#"{{"file_path": "{}", "content": "half"#, cut.display());
+    h.provider.push(MockTurn::blocks(vec![call("toolu_cut", &raw)], StopReason::MaxTokens));
+    h.provider.push(MockTurn::text("will write in parts"));
+    e.submit(prompt("write big")).await;
+    assert!(!cut.exists());
+    let (_, text, _) = tool_results(&e).into_iter().find(|(id, _, _)| id == "toolu_cut").unwrap();
+    assert!(text.contains("smaller steps"), "{text}");
+}
+
+#[tokio::test]
 async fn injected_instructions_in_tool_output_are_marked() {
     let h = Harness::new(vec![]);
     std::fs::create_dir_all(h.cwd()).unwrap();

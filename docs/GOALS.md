@@ -92,7 +92,8 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 ### 4. Tool design
 
 - **Done:** precise errors, read-before-write, CRLF-safe Edit, parallel
-  read-only batches, and results returned in call order.
+  read-only batches, results returned in call order, and repair of invalid
+  tool-call JSON (open-weight models' most common invalid call).
 - **To build:**
   - tool descriptions tuned against the eval suite;
   - structured results everywhere;

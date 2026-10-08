@@ -320,7 +320,11 @@
 - Recovery:
   - Edit "did you mean" hints;
   - a loop guard;
-  - continuation after `max_tokens`, with a higher output cap (C13).
+  - continuation after `max_tokens`, with a higher output cap (C13);
+  - tool calls the model ended itself with invalid JSON arguments (a missing
+    comma, quote or brace, raw newlines in a string) are repaired when a small
+    fix is safe (`system/tool_input_repaired`); otherwise the error says the
+    JSON was invalid and shows where, instead of blaming the output limit.
 - Safety:
   - dangerous-command patterns always ask;
   - injected instructions in tool output are marked as data (C14);

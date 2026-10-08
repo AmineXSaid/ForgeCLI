@@ -5,8 +5,15 @@ use serde_json::Value;
 
 use crate::ApiError;
 
-/// The key a tool input gets when the stream cut it off before it was valid JSON.
+/// The key a tool input gets when its arguments weren't valid JSON at the end of its block:
+/// cut off by `max_tokens`, or written invalid. The engine tells the two apart by stop reason.
 pub const TRUNCATED_INPUT: &str = "_truncated_input";
+/// The arguments as received, next to [`TRUNCATED_INPUT`] (up to [`MAX_RAW_INPUT`] bytes).
+pub const RAW_INPUT: &str = "_raw_input";
+/// The key the engine gives a call the model ended itself with invalid, unrepairable arguments.
+pub const INVALID_INPUT: &str = "_invalid_input";
+/// Raw arguments longer than this keep only their end, where the mistake usually is.
+pub const MAX_RAW_INPUT: usize = 16 * 1024;
 
 /// Builds the final message while events arrive; tool inputs arrive as
 /// partial JSON and are parsed when their block stops.
@@ -83,7 +90,14 @@ impl MessageAccumulator {
                         // Cut off mid-input (usually `max_tokens`): keep the call, marked, so the
                         // engine can answer it with an error instead of failing the whole turn.
                         *input = serde_json::from_str(&json).unwrap_or_else(|e| {
-                            serde_json::json!({ TRUNCATED_INPUT: format!("incomplete JSON ({e}), {} bytes", json.len()) })
+                            let mut from = json.len().saturating_sub(MAX_RAW_INPUT);
+                            while !json.is_char_boundary(from) {
+                                from += 1;
+                            }
+                            serde_json::json!({
+                                TRUNCATED_INPUT: format!("incomplete JSON ({e}), {} bytes", json.len()),
+                                RAW_INPUT: &json[from..],
+                            })
                         });
                     } else if input.is_null() {
                         *input = Value::Object(Default::default());
@@ -188,5 +202,6 @@ mod tests {
         acc.push(&serde_json::from_value(json!({"type":"content_block_stop","index":0})).unwrap()).unwrap();
         let ContentBlock::ToolUse { input, .. } = &acc.snapshot().unwrap().content[0] else { panic!() };
         assert!(input[TRUNCATED_INPUT].as_str().unwrap().contains("incomplete JSON"), "{input}");
+        assert_eq!(input[RAW_INPUT], "{\"command\": ", "the raw arguments are kept");
     }
 }

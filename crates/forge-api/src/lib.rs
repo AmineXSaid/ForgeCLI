@@ -12,6 +12,7 @@ pub mod messages;
 pub mod mock;
 pub mod models;
 pub mod openai;
+pub mod repair;
 pub mod sse;
 
 use std::pin::Pin;
@@ -21,11 +22,12 @@ use forge_types::{MessagesRequest, StreamEvent};
 use futures::Stream;
 use tokio_util::sync::CancellationToken;
 
-pub use accumulate::{MessageAccumulator, TRUNCATED_INPUT};
+pub use accumulate::{MessageAccumulator, INVALID_INPUT, MAX_RAW_INPUT, RAW_INPUT, TRUNCATED_INPUT};
 pub use messages::{describe_network_error, MessagesConfig, MessagesProvider};
 pub use mock::{MockProvider, MockTurn};
 pub use models::{resolve_model, ModelInfo, ThinkingStyle};
 pub use openai::{OpenAiConfig, OpenAiProvider};
+pub use repair::repair_json;
 
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ApiError>> + Send>>;
 

@@ -1436,7 +1436,7 @@ impl Engine {
                 StreamOutcome::Interrupted(_) => tracing::debug!("model response interrupted"),
                 StreamOutcome::Failed(e) => tracing::debug!(error = %e, "model request failed"),
             }
-            let msg = match outcome {
+            let mut msg = match outcome {
                 StreamOutcome::Done(m) => m,
                 StreamOutcome::Interrupted(partial) => {
                     let mut marker = INTERRUPT_MARKER;
@@ -1531,6 +1531,7 @@ impl Engine {
                 last_text = Some(text);
             }
             let stop_reason = msg.stop_reason;
+            self.settle_invalid_tool_inputs(&mut msg.content, stop_reason);
             let tool_uses: Vec<(String, String, Value)> =
                 msg.to_message().tool_uses().map(|(a, b, c)| (a.to_string(), b.to_string(), c.clone())).collect();
             self.push_assistant(msg);
@@ -1732,6 +1733,32 @@ impl Engine {
                 Some(StopReason::Other) => "other",
             };
             return self.finish(started, turn, ResultSubtype::Success, last_text, Some(reason.into()), None);
+        }
+    }
+
+    /// Tool calls whose arguments weren't valid JSON (GOALS pillar 4). A call cut off by
+    /// `max_tokens` stays marked as cut off. One the model ended itself was written invalid:
+    /// it is repaired when a small, safe fix makes it an object (a missing comma, quote or
+    /// brace, raw newlines in a string), and otherwise marked invalid, so the model is told
+    /// what was wrong instead of being told to write less.
+    fn settle_invalid_tool_inputs(&self, content: &mut [ContentBlock], stop_reason: Option<StopReason>) {
+        if stop_reason == Some(StopReason::MaxTokens) {
+            return;
+        }
+        for block in content.iter_mut() {
+            let ContentBlock::ToolUse { name, input, .. } = block else { continue };
+            let Some(problem) = input.get(forge_api::TRUNCATED_INPUT).and_then(Value::as_str).map(str::to_string)
+            else {
+                continue;
+            };
+            let raw = input.get(forge_api::RAW_INPUT).and_then(Value::as_str).unwrap_or_default().to_string();
+            if let Some(fixed) = forge_api::repair_json(&raw) {
+                self.system_event("tool_input_repaired", json!({"tool": name, "problem": problem}));
+                *input = Value::Object(fixed);
+            } else {
+                let problem = problem.replacen("incomplete JSON", "invalid JSON", 1);
+                *input = json!({ forge_api::INVALID_INPUT: problem, forge_api::RAW_INPUT: raw });
+            }
         }
     }
 

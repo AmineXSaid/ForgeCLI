@@ -125,6 +125,22 @@ async fn run_one(
             ),
         );
     }
+    if let Some(problem) = input.get(forge_api::INVALID_INPUT).and_then(Value::as_str) {
+        let raw = input.get(forge_api::RAW_INPUT).and_then(Value::as_str).unwrap_or_default();
+        let tail: String = {
+            let chars: Vec<char> = raw.chars().collect();
+            chars[chars.len().saturating_sub(160)..].iter().collect()
+        };
+        return CallResult::plain(
+            id,
+            ToolOutput::error(format!(
+                "<tool_use_error>The arguments of this call were not valid JSON ({problem}), so it did not run. \
+                 They ended with:\n{tail}\nSend the call again as valid JSON: quote every key and string, put a \
+                 comma between fields, and escape quotes, backslashes and newlines inside strings. For a long \
+                 script, Write it to a file first and then run the file.</tool_use_error>"
+            )),
+        );
+    }
     let Some(tool) = shared.tools.get(name) else {
         return CallResult::plain(id, ToolOutput::error(format!("Error: No such tool available: {name}")));
     };
