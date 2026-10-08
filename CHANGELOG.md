@@ -88,6 +88,18 @@
   wrapped lines continue under their text instead of at column 0.
 - The header is one line (`ForgeCLI 0.1.0 · model · ~/project`); the cost reads
   `cost ?` from the start for a model without a known price.
+- Two-column output (`/status`, `/doctor`, the shortcuts) wraps under its value
+  column; a long path breaks in place instead of leaving a bare label.
+  `/status` and `/doctor` show paths under the home directory as `~/…`.
+- `/doctor` colours only its failed rows; an unknown model is one `note` row
+  (guessed limits, no price) instead of two failures.
+- The context meter follows each request of a turn, and reads `<1%` rather
+  than `0%` once something is in the window. `/context` puts the measured size
+  on its own line; screens with nothing to choose scroll without a pointer.
+- A streaming answer is set apart from the prompt from its first words. Without
+  colour (`NO_COLOR`), inline code keeps its backticks.
+- HTTP errors read `API Error: HTTP 401 (…) from <url>: …` (no doubled "API
+  error").
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom
   holds the spinner, dialogs, queued messages, a multiline input box, the

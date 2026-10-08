@@ -58,6 +58,16 @@ pub fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// A path as people write it: `~/proj` under the home directory, else unchanged.
+pub fn short_path(p: &Path) -> String {
+    let full = p.display().to_string();
+    let home = home().display().to_string();
+    match full.strip_prefix(&home) {
+        Some(rest) if home.len() > 1 && (rest.is_empty() || rest.starts_with(['/', '\\'])) => format!("~{rest}"),
+        _ => full,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scope {
     User,

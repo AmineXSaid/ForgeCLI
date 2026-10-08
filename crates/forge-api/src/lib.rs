@@ -31,7 +31,7 @@ pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ApiError>> 
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    #[error("API error {status} ({kind}){}: {message}", from_url(url))]
+    #[error("HTTP {status} ({kind}){}: {message}", from_url(url))]
     Http {
         status: u16,
         kind: String,

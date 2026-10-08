@@ -503,11 +503,7 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
 
 /// A directory as people write it: `~/proj` under the home directory.
 pub fn short_path(p: &str) -> String {
-    let home = forge_config::home().display().to_string();
-    match p.strip_prefix(&home) {
-        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with(['/', '\\'])) => format!("~{rest}"),
-        _ => p.to_string(),
-    }
+    forge_config::short_path(std::path::Path::new(p))
 }
 
 fn io_fail(e: std::io::Error) -> Fail {

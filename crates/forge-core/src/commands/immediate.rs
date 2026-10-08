@@ -127,9 +127,9 @@ fn status(v: &SessionView) -> String {
     let _ = writeln!(s, "ForgeCLI {}", crate::VERSION);
     let title = d.transcript.title();
     let _ = writeln!(s, "Session:        {}{}", d.session_id, title.map(|t| format!(" ({t})")).unwrap_or_default());
-    let _ = writeln!(s, "Directory:      {}", d.cwd.display());
+    let _ = writeln!(s, "Directory:      {}", forge_config::short_path(&d.cwd));
     let dirs: Vec<String> =
-        d.tool_ctx.working_dirs.read().unwrap().iter().skip(1).map(|p| p.display().to_string()).collect();
+        d.tool_ctx.working_dirs.read().unwrap().iter().skip(1).map(|p| forge_config::short_path(p)).collect();
     if !dirs.is_empty() {
         let _ = writeln!(s, "Also allowed:   {}", dirs.join(", "));
     }
@@ -333,17 +333,18 @@ impl ContextData {
 
     pub fn headline(&self) -> String {
         let total = self.total();
-        let mut s = format!(
+        format!(
             "Context: about {} of {} tokens ({}) for {}",
             thousands(total),
             thousands(self.window),
             pct(total, self.window),
             self.model
-        );
-        if self.measured > 0 {
-            let _ = write!(s, "; the last request measured {}", thousands(self.measured));
-        }
-        s
+        )
+    }
+
+    /// What the endpoint counted for the last request, when it said.
+    pub fn measured_line(&self) -> Option<String> {
+        (self.measured > 0).then(|| format!("The last request measured {} tokens.", thousands(self.measured)))
     }
 }
 
@@ -409,6 +410,10 @@ fn context(v: &SessionView, args: &str) -> Exec {
     let c = context_data(v);
     let window = c.window;
     let mut s = c.headline();
+    if let Some(m) = c.measured_line() {
+        s.push('\n');
+        s.push_str(&m);
+    }
     s.push_str("\n\n");
     let mut row = |name: &str, n: u64| {
         let _ = writeln!(s, "  {name:<20} {:>10}  {:>6}", thousands(n), pct(n, window));

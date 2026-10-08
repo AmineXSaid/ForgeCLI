@@ -226,6 +226,9 @@ fn context(v: &SessionView) -> Screen {
     }
     rows.push(Row::blank());
     rows.push(Row::text(c.headline(), Tone::Bold));
+    if let Some(m) = c.measured_line() {
+        rows.push(Row::text(m, Tone::Dim));
+    }
     for (i, ((name, _), n)) in context_parts().iter().zip(parts).enumerate() {
         if i == 4 && n == 0 {
             continue;

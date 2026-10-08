@@ -280,7 +280,12 @@ pub fn inline(s: &str, t: &Theme) -> Vec<Span<'static>> {
                 if !plain.is_empty() {
                     spans.push(Span::raw(std::mem::take(&mut plain)));
                 }
-                spans.push(Span::styled(body[..end].to_string(), style));
+                // Without colour, code keeps its backticks: nothing else sets it apart.
+                let text = match marker {
+                    "`" if !t.color => format!("`{}`", &body[..end]),
+                    _ => body[..end].to_string(),
+                };
+                spans.push(Span::styled(text, style));
                 rest = &body[end + marker.len()..];
             }
             _ => {
@@ -304,7 +309,7 @@ pub fn width(s: &str) -> usize {
 /// The indent a wrapped row continues at: the line's leading spaces plus a
 /// leading marker (`• `, `› `, `↳ `, `- `, `* `, `> `, `12. `), so lists,
 /// answers and tool results wrap under their text, not at column 0.
-fn hanging_indent(cells: &[(char, Style)]) -> usize {
+fn hanging_indent(cells: &[(char, Style)], max: usize) -> usize {
     let text: String = cells.iter().map(|(c, _)| *c).collect();
     let lead = text.len() - text.trim_start_matches(' ').len();
     let rest = &text[lead..];
@@ -319,8 +324,33 @@ fn hanging_indent(cells: &[(char, Style)]) -> usize {
         .unwrap_or(0);
     // Spaces after the marker belong to it too (`↳  text`).
     let after = rest.chars().skip(marker).take_while(|c| *c == ' ').count();
-    width(&text.chars().take(lead + marker + if marker > 0 { after } else { 0 }).collect::<String>())
+    let start = lead + marker + if marker > 0 { after } else { 0 };
+    // Columns (`Ctrl+R      Search earlier prompts`, `Model:   x`, `ok   git   found`):
+    // continue under the last one that starts near the left, so a wrapped
+    // value doesn't look like a key. Columns are set apart by 2+ spaces.
+    let chars: Vec<char> = text.chars().collect();
+    let limit = start + COLUMN_LIMIT.min(max.saturating_sub(start));
+    let mut column = None;
+    let mut i = start;
+    while i < chars.len() && i < limit {
+        if chars[i] != ' ' {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < chars.len() && chars[j] == ' ' {
+            j += 1;
+        }
+        if j - i >= 2 && j < chars.len() && j <= limit {
+            column = Some(j);
+        }
+        i = j;
+    }
+    width(&chars[..column.unwrap_or(start).min(chars.len())].iter().collect::<String>())
 }
+
+/// How far from the text's start a value column may begin and still be used as the indent.
+const COLUMN_LIMIT: usize = 28;
 
 pub fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
     let width = (width as usize).max(1);
@@ -334,7 +364,7 @@ pub fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
             continue;
         }
         // Continuation rows start under the text; never more than half the width.
-        let indent = hanging_indent(&cells).min(width / 2);
+        let indent = hanging_indent(&cells, width / 2).min(width / 2);
         let mut start = 0;
         let mut first = true;
         while start < cells.len() {
@@ -356,7 +386,10 @@ pub fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
             }
             let mut next = end;
             if end < cells.len() {
-                if let Some(sp) = last_space.filter(|sp| *sp > start) {
+                // On the first row, a break inside the padding before the value
+                // column would leave a bare label: break the long value instead.
+                let label = |sp: usize| first && width_of(&cells[start..sp]) <= indent;
+                if let Some(sp) = last_space.filter(|sp| *sp > start && !label(*sp)) {
                     // Break after the space; the space ends this row.
                     end = sp;
                     next = sp + 1;
@@ -376,6 +409,10 @@ pub fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
         }
     }
     out
+}
+
+fn width_of(cells: &[(char, Style)]) -> usize {
+    cells.iter().map(|(c, _)| c.width().unwrap_or(0)).sum()
 }
 
 fn spans_of(cells: &[(char, Style)]) -> Line<'static> {
@@ -409,6 +446,9 @@ mod tests {
         assert_eq!(plain(&l), "Run cargo test and check it");
         assert_eq!(l.spans[1].style, T.code());
         assert_eq!(l.spans[3].style, T.bold());
+        let mono = Theme { color: false, ..T };
+        let l = Markdown::default().line("Run `cargo test` and **check** it", &mono).unwrap();
+        assert_eq!(plain(&l), "Run `cargo test` and check it", "without colour, code keeps its backticks");
         assert!(md.line("```rust", &T).is_none(), "fence markers aren't drawn");
         assert_eq!(plain(&md.line("# not a heading", &T).unwrap()), "  # not a heading");
         md.line("```", &T);
@@ -445,6 +485,17 @@ mod tests {
         assert_eq!(rows, ["  ↳  alpha", "     beta", "     gamma"]);
         let rows: Vec<String> = wrap(vec![Line::from("12. aaaa bbbb")], 9).iter().map(plain).collect();
         assert_eq!(rows, ["12. aaaa", "    bbbb"]);
+        // Two columns: the description wraps under itself.
+        let rows: Vec<String> =
+            wrap(vec![Line::from("Ctrl+C    clear the input or exit")], 24).iter().map(plain).collect();
+        assert_eq!(rows, ["Ctrl+C    clear the", "          input or exit"]);
+        // A doctor row continues under its detail; a long path breaks in place.
+        let rows: Vec<String> =
+            wrap(vec![Line::from("FAIL session      no key was sent anywhere")], 40).iter().map(plain).collect();
+        assert_eq!(rows, ["FAIL session      no key was sent", "                  anywhere"]);
+        let rows: Vec<String> =
+            wrap(vec![Line::from("Directory:   /tmp/a-long/path/to/proj")], 30).iter().map(plain).collect();
+        assert_eq!(rows, ["Directory:   /tmp/a-long/path/", "             to/proj"]);
         // Styles survive the wrap.
         let l = Line::from(vec![Span::raw("aa "), Span::styled("bbbb", T.bold())]);
         let w = wrap(vec![l], 4);

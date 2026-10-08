@@ -202,28 +202,51 @@ fn doctor(d: &Driver) -> Exec {
 /// `forge doctor`'s checks plus this session's: warnings, MCP servers, model pricing.
 pub(super) fn doctor_checks(d: &Driver) -> Vec<crate::doctor::Check> {
     let mut checks = crate::doctor::checks(&d.info.cwd);
+    // The model row below says what an unknown model means; don't say it twice.
+    let warnings: Vec<&String> =
+        d.info.warnings.iter().filter(|w| !w.starts_with(crate::UNKNOWN_MODEL_PREFIX)).collect();
     checks.push(crate::doctor::Check {
-        ok: d.info.warnings.is_empty(),
+        note: false,
+        ok: warnings.is_empty(),
         name: "session",
-        detail: if d.info.warnings.is_empty() { "no warnings".into() } else { d.info.warnings.join("; ") },
+        detail: if warnings.is_empty() {
+            "no warnings".into()
+        } else {
+            warnings.iter().map(|w| w.as_str()).collect::<Vec<_>>().join("; ")
+        },
     });
     if let Some(m) = &d.catalog.mcp {
         let failed = m.warnings();
         checks.push(crate::doctor::Check {
+            note: false,
             ok: failed.is_empty(),
             name: "mcp",
             detail: if failed.is_empty() { format!("{} server(s) fine", m.servers.len()) } else { failed.join("; ") },
         });
     }
     let model = d.handle().model();
-    let priced = forge_api::models::model_info(&model).is_some();
+    let priced = d.engine.has_price(&model);
+    let guessed = forge_api::models::limits_source(&model) == forge_api::models::LimitsSource::Guessed;
+    let mut unknown = vec![];
+    if guessed {
+        let info = forge_api::models::model_info_or_default(&model);
+        unknown.push(format!(
+            "limits guessed ({} context, {} output; set \"modelLimits\")",
+            thousands(info.context_window),
+            thousands(u64::from(info.max_output))
+        ));
+    }
+    if !priced {
+        unknown.push("no price, so costs show as unknown (set \"modelPricing\")".into());
+    }
     checks.push(crate::doctor::Check {
-        ok: priced,
+        note: !unknown.is_empty(),
+        ok: true,
         name: "model",
-        detail: if priced {
-            format!("{model} (known pricing)")
+        detail: if unknown.is_empty() {
+            format!("{model} (known limits and pricing)")
         } else {
-            format!("{model}: unknown pricing; costs show as unknown and --max-budget-usd refuses it")
+            format!("{model}: {}", unknown.join("; "))
         },
     });
     checks

@@ -412,12 +412,15 @@ fn apply_model_limits(s: &LoadedSettings) -> Vec<String> {
     warnings
 }
 
+/// How [`unknown_model_notice`] starts, so `/doctor` can tell it apart.
+pub const UNKNOWN_MODEL_PREFIX: &str = "Forge doesn't know the model ";
+
 /// Shown once when the session's model is in no table and nothing set its limits.
 pub fn unknown_model_notice(model: &str, priced: bool) -> String {
     let info = forge_api::models::model_info_or_default(model);
     let price = if priced { "" } else { ", and has no price for it" };
     format!(
-        "Forge doesn't know the model {model}: it assumes a {}-token context window and {} output tokens{price}. \
+        "{UNKNOWN_MODEL_PREFIX}{model}: it assumes a {}-token context window and {} output tokens{price}. \
          Set its limits with \"modelLimits\" in settings{}, or FORGE_CONTEXT_WINDOW for every unknown model.",
         group(info.context_window),
         group(u64::from(info.max_output)),

@@ -576,7 +576,11 @@ async fn run_doctor(probe: bool) -> Result<i32, Fail> {
         checks.push(forge_core::doctor::probe(&cwd).await);
     }
     for c in &checks {
-        let mark = if c.ok { term::paint("32", "ok  ") } else { term::red("FAIL") };
+        let mark = match (c.ok, c.note) {
+            (false, _) => term::red("FAIL"),
+            (true, true) => term::paint("33", "note"),
+            (true, false) => term::paint("32", "ok  "),
+        };
         outln!("{mark} {:<12} {}", c.name, c.detail);
     }
     Ok(if checks.iter().all(|c| c.ok) { exit::OK } else { exit::CONFIG })

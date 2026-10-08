@@ -67,6 +67,8 @@ pub fn status(d: &Driver) -> StatusView {
         cost: d.engine.state.total_cost_usd,
         cost_unknown,
         context_pct,
+        context_used: used > 0,
+        window,
     }
 }
 

@@ -43,6 +43,10 @@ pub struct StatusView {
     pub cost_unknown: bool,
     /// Context used, in percent of the model's window.
     pub context_pct: Option<u8>,
+    /// Some context is in use (so 0% means "under 1%").
+    pub context_used: bool,
+    /// The model's context window, so the meter can follow a turn's requests.
+    pub window: u64,
 }
 
 /// From the session task to the UI.
@@ -245,6 +249,10 @@ pub struct App {
     first_line: bool,
     /// Text streamed for the current message (its complete copy isn't written again).
     streamed: bool,
+    /// The usage the current request reported so far (its start, then its deltas).
+    request_usage: forge_types::Usage,
+    /// The last line already written to the terminal is blank.
+    printed_blank: bool,
     pub dialog: Option<Dialog>,
     commands: Vec<CommandInfo>,
     files: Vec<String>,
@@ -275,6 +283,18 @@ pub struct App {
 
 /// Most diff lines shown under an edit; the rest are counted.
 const DIFF_LINES: usize = 16;
+
+/// A line with nothing but spaces.
+fn blank(l: &Line) -> bool {
+    l.spans.iter().all(|s| s.content.trim().is_empty())
+}
+
+/// A checklist row's status word (`ok`, `note`, `FAIL`) and its colour.
+fn check_mark(t: &Theme, line: &str) -> Option<(&'static str, Style)> {
+    [("ok  ", t.success()), ("note", t.warning()), ("FAIL", t.error())]
+        .into_iter()
+        .find(|(m, _)| line.strip_prefix(m).is_some_and(|r| r.starts_with(' ')))
+}
 
 /// How a tool result is shown: a one-line summary that says what happened
 /// (`Read 120 lines`, `Updated src/a.rs: 2 added, 1 removed`), then, for edits,
@@ -488,6 +508,8 @@ impl App {
             md: Markdown::default(),
             first_line: true,
             streamed: false,
+            request_usage: Default::default(),
+            printed_blank: false,
             dialog: None,
             commands: vec![],
             files: vec![],
@@ -513,13 +535,19 @@ impl App {
 
     /// A blank line between items, unless one is already there.
     fn gap(&mut self) {
-        let blank = |l: &Line| l.spans.iter().all(|s| s.content.trim().is_empty());
-        if self.pending.last().is_none_or(|l| !blank(l)) {
+        let last_blank = match self.pending.last() {
+            Some(l) => blank(l),
+            None => self.printed_blank,
+        };
+        if !last_blank {
             self.pending.push(Line::default());
         }
     }
 
     pub fn take_pending(&mut self) -> Vec<Line<'static>> {
+        if let Some(l) = self.pending.last() {
+            self.printed_blank = blank(l);
+        }
         std::mem::take(&mut self.pending)
     }
 
@@ -582,12 +610,19 @@ impl App {
     }
 
     fn reply_lines(&mut self, text: &str, is_error: bool) {
-        let st = if is_error { self.theme.error() } else { Style::default() };
+        // A checklist (`/doctor`): only its failed rows are errors.
+        let checklist = text.lines().next().is_some_and(|l| check_mark(&self.theme, l).is_some());
+        let st = if is_error && !checklist { self.theme.error() } else { Style::default() };
         self.gap();
         for (i, l) in text.lines().enumerate() {
-            let marker = if i == 0 { RESULT_MARK } else { "     " };
-            self.pending
-                .push(Line::from(vec![Span::styled(marker, self.theme.dim()), Span::styled(l.to_string(), st)]));
+            let marker = Span::styled(if i == 0 { RESULT_MARK } else { "     " }, self.theme.dim());
+            let line = match check_mark(&self.theme, l) {
+                Some((mark, ms)) => {
+                    Line::from(vec![marker, Span::styled(mark, ms), Span::raw(l[mark.len()..].to_string())])
+                }
+                None => Line::from(vec![marker, Span::styled(l.to_string(), st)]),
+            };
+            self.pending.push(line);
         }
     }
 
@@ -665,6 +700,15 @@ impl App {
         text
     }
 
+    /// The context meter follows each request of a turn, not only its end.
+    fn meter(&mut self) {
+        let used = self.request_usage.context_tokens();
+        if used > 0 && self.status.window > 0 {
+            self.status.context_pct = Some((used * 100 / self.status.window).min(100) as u8);
+            self.status.context_used = true;
+        }
+    }
+
     fn on_engine(&mut self, e: EngineEvent) {
         match e {
             // Sub-agents' own messages stay in their transcripts.
@@ -672,7 +716,22 @@ impl App {
             | EngineEvent::Assistant { parent_tool_use_id: Some(_), .. }
             | EngineEvent::User { parent_tool_use_id: Some(_), .. } => {}
             EngineEvent::Stream { event, .. } => match event {
-                StreamEvent::MessageStart { .. } => self.streamed = false,
+                StreamEvent::MessageStart { message } => {
+                    self.streamed = false;
+                    self.request_usage = message.usage;
+                    self.meter();
+                }
+                StreamEvent::MessageDelta { usage, .. } => {
+                    // Deltas carry the output so far, and the input when the endpoint sends it late.
+                    let u = &mut self.request_usage;
+                    if usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens > 0 {
+                        u.input_tokens = usage.input_tokens;
+                        u.cache_read_input_tokens = usage.cache_read_input_tokens;
+                        u.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+                    }
+                    u.output_tokens = u.output_tokens.max(usage.output_tokens);
+                    self.meter();
+                }
                 StreamEvent::ContentBlockStart { content_block: ContentBlock::Text { .. }, .. } => {
                     self.flush_live();
                     self.first_line = true;
@@ -682,6 +741,10 @@ impl App {
                 StreamEvent::ContentBlockDelta { delta: Delta::TextDelta { text }, .. } => {
                     self.streamed = true;
                     self.live.push_str(&text);
+                    // The answer's blank line goes above its first words, before its first line ends.
+                    if self.first_line && !self.live.trim().is_empty() {
+                        self.gap();
+                    }
                     while let Some(i) = self.live.find('\n') {
                         let line: String = self.live[..i].to_string();
                         self.live.drain(..=i);
@@ -1158,6 +1221,25 @@ impl App {
             return vec![];
         };
         let last = screen.rows.len().saturating_sub(1);
+        // Nothing to choose: the keys scroll the page, and no row is highlighted.
+        if screen.rows.iter().all(|r| r.action.is_none()) {
+            let bottom = screen.rows.len().saturating_sub(page);
+            *top = match key.code {
+                KeyCode::Up => top.saturating_sub(1),
+                KeyCode::Down => (*top + 1).min(bottom),
+                KeyCode::PageUp => top.saturating_sub(page),
+                KeyCode::PageDown | KeyCode::Char(' ') => (*top + page).min(bottom),
+                KeyCode::Home => 0,
+                KeyCode::End => bottom,
+                KeyCode::Esc | KeyCode::Left | KeyCode::Char('q') | KeyCode::Enter => {
+                    self.dialog = None;
+                    return vec![];
+                }
+                _ => *top,
+            };
+            *cursor = *top;
+            return vec![];
+        }
         match key.code {
             KeyCode::Up => *cursor = cursor.saturating_sub(1),
             KeyCode::Down => *cursor = (*cursor + 1).min(last),
@@ -1302,7 +1384,8 @@ impl App {
         let mut hits: Vec<(bool, usize, &str)> = self
             .files
             .iter()
-            .filter(|f| f.to_lowercase().contains(&q))
+            // What is typed already (a completed directory) isn't offered again.
+            .filter(|f| f.to_lowercase().contains(&q) && f.to_lowercase() != q)
             .map(|f| {
                 let name = f.trim_end_matches('/').rsplit('/').next().unwrap_or(f).to_lowercase();
                 (!name.starts_with(&q), f.len(), f.as_str())
@@ -1314,8 +1397,11 @@ impl App {
 
     fn complete_file(&mut self, path: &str) {
         let (_, word) = self.editor.word_before_cursor();
-        // A path with spaces is quoted, the way `@` mentions read it.
-        let mention = if path.contains(char::is_whitespace) { format!("@\"{path}\" ") } else { format!("@{path} ") };
+        // A path with spaces is quoted, the way `@` mentions read it. A directory
+        // gets no trailing space, so Tab can go on into it.
+        let end = if path.ends_with('/') { "" } else { " " };
+        let mention =
+            if path.contains(char::is_whitespace) { format!("@\"{path}\"{end}") } else { format!("@{path}{end}") };
         self.editor.replace_back(word.chars().count(), &mention);
     }
 
@@ -1696,6 +1782,21 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_checklist_paints_only_its_failed_rows() {
+        let mut a = App::new(Theme { color: true, light: false, accent: None }, vec![]);
+        a.on_event(UiEvent::Reply { text: "ok   git          found\nFAIL shell        none".into(), is_error: true });
+        let lines = a.take_pending();
+        let (ok, fail) = (&lines[1], &lines[2]);
+        assert_eq!(ok.spans[1].style, a.theme.success());
+        assert_ne!(ok.spans[2].style, a.theme.error(), "the ok row's detail is plain");
+        assert_eq!(fail.spans[1].content, "FAIL");
+        assert_eq!(fail.spans[1].style, a.theme.error());
+        // Any other failed reply is an error throughout.
+        a.on_event(UiEvent::Reply { text: "Unknown command: /x".into(), is_error: true });
+        assert_eq!(a.take_pending().last().unwrap().spans[1].style, a.theme.error());
+    }
+
+    #[test]
     fn key_bindings_apply_and_show_in_the_key_table() {
         let mut a = app();
         let (k, w) = crate::tui::keys::Keymap::parse(r#"{"ctrl+s": "submit", "ctrl+r": "none"}"#);
@@ -1805,6 +1906,55 @@ mod tests {
         typed(&mut a, "/compact");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "not immediate: queued");
         assert_eq!(a.queued.len(), 1);
+    }
+
+    #[test]
+    fn the_context_meter_follows_each_request() {
+        let mut a = app();
+        a.status.window = 1000;
+        let ev = |event| UiEvent::Engine(EngineEvent::Stream { event, parent_tool_use_id: None });
+        let start = ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: Role::Assistant,
+            model: "x".into(),
+            content: vec![],
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage { input_tokens: 100, ..Default::default() },
+        };
+        a.on_event(ev(StreamEvent::MessageStart { message: start }));
+        assert_eq!(a.status.context_pct, Some(10));
+        let body: forge_types::MessageDeltaBody = serde_json::from_str("{}").unwrap();
+        a.on_event(ev(StreamEvent::MessageDelta {
+            delta: body,
+            usage: Usage { output_tokens: 50, ..Default::default() },
+        }));
+        assert_eq!(a.status.context_pct, Some(15), "output counts too");
+        // An endpoint that reports usage only at the end (OpenAI-compatible).
+        let mut b = app();
+        b.status.window = 1000;
+        let body: forge_types::MessageDeltaBody = serde_json::from_str("{}").unwrap();
+        b.on_event(ev(StreamEvent::MessageDelta {
+            delta: body,
+            usage: Usage { input_tokens: 300, output_tokens: 20, ..Default::default() },
+        }));
+        assert_eq!(b.status.context_pct, Some(32));
+    }
+
+    #[test]
+    fn a_streaming_answer_is_set_apart_from_the_prompt_at_once() {
+        let mut a = app();
+        a.echo_prompt("hi");
+        a.take_pending();
+        a.on_event(UiEvent::Engine(EngineEvent::Stream {
+            event: StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlock::text("") },
+            parent_tool_use_id: None,
+        }));
+        a.on_event(delta("I will walk"));
+        assert_eq!(texts(&a.take_pending()), [""], "the blank line goes out with the first words");
+        a.on_event(delta(" through it.\n"));
+        assert_eq!(texts(&a.take_pending()), ["• I will walk through it."], "and isn't added twice");
     }
 
     #[test]
@@ -2135,11 +2285,14 @@ mod tests {
         a.on_key(key(KeyCode::Tab));
         assert_eq!(a.editor.text(), "explain @docs/main-notes.md and @Cargo.toml ");
         typed(&mut a, "@src");
+        a.on_key(key(KeyCode::Tab));
+        assert!(a.editor.text().ends_with("@src/"), "a directory keeps the cursor in its path: {}", a.editor.text());
+        assert_eq!(a.file_menu(), ["src/main.rs"], "and its files are offered next");
         a.on_key(key(KeyCode::Esc));
         assert!(a.file_menu().is_empty(), "Esc hides it");
         assert_eq!(
             a.on_key(key(KeyCode::Enter)),
-            vec![Action::Send("explain @docs/main-notes.md and @Cargo.toml @src".into())]
+            vec![Action::Send("explain @docs/main-notes.md and @Cargo.toml @src/".into())]
         );
         a.busy = false;
         typed(&mut a, "@my");

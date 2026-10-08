@@ -5,6 +5,8 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Check {
     pub ok: bool,
+    /// Works, with something worth knowing (an unknown model's guessed limits).
+    pub note: bool,
     pub name: &'static str,
     pub detail: String,
 }
@@ -18,9 +20,10 @@ fn shell_check(settings: &forge_config::LoadedSettings) -> Check {
     use forge_platform::shell::{Found, ShellKind};
     let shell = match crate::session_shell(settings) {
         Ok(s) => s,
-        Err(m) => return Check { ok: false, name: "shell", detail: m.to_string() },
+        Err(m) => return Check { note: false, ok: false, name: "shell", detail: m.to_string() },
     };
     let failed = |why: String| Check {
+        note: false,
         ok: false,
         name: "shell",
         detail: format!(
@@ -63,7 +66,7 @@ fn shell_check(settings: &forge_config::LoadedSettings) -> Check {
              (https://git-scm.com/downloads/win) to use bash",
         );
     }
-    Check { ok: true, name: "shell", detail }
+    Check { note: false, ok: true, name: "shell", detail }
 }
 
 /// The provider, its URL and its key, from the same resolver sessions use.
@@ -182,9 +185,9 @@ pub fn endpoint_checks(settings: &forge_config::LoadedSettings, env: &dyn Fn(&st
         }
     };
     vec![
-        Check { ok: true, name: "provider", detail: provider },
-        Check { ok: url_ok, name: "endpoint", detail: url_detail },
-        Check { ok: cred_ok, name: "credentials", detail: cred },
+        Check { note: false, ok: true, name: "provider", detail: provider },
+        Check { note: false, ok: url_ok, name: "endpoint", detail: url_detail },
+        Check { note: false, ok: cred_ok, name: "credentials", detail: cred },
     ]
 }
 
@@ -194,23 +197,28 @@ pub async fn probe(cwd: &Path) -> Check {
     let settings = forge_config::load_settings(&forge_config::SettingsOptions::new(cwd));
     let provider = match crate::make_provider(&settings, &[]) {
         Ok(p) => p,
-        Err(e) => return Check { ok: false, name: "probe", detail: format!("not run: {e}") },
+        Err(e) => return Check { note: false, ok: false, name: "probe", detail: format!("not run: {e}") },
     };
     let url = provider.base_url().unwrap_or_else(|| "the endpoint".into());
     let listed = tokio::time::timeout(std::time::Duration::from_secs(11), provider.probe()).await;
     match listed {
-        Err(_) => Check { ok: false, name: "probe", detail: format!("no answer from {url} within 10 seconds") },
+        Err(_) => {
+            Check { note: false, ok: false, name: "probe", detail: format!("no answer from {url} within 10 seconds") }
+        }
         Ok(None) => Check {
+            note: false,
             ok: true,
             name: "probe",
             detail: "skipped: this provider has no model list to ask; the key is checked by the first request".into(),
         },
         Ok(Some(Ok(n))) => Check {
+            note: false,
             ok: true,
             name: "probe",
             detail: format!("{url} answered the model list: the key works ({n} models listed)"),
         },
         Ok(Some(Err(forge_api::ApiError::Http { status: 404, .. }))) => Check {
+            note: false,
             ok: true,
             name: "probe",
             detail: format!(
@@ -218,7 +226,7 @@ pub async fn probe(cwd: &Path) -> Check {
                  wasn't checked"
             ),
         },
-        Ok(Some(Err(e))) => Check { ok: false, name: "probe", detail: e.describe() },
+        Ok(Some(Err(e))) => Check { note: false, ok: false, name: "probe", detail: e.describe() },
     }
 }
 
@@ -227,6 +235,7 @@ pub fn checks(cwd: &Path) -> Vec<Check> {
     let mut out = vec![];
     let settings = forge_config::load_settings(&forge_config::SettingsOptions::new(cwd));
     out.push(Check {
+        note: false,
         ok: settings.errors.is_empty(),
         name: "settings",
         detail: format!(
@@ -242,12 +251,14 @@ pub fn checks(cwd: &Path) -> Vec<Check> {
     out.extend(endpoint_checks(&settings, &|k| std::env::var(k).ok()));
     let git = which("git");
     out.push(Check {
+        note: false,
         ok: git,
         name: "git",
         detail: if git { "found".into() } else { "not found: git status and worktrees are unavailable".into() },
     });
     out.push(shell_check(&settings));
     out.push(Check {
+        note: false,
         ok: true,
         name: "sandbox",
         detail: match forge_tools::sandbox::backend() {
@@ -255,16 +266,33 @@ pub fn checks(cwd: &Path) -> Vec<Check> {
             None => format!("unavailable: {}", forge_tools::sandbox::unavailable_reason()),
         },
     });
-    out.push(Check { ok: true, name: "config dir", detail: forge_config::config_dir().display().to_string() });
-    out.push(Check { ok: true, name: "state dir", detail: forge_config::state_dir().display().to_string() });
+    out.push(Check {
+        note: false,
+        ok: true,
+        name: "config dir",
+        detail: forge_config::short_path(&forge_config::config_dir()),
+    });
+    out.push(Check {
+        note: false,
+        ok: true,
+        name: "state dir",
+        detail: forge_config::short_path(&forge_config::state_dir()),
+    });
     out
 }
 
-/// Plain-text rendering: `ok  name  detail` / `FAIL name  detail`.
+impl Check {
+    /// `ok`, `note` or `FAIL`, padded to one width.
+    pub fn mark(&self) -> &'static str {
+        match (self.ok, self.note) {
+            (false, _) => "FAIL",
+            (true, true) => "note",
+            (true, false) => "ok  ",
+        }
+    }
+}
+
+/// Plain-text rendering: `ok   name  detail` / `FAIL name  detail`.
 pub fn render(checks: &[Check]) -> String {
-    checks
-        .iter()
-        .map(|c| format!("{} {:<12} {}", if c.ok { "ok  " } else { "FAIL" }, c.name, c.detail))
-        .collect::<Vec<_>>()
-        .join("\n")
+    checks.iter().map(|c| format!("{} {:<12} {}", c.mark(), c.name, c.detail)).collect::<Vec<_>>().join("\n")
 }

@@ -285,7 +285,7 @@ async fn rename_export_context_and_diff() {
     assert!(text.contains("(Parser drops last token)"), "the title is in the header");
 
     let ctx = local(d, "/context").await;
-    for want in ["System prompt", "Built-in tools", "Messages", "Free", "the last request measured"] {
+    for want in ["System prompt", "Built-in tools", "Messages", "Free", "The last request measured"] {
         assert!(ctx.contains(want), "{ctx}");
     }
     assert!(local(d, "/context all").await.contains("Tools:\n  "));
@@ -1818,6 +1818,22 @@ async fn unknown_models_show_unknown_cost_and_a_guessed_window() {
     let u = local(&mut t.d, "/usage").await;
     assert!(u.contains("Total cost:     unknown: Forge has no price for test-unpriced-model"), "{u}");
     assert!(u.contains("(price unknown)") && u.contains("a guess: Forge doesn't know"), "{u}");
+}
+
+#[tokio::test]
+async fn doctor_names_an_unknown_model_once_as_a_note() {
+    let mut t = driver();
+    local(&mut t.d, "/model test-unpriced-model").await;
+    t.d.info.warnings.push(crate::unknown_model_notice("test-unpriced-model", false));
+    t.d.info.warnings.push("hooks: bad matcher".into());
+    let out = run(&mut t.d, "/doctor").await.result.unwrap_or_default();
+    let row =
+        |name: &str| out.lines().find(|l| l[5..].starts_with(&format!("{name} "))).unwrap_or_default().to_string();
+    assert_eq!(row("session"), "FAIL session      hooks: bad matcher", "{out}");
+    let model = row("model");
+    assert!(model.starts_with("note model        test-unpriced-model: limits guessed (200,000 context"), "{model}");
+    assert!(model.contains("no price, so costs show as unknown"), "{model}");
+    assert_eq!(out.matches("doesn't know").count(), 0, "{out}");
 }
 
 #[test]

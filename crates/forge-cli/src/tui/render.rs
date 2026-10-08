@@ -93,8 +93,11 @@ fn status_right(app: &App) -> String {
     if !s.model.is_empty() {
         parts.push(s.model.clone());
     }
-    if let Some(p) = s.context_pct {
-        parts.push(format!("{p}% context"));
+    match s.context_pct {
+        // Some context in use, under 1%: "0%" would read as empty.
+        Some(0) if s.context_used => parts.push("<1% context".into()),
+        Some(p) => parts.push(format!("{p}% context")),
+        None => {}
     }
     parts.push(match (s.cost_unknown, s.cost > 0.0) {
         (false, _) => format!("${:.2}", s.cost),
@@ -162,6 +165,9 @@ fn viewer(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
     let inner = w.saturating_sub(6).max(1);
     // The highlighted row stays in view even if the terminal shrank.
     let top = top.min(cursor).max((cursor + 1).saturating_sub(page));
+    // A screen with nothing to choose scrolls; it highlights no row.
+    let pick = screen.rows.iter().any(|r| r.action.is_some());
+    let cursor = if pick { cursor } else { usize::MAX };
     let mut body = vec![];
     for (i, row) in screen.rows.iter().enumerate().skip(top).take(page) {
         let mark = if i == cursor { "❯ " } else { "  " };
@@ -317,7 +323,7 @@ fn file_menu(app: &App, w: usize) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(i, f)| {
             let st = if first + i == sel { t.selected() } else { Style::default() };
-            Line::from(Span::styled(fit(&format!("  + {f}"), w), st))
+            Line::from(Span::styled(fit(&format!("  {f}"), w), st))
         })
         .collect()
 }
@@ -486,8 +492,14 @@ mod tests {
             cost: 0.0,
             cost_unknown: true,
             context_pct: Some(3),
+            context_used: true,
+            window: 200_000,
         }));
         assert_eq!(status_right(&a), "local · 3% context · cost ?");
+        a.status.context_pct = Some(0);
+        assert_eq!(status_right(&a), "local · <1% context · cost ?");
+        a.status.context_used = false;
+        assert_eq!(status_right(&a), "local · 0% context · cost ?");
     }
 
     fn app(color: bool) -> App {
@@ -499,6 +511,8 @@ mod tests {
             cost: 0.25,
             cost_unknown: false,
             context_pct: Some(12),
+            context_used: true,
+            window: 200_000,
         }));
         a.on_event(UiEvent::Commands(vec![
             CommandInfo { name: "clear".into(), args: "[name]".into(), description: "Start a new conversation".into() },
@@ -718,7 +732,7 @@ mod tests {
         a.on_event(UiEvent::Files(vec!["src/".into(), "src/main.rs".into(), "README.md".into()]));
         typed(&mut a, "look at @ma");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
-        assert_eq!(rows[3], "  + src/main.rs");
+        assert_eq!(rows[3], "  src/main.rs");
     }
 
     fn diff_screen() -> forge_core::commands::screens::Screen {
@@ -828,13 +842,33 @@ mod tests {
         let mut a = app(false);
         a.on_event(UiEvent::Screen(screen.clone()));
         let (rows, _) = draw(&live_view(&a, 40, 20), 40);
-        assert_eq!(rows[2], format!("│ {:<36} │", "❯ S G ·"));
+        assert_eq!(rows[2], format!("│ {:<36} │", "  S G ·"), "nothing to choose: no pointer");
         let mut a = app(true);
         a.on_event(UiEvent::Screen(screen));
         let (rows, buf) = draw(&live_view(&a, 40, 20), 40);
-        assert_eq!(rows[2], format!("│ {:<36} │", "❯ ⛁ ⛁ ⛶"));
+        assert_eq!(rows[2], format!("│ {:<36} │", "  ⛁ ⛁ ⛶"));
         let glyphs: Vec<u16> = (0..40).filter(|&x| buf[(x, 2)].symbol() == "⛁").collect();
         assert_eq!(buf[(glyphs[1], 2)].fg, ratatui::style::Color::Green, "messages");
+    }
+
+    #[test]
+    fn a_screen_with_nothing_to_choose_scrolls_by_page() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use forge_core::commands::screens::{Row, Screen, Tone};
+        let rows = (1..=30).map(|i| Row::text(format!("line {i}"), Tone::Plain)).collect();
+        let mut a = app(false);
+        a.on_event(UiEvent::Screen(Screen { title: "Info".into(), rows }));
+        let first = draw(&live_view(&a, 40, 14), 40).0;
+        let page = a.viewer_page.get();
+        assert!(first[2].contains("  line 1 ") && !first.concat().contains('❯'), "{first:#?}");
+        let key = |a: &mut App, c| a.on_term_event(crossterm::event::Event::Key(KeyEvent::new(c, KeyModifiers::NONE)));
+        key(&mut a, KeyCode::Down);
+        assert!(draw(&live_view(&a, 40, 14), 40).0[2].contains("line 2 "), "one row down");
+        key(&mut a, KeyCode::End);
+        let last = draw(&live_view(&a, 40, 14), 40).0;
+        assert!(last[2].contains(&format!("line {} ", 31 - page)), "{last:#?}");
+        key(&mut a, KeyCode::Esc);
+        assert!(a.dialog.is_none());
     }
 
     #[test]
