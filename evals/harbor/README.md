@@ -79,3 +79,20 @@ claim a small one.
 `forge_agent.py` was written against Harbor 0.24.0 and checked against its
 installed-agent API with a fake environment. It has not been run against real
 task containers here.
+
+## Behind a company proxy
+
+If `harbor run` fails with `CERTIFICATE_VERIFY_FAILED`, your network
+re-signs HTTPS traffic with its own certificate authority, and Harbor's Python
+doesn't trust it. Point Python at the system's trust store, which should
+already hold that authority:
+
+```bash
+export SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt      # Fedora/CentOS/RHEL
+# export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt  # Debian/Ubuntu
+```
+
+If that file doesn't have it either, ask IT for the root certificate and add
+it to the system trust store (`/etc/pki/ca-trust/source/anchors/` then
+`sudo update-ca-trust`, or `/usr/local/share/ca-certificates/` then
+`sudo update-ca-certificates`).

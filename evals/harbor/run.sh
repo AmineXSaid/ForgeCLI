@@ -41,7 +41,7 @@ echo "job: $job"
 PYTHONPATH="$repo/evals/harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   -d "${FORGE_HARBOR_DATASET:-terminal-bench@2.0}" \
   -m "${FORGE_HARBOR_MODEL:-openai/deep-thinking}" \
-  --agent-import-path forge_agent:ForgeCLI \
+  --agent forge_agent:ForgeCLI \
   --n-concurrent "${FORGE_HARBOR_JOBS:-2}" \
   --job-name "$job" \
   "${scope[@]}" "$@"
