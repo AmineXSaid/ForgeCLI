@@ -15,6 +15,11 @@ Configuration comes from the environment of the `harbor` process:
 - `FORGE_HARBOR_TIME_LIMIT`: seconds for `--max-time`. By default the task's own
   agent time limit is used (read from the running trial), minus a margin, so
   the model knows its deadline and is warned before it.
+- `FORGE_HARBOR_HOSTS`: extra host names (comma-separated) to resolve on this
+  machine and pin in each container's `/etc/hosts`. The endpoint's host
+  (`FORGE_OPENAI_BASE_URL` or `FORGE_BASE_URL`) is always pinned, so an
+  endpoint behind company DNS works from task containers;
+  `FORGE_HARBOR_HOSTS=none` turns pinning off.
 - `FORGE_HARBOR_CA_BUNDLE`: a PEM file of extra certificate authorities to
   trust inside the task container (behind a TLS-inspecting proxy). This
   changes the task environment: scores are for local comparisons only.
@@ -29,7 +34,9 @@ import inspect
 import json
 import os
 import shlex
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
@@ -68,6 +75,34 @@ mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
 """ % REMOTE_CA
 
 
+def pinned_hosts() -> list[tuple[str, str]]:
+    """(ip, name) for the endpoint's host and FORGE_HARBOR_HOSTS, as this machine resolves them.
+
+    Task containers use Docker's DNS, which doesn't know names that only company DNS
+    resolves; pinning them in /etc/hosts lets forge reach such an endpoint.
+    """
+    extra = os.environ.get("FORGE_HARBOR_HOSTS", "")
+    if extra.strip().lower() == "none":
+        return []
+    names = [n.strip() for n in extra.split(",") if n.strip()]
+    for var in ("FORGE_OPENAI_BASE_URL", "FORGE_BASE_URL"):
+        host = urlparse(os.environ.get(var, "")).hostname
+        if host:
+            names.append(host)
+    out = []
+    for name in dict.fromkeys(names):
+        try:
+            socket.inet_aton(name)
+            continue  # already an address
+        except OSError:
+            pass
+        try:
+            out.append((socket.gethostbyname(name), name))
+        except OSError:
+            pass  # unresolvable here too: leave it to the container's DNS
+    return out
+
+
 def task_time_limit() -> float | None:
     """The agent time limit of the trial running this agent, in seconds.
 
@@ -100,6 +135,10 @@ class ForgeCLI(BaseInstalledAgent):
             raise RuntimeError(f"{binary} not found: run evals/harbor/build-static.sh first")
         await environment.upload_file(binary, REMOTE_BIN)
         await self.exec_as_root(environment, command=f"chmod 755 {REMOTE_BIN} && {REMOTE_BIN} --version")
+        hosts = pinned_hosts()
+        if hosts:
+            lines = "\n".join(f"{ip} {name}" for ip, name in hosts)
+            await self.exec_as_root(environment, command=f"printf '%s\\n' {shlex.quote(lines)} >> /etc/hosts")
         ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():

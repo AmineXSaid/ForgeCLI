@@ -55,6 +55,7 @@ evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
 | `FORGE_STATIC_BIN` | `target-static/release/forge` | Binary copied into containers |
 | `FORGE_HARBOR_TIME_LIMIT` | the task's own limit | Seconds for `forge --max-time` |
 | `FORGE_HARBOR_CA_BUNDLE` | | Extra CAs to trust inside containers (see below) |
+| `FORGE_HARBOR_HOSTS` | the endpoint's host | Names to resolve here and pin in each container's `/etc/hosts` (`none` turns it off) |
 
 Each task has an agent time limit, and Harbor stops the agent when it's up.
 The agent passes that limit, less 30 seconds, as `--max-time`. The model then
@@ -76,7 +77,10 @@ claim a small one.
 
 ## Things to check first
 
-- **Network.** The containers must reach your endpoint. A gateway reachable only
+- **Network.** The containers must reach your endpoint. Docker's DNS doesn't know
+  names that only company DNS resolves, so the agent pins the endpoint's host,
+  as this machine resolves it, in each container's `/etc/hosts`. The address
+  itself must still be reachable from Docker. A gateway reachable only
   on a company network or VPN may not be reachable from Docker.
 - **Rate limits and cost.** The full run is 89 × 5 trials. Run the subset first.
 - **Keys.** The key is copied into every task container. Use a key made for
