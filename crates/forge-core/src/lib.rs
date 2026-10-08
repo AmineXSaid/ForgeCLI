@@ -415,14 +415,13 @@ fn apply_model_limits(s: &LoadedSettings) -> Vec<String> {
 /// Shown once when the session's model is in no table and nothing set its limits.
 pub fn unknown_model_notice(model: &str, priced: bool) -> String {
     let info = forge_api::models::model_info_or_default(model);
-    let price = if priced { "" } else { ", and can't price it, so costs show as unknown" };
+    let price = if priced { "" } else { ", and has no price for it" };
     format!(
         "Forge doesn't know the model {model}: it assumes a {}-token context window and {} output tokens{price}. \
-         Set its real limits in settings, for example {{\"modelLimits\": {{\"{model}\": {{\"contextWindow\": \
-         131072, \"maxOutputTokens\": 8192}}}}}}{}, or FORGE_CONTEXT_WINDOW for every unknown model.",
+         Set its limits with \"modelLimits\" in settings{}, or FORGE_CONTEXT_WINDOW for every unknown model.",
         group(info.context_window),
         group(u64::from(info.max_output)),
-        if priced { "" } else { " (and its prices under \"modelPricing\")" }
+        if priced { "" } else { " (and its price with \"modelPricing\")" }
     )
 }
 

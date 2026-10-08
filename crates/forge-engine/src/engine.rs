@@ -584,6 +584,11 @@ impl Engine {
         self.shared.permissions.read().unwrap().mode.as_str()
     }
 
+    /// Forge knows `model`'s price (built in, or `modelPricing`).
+    pub fn has_price(&self, model: &str) -> bool {
+        self.pricing_for(model).is_some()
+    }
+
     fn pricing_for(&self, model: &str) -> Option<Pricing> {
         self.cfg.pricing.get(model).copied().or_else(|| model_info(model).map(Pricing::from_model))
     }

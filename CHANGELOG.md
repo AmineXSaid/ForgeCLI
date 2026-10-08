@@ -80,6 +80,14 @@
   and say what is missing. Replies are kept short for short messages.
 
 ### Terminal UI
+- Results say what happened: `Read 40 lines`, `Updated calc.py: 1 addition,
+  1 removal` with the changed lines in red and green, the first lines of a
+  command's output. Permission dialogs for edits show the change; the spinner
+  says `Waiting for your answer` while one is open.
+- Tables are drawn with aligned columns; code blocks without their fences;
+  wrapped lines continue under their text instead of at column 0.
+- The header is one line (`ForgeCLI 0.1.0 · model · ~/project`); the cost reads
+  `cost ?` from the start for a model without a known price.
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom
   holds the spinner, dialogs, queued messages, a multiline input box, the

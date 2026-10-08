@@ -226,6 +226,8 @@ const FILE_MATCHES: usize = 50;
 const DOUBLE_PRESS: Duration = Duration::from_millis(800);
 
 pub struct App {
+    /// Tool calls of this turn by id (name, input), so each result is shown the way its tool needs.
+    calls: std::collections::HashMap<String, (String, Value)>,
     pub theme: Theme,
     pub editor: Editor,
     pub status: StatusView,
@@ -271,6 +273,126 @@ pub struct App {
     held: Option<Dialog>,
 }
 
+/// Most diff lines shown under an edit; the rest are counted.
+const DIFF_LINES: usize = 16;
+
+/// How a tool result is shown: a one-line summary that says what happened
+/// (`Read 120 lines`, `Updated src/a.rs: 2 added, 1 removed`), then, for edits,
+/// the changed lines with their numbers; for commands, the first lines of output.
+pub fn result_lines(
+    t: &Theme,
+    tool: &str,
+    text: &str,
+    is_error: bool,
+    structured: Option<&Value>,
+) -> Vec<Line<'static>> {
+    let mark = || Span::styled(RESULT_MARK, t.dim());
+    let one = |s: String, st: Style| vec![Line::from(vec![mark(), Span::styled(s, st)])];
+    let first_line = |text: &str| -> String {
+        text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(160).collect()
+    };
+    if is_error {
+        let more = text.lines().filter(|l| !l.trim().is_empty()).count().saturating_sub(1);
+        let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
+        return one(format!("{}{more}", first_line(text)), t.error());
+    }
+    match (tool, structured) {
+        ("Read", Some(v)) if v["type"] == "text" => {
+            let f = &v["file"];
+            let n = f["numLines"].as_u64().unwrap_or(0);
+            let total = f["totalLines"].as_u64().unwrap_or(n);
+            let msg = if text.contains("is unchanged since you last read") {
+                "Unchanged since the last read".to_string()
+            } else if n < total {
+                format!("Read {n} of {total} lines")
+            } else {
+                format!("Read {n} {}", if n == 1 { "line" } else { "lines" })
+            };
+            one(msg, t.dim())
+        }
+        ("Read", Some(v)) => one(format!("Read {}", v["type"].as_str().unwrap_or("file")), t.dim()),
+        ("Edit" | "MultiEdit" | "Write", Some(v)) if v.get("structuredPatch").is_some() => {
+            let hunks = v["structuredPatch"].as_array().cloned().unwrap_or_default();
+            let path = v["filePath"].as_str().unwrap_or("");
+            let name =
+                std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let lines: Vec<String> = hunks
+                .iter()
+                .flat_map(|h| h["lines"].as_array().cloned().unwrap_or_default())
+                .filter_map(|l| l.as_str().map(str::to_string))
+                .collect();
+            let added = lines.iter().filter(|l| l.starts_with('+')).count();
+            let removed = lines.iter().filter(|l| l.starts_with('-')).count();
+            if tool == "Write" && hunks.is_empty() {
+                let n = v["content"].as_str().map(|c| c.lines().count()).unwrap_or(0);
+                return one(format!("Wrote {n} lines to {name}"), t.dim());
+            }
+            let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
+            let mut out =
+                one(format!("Updated {name}: {}, {}", plural(added, "addition"), plural(removed, "removal")), t.dim());
+            let mut shown = 0;
+            for h in &hunks {
+                let (mut old, mut new) = (h["oldStart"].as_u64().unwrap_or(1), h["newStart"].as_u64().unwrap_or(1));
+                for l in h["lines"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    let (sign, body) = l.split_at(l.chars().next().map(char::len_utf8).unwrap_or(0));
+                    let (num, style) = match sign {
+                        "-" => {
+                            old += 1;
+                            (old - 1, t.removed())
+                        }
+                        "+" => {
+                            new += 1;
+                            (new - 1, t.added())
+                        }
+                        _ => {
+                            old += 1;
+                            new += 1;
+                            (new - 1, t.dim())
+                        }
+                    };
+                    if sign != "-" && sign != "+" {
+                        continue; // context lines: only the changes are shown
+                    }
+                    if shown == DIFF_LINES {
+                        break;
+                    }
+                    shown += 1;
+                    out.push(Line::from(vec![
+                        Span::raw("     "),
+                        Span::styled(format!("{num:>4} {sign} {body}"), style),
+                    ]));
+                }
+            }
+            let changed = added + removed;
+            if changed > shown {
+                out.push(Line::from(Span::styled(format!("     … {} more changed lines", changed - shown), t.dim())));
+            }
+            out
+        }
+        ("Bash", _) => {
+            let body: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            if body.is_empty() {
+                return one("(no output)".into(), t.dim());
+            }
+            let mut out = vec![];
+            for (i, l) in body.iter().take(3).enumerate() {
+                let lead = if i == 0 { mark() } else { Span::raw("     ") };
+                let l: String = l.chars().take(200).collect();
+                out.push(Line::from(vec![lead, Span::styled(l, t.dim())]));
+            }
+            if body.len() > 3 {
+                out.push(Line::from(Span::styled(format!("     … +{} lines", body.len() - 3), t.dim())));
+            }
+            out
+        }
+        _ => {
+            let more = text.lines().count().saturating_sub(1);
+            let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
+            one(format!("{}{more}", first_line(text)), t.dim())
+        }
+    }
+}
+
 /// The main argument of a tool call, for one line.
 pub fn summarize(tool: &str, input: &Value) -> String {
     let key = match tool {
@@ -297,13 +419,54 @@ pub fn summarize(tool: &str, input: &Value) -> String {
     }
 }
 
+/// The label of the "always" option for a permission suggestion.
 fn rule_text(s: &Suggestion) -> Option<String> {
     match s {
-        Suggestion::AddRules { rules, .. } => {
-            Some(rules.iter().map(|r| r.to_rule_string()).collect::<Vec<_>>().join(", "))
+        Suggestion::AddRules { rules, .. } => Some(format!(
+            "Yes, and don't ask again for {}",
+            rules.iter().map(|r| r.to_rule_string()).collect::<Vec<_>>().join(", ")
+        )),
+        Suggestion::AddDirectories { directories, .. } => {
+            Some(format!("Yes, and allow {} for this session", directories.join(", ")))
         }
-        Suggestion::AddDirectories { directories, .. } => Some(directories.join(", ")),
-        Suggestion::SetMode { mode, .. } => Some(format!("{mode} mode")),
+        Suggestion::SetMode { mode, .. } if mode == "acceptEdits" => {
+            Some("Yes, and allow all edits this session (shift+tab)".into())
+        }
+        Suggestion::SetMode { mode, .. } => Some(format!("Yes, and switch to {mode} mode")),
+    }
+}
+
+/// What an edit would change, for the permission dialog: removed lines as
+/// `  - `, added lines as `  + ` (the dialog colours them), a few of each.
+fn edit_preview(tool: &str, input: &Value) -> Vec<String> {
+    const MAX: usize = 8;
+    let side = |text: &str, sign: char| -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut out: Vec<String> = lines.iter().take(MAX).map(|l| format!("  {sign} {l}")).collect();
+        if lines.len() > MAX {
+            out.push(format!("    … {} more lines", lines.len() - MAX));
+        }
+        out
+    };
+    match tool {
+        "Edit" => {
+            let mut v = side(input["old_string"].as_str().unwrap_or(""), '-');
+            v.extend(side(input["new_string"].as_str().unwrap_or(""), '+'));
+            v
+        }
+        "MultiEdit" => input["edits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(3)
+            .flat_map(|e| {
+                let mut v = side(e["old_string"].as_str().unwrap_or(""), '-');
+                v.extend(side(e["new_string"].as_str().unwrap_or(""), '+'));
+                v
+            })
+            .collect(),
+        "Write" => side(input["content"].as_str().unwrap_or(""), '+'),
+        _ => vec![],
     }
 }
 
@@ -312,6 +475,7 @@ const MODES: [PermissionMode; 3] = [PermissionMode::Default, PermissionMode::Acc
 impl App {
     pub fn new(theme: Theme, history: Vec<String>) -> Self {
         App {
+            calls: Default::default(),
             theme,
             editor: Editor::with_history(history),
             status: StatusView::default(),
@@ -361,15 +525,26 @@ impl App {
 
     fn commit_text_line(&mut self, raw: &str) {
         let t = self.theme;
-        let mut line = self.md.line(raw, &t);
-        let marker =
-            if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.accent()) } else { Span::raw("  ") };
-        if self.first_line {
-            self.gap();
+        let lines = self.md.push(raw, &t);
+        self.commit_answer_lines(lines);
+    }
+
+    /// Answer lines into scrollback: the first of a block gets the answer mark.
+    fn commit_answer_lines(&mut self, lines: Vec<Line<'static>>) {
+        let t = self.theme;
+        for mut line in lines {
+            let marker = if self.first_line {
+                Span::styled(format!("{} ", glyphs::ANSWER), t.accent())
+            } else {
+                Span::raw("  ")
+            };
+            if self.first_line {
+                self.gap();
+            }
+            self.first_line = false;
+            line.spans.insert(0, marker);
+            self.pending.push(line);
         }
-        self.first_line = false;
-        line.spans.insert(0, marker);
-        self.pending.push(line);
     }
 
     /// The unfinished answer line as it will look in scrollback.
@@ -378,7 +553,7 @@ impl App {
             return None;
         }
         let t = self.theme;
-        let mut line = self.md.clone().line(&self.live, &t);
+        let mut line = self.md.clone().line(&self.live, &t)?;
         let marker =
             if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.accent()) } else { Span::raw("  ") };
         line.spans.insert(0, marker);
@@ -390,6 +565,10 @@ impl App {
             let rest = std::mem::take(&mut self.live);
             self.commit_text_line(&rest);
         }
+        // A table that ended the block is drawn now.
+        let t = self.theme;
+        let held = self.md.finish(&t);
+        self.commit_answer_lines(held);
     }
 
     /// Write the person's prompt into scrollback.
@@ -527,7 +706,8 @@ impl App {
                             }
                         }
                         ContentBlock::ToolUse { name, .. } if self.focus => self.activity = format!("Running {name}"),
-                        ContentBlock::ToolUse { name, input, .. } => {
+                        ContentBlock::ToolUse { id, name, input, .. } => {
+                            self.calls.insert(id.clone(), (name.clone(), input.clone()));
                             self.gap();
                             let t = self.theme;
                             self.pending.push(Line::from(vec![
@@ -542,22 +722,22 @@ impl App {
                 }
                 self.streamed = false;
             }
-            EngineEvent::User { message, is_meta: false, .. } => {
+            EngineEvent::User { message, is_meta: false, tool_use_result, .. } => {
                 if self.focus {
                     self.activity = "Working".into();
                     return;
                 }
                 for b in &message.content {
-                    if let ContentBlock::ToolResult { content, is_error, .. } = b {
-                        let text = content.to_text();
-                        let first: String = text.lines().next().unwrap_or("").chars().take(160).collect();
-                        let more = text.lines().count().saturating_sub(1);
-                        let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
-                        let st = if *is_error == Some(true) { self.theme.error() } else { self.theme.dim() };
-                        self.pending.push(Line::from(vec![
-                            Span::styled(RESULT_MARK, self.theme.dim()),
-                            Span::styled(format!("{first}{more}"), st),
-                        ]));
+                    if let ContentBlock::ToolResult { tool_use_id, content, is_error, .. } = b {
+                        let tool = self.calls.remove(tool_use_id).map(|(n, _)| n).unwrap_or_default();
+                        let lines = result_lines(
+                            &self.theme,
+                            &tool,
+                            &content.to_text(),
+                            *is_error == Some(true),
+                            tool_use_result.as_ref(),
+                        );
+                        self.pending.extend(lines);
                         self.activity = "Working".into();
                     }
                 }
@@ -629,8 +809,9 @@ impl App {
                 self.pending.push(Line::from(Span::styled("Here is the plan:", self.theme.bold())));
                 let plan = prompt.input["plan"].as_str().unwrap_or("").to_string();
                 let mut md = Markdown::default();
-                for l in plan.lines() {
-                    let mut line = md.line(l, &self.theme);
+                let mut lines: Vec<Line<'static>> = plan.lines().flat_map(|l| md.push(l, &self.theme)).collect();
+                lines.extend(md.finish(&self.theme));
+                for mut line in lines {
                     line.spans.insert(0, Span::raw("  "));
                     self.pending.push(line);
                 }
@@ -669,7 +850,7 @@ impl App {
             DialogKind::Permission { always } => {
                 let mut v = vec![("Yes".to_string(), String::new())];
                 if let Some(r) = always {
-                    v.push((format!("Yes, and don't ask again for {r}"), String::new()));
+                    v.push((r.clone(), String::new()));
                 }
                 v.push(("No, and tell Forge what to do instead".to_string(), "esc".to_string()));
                 v
@@ -703,6 +884,14 @@ impl App {
         }
     }
 
+    /// A question to the person is open (permission, plan approval, AskUserQuestion):
+    /// the turn waits on them, not on the model.
+    pub fn waiting_for_answer(&self) -> bool {
+        self.dialog.as_ref().is_some_and(|d| {
+            matches!(d.kind, DialogKind::Permission { .. } | DialogKind::Plan | DialogKind::Questions { .. })
+        })
+    }
+
     /// The open picker's rows that match its filter.
     fn picker_rows(&self) -> Vec<&forge_core::commands::picker::Choice> {
         let Some(Dialog { kind: DialogKind::Picker { picker, filter }, .. }) = &self.dialog else { return vec![] };
@@ -732,10 +921,15 @@ impl App {
                 let mut body = vec![];
                 if p.tool_name == "Bash" {
                     body.extend(p.input["command"].as_str().unwrap_or("").lines().take(6).map(|l| format!("  {l}")));
+                    if let Some(d) = p.input["description"].as_str().filter(|d| !d.trim().is_empty()) {
+                        body.push(format!("  {d}"));
+                    }
                 } else if !arg.is_empty() {
                     body.push(format!("  {arg}"));
                 }
-                if !p.reason.is_empty() {
+                body.extend(edit_preview(&p.tool_name, &p.input));
+                // The generic reason says nothing the title doesn't.
+                if !p.reason.is_empty() && p.reason != "this tool requires permission" {
                     body.push(p.reason.clone());
                 }
                 (format!("Allow {}?", p.tool_name), body)
@@ -1628,7 +1822,7 @@ mod tests {
             event: StreamEvent::ContentBlockStop { index: 0 },
             parent_tool_use_id: None,
         }));
-        assert_eq!(texts(&a.take_pending())[2..], ["  - step one", "  ```sh", "    ls"]);
+        assert_eq!(texts(&a.take_pending())[2..], ["  - step one", "    ls"], "fences aren't drawn; code is indented");
         // The complete message adds its tool call, not its text again.
         let msg = ApiMessage {
             id: "m".into(),
@@ -1661,8 +1855,62 @@ mod tests {
             is_meta: false,
             parent_tool_use_id: None,
         }));
-        assert_eq!(texts(&a.take_pending()), ["  ↳  ok (+1 lines)"]);
+        assert_eq!(texts(&a.take_pending()), ["  ↳  ok", "     2 passed"], "a command shows its first lines");
         let _ = MessageContent::Text(String::new());
+    }
+
+    #[test]
+    fn results_say_what_happened() {
+        let t = Theme { color: false, light: false, accent: None };
+        let read =
+            json!({"type": "text", "file": {"filePath": "/p/a.rs", "numLines": 40, "startLine": 1, "totalLines": 120}});
+        assert_eq!(
+            texts(&result_lines(&t, "Read", "     1\tfn main", false, Some(&read))),
+            ["  ↳  Read 40 of 120 lines"]
+        );
+        let edit = json!({"filePath": "/p/src/calc.py", "structuredPatch": [{
+            "oldStart": 1, "oldLines": 3, "newStart": 1, "newLines": 3,
+            "lines": [" def add(a, b):", "-    return a - b", "+    return a + b", ""]
+        }]});
+        assert_eq!(
+            texts(&result_lines(&t, "Edit", "The file was updated", false, Some(&edit))),
+            [
+                "  ↳  Updated calc.py: 1 addition, 1 removal",
+                "        2 -     return a - b",
+                "        2 +     return a + b"
+            ]
+        );
+        let write = json!({"type": "create", "filePath": "/p/new.txt", "content": "a\nb\n", "structuredPatch": []});
+        assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  ↳  Wrote 2 lines to new.txt"]);
+        assert_eq!(texts(&result_lines(&t, "Bash", "", false, None)), ["  ↳  (no output)"]);
+        let long = (1..=6).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            texts(&result_lines(&t, "Bash", &long, false, None)),
+            ["  ↳  line 1", "     line 2", "     line 3", "     … +3 lines"]
+        );
+        assert_eq!(texts(&result_lines(&t, "Bash", "boom\nmore", true, None)), ["  ↳  boom (+1 lines)"]);
+    }
+
+    #[test]
+    fn edit_permission_shows_the_change() {
+        let mut a = app();
+        let (tx, rx) = oneshot::channel();
+        std::mem::forget(rx);
+        a.on_event(UiEvent::Ask {
+            prompt: PermissionPrompt {
+                tool_name: "Edit".into(),
+                tool_use_id: "t".into(),
+                input: json!({"file_path": "src/calc.py", "old_string": "return a - b", "new_string": "return a + b"}),
+                reason: "this tool requires permission".into(),
+                suggestions: vec![],
+                blocked_path: None,
+            },
+            reply: tx,
+        });
+        let (title, body) = a.dialog_text();
+        assert_eq!(title, "Allow Edit?");
+        assert_eq!(body, ["  src/calc.py", "  - return a - b", "  + return a + b"], "no generic reason line");
+        assert!(a.waiting_for_answer());
     }
 
     #[test]

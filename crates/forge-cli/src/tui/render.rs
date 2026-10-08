@@ -244,7 +244,19 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
     }
     let t = app.theme;
     let (title, body) = app.dialog_text();
-    let mut rows: Vec<Line<'static>> = body.into_iter().map(Line::from).collect();
+    // A proposed edit's lines: removed in red, added in green.
+    let mut rows: Vec<Line<'static>> = body
+        .into_iter()
+        .map(|l| {
+            if l.starts_with("  - ") {
+                Line::from(Span::styled(l, t.removed()))
+            } else if l.starts_with("  + ") {
+                Line::from(Span::styled(l, t.added()))
+            } else {
+                Line::from(l)
+            }
+        })
+        .collect();
     rows.push(Line::default());
     let selected = app.dialog_selected();
     for (i, (label, desc)) in app.dialog_options().into_iter().enumerate() {
@@ -374,8 +386,12 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     if app.busy {
         let since = app.busy_since.map(|s| now.duration_since(s)).unwrap_or_default();
         let frame = SPINNER[(since.as_millis() / SPINNER_STEP.as_millis()) as usize % SPINNER.len()];
-        let activity = if app.activity.is_empty() { "Working" } else { app.activity.as_str() };
-        let text = format!("{frame} {activity}… ({}s · esc to interrupt)", since.as_secs());
+        let text = if app.waiting_for_answer() {
+            format!("{frame} Waiting for your answer… ({}s)", since.as_secs())
+        } else {
+            let activity = if app.activity.is_empty() { "Working" } else { app.activity.as_str() };
+            format!("{frame} {activity}… ({}s · esc to interrupt)", since.as_secs())
+        };
         spinner.push(Line::default());
         spinner.push(Line::from(Span::styled(fit(&text, w), t.accent())));
     }
@@ -597,7 +613,7 @@ mod tests {
                 "│                                      │",
                 "│ ❯ 1. Yes                             │",
                 "│   2. No, and tell Forge what to do   │",
-                "│ instead  esc                         │",
+                "│      instead  esc                    │",
                 "│                                      │",
                 "│ Enter to select · Esc to cancel      │",
                 "╰──────────────────────────────────────╯",

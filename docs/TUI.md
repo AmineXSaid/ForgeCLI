@@ -162,9 +162,15 @@ The live region, top to bottom (each part only when present):
 2. The spinner while `busy`:
    - braille frames `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` (`forge_core::glyphs::SPINNER`),
      advanced every 80 ms from `busy_since`;
-   - then `{activity}… ({secs}s · esc to interrupt)`, in the accent style.
+   - then `{activity}… ({secs}s · esc to interrupt)`, in the accent style;
+     while a permission, plan or question dialog is open,
+     `Waiting for your answer… ({secs}s)` instead.
 3. A dialog: a rounded box (`Block::bordered().border_type(Rounded)`) with:
-   - the title (`dialog_text().0`) and body lines;
+   - the title (`dialog_text().0`) and body lines; a permission dialog for
+     Edit, MultiEdit or Write shows the lines it removes (`  - `, red) and
+     adds (`  + `, green), at most 8 of each; Bash shows the command and its
+     description; the generic reason "this tool requires permission" is left
+     out;
    - the numbered options from `dialog_options()`, the selected one marked
      `❯` and styled `theme.selected()`, descriptions dimmed on the right;
    - a footer `Enter to select · Esc to cancel`.
@@ -269,12 +275,22 @@ with `{"text", "cwd"}`:
 - **Assistant text** streams into `app.live`. Each complete line moves to
   scrollback. The first line of a text block gets `• `, the others two
   spaces.
-- **Markdown**, one line at a time:
+- **Markdown**, one line at a time (`text::Markdown::push`):
   - headings and `**bold**` are bold;
   - `` `code` `` uses the code style;
-  - fence lines are dim, and fenced lines are indented and coloured as code.
-- **Tool calls**: `› Name(main argument)` (`app::summarize`). Their results:
-  `  ↳  first line (+N lines)`, red on error.
+  - fence markers aren't drawn; fenced lines are indented and coloured as code;
+  - table rows are held until the table ends, then drawn with aligned
+    columns, `│` between cells, a `─┼─` rule and a bold header.
+- **Wrapping** (`text::wrap`): a wrapped row continues under the text, past
+  the line's indent and its marker (`• `, `› `, `↳ `, `- `, `1. `).
+- **Tool calls**: `› Name(main argument)` (`app::summarize`). Their results
+  (`app::result_lines`), red on error:
+  - Read: `Read 40 lines` or `Read 40 of 120 lines`;
+  - Edit, MultiEdit, Write: `Updated calc.py: 1 addition, 1 removal`, then the
+    changed lines with their numbers, `-` red and `+` green (at most 16);
+    a new file: `Wrote 12 lines to new.txt`;
+  - Bash: the first 3 output lines, then `… +N lines`, or `(no output)`;
+  - anything else: `first line (+N lines)`.
 - Events of sub-agents (those with a `parent_tool_use_id`) are not shown.
 - **Your prompts**: `> text`, in the user style.
 - **Local command output**: `  ↳  ` on the first line, then indented.
@@ -323,7 +339,7 @@ keys in effect, the file and the unbound keys.
 | Dialog | Options | Answer |
 | --- | --- | --- |
 | Permission | 1. Yes | `Allow` |
-| | 2. Yes, and don't ask again for `<rule>` (only when the prompt has suggestions) | `Allow` with the suggestions as `updated_permissions` |
+| | 2. Yes, and don't ask again for `<rule>`, or "Yes, and allow all edits this session (shift+tab)" for an edit (only when the prompt has suggestions) | `Allow` with the suggestions as `updated_permissions` |
 | | 3. No, and tell Forge what to do instead (Esc) | `Deny { interrupt: true }` |
 | AskUserQuestion | The options, then "Type an answer"; multi-select toggles with Space | `Allow` with `input.answers = {question: answer}` (the shape `LinePrompter` uses) |
 | Plan approval (the plan goes to scrollback first) | 1. Yes, and accept edits without asking | `Allow` plus `setMode acceptEdits` (session) |

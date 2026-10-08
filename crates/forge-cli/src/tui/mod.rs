@@ -355,8 +355,11 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     app.keymap = keymap;
     let warnings: Vec<String> = warnings.into_iter().chain(key_warnings).collect();
     app.pending.push(Line::from(vec![
-        ratatui::text::Span::styled(format!("ForgeCLI {}", forge_core::VERSION), theme.bold()),
-        ratatui::text::Span::styled(format!("  {model} · {cwd}"), theme.dim()),
+        ratatui::text::Span::styled(
+            "ForgeCLI".to_string(),
+            theme.accent().add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        ratatui::text::Span::styled(format!(" {} · {model} · {}", forge_core::VERSION, short_path(&cwd)), theme.dim()),
     ]));
     for w in warnings {
         app.on_event(UiEvent::Engine(forge_engine::EngineEvent::Notice {
@@ -496,6 +499,15 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         eprintln!("Resume this conversation with: forge --resume {}", live.session_id());
     }
     Ok(crate::exit::OK)
+}
+
+/// A directory as people write it: `~/proj` under the home directory.
+pub fn short_path(p: &str) -> String {
+    let home = forge_config::home().display().to_string();
+    match p.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with(['/', '\\'])) => format!("~{rest}"),
+        _ => p.to_string(),
+    }
 }
 
 fn io_fail(e: std::io::Error) -> Fail {

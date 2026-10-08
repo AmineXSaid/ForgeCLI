@@ -59,12 +59,13 @@ pub fn status(d: &Driver) -> StatusView {
     let window = d.engine.context_window(&model);
     let used = d.engine.projected_context_tokens();
     let context_pct = (window > 0).then(|| ((used * 100 / window).min(100)) as u8);
+    let cost_unknown = !d.engine.state.unpriced.is_empty() || !d.engine.has_price(&model);
     StatusView {
         model,
         mode,
         cwd: d.info.cwd.display().to_string(),
         cost: d.engine.state.total_cost_usd,
-        cost_unknown: !d.engine.state.unpriced.is_empty(),
+        cost_unknown,
         context_pct,
     }
 }
