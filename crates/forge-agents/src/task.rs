@@ -353,8 +353,12 @@ impl Tool for TaskTool {
         env.shell = forge_platform::shell::env_line(&self.rt.shell);
         let mut sys = forge_types::SystemBlock::text(format!("{}\n\n{}", agent.prompt, env.render()));
         sys.cache_control = Some(forge_types::CacheControl::ephemeral());
+        let mut cfg = self.rt.child_config(&model);
+        if agent.effort.is_some() {
+            cfg.effort = agent.effort.clone();
+        }
         let spec = ChildSpec {
-            cfg: self.rt.child_config(&model),
+            cfg,
             tools: self.registry_for(&agent),
             system: vec![sys],
             prompter: parent.prompter.clone(),

@@ -328,7 +328,10 @@
 - Context:
   - long output is saved to a file and the result points to it;
   - no repeated reads;
-  - the task list survives compaction and resume (C15).
+  - the task list survives compaction and resume (C15);
+  - an agent can set its own `effort` (frontmatter or `--agents` JSON); the
+    built-in Explore agent searches at `low` effort, so exploration costs
+    less. Models without effort levels ignore it.
 
 ### Tools and integrations
 - MCP client (stdio, streamable HTTP, SSE), `forge mcp` and `forge mcp serve` (C16).

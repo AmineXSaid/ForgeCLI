@@ -133,6 +133,9 @@ async fn explore_agent_reports_back_in_its_own_context() {
         "{child_tools:?}"
     );
     assert!(child[0].messages[0].text().contains("Find where secret_answer"), "the child sees only its prompt");
+    // Explore searches at low effort; the parent keeps its own (here, the model default).
+    assert_eq!(child[0].output_config.as_ref().map(|c| c["effort"].clone()), Some(json!("low")));
+    assert!(parent[0].output_config.is_none(), "{:?}", parent[0].output_config);
     assert_eq!(results(&e)[0].0, "secret_answer is defined in lib.rs:1 and returns 42.");
     assert!(
         !format!("{:?}", parent[1].messages).contains("output_mode"),

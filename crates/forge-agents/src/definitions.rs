@@ -21,6 +21,8 @@ pub struct AgentDef {
     pub tools: Option<Vec<String>>,
     /// Model alias or id; `None` / `inherit` = the caller's model.
     pub model: Option<String>,
+    /// Effort level (`low` ... `max`); `None` / `inherit` = the caller's effort.
+    pub effort: Option<String>,
     pub source: AgentSource,
 }
 
@@ -63,6 +65,7 @@ pub fn builtin_agents() -> Vec<AgentDef> {
             prompt: GENERAL.into(),
             tools: None,
             model: None,
+            effort: None,
             source: AgentSource::Builtin,
         },
         AgentDef {
@@ -73,6 +76,8 @@ pub fn builtin_agents() -> Vec<AgentDef> {
             prompt: EXPLORE.into(),
             tools: ro(),
             model: None,
+            // Searching needs little reasoning; low effort keeps it fast and cheap (GOALS pillar 1).
+            effort: Some("low".into()),
             source: AgentSource::Builtin,
         },
         AgentDef {
@@ -83,6 +88,7 @@ pub fn builtin_agents() -> Vec<AgentDef> {
             prompt: PLAN.into(),
             tools: ro(),
             model: None,
+            effort: None,
             source: AgentSource::Builtin,
         },
     ]
@@ -99,7 +105,7 @@ fn parse_list(raw: &str) -> Vec<String> {
 }
 
 /// Parse an agent file: `---` frontmatter (`name`, `description`, `tools`,
-/// `model`) followed by the system prompt.
+/// `model`, `effort`) followed by the system prompt.
 pub fn parse_agent_markdown(text: &str, source: AgentSource) -> Result<AgentDef, String> {
     let rest = text.strip_prefix("---").ok_or("missing --- frontmatter")?;
     let end = rest.find("\n---").ok_or("unterminated frontmatter")?;
@@ -110,6 +116,7 @@ pub fn parse_agent_markdown(text: &str, source: AgentSource) -> Result<AgentDef,
         prompt: body.trim_start_matches(['\r', '\n']).trim_end().to_string(),
         tools: None,
         model: None,
+        effort: None,
         source,
     };
     let mut list_key: Option<String> = None;
@@ -130,6 +137,7 @@ pub fn parse_agent_markdown(text: &str, source: AgentSource) -> Result<AgentDef,
             "name" => def.name = v.to_string(),
             "description" => def.description = v.to_string(),
             "model" => def.model = Some(v.to_string()).filter(|m| !m.is_empty() && m != "inherit"),
+            "effort" => def.effort = Some(v.to_string()).filter(|e| !e.is_empty() && e != "inherit"),
             "tools" if v.is_empty() => list_key = Some("tools".into()),
             "tools" => def.tools = Some(parse_list(v)),
             _ => {}
@@ -147,7 +155,7 @@ pub fn parse_agent_markdown(text: &str, source: AgentSource) -> Result<AgentDef,
     Ok(def)
 }
 
-/// `--agents '{"reviewer": {"description": "...", "prompt": "...", "tools": [...], "model": "..."}}'`
+/// `--agents '{"reviewer": {"description": "...", "prompt": "...", "tools": [...], "model": "...", "effort": "..."}}'`
 pub fn parse_agents_json(raw: &str) -> Result<Vec<AgentDef>, String> {
     let v: Value = serde_json::from_str(raw).map_err(|e| format!("--agents: {e}"))?;
     let obj = v.as_object().ok_or("--agents must be a JSON object")?;
@@ -163,6 +171,7 @@ pub fn parse_agents_json(raw: &str) -> Result<Vec<AgentDef>, String> {
                     .and_then(Value::as_array)
                     .map(|t| t.iter().filter_map(Value::as_str).map(str::to_string).collect()),
                 model: s("model").filter(|m| m != "inherit"),
+                effort: s("effort").filter(|e| e != "inherit"),
                 source: AgentSource::Flag,
             })
         })
@@ -226,15 +235,25 @@ mod tests {
         assert_eq!(a.tools, Some(vec!["Read".into(), "Grep".into()]));
         assert_eq!(a.model.as_deref(), Some("sonnet"));
         assert_eq!(a.prompt, "You review code.");
+        assert_eq!(a.effort, None);
         let b = parse_agent_markdown(
-            "---\nname: x\ndescription: d\ntools:\n  - Read\n  - Bash\nmodel: inherit\n---\nP",
+            "---\nname: x\ndescription: d\ntools:\n  - Read\n  - Bash\nmodel: inherit\neffort: low\n---\nP",
             AgentSource::User,
         )
         .unwrap();
         assert_eq!(b.tools, Some(vec!["Read".into(), "Bash".into()]));
         assert_eq!(b.model, None);
+        assert_eq!(b.effort.as_deref(), Some("low"));
         assert!(parse_agent_markdown("no frontmatter", AgentSource::User).is_err());
         assert!(parse_agent_markdown("---\nname: x\n---\nP", AgentSource::User).is_err());
+    }
+
+    #[test]
+    fn explore_runs_at_low_effort_and_the_others_inherit() {
+        let effort = |n: &str| builtin_agents().into_iter().find(|a| a.name == n).unwrap().effort;
+        assert_eq!(effort("Explore").as_deref(), Some("low"));
+        assert_eq!(effort("Plan"), None);
+        assert_eq!(effort("general-purpose"), None);
     }
 
     #[test]
@@ -247,9 +266,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(d.path().join(".forge/agents/bad.md"), "oops").unwrap();
-        let flag =
-            parse_agents_json(r#"{"reviewer": {"description": "Reviews", "prompt": "Review it", "tools": ["Read"]}}"#)
-                .unwrap();
+        let flag = parse_agents_json(
+            r#"{"reviewer": {"description": "Reviews", "prompt": "Review it", "tools": ["Read"], "effort": "high"}}"#,
+        )
+        .unwrap();
+        assert_eq!(flag[0].effort.as_deref(), Some("high"));
         let mut warnings = vec![];
         let all = load_agents(d.path(), &[], &flag, &mut warnings);
         assert_eq!(warnings.len(), 1);
