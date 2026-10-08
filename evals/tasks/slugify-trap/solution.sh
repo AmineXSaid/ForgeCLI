@@ -9,5 +9,5 @@ _SEPARATORS = re.compile(r"[-\s]+")
 def slugify(value, sep="-"):
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     value = _STRIP.sub("", value).strip().lower()
-    return _SEPARATORS.sub(sep, value).strip(sep)
+    return _SEPARATORS.sub(sep, value)
 PY
