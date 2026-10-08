@@ -866,7 +866,10 @@ impl App {
                 let a = match (i, always_row) {
                     (0, _) => allow(vec![]),
                     (1, true) => allow(suggestions.iter().filter_map(|s| serde_json::to_value(s).ok()).collect()),
-                    _ => stop("The user said no. Wait for them to say what to do instead."),
+                    _ => stop(
+                        "The user said no; nothing was run. Don't run it again or reach the same result another way \
+                         (another command, shell or tool). Wait for them to say what to do instead.",
+                    ),
                 };
                 self.answer(a);
             }

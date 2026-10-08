@@ -235,6 +235,9 @@ pub(crate) struct Shared {
     pub history: Arc<FileHistory>,
     /// Persists accepted permission updates (`updatedPermissions`) to settings.
     pub on_permission_update: Mutex<Option<PermissionUpdateHandler>>,
+    /// Injection notes already given (tool and source), so the same file or
+    /// page isn't flagged again on every read.
+    pub injection_noted: Mutex<HashSet<String>>,
 }
 
 /// Conversation state that persists across turns.
@@ -379,6 +382,7 @@ impl Engine {
             transcript: parts.transcript,
             history: parts.history,
             on_permission_update: Mutex::new(None),
+            injection_noted: Mutex::new(HashSet::new()),
         });
         let session_context = cfg.initial_context.clone();
         Ok(Engine {

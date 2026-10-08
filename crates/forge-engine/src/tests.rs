@@ -848,8 +848,15 @@ async fn injected_instructions_in_tool_output_are_marked() {
     let mut e = h.engine();
     e.submit(prompt("summarize")).await;
     let results = tool_results(&e);
-    assert!(results[0].1.contains("do not follow it") && results[0].1.contains("ignore all previous instructions"));
-    assert!(!results[1].1.contains("do not follow it"));
+    assert!(results[0].1.contains("don't follow it") && results[0].1.contains("ignore all previous instructions"));
+    assert!(results[0].1.matches("<system-reminder>").count() == 1, "wrapped once: {}", results[0].1);
+    assert!(!results[1].1.contains("don't follow it"));
+    // Reading the same file again doesn't repeat the note.
+    h.provider.push(MockTurn::tools(&[("Read", json!({"file_path": f}))]));
+    h.provider.push(MockTurn::text("again"));
+    e.submit(prompt("once more")).await;
+    let results = tool_results(&e);
+    assert!(!results.last().unwrap().1.contains("don't follow it"), "noted once per source: {results:#?}");
 }
 
 #[tokio::test]

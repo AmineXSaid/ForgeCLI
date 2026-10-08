@@ -68,6 +68,17 @@
   the session's model unless `smallFastModel` names one, instead of a model
   the endpoint may not serve.
 
+### Fixes
+- `/model` (and any picker or dialog taller than the input) no longer ends the
+  session with "The cursor position could not be read": the terminal UI
+  tracks its own position instead of asking the terminal while it reads keys.
+- Injection notes: Forge's own Read notes ("Showing lines 1-2000 of N", "unchanged
+  since you last read") are no longer flagged; a note appears once per file or
+  page, reads calmly for local files, and isn't wrapped twice.
+- After a denied tool call the model is told not to reach the same result another
+  way (another command, shell or tool); after an environment failure, to stop
+  and say what is missing. Replies are kept short for short messages.
+
 ### Terminal UI
 - `forge` opens a terminal UI when stdin and stdout are terminals: answers
   stream into the terminal's own scrollback, and a live region at the bottom

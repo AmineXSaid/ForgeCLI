@@ -28,6 +28,7 @@ use crossterm::event::{
 };
 use futures::StreamExt;
 use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::layout::Position;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -47,18 +48,105 @@ const FRAME: Duration = Duration::from_millis(16);
 /// Prompts kept from history for this directory.
 const HISTORY_ENTRIES: usize = 500;
 
+/// A backend that remembers where the cursor is instead of asking the terminal.
+///
+/// ratatui asks for the cursor position whenever an inline viewport is made or
+/// resized. Asking means writing a query and reading the reply from stdin, but
+/// once the UI runs, crossterm's event reader owns stdin, so the reply never
+/// arrives and the query fails after two seconds ("The cursor position could
+/// not be read"), which ended the session (seen with `/model`). Only the first
+/// viewport asks the terminal; after that every move goes through this
+/// backend, so it knows.
+pub struct Tracked<B: Backend> {
+    inner: B,
+    pos: std::rc::Rc<std::cell::Cell<Option<Position>>>,
+}
+
+impl<B: Backend> Backend for Tracked<B> {
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        let mut last = None;
+        let cells: Vec<_> = content.inspect(|(x, y, _)| last = Some(Position { x: *x, y: *y })).collect();
+        self.inner.draw(cells.into_iter())?;
+        if let Some(p) = last {
+            self.pos.set(Some(Position { x: p.x.saturating_add(1), y: p.y }));
+        }
+        Ok(())
+    }
+
+    fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
+        self.inner.append_lines(n)?;
+        if let Some(p) = self.pos.get() {
+            let rows = self.inner.size().map(|s| s.height).unwrap_or(u16::MAX);
+            self.pos.set(Some(Position { x: p.x, y: p.y.saturating_add(n).min(rows.saturating_sub(1)) }));
+        }
+        Ok(())
+    }
+
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+        match self.pos.get() {
+            Some(p) => Ok(p),
+            None => {
+                let p = self.inner.get_cursor_position()?;
+                self.pos.set(Some(p));
+                Ok(p)
+            }
+        }
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+        let p = position.into();
+        self.inner.set_cursor_position(p)?;
+        self.pos.set(Some(p));
+        Ok(())
+    }
+
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// The live viewport and the scrollback above it.
 pub struct Screen<B: Backend> {
-    terminal: Terminal<B>,
+    terminal: Terminal<Tracked<B>>,
     /// Makes a fresh backend when the viewport changes height.
     make: Box<dyn FnMut() -> B>,
     height: u16,
+    pos: std::rc::Rc<std::cell::Cell<Option<Position>>>,
 }
 
 impl<B: Backend> Screen<B> {
     pub fn new(mut make: Box<dyn FnMut() -> B>, height: u16) -> std::io::Result<Self> {
-        let terminal = Terminal::with_options(make(), TerminalOptions { viewport: Viewport::Inline(height) })?;
-        Ok(Screen { terminal, make, height })
+        let pos = std::rc::Rc::new(std::cell::Cell::new(None));
+        let backend = Tracked { inner: make(), pos: pos.clone() };
+        let terminal = Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(height) })?;
+        Ok(Screen { terminal, make, height, pos })
     }
 
     pub fn height(&self) -> u16 {
@@ -81,7 +169,8 @@ impl<B: Backend> Screen<B> {
             return Ok(());
         }
         self.terminal.clear()?;
-        self.terminal = Terminal::with_options((self.make)(), TerminalOptions { viewport: Viewport::Inline(h) })?;
+        let backend = Tracked { inner: (self.make)(), pos: self.pos.clone() };
+        self.terminal = Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(h) })?;
         self.height = h;
         Ok(())
     }
@@ -121,7 +210,7 @@ impl<B: Backend> Screen<B> {
 
     #[cfg(test)]
     pub fn backend(&self) -> &B {
-        self.terminal.backend()
+        &self.terminal.backend().inner
     }
 }
 
@@ -417,6 +506,70 @@ fn io_fail(e: std::io::Error) -> Fail {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    /// A terminal that answers the cursor-position query only once, like a
+    /// real one whose stdin the event reader has taken over.
+    struct AsksOnce {
+        inner: TestBackend,
+        asked: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Backend for AsksOnce {
+        fn draw<'a, I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>>(&mut self, c: I) -> std::io::Result<()> {
+            self.inner.draw(c)
+        }
+        fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
+            self.inner.append_lines(n)
+        }
+        fn hide_cursor(&mut self) -> std::io::Result<()> {
+            self.inner.hide_cursor()
+        }
+        fn show_cursor(&mut self) -> std::io::Result<()> {
+            self.inner.show_cursor()
+        }
+        fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+            self.asked.set(self.asked.get() + 1);
+            if self.asked.get() > 1 {
+                return Err(std::io::Error::other("The cursor position could not be read within a normal duration"));
+            }
+            self.inner.get_cursor_position()
+        }
+        fn set_cursor_position<P: Into<Position>>(&mut self, p: P) -> std::io::Result<()> {
+            self.inner.set_cursor_position(p)
+        }
+        fn clear(&mut self) -> std::io::Result<()> {
+            self.inner.clear()
+        }
+        fn clear_region(&mut self, t: ratatui::backend::ClearType) -> std::io::Result<()> {
+            self.inner.clear_region(t)
+        }
+        fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+            self.inner.size()
+        }
+        fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+            self.inner.window_size()
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    /// `/model` ended the session: opening its picker resized the viewport, which asked the
+    /// terminal for the cursor position after the event reader owned stdin. Only the first
+    /// viewport may ask.
+    #[test]
+    fn resizing_the_viewport_never_asks_the_terminal_again() {
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+        let a = asked.clone();
+        let mut s =
+            Screen::new(Box::new(move || AsksOnce { inner: TestBackend::new(40, 12), asked: a.clone() }), 2).unwrap();
+        s.draw(&LiveView { lines: vec![Line::from("> ")], cursor: Some((2, 0)) }).unwrap();
+        s.set_height(9).expect("growing for a picker works");
+        s.draw(&LiveView { lines: vec![Line::from("picker"); 9], cursor: None }).unwrap();
+        s.set_height(3).expect("and shrinking back");
+        s.commit(vec![Line::from("answer")]).unwrap();
+        assert_eq!(asked.get(), 1, "only the first viewport asked");
+    }
 
     fn rows(b: &TestBackend) -> Vec<String> {
         let buf = b.buffer();
