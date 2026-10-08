@@ -158,8 +158,9 @@ pub enum EngineError {
 /// Sent once per turn when an unattended run ends without having used a tool (`--autonomous`).
 const ATTEMPT_REMINDER: &str = "<system-reminder>\nThis run is unattended, and you are about to finish \
 without having used any tool. Make a real attempt first: look at the environment, try an approach, run it and \
-fix what fails. Only conclude that the task can't be done after trying. If you declined for safety or policy \
-reasons, keep your answer as it is.\n</system-reminder>";
+fix what fails. Difficulty is not a reason to stop: start with the smallest piece that works and build from \
+there. Only conclude that the task can't be done after trying. If you declined for safety or policy reasons, \
+keep your answer as it is.\n</system-reminder>";
 
 pub const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 /// Fast mode's price over the model's standard rates (input and output alike).
