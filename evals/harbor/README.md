@@ -57,6 +57,7 @@ evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
 | `FORGE_HARBOR_TIME_LIMIT` | the task's own limit | Seconds for `forge --max-time` |
 | `FORGE_HARBOR_CA_BUNDLE` | | Extra CAs to trust inside containers (see below) |
 | `FORGE_HARBOR_HOSTS` | the endpoint's host | Names to resolve here and pin in each container's `/etc/hosts` (`none` turns it off) |
+| `FORGE_HARBOR_HOST_IP` | found automatically | This machine's address, used in place of a `localhost` endpoint |
 
 Each task has an agent time limit, and Harbor stops the agent when it's up.
 The agent passes that limit, less 30 seconds, as `--max-time`. The model then
@@ -64,6 +65,36 @@ knows its deadline from the start and gets a wrap-up reminder near the end.
 
 The job name records the commit, so every result is pinned to a build. A
 `-dirty` suffix means uncommitted changes to `crates/`.
+
+## Self-hosted models
+
+A server on this machine (vLLM, llama.cpp, Ollama, ...) works through its
+OpenAI-compatible endpoint:
+
+```bash
+export FORGE_OPENAI_BASE_URL=http://localhost:8000/v1
+export FORGE_OPENAI_API_KEY=none            # any value, if the server doesn't check
+export FORGE_CONTEXT_WINDOW=131072          # the context the server was started with
+export FORGE_HARBOR_MODEL=openai/<served model name>
+evals/harbor/run.sh subset
+```
+
+- Inside a task container `localhost` is the container itself. The agent
+  replaces it with this machine's address (`FORGE_HARBOR_HOST_IP` to choose
+  one). Start the server on `0.0.0.0`, not only `127.0.0.1`, and allow the
+  port in the firewall. Check with
+  `docker run --rm curlimages/curl -s http://<that address>:8000/v1/models`.
+- Set `FORGE_CONTEXT_WINDOW` (or `modelLimits`) to what the server really
+  serves. ForgeCLI otherwise assumes 200,000 tokens and compacts too late.
+- Cost shows as 0 or unknown: ForgeCLI has no price for the model. That
+  changes nothing in the run. Spending limits are opt-in: no budget is set
+  unless you pass `--max-budget-usd`, and the Harbor agent doesn't. If you
+  pass it for a model ForgeCLI has no price for, `forge` refuses to start
+  rather than run without a limit. Give the model a price under
+  `modelPricing` (`{"input": 0, "output": 0}` for a free one).
+- A slow server makes tasks hit their time limit. Lower `FORGE_HARBOR_JOBS`
+  so tasks don't share the GPU, and look at `--max-time` warnings in
+  `watch.py`.
 
 ## Watching a run live
 

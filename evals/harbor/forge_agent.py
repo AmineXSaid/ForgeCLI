@@ -22,6 +22,10 @@ Configuration comes from the environment of the `harbor` process:
   (`FORGE_OPENAI_BASE_URL` or `FORGE_BASE_URL`) is always pinned, so an
   endpoint behind company DNS works from task containers;
   `FORGE_HARBOR_HOSTS=none` turns pinning off.
+- `FORGE_HARBOR_HOST_IP`: a self-hosted endpoint on this machine (`localhost`,
+  `127.0.0.1`) means the container itself inside a task container, so such a URL
+  is rewritten to this machine's address, found automatically or set here. The
+  server must listen on that address (`0.0.0.0`), not only on `127.0.0.1`.
 - `FORGE_HARBOR_CA_BUNDLE`: a PEM file of extra certificate authorities to
   trust inside the task container (behind a TLS-inspecting proxy). This
   changes the task environment: scores are for local comparisons only.
@@ -93,6 +97,8 @@ def pinned_hosts() -> list[tuple[str, str]]:
             names.append(host)
     out = []
     for name in dict.fromkeys(names):
+        if name.lower() in LOOPBACK:
+            continue  # rewritten to this machine's address by container_url()
         try:
             socket.inet_aton(name)
             continue  # already an address
@@ -103,6 +109,28 @@ def pinned_hosts() -> list[tuple[str, str]]:
         except OSError:
             pass  # unresolvable here too: leave it to the container's DNS
     return out
+
+
+LOOPBACK = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def host_ip() -> str:
+    """This machine's address as task containers can reach it (FORGE_HARBOR_HOST_IP overrides)."""
+    ip = os.environ.get("FORGE_HARBOR_HOST_IP")
+    if ip:
+        return ip
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(("10.255.255.255", 1))  # picks the outgoing interface; sends nothing
+        return s.getsockname()[0]
+
+
+def container_url(url: str) -> str:
+    """`url` as seen from a task container: a loopback host becomes this machine's address."""
+    parts = urlparse(url)
+    if (parts.hostname or "").lower() not in LOOPBACK and not (parts.hostname or "").startswith("127."):
+        return url
+    netloc = host_ip() + (f":{parts.port}" if parts.port else "")
+    return parts._replace(netloc=netloc).geturl()
 
 
 def task_time_limit() -> float | None:
@@ -156,6 +184,9 @@ class ForgeCLI(BaseInstalledAgent):
             for k, v in os.environ.items()
             if k.startswith("FORGE_") and k != "FORGE_STATIC_BIN" and not k.startswith("FORGE_HARBOR_")
         }
+        for var in ("FORGE_OPENAI_BASE_URL", "FORGE_BASE_URL"):
+            if env.get(var):
+                env[var] = container_url(env[var])
         env["FORGE_TASK"] = instruction
         flags = ["--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
         if os.environ.get("FORGE_HARBOR_AUTONOMOUS", "1").strip().lower() not in ("0", "false", "no", "off"):
