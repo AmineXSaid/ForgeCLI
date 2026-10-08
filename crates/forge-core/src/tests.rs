@@ -197,3 +197,19 @@ async fn c10_worktree_flag_runs_the_session_in_a_new_worktree() {
     let s = build_session(o, Arc::new(NullSink), Arc::new(DenyPrompter)).unwrap();
     assert!(s.engine.tool_ctx().project_dir.ends_with(".forge/worktrees/session-12345678"));
 }
+
+#[test]
+fn unattended_runs_get_a_second_verification_reminder() {
+    use forge_config::{LoadedSettings, SettingSource};
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = LoadedSettings::default();
+    assert_eq!(crate::verify_config(&s, dir.path(), false).unwrap().max_reminders, 1);
+    assert_eq!(crate::verify_config(&s, dir.path(), true).unwrap().max_reminders, 2);
+    s.apply(
+        SettingSource::Flag,
+        std::path::Path::new(""),
+        &["verification", "maxReminders"],
+        Some(serde_json::json!(3)),
+    );
+    assert_eq!(crate::verify_config(&s, dir.path(), true).unwrap().max_reminders, 3, "a setting wins");
+}

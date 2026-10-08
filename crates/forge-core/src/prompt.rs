@@ -23,6 +23,8 @@ pub struct PromptSpec {
     pub exclude_dynamic: bool,
     /// The output style's instructions (none for the default style).
     pub output_style: Option<String>,
+    /// `--autonomous`: the unattended-run section.
+    pub autonomous: bool,
     pub env: EnvInfo,
 }
 
@@ -36,6 +38,7 @@ impl PromptSpec {
             prompts_dir: self.prompts_dir.clone(),
             exclude_dynamic: self.exclude_dynamic,
             output_style: self.output_style.clone(),
+            autonomous: self.autonomous,
         }
     }
 

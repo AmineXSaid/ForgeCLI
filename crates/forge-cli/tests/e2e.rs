@@ -386,6 +386,44 @@ async fn print_tells_the_model_its_time_limit() {
 }
 
 #[tokio::test]
+async fn autonomous_runs_have_no_question_tools_and_attempt_first() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("Not practical."), MockTurn::text("Tried; it can't be done.")]).await;
+    let (code, out, _) = run(&e, &api, &["-p", "--autonomous", "do the hard thing"], None).await;
+    assert_eq!((code, out.trim()), (0, "Tried; it can't be done."));
+    let reqs = api.requests();
+    let tools: Vec<String> =
+        reqs[0]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+    for gone in ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"] {
+        assert!(!tools.iter().any(|t| t == gone), "{gone} in {tools:?}");
+    }
+    assert!(tools.iter().any(|t| t == "Bash"));
+    assert!(reqs[0]["system"].to_string().contains("Running unattended"));
+    assert!(reqs[1]["messages"].to_string().contains("Make a real attempt first"));
+
+    // FORGE_AUTONOMOUS=1 does the same; =0 doesn't.
+    for (val, on) in [("1", true), ("0", false)] {
+        let api = MockApi::start(vec![MockTurn::text("a"), MockTurn::text("b")]).await;
+        let mut c = command(&forge_bin(), &e.cwd, &e.home, &api.url, &["-p", "x"]);
+        c.env("FORGE_AUTONOMOUS", val).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let out = tokio::time::timeout(Duration::from_secs(30), c.output()).await.unwrap().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            api.requests()[0]["system"].to_string().contains("Running unattended"),
+            on,
+            "FORGE_AUTONOMOUS={val}"
+        );
+    }
+
+    // Without the flag the question tools stay and nothing is added.
+    let api = MockApi::start(vec![MockTurn::text("hi")]).await;
+    run(&e, &api, &["-p", "hello"], None).await;
+    let req = &api.requests()[0];
+    assert!(req["tools"].as_array().unwrap().iter().any(|t| t["name"] == "AskUserQuestion"));
+    assert!(!req["system"].to_string().contains("Running unattended"));
+}
+
+#[tokio::test]
 async fn version_and_help() {
     let out = std::process::Command::new(forge_bin()).arg("--version").output().unwrap();
     let v = String::from_utf8_lossy(&out.stdout);
@@ -400,6 +438,7 @@ async fn version_and_help() {
         "--resume",
         "--max-budget-usd",
         "--max-time",
+        "--autonomous",
         "--json-schema",
     ] {
         assert!(h.contains(flag), "missing {flag}");

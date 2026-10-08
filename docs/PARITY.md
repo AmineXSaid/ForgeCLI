@@ -88,6 +88,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | Interrupt | done | `engine::c3_interrupt_during_stream`, `engine::c3_interrupt_aborts_running_and_pending_tools` | Contract C3 |
 | Retries with backoff (429 / 5xx / 529) | done | `e2e::retries_transient_errors` |  |
 | Fallback model | done | `engine::c6_fallback_on_overload_for_this_turn_only`, `engine::non_overload_errors_fail_the_turn` | Contract C6 |
+| `--autonomous` (Forge extension) | done | `engine::unattended_runs_attempt_before_giving_up`, `e2e::autonomous_runs_have_no_question_tools_and_attempt_first` | Contract C21 |
 | `--max-time` (Forge extension) | done | `engine::the_model_is_told_the_time_limit_and_warned_near_the_end`, `e2e::print_tells_the_model_its_time_limit` | Stated up front, reminder at a fifth left; the host enforces it |
 | `--max-turns` / `--max-budget-usd` | done | `engine::c7_unknown_model_budget_fails_closed`, `engine::c7_budget_and_max_turns_stop_the_run`, `e2e::max_turns_and_continue` | Contract C7 |
 | Thinking / effort per model | done | `request::thinking_per_model` |  |

@@ -85,6 +85,8 @@ pub struct LaunchOptions {
     pub max_budget_usd: Option<f64>,
     /// `--max-time`, counted from the start of the session.
     pub max_time: Option<std::time::Duration>,
+    /// `--autonomous` (or the `autonomous` setting): an unattended run.
+    pub autonomous: bool,
     pub json_schema: Option<Value>,
     pub resume: Resume,
     pub fork_session: bool,
@@ -246,7 +248,11 @@ pub struct Session {
 /// The verification loop's settings: `verification.{enabled, commands,
 /// maxReminders}`, with commands detected from the project's manifests when
 /// none are set. `FORGE_VERIFY=0` turns it off (for A/B runs).
-pub(crate) fn verify_config(settings: &LoadedSettings, cwd: &Path) -> Option<forge_engine::VerifyConfig> {
+pub(crate) fn verify_config(
+    settings: &LoadedSettings,
+    cwd: &Path,
+    autonomous: bool,
+) -> Option<forge_engine::VerifyConfig> {
     let off = env_nonempty("FORGE_VERIFY").map(|v| matches!(v.as_str(), "0" | "false" | "off" | "no")).unwrap_or(false);
     if off || settings.bool("/verification/enabled") == Some(false) {
         return None;
@@ -258,7 +264,8 @@ pub(crate) fn verify_config(settings: &LoadedSettings, cwd: &Path) -> Option<for
             .get("/verification/maxReminders")
             .and_then(Value::as_u64)
             .map(|n| n as u32)
-            .unwrap_or(1),
+            // Unattended runs get a second reminder: nobody else will catch an unchecked change.
+            .unwrap_or(if autonomous { 2 } else { 1 }),
     })
 }
 
@@ -710,7 +717,12 @@ pub fn build_session(
             tools.register(t);
         }
     }
-    let removed = removed_tools(&opts.disallowed_tools);
+    let autonomous = opts.autonomous || settings.bool("/autonomous") == Some(true);
+    let mut removed = removed_tools(&opts.disallowed_tools);
+    if autonomous {
+        // Nobody answers questions or approves plans in an unattended run.
+        removed.extend(["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"].map(String::from));
+    }
     tools.retain(|n| !removed.iter().any(|r| Rule::parse(r).map(|rule| rule.covers_tool(n)).unwrap_or(false)));
 
     let mut tool_ctx = ToolContext::new(&cwd);
@@ -809,7 +821,7 @@ pub fn build_session(
         .filter(|s| !s.is_empty())
         .map(forge_api::resolve_model)
         .collect();
-    let verify = verify_config(&settings, &cwd);
+    let verify = verify_config(&settings, &cwd, autonomous);
     let mut env_info = EnvInfo::collect(&cwd, &add_dirs, &model);
     env_info.shell = forge_platform::shell::env_line(&shell);
     if let Some(v) = &verify {
@@ -823,6 +835,7 @@ pub fn build_session(
         prompts_dir: env_nonempty("FORGE_PROMPTS_DIR").map(PathBuf::from),
         exclude_dynamic: opts.exclude_dynamic_system_prompt_sections,
         output_style: Some(style.prompt.clone()).filter(|p| !p.is_empty()),
+        autonomous,
         env: env_info,
     };
     let sp_opts = prompt.options();
@@ -895,6 +908,7 @@ pub fn build_session(
         max_turns: opts.max_turns,
         max_budget_usd: opts.max_budget_usd,
         time_limit: opts.max_time.map(forge_engine::TimeLimit::starting_now),
+        autonomous,
         json_schema: opts.json_schema.clone(),
         pricing,
         initial_context: (!initial.is_empty()).then(|| initial.join("\n\n")),

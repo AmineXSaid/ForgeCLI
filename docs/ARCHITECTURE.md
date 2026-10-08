@@ -845,6 +845,33 @@ and the reloads keep them. Session end gives them 3 s, then aborts them.
 - `-p`: keeps running while subtasks are out, then hands them all back and
   runs one more turn, whose answer is the run's result.
 
+### C21. Unattended runs (`--autonomous`)
+
+For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
+`FORGE_AUTONOMOUS=1` or the `autonomous` setting.
+- **Tools:** AskUserQuestion, EnterPlanMode and ExitPlanMode are removed, since
+  nobody answers questions or approves plans.
+- **Prompt:** the system prompt gains a "Running unattended" section
+  (`prompts/05-autonomous.md`):
+  - pick a reasonable reading and go on, instead of asking;
+  - make a real attempt before concluding something can't be done;
+  - plan with TodoWrite and finish every step;
+  - check the work before finishing;
+  - write large files in parts;
+  - if declining for safety or policy reasons, say so briefly.
+- **Attempt reminder:** a turn that would end without a single tool call gets
+  one reminder to make a real attempt. A `system` event `attempt_reminder` is
+  emitted for it. It isn't sent for a refusal stop reason, for sub-agents, or
+  twice in one turn, and the model may still answer without tools.
+- **Verification:** `verification.maxReminders` defaults to 2 instead of 1. A
+  setting still wins.
+
+Tests:
+- `engine::unattended_runs_attempt_before_giving_up`;
+- `prompts::autonomous_section_is_added_only_when_asked`;
+- `core::unattended_runs_get_a_second_verification_reminder`;
+- `e2e::autonomous_runs_have_no_question_tools_and_attempt_first`.
+
 ## Prompts
 
 ForgeCLI ships its own system prompt and tool descriptions in

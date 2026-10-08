@@ -940,6 +940,46 @@ async fn the_model_is_told_the_time_limit_and_warned_near_the_end() {
     assert!(last_user_text(&reqs[1]).contains("less than a minute of the run's time left (--max-time)"));
 }
 
+#[tokio::test]
+async fn unattended_runs_attempt_before_giving_up() {
+    // Ending without any tool call: one reminder, then the model may still stop.
+    let h = Harness::new(vec![
+        MockTurn::text("That isn't practical."),
+        MockTurn::tool("Bash", json!({"command": "ls"})),
+        MockTurn::text("Done after trying."),
+    ]);
+    let cfg = EngineConfig { autonomous: true, ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("hard task")).await;
+    assert_eq!(r.result.as_deref(), Some("Done after trying."));
+    let reqs = h.provider.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(last_user_text(&reqs[1]).contains("Make a real attempt first"), "{}", last_user_text(&reqs[1]));
+    assert!(h
+        .sink
+        .take()
+        .iter()
+        .any(|ev| matches!(ev, EngineEvent::System { subtype, .. } if subtype == "attempt_reminder")));
+
+    // Only once: a second toolless answer ends the turn.
+    let h = Harness::new(vec![MockTurn::text("No."), MockTurn::text("Still no.")]);
+    let cfg = EngineConfig { autonomous: true, ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("x")).await.result.as_deref(), Some("Still no."));
+    assert_eq!(h.provider.requests().len(), 2);
+
+    // A turn that used tools, or a run that isn't unattended, ends as it always did.
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "ls"})), MockTurn::text("done")]);
+    let cfg = EngineConfig { autonomous: true, ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("x")).await;
+    assert_eq!(h.provider.requests().len(), 2);
+    let h = Harness::new(vec![MockTurn::text("answer")]);
+    let mut e = h.engine();
+    e.submit(prompt("what is 2+2?")).await;
+    assert_eq!(h.provider.requests().len(), 1);
+}
+
 /// Answers every prompt: questions get the first option, everything else is allowed.
 struct Answering;
 

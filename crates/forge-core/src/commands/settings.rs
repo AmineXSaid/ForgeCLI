@@ -447,7 +447,11 @@ fn apply_key(d: &mut Driver, name: &str, value: &Option<Value>) -> Result<Option
             // The settings in memory still hold the old value: judge by the new one.
             let mut settings = d.info.settings.clone();
             settings.apply(SettingSource::Flag, std::path::Path::new(""), &["verification", "enabled"], value.clone());
-            d.engine.cfg.verify = if b == Some(false) { None } else { crate::verify_config(&settings, &d.info.cwd) };
+            d.engine.cfg.verify = if b == Some(false) {
+                None
+            } else {
+                crate::verify_config(&settings, &d.info.cwd, d.engine.cfg.autonomous)
+            };
             // The prompt's "run these checks" line follows.
             d.prompt.env.checks = d.engine.cfg.verify.as_ref().map(|v| v.commands.clone()).unwrap_or_default();
             d.rebuild_system();

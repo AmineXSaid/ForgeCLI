@@ -334,6 +334,14 @@
     less. Models without effort levels ignore it.
 
 ### Measurement
+- `--autonomous` (`FORGE_AUTONOMOUS=1`, setting `autonomous`), for runs nobody
+  watches:
+  - no question or plan-approval tools;
+  - a "Running unattended" prompt section;
+  - one reminder to make a real attempt when a turn would end without any tool
+    call;
+  - two verification reminders.
+  The Harbor agent turns it on; `FORGE_HARBOR_AUTONOMOUS=0` turns it off.
 - `--max-time` (`900`, `15m`, `1h`): the model is told its time limit up
   front and reminded to wrap up when a fifth of it is left. The Harbor agent
   passes each Terminal-Bench task's own limit, so runs end with a report

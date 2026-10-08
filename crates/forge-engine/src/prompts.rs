@@ -11,6 +11,9 @@ const BUILTIN: &[(&str, &str)] = &[
     ("04-style", include_str!("../prompts/04-style.md")),
 ];
 
+/// The section added for unattended runs (`--autonomous`).
+pub const AUTONOMOUS: &str = include_str!("../prompts/05-autonomous.md");
+
 /// How the system prompt is chosen (`--system-prompt`, `--append-system-prompt`).
 #[derive(Debug, Clone, Default)]
 pub struct SystemPromptOptions {
@@ -24,6 +27,8 @@ pub struct SystemPromptOptions {
     pub exclude_dynamic: bool,
     /// Output style instructions (`outputStyle`), appended as their own section.
     pub output_style: Option<String>,
+    /// `--autonomous`: add the unattended-run section.
+    pub autonomous: bool,
 }
 
 /// Facts about the machine and project for the environment section.
@@ -131,6 +136,10 @@ pub fn build_system(opts: &SystemPromptOptions, env: &EnvInfo) -> (Vec<SystemBlo
     if let Some(style) = &opts.output_style {
         base.push_str(&format!("\n\n# Output style\n\n{style}"));
     }
+    if opts.autonomous {
+        base.push_str("\n\n");
+        base.push_str(AUTONOMOUS.trim());
+    }
     let mut deferred = None;
     let using_default = opts.replace.is_none();
     if using_default {
@@ -180,6 +189,15 @@ mod tests {
         e.shell = Some(r"Git Bash (C:\Program Files\Git\bin\bash.exe)".into());
         let (blocks, _) = build_system(&SystemPromptOptions::default(), &e);
         assert!(blocks[0].text.contains("\nShell: Git Bash (C:\\Program Files\\Git\\bin\\bash.exe)\n"));
+    }
+
+    #[test]
+    fn autonomous_section_is_added_only_when_asked() {
+        let (b, _) = build_system(&SystemPromptOptions::default(), &env());
+        assert!(!b[0].text.contains("Running unattended"));
+        let (b, _) = build_system(&SystemPromptOptions { autonomous: true, ..Default::default() }, &env());
+        assert!(b[0].text.contains("# Running unattended"));
+        assert!(b[0].text.contains("Make a real attempt"));
     }
 
     #[test]

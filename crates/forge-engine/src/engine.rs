@@ -88,6 +88,9 @@ pub struct EngineConfig {
     pub max_budget_usd: Option<f64>,
     /// `--max-time`: the model is told the limit and warned near the end; the host enforces it.
     pub time_limit: Option<TimeLimit>,
+    /// `--autonomous`: nobody answers; a turn that ends without any tool call gets one
+    /// reminder to make a real attempt first.
+    pub autonomous: bool,
     /// `--json-schema`: structured output for the final answer.
     pub json_schema: Option<Value>,
     pub pricing: HashMap<String, Pricing>,
@@ -128,6 +131,7 @@ impl Default for EngineConfig {
             max_turns: None,
             max_budget_usd: None,
             time_limit: None,
+            autonomous: false,
             json_schema: None,
             pricing: HashMap::new(),
             initial_context: None,
@@ -151,6 +155,12 @@ pub enum EngineError {
 }
 
 /// The beta flag fast mode needs.
+/// Sent once per turn when an unattended run ends without having used a tool (`--autonomous`).
+const ATTEMPT_REMINDER: &str = "<system-reminder>\nThis run is unattended, and you are about to finish \
+without having used any tool. Make a real attempt first: look at the environment, try an approach, run it and \
+fix what fails. Only conclude that the task can't be done after trying. If you declined for safety or policy \
+reasons, keep your answer as it is.\n</system-reminder>";
+
 pub const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 /// Fast mode's price over the model's standard rates (input and output alike).
 pub const FAST_PRICE_MULTIPLIER: f64 = 2.0;
@@ -1371,6 +1381,7 @@ impl Engine {
         let mut continuations = 0;
         let mut continuing = false;
         let mut budget_warned = false;
+        let mut attempt_reminded = false;
 
         loop {
             if cancel.is_cancelled() {
@@ -1655,6 +1666,19 @@ impl Engine {
                 continue;
             }
             if stop_reason == Some(StopReason::PauseTurn) {
+                continue;
+            }
+
+            // Unattended runs (GOALS pillar 5): no finishing without an attempt.
+            if self.cfg.autonomous
+                && !self.cfg.is_subagent
+                && !attempt_reminded
+                && turn.tool_calls == 0
+                && stop_reason != Some(StopReason::Refusal)
+            {
+                attempt_reminded = true;
+                self.system_event("attempt_reminder", json!({}));
+                self.push_user(Message::user_text(ATTEMPT_REMINDER), true, None, true);
                 continue;
             }
 
