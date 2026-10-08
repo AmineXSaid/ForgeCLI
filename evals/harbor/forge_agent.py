@@ -12,6 +12,8 @@ Configuration comes from the environment of the `harbor` process:
   `forge` inside the container. The key is never put on the command line.
 - `FORGE_HARBOR_ARGS`: extra `forge` flags for every task (for example
   `--max-turns 100`).
+- `FORGE_HARBOR_AUTONOMOUS`: `forge` runs with `--autonomous` (no question tools,
+  attempt before giving up); `0` turns it off, for A/B runs.
 - `FORGE_HARBOR_TIME_LIMIT`: seconds for `--max-time`. By default the task's own
   agent time limit is used (read from the running trial), minus a margin, so
   the model knows its deadline and is warned before it.
@@ -156,6 +158,8 @@ class ForgeCLI(BaseInstalledAgent):
         }
         env["FORGE_TASK"] = instruction
         flags = ["--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
+        if os.environ.get("FORGE_HARBOR_AUTONOMOUS", "1").strip().lower() not in ("0", "false", "no", "off"):
+            flags.append("--autonomous")
         if model:
             flags += ["--model", model]
         extra = shlex.split(os.environ.get("FORGE_HARBOR_ARGS", ""))

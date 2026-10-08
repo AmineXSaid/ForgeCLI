@@ -53,6 +53,7 @@ evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
 | `FORGE_HARBOR_JOBS` | `2` | Tasks in parallel |
 | `FORGE_HARBOR_ARGS` | | Extra `forge` flags, e.g. `--max-turns 100` |
 | `FORGE_STATIC_BIN` | `target-static/release/forge` | Binary copied into containers |
+| `FORGE_HARBOR_AUTONOMOUS` | `1` | `forge --autonomous`; `0` turns it off (job name gets `-noauto`) |
 | `FORGE_HARBOR_TIME_LIMIT` | the task's own limit | Seconds for `forge --max-time` |
 | `FORGE_HARBOR_CA_BUNDLE` | | Extra CAs to trust inside containers (see below) |
 | `FORGE_HARBOR_HOSTS` | the endpoint's host | Names to resolve here and pin in each container's `/etc/hosts` (`none` turns it off) |

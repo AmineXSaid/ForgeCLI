@@ -9,6 +9,7 @@
 #   FORGE_HARBOR_DATASET  default terminal-bench@2.0
 #   FORGE_HARBOR_JOBS     tasks in parallel (default 2)
 #   FORGE_HARBOR_ARGS     extra forge flags for every task
+#   FORGE_HARBOR_AUTONOMOUS  0 runs forge without --autonomous (job name gets -noauto)
 #   FORGE_HARBOR_TIME_LIMIT  seconds for --max-time (default: the task's own limit)
 #   FORGE_HARBOR_CA_BUNDLE   extra CAs to trust in containers (job name gets -hostca)
 #   FORGE_*               endpoint, key and limits, passed into the containers
@@ -40,6 +41,7 @@ git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || dirty="-dirty"
 # Runs with extra trusted CAs change the task environment: label them, they're for local comparisons.
 ca=""
 [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
+case "${FORGE_HARBOR_AUTONOMOUS:-1}" in 0|false|no|off) ca="${ca}-noauto" ;; esac
 model="${FORGE_HARBOR_MODEL:-openai/deep-thinking}"
 model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 job="forgecli-${mode}-${model_tag}-${commit}${dirty}${ca}-$(date +%Y%m%d-%H%M%S)"
