@@ -1,3 +1,5 @@
 /target
 *.swp
 /evals/results
+/target-static
+__pycache__/

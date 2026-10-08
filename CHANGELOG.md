@@ -333,6 +333,13 @@
     built-in Explore agent searches at `low` effort, so exploration costs
     less. Models without effort levels ignore it.
 
+### Measurement
+- `evals/harbor/`: a Harbor agent that runs ForgeCLI on Terminal-Bench, with
+  a static (musl) build script and a run script for a 10-task subset or the
+  full 5-attempt run, each job named after its commit.
+- The `slugify-trap` eval now checks that behaviour is unchanged, as its
+  instruction says.
+
 ### Tools and integrations
 - MCP client (stdio, streamable HTTP, SSE), `forge mcp` and `forge mcp serve` (C16).
 - WebFetch (small-model answers), WebSearch, AskUserQuestion, plan mode, `--worktree`.

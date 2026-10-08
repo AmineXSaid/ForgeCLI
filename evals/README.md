@@ -41,3 +41,8 @@ and stderr.
 | csv-to-json | tool-design | Write new code to a precise spec checked on hidden input |
 
 Add tasks for every harness change, and name the pillar they exercise.
+
+## Terminal-Bench
+
+For the external benchmark (Terminal-Bench through Harbor), see
+[`harbor/README.md`](harbor/README.md).
