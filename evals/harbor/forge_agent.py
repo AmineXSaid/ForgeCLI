@@ -12,6 +12,12 @@ Configuration comes from the environment of the `harbor` process:
   `forge` inside the container. The key is never put on the command line.
 - `FORGE_HARBOR_ARGS`: extra `forge` flags for every task (for example
   `--max-turns 100`).
+- `FORGE_HARBOR_TIME_LIMIT`: seconds for `--max-time`. By default the task's own
+  agent time limit is used (read from the running trial), minus a margin, so
+  the model knows its deadline and is warned before it.
+- `FORGE_HARBOR_CA_BUNDLE`: a PEM file of extra certificate authorities to
+  trust inside the task container (behind a TLS-inspecting proxy). This
+  changes the task environment: scores are for local comparisons only.
 
 The model comes from `harbor run -m provider/name`; the provider part is
 dropped, so `-m openai/deep-thinking` runs `forge --model deep-thinking`.
@@ -19,6 +25,7 @@ dropped, so `-m openai/deep-thinking` runs `forge --model deep-thinking`.
 Run it through `evals/harbor/run.sh`. Written against Harbor 0.24.0.
 """
 
+import inspect
 import json
 import os
 import shlex
@@ -35,6 +42,48 @@ REMOTE_BIN = "/usr/local/bin/forge"
 LOG_DIR = "/logs/agent"
 STREAM_LOG = "forge.jsonl"
 STDERR_LOG = "forge.stderr.txt"
+# Seconds kept back from the task's limit, so the final report is written before the cut-off.
+TIME_MARGIN = 30
+REMOTE_CA = "/tmp/forge-extra-ca.pem"
+# Trust REMOTE_CA in the container: in the system store (now, and for any later
+# `update-ca-certificates`, e.g. when a test script installs curl), in existing bundle files,
+# and for uv, which test scripts use to install their tools.
+TRUST_CA = r"""
+src=%s
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+""" % REMOTE_CA
+
+
+def task_time_limit() -> float | None:
+    """The agent time limit of the trial running this agent, in seconds.
+
+    Harbor gives it only to its oracle agent, so it is read from the Trial on the
+    call stack (Harbor 0.24 awaits `run()` directly); FORGE_HARBOR_TIME_LIMIT overrides it.
+    """
+    override = os.environ.get("FORGE_HARBOR_TIME_LIMIT")
+    if override:
+        return float(override)
+    frame = inspect.currentframe()
+    while frame is not None:
+        value = getattr(frame.f_locals.get("self"), "_agent_timeout_sec", None)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+        frame = frame.f_back
+    return None
 
 
 class ForgeCLI(BaseInstalledAgent):
@@ -51,6 +100,12 @@ class ForgeCLI(BaseInstalledAgent):
             raise RuntimeError(f"{binary} not found: run evals/harbor/build-static.sh first")
         await environment.upload_file(binary, REMOTE_BIN)
         await self.exec_as_root(environment, command=f"chmod 755 {REMOTE_BIN} && {REMOTE_BIN} --version")
+        ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
+        if ca:
+            if not Path(ca).is_file():
+                raise RuntimeError(f"FORGE_HARBOR_CA_BUNDLE: {ca} not found")
+            await environment.upload_file(Path(ca), REMOTE_CA)
+            await self.exec_as_root(environment, command=TRUST_CA)
 
     @with_prompt_template
     async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
@@ -64,7 +119,11 @@ class ForgeCLI(BaseInstalledAgent):
         flags = ["--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
         if model:
             flags += ["--model", model]
-        flags += shlex.split(os.environ.get("FORGE_HARBOR_ARGS", ""))
+        extra = shlex.split(os.environ.get("FORGE_HARBOR_ARGS", ""))
+        limit = task_time_limit()
+        if limit and "--max-time" not in extra:
+            flags += ["--max-time", str(max(60, int(limit) - TIME_MARGIN))]
+        flags += extra
         command = (
             f"mkdir -p {LOG_DIR}; "
             f'{REMOTE_BIN} -p "$FORGE_TASK" {shlex.join(flags)} '

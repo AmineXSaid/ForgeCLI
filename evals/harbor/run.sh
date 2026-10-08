@@ -9,6 +9,8 @@
 #   FORGE_HARBOR_DATASET  default terminal-bench@2.0
 #   FORGE_HARBOR_JOBS     tasks in parallel (default 2)
 #   FORGE_HARBOR_ARGS     extra forge flags for every task
+#   FORGE_HARBOR_TIME_LIMIT  seconds for --max-time (default: the task's own limit)
+#   FORGE_HARBOR_CA_BUNDLE   extra CAs to trust in containers (job name gets -hostca)
 #   FORGE_*               endpoint, key and limits, passed into the containers
 # Anything after the mode goes to `harbor run` (e.g. -i 'some-task*').
 set -euo pipefail
@@ -35,7 +37,10 @@ esac
 commit="$(git rev-parse --short HEAD)"
 dirty=""
 git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || dirty="-dirty"
-job="forgecli-${mode}-${commit}${dirty}-$(date +%Y%m%d-%H%M%S)"
+# Runs with extra trusted CAs change the task environment: label them, they're for local comparisons.
+ca=""
+[ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
+job="forgecli-${mode}-${commit}${dirty}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
 PYTHONPATH="$repo/evals/harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \

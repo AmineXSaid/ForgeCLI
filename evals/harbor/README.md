@@ -53,6 +53,12 @@ evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
 | `FORGE_HARBOR_JOBS` | `2` | Tasks in parallel |
 | `FORGE_HARBOR_ARGS` | | Extra `forge` flags, e.g. `--max-turns 100` |
 | `FORGE_STATIC_BIN` | `target-static/release/forge` | Binary copied into containers |
+| `FORGE_HARBOR_TIME_LIMIT` | the task's own limit | Seconds for `forge --max-time` |
+| `FORGE_HARBOR_CA_BUNDLE` | | Extra CAs to trust inside containers (see below) |
+
+Each task has an agent time limit, and Harbor stops the agent when it's up.
+The agent passes that limit, less 30 seconds, as `--max-time`. The model then
+knows its deadline from the start and gets a wrap-up reminder near the end.
 
 The job name records the commit, so every result is pinned to a build. A
 `-dirty` suffix means uncommitted changes to `crates/`.
@@ -96,3 +102,23 @@ If that file doesn't have it either, ask IT for the root certificate and add
 it to the system trust store (`/etc/pki/ca-trust/source/anchors/` then
 `sudo update-ca-trust`, or `/usr/local/share/ca-certificates/` then
 `sudo update-ca-certificates`).
+
+The task containers have the same problem. Their test scripts download tools
+(`uv`, packages) over HTTPS, so on such a network they fail and every task
+scores 0, whatever the agent did. To work around it:
+
+```bash
+export FORGE_HARBOR_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
+evals/harbor/run.sh subset
+```
+
+The agent adds those certificates to each container's trust store, including
+for any later `update-ca-certificates`, and turns on `native-tls` for `uv`.
+This changes the task environment, so:
+- these jobs are named `-hostca`;
+- their scores only compare ForgeCLI builds with each other;
+- they aren't comparable with the leaderboard, and must not be submitted.
+
+Tools that bring their own certificate list (for example `pip` through
+`certifi`) may still fail. For real scores, run from a network without TLS
+inspection.
