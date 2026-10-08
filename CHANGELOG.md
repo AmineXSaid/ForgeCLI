@@ -79,6 +79,30 @@
   way (another command, shell or tool); after an environment failure, to stop
   and say what is missing. Replies are kept short for short messages.
 
+### Terminal UI: Forge's look
+- Forge's palette: every colour is a Pajamas stop from Forge for VS Code
+  (brand purple, link blue, CI-style green, amber and red), with its own value
+  for dark and light backgrounds. 24-bit where the terminal says it has it
+  (`COLORTERM`, Windows Terminal, iTerm, WezTerm, VS Code), else the nearest of
+  256, else the 16 ANSI colours; `FORGE_COLOR_DEPTH` overrides. The `auto`
+  theme (now the default) follows `COLORFGBG`.
+- Forge's F-and-cube logo opens a session, drawn in half blocks beside
+  ForgeCLI's version, the model and where it runs, the directory and the keys
+  to know, then Forge's welcome line. Narrow terminals get the small logo, or
+  none; without colour it keeps its shape.
+- With no endpoint set up, a first-run card (the logo, what ForgeCLI is, the
+  servers it works with, the variables to set and what Forge found) replaces
+  the bare error. It still exits with 3.
+- The transcript is Forge's timeline: a tool call shows its turning blue dot
+  while it runs, then goes to scrollback with a green or red dot and its
+  result under `└`; paths are in link colour, commands follow a `$`. Answers
+  have a quiet dot, prompts a purple `❯` on a raised surface; notices lead with
+  `·`, `▲` or `✕`.
+- The spinner speaks Forge (Forging, Hammering, Tempering…) with a shimmer
+  sweeping the word; waiting for an answer is amber. The composer asks "What
+  shall we forge today?". The status line starts with Forge's `▛◆` and shows a
+  context meter (`━━━─────`) that turns amber at 70% and red at 90%.
+
 ### Terminal UI
 - Results say what happened: `Read 40 lines`, `Updated calc.py: 1 addition,
   1 removal` with the changed lines in red and green, the first lines of a

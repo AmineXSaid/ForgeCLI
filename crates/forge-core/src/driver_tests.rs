@@ -1361,8 +1361,8 @@ async fn tui_only_commands_save_theme_and_status_line() {
 
     t.d.surface = Surface::Tui;
     let d = &mut t.d;
-    assert!(local(d, "/theme").await.starts_with("Theme: dark"));
-    assert!(fails(d, "/theme neon").await.contains("Choose dark, light or none"));
+    assert!(local(d, "/theme").await.starts_with("Theme: auto"));
+    assert!(fails(d, "/theme neon").await.contains("Choose auto, dark, light or none"));
     assert!(local(d, "/theme light").await.starts_with("Theme set to light. Saved in user settings"));
     assert_eq!(read_json(&user)["theme"], "light");
     assert_eq!(d.info.settings.str("/theme"), Some("light"), "the loaded settings follow");

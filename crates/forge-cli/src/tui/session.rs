@@ -316,7 +316,7 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         let now = driver.info.settings.str("/theme").map(str::to_string);
         if now != theme {
             theme = now;
-            let _ = ui.send(UiEvent::Theme(theme.clone().unwrap_or_else(|| "dark".into())));
+            let _ = ui.send(UiEvent::Theme(theme.clone().unwrap_or_else(|| "auto".into())));
         }
         match status_command(&driver) {
             Some(cmd) => {

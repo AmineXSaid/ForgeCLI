@@ -22,7 +22,9 @@ use super::editor::Editor;
 use super::text::{Markdown, Theme};
 
 /// Under a tool call or a command: its result.
-const RESULT_MARK: &str = "  ↳  ";
+const RESULT_MARK: &str = "  └ ";
+/// Where a result's further lines start: under the text after [`RESULT_MARK`].
+const RESULT_INDENT: &str = "    ";
 
 /// A slash command for the `/` menu.
 #[derive(Debug, Clone, PartialEq)]
@@ -232,6 +234,9 @@ const DOUBLE_PRESS: Duration = Duration::from_millis(800);
 pub struct App {
     /// Tool calls of this turn by id (name, input), so each result is shown the way its tool needs.
     calls: std::collections::HashMap<String, (String, Value)>,
+    /// Tool calls still running, in call order: their header waits in the live
+    /// region with a turning dot, and goes to scrollback with its result.
+    pub running: Vec<Running>,
     pub theme: Theme,
     pub editor: Editor,
     pub status: StatusView,
@@ -306,7 +311,7 @@ pub fn result_lines(
     is_error: bool,
     structured: Option<&Value>,
 ) -> Vec<Line<'static>> {
-    let mark = || Span::styled(RESULT_MARK, t.dim());
+    let mark = || Span::styled(RESULT_MARK, t.hairline());
     let one = |s: String, st: Style| vec![Line::from(vec![mark(), Span::styled(s, st)])];
     let first_line = |text: &str| -> String {
         text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(160).collect()
@@ -378,14 +383,17 @@ pub fn result_lines(
                     }
                     shown += 1;
                     out.push(Line::from(vec![
-                        Span::raw("     "),
+                        Span::raw(RESULT_INDENT),
                         Span::styled(format!("{num:>4} {sign} {body}"), style),
                     ]));
                 }
             }
             let changed = added + removed;
             if changed > shown {
-                out.push(Line::from(Span::styled(format!("     … {} more changed lines", changed - shown), t.dim())));
+                out.push(Line::from(Span::styled(
+                    format!("{RESULT_INDENT}… {} more changed lines", changed - shown),
+                    t.dim(),
+                )));
             }
             out
         }
@@ -396,12 +404,12 @@ pub fn result_lines(
             }
             let mut out = vec![];
             for (i, l) in body.iter().take(3).enumerate() {
-                let lead = if i == 0 { mark() } else { Span::raw("     ") };
+                let lead = if i == 0 { mark() } else { Span::raw(RESULT_INDENT) };
                 let l: String = l.chars().take(200).collect();
                 out.push(Line::from(vec![lead, Span::styled(l, t.dim())]));
             }
             if body.len() > 3 {
-                out.push(Line::from(Span::styled(format!("     … +{} lines", body.len() - 3), t.dim())));
+                out.push(Line::from(Span::styled(format!("{RESULT_INDENT}… +{} lines", body.len() - 3), t.dim())));
             }
             out
         }
@@ -411,6 +419,37 @@ pub fn result_lines(
             one(format!("{}{more}", first_line(text)), t.dim())
         }
     }
+}
+
+/// A tool call that has not answered yet.
+#[derive(Debug, Clone)]
+pub struct Running {
+    pub id: String,
+    /// The header without its dot: the tool's name and what it works on.
+    pub header: Vec<Span<'static>>,
+    pub since: Instant,
+}
+
+/// A tool call's header, as Forge's chat writes it: the name, then what it
+/// works on: a path in link colour, a command after a `$`, else quieter text.
+pub fn tool_header(t: &Theme, name: &str, input: &Value) -> Vec<Span<'static>> {
+    let arg = summarize(name, input);
+    let mut spans = vec![Span::styled(name.to_string(), t.bold())];
+    if arg.is_empty() {
+        return spans;
+    }
+    spans.push(Span::raw(" "));
+    match name {
+        "Bash" => {
+            spans.push(Span::styled("$ ", t.accent()));
+            spans.push(Span::raw(arg));
+        }
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "LS" | "Glob" | "Grep" | "WebFetch" => {
+            spans.push(Span::styled(arg, t.info()));
+        }
+        _ => spans.push(Span::styled(arg, t.dim())),
+    }
+    spans
 }
 
 /// The main argument of a tool call, for one line.
@@ -496,6 +535,7 @@ impl App {
     pub fn new(theme: Theme, history: Vec<String>) -> Self {
         App {
             calls: Default::default(),
+            running: vec![],
             theme,
             editor: Editor::with_history(history),
             status: StatusView::default(),
@@ -561,11 +601,8 @@ impl App {
     fn commit_answer_lines(&mut self, lines: Vec<Line<'static>>) {
         let t = self.theme;
         for mut line in lines {
-            let marker = if self.first_line {
-                Span::styled(format!("{} ", glyphs::ANSWER), t.accent())
-            } else {
-                Span::raw("  ")
-            };
+            let marker =
+                if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.dim()) } else { Span::raw("  ") };
             if self.first_line {
                 self.gap();
             }
@@ -583,7 +620,7 @@ impl App {
         let t = self.theme;
         let mut line = self.md.clone().line(&self.live, &t)?;
         let marker =
-            if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.accent()) } else { Span::raw("  ") };
+            if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.dim()) } else { Span::raw("  ") };
         line.spans.insert(0, marker);
         Some(line)
     }
@@ -602,10 +639,13 @@ impl App {
     /// Write the person's prompt into scrollback.
     pub fn echo_prompt(&mut self, text: &str) {
         self.gap();
-        let st = self.theme.user();
+        let t = self.theme;
+        let st = t.user();
+        // The mark in brand colour on the prompt's own surface.
+        let mark_st = if t.color { st.patch(t.accent()) } else { st };
         for (i, l) in text.lines().enumerate() {
-            let marker = if i == 0 { "> " } else { "  " };
-            self.pending.push(Line::from(Span::styled(format!("{marker}{l} "), st)));
+            let marker = if i == 0 { format!("{} ", glyphs::PROMPT) } else { "  ".into() };
+            self.pending.push(Line::from(vec![Span::styled(marker, mark_st), Span::styled(format!("{l} "), st)]));
         }
     }
 
@@ -615,7 +655,7 @@ impl App {
         let st = if is_error && !checklist { self.theme.error() } else { Style::default() };
         self.gap();
         for (i, l) in text.lines().enumerate() {
-            let marker = Span::styled(if i == 0 { RESULT_MARK } else { "     " }, self.theme.dim());
+            let marker = Span::styled(if i == 0 { RESULT_MARK } else { RESULT_INDENT }, self.theme.hairline());
             let line = match check_mark(&self.theme, l) {
                 Some((mark, ms)) => {
                     Line::from(vec![marker, Span::styled(mark, ms), Span::raw(l[mark.len()..].to_string())])
@@ -626,15 +666,26 @@ impl App {
         }
     }
 
+    /// A tool call's header into scrollback, its dot in the colour of how it ended.
+    fn commit_tool(&mut self, r: Running, dot: Style) {
+        self.gap();
+        let mut spans = vec![Span::styled(format!("{} ", glyphs::TOOL), dot)];
+        spans.extend(r.header);
+        self.pending.push(Line::from(spans));
+    }
+
     fn notice(&mut self, level: NoticeLevel, text: &str) {
-        let st = match level {
-            NoticeLevel::Info => self.theme.dim(),
-            NoticeLevel::Warning => self.theme.warning(),
-            NoticeLevel::Error => self.theme.error(),
+        let t = self.theme;
+        // A mark in the level's colour; the words stay readable.
+        let (mark, mark_st, st) = match level {
+            NoticeLevel::Info => ("·", t.dim(), t.dim()),
+            NoticeLevel::Warning => ("▲", t.warning(), Style::default()),
+            NoticeLevel::Error => ("✕", t.error(), t.error()),
         };
         self.gap();
-        for l in text.lines() {
-            self.pending.push(Line::from(Span::styled(format!("  {l}"), st)));
+        for (i, l) in text.lines().enumerate() {
+            let lead = if i == 0 { Span::styled(format!("  {mark} "), mark_st) } else { Span::raw("    ") };
+            self.pending.push(Line::from(vec![lead, Span::styled(l.to_string(), st)]));
         }
     }
 
@@ -656,7 +707,7 @@ impl App {
             UiEvent::Theme(name) => {
                 // The session's /color stays.
                 let accent = self.theme.accent;
-                self.theme = Theme::named(&name, self.color_ok);
+                self.theme = Theme::named(&name, self.color_ok, self.theme.depth);
                 self.theme.accent = accent;
             }
             UiEvent::Copy(text) => self.clipboard = Some(text),
@@ -673,6 +724,10 @@ impl App {
             }
             UiEvent::Idle => {
                 self.flush_live();
+                for r in std::mem::take(&mut self.running) {
+                    let dot = self.theme.dim();
+                    self.commit_tool(r, dot);
+                }
                 self.busy = false;
                 self.busy_since = None;
                 self.activity.clear();
@@ -771,13 +826,11 @@ impl App {
                         ContentBlock::ToolUse { name, .. } if self.focus => self.activity = format!("Running {name}"),
                         ContentBlock::ToolUse { id, name, input, .. } => {
                             self.calls.insert(id.clone(), (name.clone(), input.clone()));
-                            self.gap();
-                            let t = self.theme;
-                            self.pending.push(Line::from(vec![
-                                Span::styled(format!("{} ", glyphs::TOOL), t.success()),
-                                Span::styled(name.clone(), t.bold()),
-                                Span::raw(format!("({})", summarize(name, input))),
-                            ]));
+                            self.running.push(Running {
+                                id: id.clone(),
+                                header: tool_header(&self.theme, name, input),
+                                since: Instant::now(),
+                            });
                             self.activity = format!("Running {name}");
                         }
                         _ => {}
@@ -793,6 +846,12 @@ impl App {
                 for b in &message.content {
                     if let ContentBlock::ToolResult { tool_use_id, content, is_error, .. } = b {
                         let tool = self.calls.remove(tool_use_id).map(|(n, _)| n).unwrap_or_default();
+                        let failed = *is_error == Some(true);
+                        if let Some(i) = self.running.iter().position(|r| r.id == *tool_use_id) {
+                            let r = self.running.remove(i);
+                            let dot = if failed { self.theme.error() } else { self.theme.success() };
+                            self.commit_tool(r, dot);
+                        }
                         let lines = result_lines(
                             &self.theme,
                             &tool,
@@ -1724,7 +1783,7 @@ mod tests {
     use forge_types::{ApiMessage, MessageContent, Role, StopReason, Usage};
 
     fn app() -> App {
-        let mut a = App::new(Theme { color: false, light: false, accent: None }, vec![]);
+        let mut a = App::new(Theme { color: false, light: false, accent: None, depth: Default::default() }, vec![]);
         a.commands = vec![
             CommandInfo { name: "clear".into(), args: "[name]".into(), description: "Start a new conversation".into() },
             CommandInfo { name: "compact".into(), args: "[instructions]".into(), description: "Summarize".into() },
@@ -1765,7 +1824,7 @@ mod tests {
         typed(&mut a, "hello");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("hello".into())]);
         assert!(a.busy);
-        assert_eq!(texts(&a.take_pending()), ["", "> hello "]);
+        assert_eq!(texts(&a.take_pending()), ["", "❯ hello "]);
         typed(&mut a, "next");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "queued while a turn runs");
         assert_eq!(a.queued.len(), 1);
@@ -1783,7 +1842,7 @@ mod tests {
 
     #[test]
     fn a_failed_checklist_paints_only_its_failed_rows() {
-        let mut a = App::new(Theme { color: true, light: false, accent: None }, vec![]);
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
         a.on_event(UiEvent::Reply { text: "ok   git          found\nFAIL shell        none".into(), is_error: true });
         let lines = a.take_pending();
         let (ok, fail) = (&lines[1], &lines[2]);
@@ -1794,6 +1853,21 @@ mod tests {
         // Any other failed reply is an error throughout.
         a.on_event(UiEvent::Reply { text: "Unknown command: /x".into(), is_error: true });
         assert_eq!(a.take_pending().last().unwrap().spans[1].style, a.theme.error());
+    }
+
+    #[test]
+    fn notices_lead_with_a_mark_in_their_colour() {
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
+        a.on_event(UiEvent::Engine(EngineEvent::Notice {
+            level: NoticeLevel::Warning,
+            text: "careful\nsecond".into(),
+        }));
+        let lines = a.take_pending();
+        assert_eq!(texts(&lines), ["", "  ▲ careful", "    second"]);
+        assert_eq!(lines[1].spans[0].style, a.theme.warning());
+        assert_eq!(lines[1].spans[1].style, Style::default(), "the words stay readable");
+        a.on_event(UiEvent::Engine(EngineEvent::Notice { level: NoticeLevel::Error, text: "broke".into() }));
+        assert_eq!(texts(&a.take_pending()), ["", "  ✕ broke"]);
     }
 
     #[test]
@@ -1815,7 +1889,7 @@ mod tests {
 
     #[test]
     fn color_and_focus_change_this_session_only() {
-        let mut a = App::new(Theme { color: true, light: false, accent: None }, vec![]);
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
         assert!(a.submit("/color green".into()).is_empty(), "answered by the UI");
         assert_eq!(a.theme.accent, Some(ratatui::style::Color::Green));
         assert_eq!(a.theme.accent().fg, Some(ratatui::style::Color::Green));
@@ -1902,7 +1976,7 @@ mod tests {
         typed(&mut a, "/usage");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/usage".into())], "sent, not queued");
         assert!(a.queued.is_empty() && a.busy, "the turn goes on");
-        assert_eq!(texts(&a.take_pending()), ["", "> /usage "], "echoed");
+        assert_eq!(texts(&a.take_pending()), ["", "❯ /usage "], "echoed");
         typed(&mut a, "/compact");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "not immediate: queued");
         assert_eq!(a.queued.len(), 1);
@@ -1954,7 +2028,7 @@ mod tests {
         a.on_event(delta("I will walk"));
         assert_eq!(texts(&a.take_pending()), [""], "the blank line goes out with the first words");
         a.on_event(delta(" through it.\n"));
-        assert_eq!(texts(&a.take_pending()), ["• I will walk through it."], "and isn't added twice");
+        assert_eq!(texts(&a.take_pending()), ["● I will walk through it."], "and isn't added twice");
     }
 
     #[test]
@@ -1965,7 +2039,7 @@ mod tests {
             parent_tool_use_id: None,
         }));
         a.on_event(delta("Here is **the** plan:\n- step"));
-        assert_eq!(texts(&a.pending), ["", "• Here is the plan:"]);
+        assert_eq!(texts(&a.pending), ["", "● Here is the plan:"]);
         assert_eq!(a.live, "- step");
         a.on_event(delta(" one\n```sh\nls\n"));
         a.on_event(UiEvent::Engine(EngineEvent::Stream {
@@ -1997,7 +2071,10 @@ mod tests {
             uuid: "u".into(),
             parent_tool_use_id: None,
         }));
-        assert_eq!(texts(&a.take_pending()), ["", "› Bash(cargo test)"]);
+        // The call waits in the live region with a turning dot until it answers.
+        assert!(texts(&a.take_pending()).is_empty());
+        assert_eq!(a.running.len(), 1);
+        assert_eq!(texts(&[Line::from(a.running[0].header.clone())]), ["Bash $ cargo test"]);
         a.on_event(UiEvent::Engine(EngineEvent::User {
             message: forge_types::Message::user(vec![ContentBlock::tool_result("t1", "ok\n2 passed", false)]),
             uuid: "u2".into(),
@@ -2005,18 +2082,23 @@ mod tests {
             is_meta: false,
             parent_tool_use_id: None,
         }));
-        assert_eq!(texts(&a.take_pending()), ["  ↳  ok", "     2 passed"], "a command shows its first lines");
+        assert_eq!(
+            texts(&a.take_pending()),
+            ["", "● Bash $ cargo test", "  └ ok", "    2 passed"],
+            "the header goes out with its result; a command shows its first lines"
+        );
+        assert!(a.running.is_empty());
         let _ = MessageContent::Text(String::new());
     }
 
     #[test]
     fn results_say_what_happened() {
-        let t = Theme { color: false, light: false, accent: None };
+        let t = Theme { color: false, light: false, accent: None, depth: Default::default() };
         let read =
             json!({"type": "text", "file": {"filePath": "/p/a.rs", "numLines": 40, "startLine": 1, "totalLines": 120}});
         assert_eq!(
             texts(&result_lines(&t, "Read", "     1\tfn main", false, Some(&read))),
-            ["  ↳  Read 40 of 120 lines"]
+            ["  └ Read 40 of 120 lines"]
         );
         let edit = json!({"filePath": "/p/src/calc.py", "structuredPatch": [{
             "oldStart": 1, "oldLines": 3, "newStart": 1, "newLines": 3,
@@ -2025,20 +2107,20 @@ mod tests {
         assert_eq!(
             texts(&result_lines(&t, "Edit", "The file was updated", false, Some(&edit))),
             [
-                "  ↳  Updated calc.py: 1 addition, 1 removal",
-                "        2 -     return a - b",
-                "        2 +     return a + b"
+                "  └ Updated calc.py: 1 addition, 1 removal",
+                "       2 -     return a - b",
+                "       2 +     return a + b"
             ]
         );
         let write = json!({"type": "create", "filePath": "/p/new.txt", "content": "a\nb\n", "structuredPatch": []});
-        assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  ↳  Wrote 2 lines to new.txt"]);
-        assert_eq!(texts(&result_lines(&t, "Bash", "", false, None)), ["  ↳  (no output)"]);
+        assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  └ Wrote 2 lines to new.txt"]);
+        assert_eq!(texts(&result_lines(&t, "Bash", "", false, None)), ["  └ (no output)"]);
         let long = (1..=6).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         assert_eq!(
             texts(&result_lines(&t, "Bash", &long, false, None)),
-            ["  ↳  line 1", "     line 2", "     line 3", "     … +3 lines"]
+            ["  └ line 1", "    line 2", "    line 3", "    … +3 lines"]
         );
-        assert_eq!(texts(&result_lines(&t, "Bash", "boom\nmore", true, None)), ["  ↳  boom (+1 lines)"]);
+        assert_eq!(texts(&result_lines(&t, "Bash", "boom\nmore", true, None)), ["  └ boom (+1 lines)"]);
     }
 
     #[test]
@@ -2237,7 +2319,7 @@ mod tests {
     #[test]
     fn ctrl_r_searches_history() {
         let mut a = App::new(
-            Theme { color: false, light: false, accent: None },
+            Theme { color: false, light: false, accent: None, depth: Default::default() },
             vec!["cargo test".into(), "git status".into(), "cargo build".into()],
         );
         typed(&mut a, "draft");
@@ -2321,7 +2403,7 @@ mod tests {
 
     #[test]
     fn question_mark_themes_and_clipboard() {
-        let mut a = App::new(Theme { color: true, light: false, accent: None }, vec![]);
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
         a.on_key(key(KeyCode::Char('?')));
         let shown = texts(&a.take_pending()).join("\n");
         assert!(shown.contains("Shift+Tab") && shown.contains("Ctrl+R"), "{shown}");
@@ -2330,13 +2412,13 @@ mod tests {
         assert_eq!(a.editor.text(), "why?");
 
         a.on_event(UiEvent::Theme("light".into()));
-        assert_eq!(a.theme, Theme { color: true, light: true, accent: None });
+        assert_eq!(a.theme, Theme { color: true, light: true, accent: None, depth: Default::default() });
         a.on_event(UiEvent::Theme("none".into()));
         assert!(!a.theme.color);
         a.on_event(UiEvent::Theme("dark".into()));
-        assert_eq!(a.theme, Theme { color: true, light: false, accent: None });
+        assert_eq!(a.theme, Theme { color: true, light: false, accent: None, depth: Default::default() });
         // Without colour allowed, no theme brings it back.
-        let mut b = App::new(Theme { color: false, light: false, accent: None }, vec![]);
+        let mut b = App::new(Theme { color: false, light: false, accent: None, depth: Default::default() }, vec![]);
         b.on_event(UiEvent::Theme("light".into()));
         assert!(!b.theme.color);
 

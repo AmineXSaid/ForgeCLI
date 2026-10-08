@@ -21,15 +21,17 @@ pub struct Fail {
     pub code: i32,
     pub message: String,
     pub hint: Option<String>,
+    /// No endpoint is set up: the terminal UI shows its first-run card.
+    pub first_run: bool,
 }
 
 impl Fail {
     pub fn usage(message: impl Into<String>) -> Self {
-        Fail { code: USAGE, message: message.into(), hint: None }
+        Fail { code: USAGE, message: message.into(), hint: None, first_run: false }
     }
 
     pub fn config(message: impl Into<String>) -> Self {
-        Fail { code: CONFIG, message: message.into(), hint: None }
+        Fail { code: CONFIG, message: message.into(), hint: None, first_run: false }
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
@@ -54,7 +56,10 @@ impl From<forge_core::CoreError> for Fail {
     fn from(e: forge_core::CoreError) -> Self {
         use forge_core::CoreError::*;
         match e {
-            Auth(m) => Fail::config(m).with_hint("Run `forge doctor` to see which endpoint and key Forge found."),
+            Auth(m) => Fail {
+                first_run: true,
+                ..Fail::config(m).with_hint("Run `forge doctor` to see which endpoint and key Forge found.")
+            },
             Config(m) => Fail::config(m),
             Engine(e) => Fail::config(e.to_string()),
             Session(forge_session::SessionError::NotFound(id)) => Fail::config(format!("no session {id}"))
@@ -63,9 +68,12 @@ impl From<forge_core::CoreError> for Fail {
                 Fail::usage(format!("invalid session id {id:?}: session ids are UUIDs"))
             }
             Session(e) => Fail::config(e.to_string()),
-            Api(e) => {
-                Fail { code: if e.is_auth_failure() { CONFIG } else { FAILED }, message: e.to_string(), hint: e.hint() }
-            }
+            Api(e) => Fail {
+                code: if e.is_auth_failure() { CONFIG } else { FAILED },
+                message: e.to_string(),
+                hint: e.hint(),
+                first_run: false,
+            },
         }
     }
 }

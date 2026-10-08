@@ -25,7 +25,15 @@ pub const SPINNER_STEP: Duration = Duration::from_millis(80);
 pub const HINT_FOR: Duration = Duration::from_secs(2);
 const MENU_ROWS: usize = 8;
 const LIVE_ROWS: usize = 3;
-pub const PLACEHOLDER: &str = "Try \"explain this repo\" · / for commands";
+/// The composer's placeholder, as Forge's says it.
+pub const PLACEHOLDER: &str = "What shall we forge today?";
+/// What the spinner says while the model works, in Forge's voice (its spinner verbs).
+pub const VERBS: [&str; 8] =
+    ["Forging", "Hammering", "Tempering", "Shaping", "Heating the anvil", "Striking", "Annealing", "Polishing"];
+/// How long one verb stays.
+const VERB_FOR: Duration = Duration::from_secs(4);
+/// How long the turning dot of a running tool shows one face.
+const RUNNING_STEP: Duration = Duration::from_millis(220);
 
 /// `s` cut to `w` columns, with an ellipsis when it was longer.
 pub fn fit(s: &str, w: usize) -> String {
@@ -80,7 +88,7 @@ fn status_left(app: &App, now: Instant) -> (String, Style) {
         "plan" => (format!("{} plan mode on (shift+tab to cycle)", glyphs::MODE_PLAN), t.success()),
         "bypassPermissions" => (format!("{} bypass permissions on", glyphs::MODE_BYPASS), t.error()),
         "dontAsk" => ("don't ask mode on (shift+tab to cycle)".into(), t.dim()),
-        _ => ("? for shortcuts".into(), t.dim()),
+        _ => ("? for shortcuts".into(), t.subtle()),
     }
 }
 
@@ -283,8 +291,9 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
 fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
     let t = app.theme;
     let text_w = w.saturating_sub(2).max(1);
+    let prompt = || Span::styled(format!("{} ", glyphs::PROMPT), t.accent());
     if app.editor.is_empty() && !app.busy {
-        let row = Line::from(vec![Span::styled("> ", t.accent()), Span::styled(fit(PLACEHOLDER, text_w), t.dim())]);
+        let row = Line::from(vec![prompt(), Span::styled(fit(PLACEHOLDER, text_w), t.subtle())]);
         return (vec![row], (2, 0));
     }
     let (cur_line, cur_col) = app.editor.position();
@@ -302,7 +311,7 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
                     cursor = ((2 + col).min(w.saturating_sub(1)) as u16, rows.len() as u16);
                 }
             }
-            let prefix = if rows.is_empty() { Span::styled("> ", t.accent()) } else { Span::raw("  ") };
+            let prefix = if rows.is_empty() { prompt() } else { Span::raw("  ") };
             rows.push(Line::from(vec![prefix, Span::raw(chars[*a..*b].iter().collect::<String>())]));
         }
     }
@@ -359,19 +368,89 @@ fn menu(app: &App, w: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Forge's working shimmer: a soft highlight sweeps across `text`, once
+/// every two seconds or so.
+fn shimmer(t: &text::Theme, text: &str, since: Duration) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let span = chars.len() as i64 + 8;
+    let head = ((since.as_millis() / 70) as i64 % span) - 4;
+    let mut out: Vec<Span<'static>> = vec![];
+    for (i, c) in chars.iter().enumerate() {
+        let d = (i as i64 - head).abs();
+        let level = match d {
+            0 => 3,
+            1 => 2,
+            2 => 1,
+            _ => 0,
+        };
+        let st = t.shimmer(level);
+        match out.last_mut() {
+            Some(s) if s.style == st => s.content.to_mut().push(*c),
+            _ => out.push(Span::styled(c.to_string(), st)),
+        }
+    }
+    out
+}
+
+/// The context meter: `━━━─────` (box-drawing bars, which every monospace font
+/// has), brand while there is room, amber from 70%, red from 90%.
+fn meter(t: &text::Theme, pct: u8) -> Vec<Span<'static>> {
+    const CELLS: usize = 8;
+    let filled = ((pct as usize * CELLS + 50) / 100).min(CELLS);
+    let tone = if pct >= 90 {
+        t.error()
+    } else if pct >= 70 {
+        t.warning()
+    } else {
+        t.accent()
+    };
+    vec![Span::styled("━".repeat(filled), tone), Span::styled("─".repeat(CELLS - filled), t.subtle())]
+}
+
 fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     let (left, left_style) = status_left(app, now);
-    let right = status_right(app);
-    let left = fit(&left, w.saturating_sub(2));
-    let room = w.saturating_sub(text_width(&left) + 4);
-    let right = if room >= 8 { fit(&right, room) } else { String::new() };
-    let gap = w.saturating_sub(2 + text_width(&left) + text_width(&right));
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(left, left_style),
-        Span::raw(" ".repeat(gap)),
-        Span::styled(right, app.theme.dim()),
-    ])
+    // Forge's mark at text size leads the line, as in Forge's own status line.
+    let mark = super::brand::mark_inline(&app.theme);
+    let left = fit(&left, w.saturating_sub(5));
+    let room = w.saturating_sub(text_width(&left) + 7);
+    let right = status_right_spans(app, room);
+    let right_w: usize = right.iter().map(|s| text_width(&s.content)).sum();
+    let gap = w.saturating_sub(5 + text_width(&left) + right_w);
+    let mut spans = vec![Span::raw("  ")];
+    spans.extend(mark);
+    spans.push(Span::raw(" "));
+    spans.extend([Span::styled(left, left_style), Span::raw(" ".repeat(gap))]);
+    spans.extend(right);
+    Line::from(spans)
+}
+
+/// The right side of the status line in `room` columns: with the context
+/// meter when it fits, else the plain text of [`status_right`].
+fn status_right_spans(app: &App, room: usize) -> Vec<Span<'static>> {
+    let t = app.theme;
+    let s = &app.status;
+    let plain = status_right(app);
+    if app.status_text.is_some() || s.context_pct.is_none() || text_width(&plain) + 2 > room {
+        return if room >= 8 { vec![Span::styled(fit(&plain, room), t.dim())] } else { vec![] };
+    }
+    let sep = || Span::styled(" · ", t.hairline());
+    let mut out = vec![];
+    if !s.model.is_empty() {
+        out.push(Span::styled(s.model.clone(), t.dim()));
+        out.push(sep());
+    }
+    let pct = s.context_pct.unwrap_or(0);
+    out.extend(meter(&t, pct));
+    let label = if pct == 0 && s.context_used { " <1%".to_string() } else { format!(" {pct}%") };
+    out.push(Span::styled(label, t.dim()));
+    out.push(sep());
+    let cost = plain.rsplit(" · ").next().unwrap_or("").to_string();
+    out.push(Span::styled(cost, t.dim()));
+    let w: usize = out.iter().map(|s| text_width(&s.content)).sum();
+    if w > room {
+        return vec![Span::styled(fit(&plain, room), t.dim())];
+    }
+    out
 }
 
 /// The live region for a terminal `width` columns wide, at most `max_height` rows.
@@ -387,19 +466,37 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     if live.len() > LIVE_ROWS {
         live.drain(..live.len() - LIVE_ROWS);
     }
-    // 2. The spinner.
+    // 2. Tool calls still running, each with its dot turning; then the spinner.
     let mut spinner = vec![];
+    for r in &app.running {
+        let face = glyphs::RUNNING[(now.duration_since(r.since).as_millis() / RUNNING_STEP.as_millis()) as usize % 4];
+        let mut spans = vec![Span::styled(format!("{face} "), t.info())];
+        spans.extend(r.header.iter().cloned());
+        spinner.push(Line::default());
+        spinner.extend(text::wrap(vec![Line::from(spans)], w as u16).into_iter().take(2));
+    }
     if app.busy {
         let since = app.busy_since.map(|s| now.duration_since(s)).unwrap_or_default();
         let frame = SPINNER[(since.as_millis() / SPINNER_STEP.as_millis()) as usize % SPINNER.len()];
-        let text = if app.waiting_for_answer() {
-            format!("{frame} Waiting for your answer… ({}s)", since.as_secs())
+        let mut line = vec![Span::styled(format!("{frame} "), t.accent())];
+        if app.waiting_for_answer() {
+            // Needs you: amber, as Forge's status colours say it.
+            line.push(Span::styled(
+                fit(&format!("Waiting for your answer… ({}s)", since.as_secs()), w - 2),
+                t.warning(),
+            ));
         } else {
-            let activity = if app.activity.is_empty() { "Working" } else { app.activity.as_str() };
-            format!("{frame} {activity}… ({}s · esc to interrupt)", since.as_secs())
-        };
+            let verb = match app.activity.as_str() {
+                "" | "Working" => VERBS[(since.as_secs() / VERB_FOR.as_secs()) as usize % VERBS.len()].to_string(),
+                a => a.to_string(),
+            };
+            line.extend(shimmer(&t, &format!("{verb}…"), since));
+            let rest = format!(" ({}s · esc to interrupt)", since.as_secs());
+            let room = w.saturating_sub(2 + text_width(&verb) + 1);
+            line.push(Span::styled(fit(&rest, room), t.subtle()));
+        }
         spinner.push(Line::default());
-        spinner.push(Line::from(Span::styled(fit(&text, w), t.accent())));
+        spinner.push(Line::from(line));
     }
     // 3. A dialog.
     let room = (max_height as usize).max(1).saturating_sub(spinner.len() + 1);
@@ -411,7 +508,7 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         .map(|q| Line::from(Span::styled(fit(&format!("  ⏎ {}", q.replace('\n', " ")), w), t.dim())))
         .collect();
     // 5. The input box (hidden while a dialog is open).
-    let rule = Line::from(Span::styled("─".repeat(w), t.dim()));
+    let rule = Line::from(Span::styled("─".repeat(w), t.hairline()));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, w) } else { (vec![], (0, 0)) };
     // Ctrl+R: what is being searched for, above the input.
     let search: Vec<Line<'static>> = app
@@ -503,7 +600,7 @@ mod tests {
     }
 
     fn app(color: bool) -> App {
-        let mut a = App::new(Theme { color, light: false, accent: None }, vec![]);
+        let mut a = App::new(Theme { color, light: false, accent: None, depth: Default::default() }, vec![]);
         a.on_event(UiEvent::Status(StatusView {
             model: "opus".into(),
             mode: "default".into(),
@@ -546,13 +643,13 @@ mod tests {
         let v = live_view(&a, 60, 20);
         let (rows, buf) = draw(&v, 60);
         assert_eq!(rows[0], "─".repeat(60));
-        assert_eq!(rows[1], format!("> {PLACEHOLDER}"));
+        assert_eq!(rows[1], format!("❯ {PLACEHOLDER}"));
         assert_eq!(rows[2], "─".repeat(60));
-        assert_eq!(rows[3], "  ? for shortcuts                 opus · 12% context · $0.25");
+        assert_eq!(rows[3], "  ▛◆ ? for shortcuts             opus · ━─────── 12% · $0.25");
         assert_eq!(v.cursor, Some((2, 1)));
-        // The placeholder is dim; the prompt marker uses the accent colour.
-        assert!(buf[(4, 1)].modifier.contains(ratatui::style::Modifier::DIM));
-        assert_eq!(buf[(0, 1)].fg, ratatui::style::Color::Rgb(0x9b, 0x7b, 0xf0));
+        // The placeholder is quiet; the prompt marker is Forge's brand purple.
+        assert_eq!(buf[(4, 1)].fg, crate::tui::palette::SUBTLE.color(Default::default(), false));
+        assert_eq!(buf[(0, 1)].fg, crate::tui::palette::BRAND.color(Default::default(), false));
     }
 
     #[test]
@@ -567,17 +664,17 @@ mod tests {
         typed(&mut a, "ab");
         let v = live_view_at(&a, 50, 20, start + Duration::from_millis(1300));
         let (rows, _) = draw(&v, 50);
-        assert_eq!(rows[0], "• partial answer");
+        assert_eq!(rows[0], "● partial answer");
         assert_eq!(rows[1], "");
-        assert_eq!(rows[2], "⠦ Working… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
+        assert_eq!(rows[2], "⠦ Forging… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
         assert_eq!(rows[3], "  ⏎ next");
-        assert_eq!(rows[5], "> ab");
+        assert_eq!(rows[5], "❯ ab");
         assert_eq!(v.cursor, Some((4, 5)));
         // Too short a screen drops the answer line first, then queued messages, never the input.
         let v = live_view_at(&a, 50, 6, start);
         let (rows, _) = draw(&v, 50);
         assert!(rows.iter().all(|r| !r.contains("partial")), "{rows:?}");
-        assert!(rows.iter().any(|r| r == "> ab"), "{rows:?}");
+        assert!(rows.iter().any(|r| r == "❯ ab"), "{rows:?}");
         assert_eq!(v.lines.len(), 6);
     }
 
@@ -588,7 +685,7 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let v = live_view(&a, 60, 20);
         let (rows, buf) = draw(&v, 60);
-        assert_eq!(rows[1], "> /c");
+        assert_eq!(rows[1], "❯ /c");
         assert_eq!(rows[3], "  /clear [name]            Start a new conversation");
         assert_eq!(rows[4], "  /compact [instructions]  Summarize");
         // The selected row is highlighted.
@@ -631,7 +728,7 @@ mod tests {
                 "│                                      │",
                 "│ Enter to select · Esc to cancel      │",
                 "╰──────────────────────────────────────╯",
-                "  ? for shortcuts  opus · 12% context ·…",
+                "  ▛◆ ? for shortcuts  opus · 12% contex…",
             ]
         );
         assert_eq!(v.cursor, None, "no cursor while a dialog is open");
@@ -663,7 +760,7 @@ mod tests {
         typed(&mut a, "abcdefghijklmnopqrstuvwxyz");
         let v = live_view(&a, 20, 20);
         let (rows, _) = draw(&v, 20);
-        assert_eq!(rows[1], "> abcdefghijklmnopqr");
+        assert_eq!(rows[1], "❯ abcdefghijklmnopqr");
         assert_eq!(rows[2], "  stuvwxyz");
         assert_eq!(v.cursor, Some((10, 2)));
         assert!(v.lines.iter().all(|l| text::width(&text::plain(l)) <= 20));
@@ -683,13 +780,13 @@ mod tests {
         let mut a = app(true);
         a.status.mode = "plan".into();
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
-        assert!(rows.last().unwrap().starts_with("  ‖ plan mode on (shift+tab to cycle)"));
+        assert!(rows.last().unwrap().starts_with("  ▛◆ ‖ plan mode on (shift+tab to cycle)"));
         a.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
-        assert!(rows.last().unwrap().starts_with("  Press Ctrl-C again to exit"));
+        assert!(rows.last().unwrap().starts_with("  ▛◆ Press Ctrl-C again to exit"));
         let later = Instant::now() + HINT_FOR;
         let (rows, _) = draw(&live_view_at(&a, 70, 10, later), 70);
-        assert!(rows.last().unwrap().starts_with("  ‖ plan mode"));
+        assert!(rows.last().unwrap().starts_with("  ▛◆ ‖ plan mode"));
     }
 
     #[test]
@@ -715,14 +812,14 @@ mod tests {
 
         // Ctrl+R shows the search and the match in the input box.
         let mut a = App::new(
-            Theme { color: false, light: false, accent: None },
+            Theme { color: false, light: false, accent: None, depth: Default::default() },
             vec!["cargo test".into(), "git status".into()],
         );
         a.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         typed(&mut a, "car");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: car");
-        assert_eq!(rows[2], "> cargo test");
+        assert_eq!(rows[2], "❯ cargo test");
         typed(&mut a, "zz");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: carzz (no match)");
@@ -792,9 +889,14 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let (rows, buf) = draw(&live_view(&a, 100, 40), 100);
         let y = rows.iter().position(|r| r.contains("-fn old() {}")).unwrap() as u16;
-        assert_eq!(buf[(5, y)].fg, ratatui::style::Color::Red);
-        assert_eq!(buf[(5, y + 1)].fg, ratatui::style::Color::Green);
-        assert!(buf[(5, y - 1)].modifier.contains(ratatui::style::Modifier::DIM), "{}", rows[y as usize - 1]);
+        assert_eq!(buf[(5, y)].fg, crate::tui::palette::DANGER.color(Default::default(), false));
+        assert_eq!(buf[(5, y + 1)].fg, crate::tui::palette::SUCCESS.color(Default::default(), false));
+        assert_eq!(
+            buf[(5, y - 1)].fg,
+            crate::tui::palette::MUTED.color(Default::default(), false),
+            "{}",
+            rows[y as usize - 1]
+        );
         assert!(rows.iter().all(|r| r.chars().count() <= 100));
     }
 
@@ -848,7 +950,7 @@ mod tests {
         let (rows, buf) = draw(&live_view(&a, 40, 20), 40);
         assert_eq!(rows[2], format!("│ {:<36} │", "  ⛁ ⛁ ⛶"));
         let glyphs: Vec<u16> = (0..40).filter(|&x| buf[(x, 2)].symbol() == "⛁").collect();
-        assert_eq!(buf[(glyphs[1], 2)].fg, ratatui::style::Color::Green, "messages");
+        assert_eq!(buf[(glyphs[1], 2)].fg, crate::tui::palette::SUCCESS.color(Default::default(), false), "messages");
     }
 
     #[test]
@@ -872,10 +974,67 @@ mod tests {
     }
 
     #[test]
+    fn a_running_tool_turns_its_dot_until_it_answers() {
+        use forge_types::{ApiMessage, ContentBlock, Role, StopReason, Usage};
+        let mut a = app(true);
+        a.on_event(UiEvent::Busy);
+        let msg = ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: Role::Assistant,
+            model: "x".into(),
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "Read".into(),
+                input: serde_json::json!({"file_path": "src/a.rs"}),
+                cache_control: None,
+            }],
+            stop_reason: Some(StopReason::ToolUse),
+            stop_sequence: None,
+            usage: Usage::default(),
+        };
+        a.on_event(UiEvent::Engine(forge_engine::EngineEvent::Assistant {
+            message: msg,
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        let since = a.running[0].since;
+        let face = |at: Instant| {
+            let (rows, buf) = draw(&live_view_at(&a, 60, 20, at), 60);
+            let y = rows.iter().position(|r| r.contains("Read src/a.rs")).expect("the call shows while it runs");
+            (rows[y].chars().next().unwrap(), buf[(0, y as u16)].fg)
+        };
+        let (first, color) = face(since);
+        let (later, _) = face(since + Duration::from_millis(250));
+        assert_ne!(first, later, "the dot turns");
+        assert!(glyphs::RUNNING.contains(&first.to_string().as_str()));
+        assert_eq!(color, crate::tui::palette::INFO.color(Default::default(), false), "running is blue, as in Forge");
+    }
+
+    #[test]
+    fn the_shimmer_sweeps_and_the_meter_warns() {
+        let t = text::Theme { color: true, light: false, accent: None, depth: Default::default() };
+        let at = |ms| shimmer(&t, "Forging…", Duration::from_millis(ms));
+        // Where the brightest character is, in characters from the start.
+        let bright = |spans: &[Span]| {
+            let i = spans.iter().position(|s| s.style == t.shimmer(3))?;
+            Some(spans[..i].iter().map(|s| s.content.chars().count()).sum::<usize>())
+        };
+        assert_ne!(bright(&at(500)), bright(&at(700)), "the highlight moves");
+        let text: String = at(500).iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Forging…");
+        assert_eq!(meter(&t, 50)[0].content, "━━━━");
+        assert_eq!(meter(&t, 50)[0].style, t.accent());
+        assert_eq!(meter(&t, 75)[0].style, t.warning());
+        assert_eq!(meter(&t, 95)[0].style, t.error());
+        assert_eq!(meter(&t, 0)[0].content, "");
+    }
+
+    #[test]
     fn a_status_line_command_replaces_the_right_side() {
         let mut a = app(false);
         a.on_event(UiEvent::StatusLine(Some("main · 3 files".into())));
         let (rows, _) = draw(&live_view(&a, 40, 10), 40);
-        assert_eq!(rows.last().unwrap(), "  ? for shortcuts         main · 3 files");
+        assert_eq!(rows.last().unwrap(), "  ▛◆ ? for shortcuts      main · 3 files");
     }
 }

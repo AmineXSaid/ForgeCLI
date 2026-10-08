@@ -12,8 +12,10 @@
 //! - this module: the terminal, the event loop and prompt history.
 
 pub mod app;
+pub mod brand;
 pub mod editor;
 pub mod keys;
+pub mod palette;
 pub mod render;
 pub mod session;
 pub mod text;
@@ -341,26 +343,35 @@ fn walk_files(root: String, ui: mpsc::UnboundedSender<UiEvent>) {
 /// The interactive UI: until `/exit`, Ctrl-D or Ctrl-C twice.
 pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<UiEvent>();
-    let (driver, warnings) = session::build(&o, ui_tx.clone()).await?;
+    let theme = text::Theme::named("auto", crate::term::get().color, palette::Depth::detect());
+    let cols = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
+    let (driver, warnings) = match session::build(&o, ui_tx.clone()).await {
+        Ok(built) => built,
+        // Nothing to talk to yet: the first-run card says how to set one up.
+        Err(f) if f.first_run => {
+            for l in brand::first_run(&theme, forge_core::VERSION, &f.message, cols) {
+                println!("{}", brand::ansi(&l));
+            }
+            return Ok(f.code);
+        }
+        Err(f) => return Err(f),
+    };
     let live = driver.live();
     let cwd = driver.info.cwd.display().to_string();
     let model = driver.handle().model();
     let persist = !o.no_session_persistence;
     let hist_path = history_path();
     // The `theme` setting arrives from the session first thing.
-    let theme = text::Theme { color: crate::term::get().color, light: false, accent: None };
     let mut app = App::new(theme, load_history(&hist_path, &cwd));
     // Bad entries in keybindings.json are warnings, never a failure.
     let (keymap, key_warnings) = keys::Keymap::load();
     app.keymap = keymap;
     let warnings: Vec<String> = warnings.into_iter().chain(key_warnings).collect();
-    app.pending.push(Line::from(vec![
-        ratatui::text::Span::styled(
-            "ForgeCLI".to_string(),
-            theme.accent().add_modifier(ratatui::style::Modifier::BOLD),
-        ),
-        ratatui::text::Span::styled(format!(" {} · {model} · {}", forge_core::VERSION, short_path(&cwd)), theme.dim()),
-    ]));
+    let provider = driver.engine.provider();
+    let endpoint = endpoint_label(provider.base_url().as_deref(), provider.origin().map(|o| o.backend));
+    let short = short_path(&cwd);
+    let welcome = brand::Welcome { version: forge_core::VERSION, model: &model, endpoint: &endpoint, cwd: &short };
+    app.pending.extend(brand::welcome(&theme, &welcome, cols));
     for w in warnings {
         app.on_event(UiEvent::Engine(forge_engine::EngineEvent::Notice {
             level: forge_engine::NoticeLevel::Warning,
@@ -501,6 +512,23 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     Ok(crate::exit::OK)
 }
 
+/// Where requests go, for the welcome banner: the endpoint's host, or its kind.
+fn endpoint_label(url: Option<&str>, backend: Option<forge_api::auth::Backend>) -> String {
+    if let Some(u) = url {
+        let rest = u.split_once("://").map(|(_, r)| r).unwrap_or(u);
+        let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        // No user name or password in a banner.
+        let host = host.rsplit('@').next().unwrap_or(host);
+        if !host.is_empty() {
+            return host.to_string();
+        }
+    }
+    match backend {
+        Some(forge_api::auth::Backend::OpenAi) => "an OpenAI-compatible endpoint".into(),
+        _ => "the Messages API".into(),
+    }
+}
+
 /// A directory as people write it: `~/proj` under the home directory.
 pub fn short_path(p: &str) -> String {
     forge_config::short_path(std::path::Path::new(p))
@@ -513,6 +541,15 @@ fn io_fail(e: std::io::Error) -> Fail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_banner_names_the_endpoint_host_without_credentials() {
+        use forge_api::auth::Backend;
+        assert_eq!(endpoint_label(Some("http://127.0.0.1:11434/v1"), Some(Backend::OpenAi)), "127.0.0.1:11434");
+        assert_eq!(endpoint_label(Some("https://u:p@gw.example.com/v1?k=x"), None), "gw.example.com");
+        assert_eq!(endpoint_label(None, Some(Backend::Messages)), "the Messages API");
+        assert_eq!(endpoint_label(None, Some(Backend::OpenAi)), "an OpenAI-compatible endpoint");
+    }
     use ratatui::backend::TestBackend;
 
     /// A terminal that answers the cursor-position query only once, like a

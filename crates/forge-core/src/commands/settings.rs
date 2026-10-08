@@ -678,7 +678,8 @@ pub(super) fn advisor(d: &mut Driver, args: &str) -> Exec {
 }
 
 /// The colour themes of the terminal UI.
-pub const THEMES: [(&str, &str); 3] = [
+pub const THEMES: [(&str, &str); 4] = [
+    ("auto", "Follow the terminal's background (COLORFGBG), else dark"),
     ("dark", "For dark terminal backgrounds"),
     ("light", "For light backgrounds"),
     ("none", "No colours: bold, dim and reverse only"),
@@ -688,12 +689,12 @@ fn tui_only(d: &Driver, name: &str) -> Option<Exec> {
     (d.surface != Surface::Tui).then(|| err(format!("/{name} works only in the terminal UI.")))
 }
 
-/// `/theme [dark|light|none]`: saved as `theme` in user settings; the UI applies it.
+/// `/theme [auto|dark|light|none]`: saved as `theme` in user settings; the UI applies it.
 pub(super) fn theme(d: &mut Driver, args: &str) -> Exec {
     if let Some(e) = tui_only(d, "theme") {
         return e;
     }
-    let current = d.info.settings.str("/theme").unwrap_or("dark").to_string();
+    let current = d.info.settings.str("/theme").unwrap_or("auto").to_string();
     if args.is_empty() {
         let mut s = format!("Theme: {current}\n");
         for (name, what) in THEMES {
@@ -703,7 +704,7 @@ pub(super) fn theme(d: &mut Driver, args: &str) -> Exec {
         return ok(s);
     }
     let Some((name, _)) = THEMES.iter().find(|(n, _)| *n == args) else {
-        return err(format!("No theme {args:?}. Choose dark, light or none."));
+        return err(format!("No theme {args:?}. Choose auto, dark, light or none."));
     };
     let saved = save_default(d, Scope::User, &["theme"], Some(json!(name)));
     ok(join(&[format!("Theme set to {name}."), saved]))

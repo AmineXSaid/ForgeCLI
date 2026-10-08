@@ -6,8 +6,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-/// Colours and emphasis. Without colour (`NO_COLOR`, `--color never`, the
-/// `none` theme) only bold, dim and reverse are used.
+use super::palette::{self, Depth};
+
+/// Colours and emphasis: Forge's palette (`palette.rs`). Without colour
+/// (`NO_COLOR`, `--color never`, the `none` theme) only bold, dim and reverse are used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub color: bool,
@@ -15,6 +17,8 @@ pub struct Theme {
     pub light: bool,
     /// The accent colour chosen with `/color` for this session (`None`: Forge's own).
     pub accent: Option<Color>,
+    /// How many colours the terminal shows.
+    pub depth: Depth,
 }
 
 /// `/color` names and their colours.
@@ -30,14 +34,21 @@ pub const ACCENTS: &[(&str, Color)] = &[
 ];
 
 impl Theme {
-    /// The theme named in settings (`dark`, `light`, `none`), when colour is allowed at all.
-    pub fn named(name: &str, color_ok: bool) -> Theme {
-        Theme { color: color_ok && name != "none", light: name == "light", accent: None }
+    /// The theme named in settings (`dark`, `light`, `none`, or `auto`: what
+    /// the terminal says of its background, else dark), when colour is allowed at all.
+    pub fn named(name: &str, color_ok: bool, depth: Depth) -> Theme {
+        let light = match name {
+            "light" => true,
+            "auto" => palette::light_background().unwrap_or(false),
+            _ => false,
+        };
+        Theme { color: color_ok && name != "none", light, accent: None, depth }
     }
 
-    fn fg(&self, c: Color) -> Style {
+    /// A role's colour as a foreground, or no style without colour.
+    pub fn role(&self, r: palette::Role) -> Style {
         if self.color {
-            Style::default().fg(c)
+            Style::default().fg(r.color(self.depth, self.light))
         } else {
             Style::default()
         }
@@ -49,14 +60,46 @@ impl Theme {
             return Style::default().fg(c);
         }
         if self.color {
-            Style::default().fg(if self.light { Color::Rgb(0x5b, 0x3c, 0xc4) } else { Color::Rgb(0x9b, 0x7b, 0xf0) })
+            self.role(palette::BRAND)
         } else {
             Style::default().add_modifier(Modifier::BOLD)
         }
     }
 
+    /// The brand a step brighter: the wordmark, headings in brand colour.
+    pub fn brand_strong(&self) -> Style {
+        if self.color && self.accent.is_none() {
+            self.role(palette::BRAND_STRONG)
+        } else {
+            self.accent()
+        }
+    }
+
+    /// Secondary text. A muted colour where there are enough colours, else dim.
     pub fn dim(&self) -> Style {
-        Style::default().add_modifier(Modifier::DIM)
+        if self.color && self.depth != Depth::Ansi16 {
+            self.role(palette::MUTED)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+    }
+
+    /// Placeholders and the quietest hints.
+    pub fn subtle(&self) -> Style {
+        if self.color && self.depth != Depth::Ansi16 {
+            self.role(palette::SUBTLE)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+    }
+
+    /// Rules and box edges that separate without drawing the eye.
+    pub fn hairline(&self) -> Style {
+        if self.color && self.depth != Depth::Ansi16 {
+            self.role(palette::HAIRLINE)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
     }
 
     pub fn bold(&self) -> Style {
@@ -65,36 +108,33 @@ impl Theme {
 
     pub fn error(&self) -> Style {
         if self.color {
-            self.fg(Color::Red)
+            self.role(palette::DANGER)
         } else {
             self.bold()
         }
     }
 
     pub fn warning(&self) -> Style {
-        self.fg(if self.light { Color::Rgb(0x9a, 0x6a, 0x00) } else { Color::Yellow })
+        self.role(palette::WARNING)
     }
 
     pub fn success(&self) -> Style {
-        self.fg(Color::Green)
+        self.role(palette::SUCCESS)
+    }
+
+    /// Links, paths and what is running now.
+    pub fn info(&self) -> Style {
+        self.role(palette::INFO)
     }
 
     /// A removed line in a diff.
     pub fn removed(&self) -> Style {
-        if self.color {
-            self.fg(if self.light { Color::Rgb(0xb0, 0x20, 0x20) } else { Color::Rgb(0xf0, 0x70, 0x70) })
-        } else {
-            Style::default()
-        }
+        self.role(palette::REMOVED)
     }
 
     /// An added line in a diff.
     pub fn added(&self) -> Style {
-        if self.color {
-            self.fg(if self.light { Color::Rgb(0x1a, 0x7f, 0x37) } else { Color::Rgb(0x70, 0xd0, 0x80) })
-        } else {
-            Style::default()
-        }
+        self.role(palette::ADDED)
     }
 
     /// The colour of part `i` of the context window (`/context` grid).
@@ -102,25 +142,21 @@ impl Theme {
         if !self.color {
             return Style::default();
         }
-        let c = match i {
-            0 => Color::Rgb(0x9b, 0x7b, 0xf0),
-            1 => Color::Cyan,
-            2 => Color::Magenta,
-            3 => Color::Yellow,
-            4 => Color::Blue,
-            5 => Color::Green,
-            _ => return self.dim(),
+        let r = match i {
+            0 => palette::BRAND,
+            1 => palette::INFO,
+            2 => palette::BRAND_STRONG,
+            3 => palette::WARNING,
+            4 => palette::CODE,
+            5 => palette::SUCCESS,
+            _ => return self.subtle(),
         };
-        Style::default().fg(c)
+        self.role(r)
     }
 
     /// Inline `code`.
     pub fn code(&self) -> Style {
-        if self.color {
-            self.fg(if self.light { Color::Blue } else { Color::Cyan })
-        } else {
-            Style::default()
-        }
+        self.role(palette::CODE)
     }
 
     /// The highlighted row of a menu or dialog.
@@ -132,15 +168,35 @@ impl Theme {
         }
     }
 
-    /// The person's own prompts in the transcript.
+    /// The person's own prompts in the transcript: a raised surface.
     pub fn user(&self) -> Style {
-        if self.color && self.light {
-            Style::default().bg(Color::Rgb(0xe6, 0xe6, 0xee)).fg(Color::Rgb(0x10, 0x10, 0x18))
-        } else if self.color {
-            Style::default().bg(Color::Rgb(0x3a, 0x3a, 0x44)).fg(Color::Rgb(0xe8, 0xe8, 0xf0))
+        if self.color {
+            Style::default()
+                .bg(palette::PROMPT_BG.color(self.depth, self.light))
+                .fg(palette::PROMPT_FG.color(self.depth, self.light))
         } else {
             self.dim()
         }
+    }
+
+    /// The working shimmer: `level` 0 is the resting tone, 3 the brightest.
+    pub fn shimmer(&self, level: u8) -> Style {
+        if !self.color || self.depth == Depth::Ansi16 {
+            return match level {
+                0 => Style::default().add_modifier(Modifier::DIM),
+                3 => self.bold(),
+                _ => Style::default(),
+            };
+        }
+        let (base, peak) = (palette::SHIMMER_BASE, palette::SHIMMER_PEAK);
+        let pick = |r: palette::Role| if self.light { r.light } else { r.dark };
+        let (a, b) = (pick(base), pick(peak));
+        let mix = |shift: u32| -> u32 {
+            let (x, y) = ((a >> shift) & 0xff, (b >> shift) & 0xff);
+            (x * (3 - level.min(3) as u32) + y * level.min(3) as u32) / 3
+        };
+        let hex = (mix(16) << 16) | (mix(8) << 8) | mix(0);
+        Style::default().fg(palette::ink(hex, self.depth, Color::Reset))
     }
 }
 
@@ -307,13 +363,13 @@ pub fn width(s: &str) -> usize {
 
 /// Wrap styled lines to `width` columns, breaking at spaces where it can.
 /// The indent a wrapped row continues at: the line's leading spaces plus a
-/// leading marker (`• `, `› `, `↳ `, `- `, `* `, `> `, `12. `), so lists,
+/// leading marker (`● `, `└ `, `❯ `, `- `, `* `, `> `, `12. `), so lists,
 /// answers and tool results wrap under their text, not at column 0.
 fn hanging_indent(cells: &[(char, Style)], max: usize) -> usize {
     let text: String = cells.iter().map(|(c, _)| *c).collect();
     let lead = text.len() - text.trim_start_matches(' ').len();
     let rest = &text[lead..];
-    let marker = ["• ", "› ", "↳ ", "- ", "* ", "> ", "‖ ", "» "]
+    let marker = ["● ", "└ ", "❯ ", "▲ ", "✕ ", "· ", "• ", "› ", "↳ ", "- ", "* ", "> ", "‖ ", "» "]
         .iter()
         .find(|m| rest.starts_with(**m))
         .map(|m| m.chars().count())
@@ -436,7 +492,7 @@ pub fn plain(line: &Line) -> String {
 mod tests {
     use super::*;
 
-    const T: Theme = Theme { color: true, light: false, accent: None };
+    const T: Theme = Theme { color: true, light: false, accent: None, depth: Depth::True };
 
     #[test]
     fn markdown_lines_keep_track_of_fences() {

@@ -156,7 +156,7 @@ fn styles(d: &Driver) -> Picker {
 }
 
 fn themes(d: &Driver) -> Picker {
-    let current = d.info.settings.str("/theme").unwrap_or("dark");
+    let current = d.info.settings.str("/theme").unwrap_or("auto");
     let choices = super::settings::THEMES
         .iter()
         .map(|(name, what)| Choice {
