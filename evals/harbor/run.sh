@@ -40,12 +40,14 @@ git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || dirty="-dirty"
 # Runs with extra trusted CAs change the task environment: label them, they're for local comparisons.
 ca=""
 [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
-job="forgecli-${mode}-${commit}${dirty}${ca}-$(date +%Y%m%d-%H%M%S)"
+model="${FORGE_HARBOR_MODEL:-openai/deep-thinking}"
+model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
+job="forgecli-${mode}-${model_tag}-${commit}${dirty}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
 PYTHONPATH="$repo/evals/harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   -d "${FORGE_HARBOR_DATASET:-terminal-bench@2.0}" \
-  -m "${FORGE_HARBOR_MODEL:-openai/deep-thinking}" \
+  -m "$model" \
   --agent forge_agent:ForgeCLI \
   --n-concurrent "${FORGE_HARBOR_JOBS:-2}" \
   --job-name "$job" \
