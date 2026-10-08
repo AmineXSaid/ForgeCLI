@@ -64,6 +64,16 @@ knows its deadline from the start and gets a wrap-up reminder near the end.
 The job name records the commit, so every result is pinned to a build. A
 `-dirty` suffix means uncommitted changes to `crates/`.
 
+## Watching a run live
+
+```bash
+python3 evals/harbor/watch.py              # newest job; --from-start replays it first
+```
+
+It follows every task's `forge.jsonl` and prints the model's thinking, its tool
+calls and their results, and ForgeCLI's own reminders, one colour per task. A
+step shows up once the model finishes it.
+
 ## Comparing harnesses
 
 To compare harnesses, keep the model and the tasks fixed and change only the
