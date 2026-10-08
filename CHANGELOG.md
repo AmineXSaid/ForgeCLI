@@ -334,6 +334,13 @@
     less. Models without effort levels ignore it.
 
 ### Measurement
+- `--max-time` (`900`, `15m`, `1h`): the model is told its time limit up
+  front and reminded to wrap up when a fifth of it is left. The Harbor agent
+  passes each Terminal-Bench task's own limit, so runs end with a report
+  instead of being cut off mid-change.
+- The Harbor agent can trust extra certificate authorities in task containers
+  (`FORGE_HARBOR_CA_BUNDLE`), for networks that inspect TLS; such jobs are
+  named `-hostca` and are for local comparisons only.
 - `evals/harbor/`: a Harbor agent that runs ForgeCLI on Terminal-Bench, with
   a static (musl) build script and a run script for a 10-task subset or the
   full 5-attempt run, each job named after its commit.

@@ -190,6 +190,9 @@ pub struct Opts {
     /// Maximum dollar amount to spend on API calls (print mode)
     #[arg(long = "max-budget-usd")]
     pub max_budget_usd: Option<f64>,
+    /// Time limit for the run, e.g. 900, 15m or 1h (print mode): the model is told it and warned near the end
+    #[arg(long = "max-time", value_parser = parse_duration)]
+    pub max_time: Option<std::time::Duration>,
     /// JSON Schema for structured output
     #[arg(long = "json-schema")]
     pub json_schema: Option<String>,
@@ -297,4 +300,24 @@ pub enum ConfigAction {
     Get { key: String },
     /// Print the configuration, state and cache directories and the settings files read
     Paths,
+}
+
+/// `--max-time`: whole seconds, or a number with `s`, `m` or `h`.
+pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
+    let raw = raw.trim();
+    let (num, unit) = match raw.char_indices().last() {
+        Some((i, c)) if c.is_ascii_alphabetic() => (&raw[..i], c.to_ascii_lowercase()),
+        _ => (raw, 's'),
+    };
+    let n: u64 = num.trim().parse().map_err(|_| format!("expected a duration like 900, 15m or 1h, not {raw:?}"))?;
+    let secs = match unit {
+        's' => n,
+        'm' => n * 60,
+        'h' => n * 3600,
+        _ => return Err(format!("unknown unit in {raw:?}: use s, m or h")),
+    };
+    if secs == 0 {
+        return Err("the time limit must be more than 0".into());
+    }
+    Ok(std::time::Duration::from_secs(secs))
 }

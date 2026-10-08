@@ -125,6 +125,7 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
         setting_sources,
         max_turns: o.max_turns,
         max_budget_usd: o.max_budget_usd,
+        max_time: o.max_time,
         json_schema,
         resume,
         fork_session: o.fork_session,

@@ -83,6 +83,8 @@ pub struct LaunchOptions {
     pub setting_sources: Option<Vec<SettingSource>>,
     pub max_turns: Option<u32>,
     pub max_budget_usd: Option<f64>,
+    /// `--max-time`, counted from the start of the session.
+    pub max_time: Option<std::time::Duration>,
     pub json_schema: Option<Value>,
     pub resume: Resume,
     pub fork_session: bool,
@@ -892,6 +894,7 @@ pub fn build_session(
             .or_else(|| (settings.bool("/alwaysThinkingEnabled") == Some(false)).then_some(0)),
         max_turns: opts.max_turns,
         max_budget_usd: opts.max_budget_usd,
+        time_limit: opts.max_time.map(forge_engine::TimeLimit::starting_now),
         json_schema: opts.json_schema.clone(),
         pricing,
         initial_context: (!initial.is_empty()).then(|| initial.join("\n\n")),

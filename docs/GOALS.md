@@ -108,6 +108,9 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
     rebuilt from the last TodoWrite call or that record;
   - budget awareness: one reminder to wrap up when 3 model calls (of at least
     6) or 15% of the budget are left;
+  - time awareness (`--max-time`): the limit is stated up front and one
+    reminder comes when a fifth of the time is left. Benchmark tasks have
+    hard time limits; a run cut off mid-change scores nothing;
   - resumable sessions, and unattended headless runs.
 - **To build:**
   - a notes file;

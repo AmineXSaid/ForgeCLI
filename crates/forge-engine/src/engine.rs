@@ -49,6 +49,32 @@ impl Pricing {
     }
 }
 
+/// A wall-clock limit for the run (`--max-time`), counted from when it started.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimeLimit {
+    pub started: Instant,
+    pub total: Duration,
+}
+
+impl TimeLimit {
+    pub fn starting_now(total: Duration) -> Self {
+        TimeLimit { started: Instant::now(), total }
+    }
+
+    pub fn remaining(&self) -> Duration {
+        self.total.saturating_sub(self.started.elapsed())
+    }
+}
+
+/// "about 12 minutes", for time-limit notes.
+fn about(left: Duration) -> String {
+    match left.as_secs() {
+        s if s < 60 => "less than a minute".into(),
+        s if s < 90 => "about a minute".into(),
+        s => format!("about {} minutes", (s + 30) / 60),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub model: String,
@@ -60,6 +86,8 @@ pub struct EngineConfig {
     pub max_thinking_tokens: Option<u32>,
     pub max_turns: Option<u32>,
     pub max_budget_usd: Option<f64>,
+    /// `--max-time`: the model is told the limit and warned near the end; the host enforces it.
+    pub time_limit: Option<TimeLimit>,
     /// `--json-schema`: structured output for the final answer.
     pub json_schema: Option<Value>,
     pub pricing: HashMap<String, Pricing>,
@@ -99,6 +127,7 @@ impl Default for EngineConfig {
             max_thinking_tokens: None,
             max_turns: None,
             max_budget_usd: None,
+            time_limit: None,
             json_schema: None,
             pricing: HashMap::new(),
             initial_context: None,
@@ -1259,6 +1288,15 @@ impl Engine {
             if let Some(c) = self.cfg.initial_context.take().filter(|_| self.state.messages.is_empty()) {
                 context.push(c);
             }
+            // A time-limited run (GOALS pillar 5): the model plans for the deadline from the start.
+            if let Some(t) = self.cfg.time_limit {
+                context.push(format!(
+                    "This run has a time limit (--max-time): {} left. Plan the work to fit: make the essential \
+                     change first, check it, and leave time to report. The run is stopped when time is up, and \
+                     unfinished work is lost.",
+                    about(t.remaining())
+                ));
+            }
             context.extend(o.additional_context);
             if !context.is_empty() {
                 blocks.insert(
@@ -1672,7 +1710,7 @@ impl Engine {
         }
     }
 
-    /// A heads-up when this run's turn or spending limit is close (GOALS pillar 5), so the model
+    /// A heads-up when this run's turn, spending or time limit is close (GOALS pillar 5), so the model
     /// wraps up with a report instead of being cut off mid-change.
     fn budget_warning(&self, calls: u32) -> Option<String> {
         let turns_left = self.cfg.max_turns.filter(|m| *m >= 6).map(|m| m.saturating_sub(calls)).filter(|l| *l <= 3);
@@ -1681,10 +1719,19 @@ impl Engine {
             .max_budget_usd
             .map(|b| b - self.state.total_cost_usd)
             .filter(|left| self.cfg.max_budget_usd.map(|b| *left <= b * 0.15).unwrap_or(false));
-        let what = match (turns_left, money_left) {
-            (Some(t), _) => format!("{t} model call{} left in this run (--max-turns)", if t == 1 { "" } else { "s" }),
-            (None, Some(m)) => format!("${m:.2} of the run's budget left (--max-budget-usd)"),
-            (None, None) => return None,
+        let time_left = self
+            .cfg
+            .time_limit
+            .map(|t| (t.remaining(), t.total))
+            .filter(|(left, total)| *left <= (*total / 5).max(Duration::from_secs(60)))
+            .map(|(left, _)| left);
+        let what = match (turns_left, money_left, time_left) {
+            (Some(t), _, _) => {
+                format!("{t} model call{} left in this run (--max-turns)", if t == 1 { "" } else { "s" })
+            }
+            (None, Some(m), _) => format!("${m:.2} of the run's budget left (--max-budget-usd)"),
+            (None, None, Some(left)) => format!("{} of the run's time left (--max-time)", about(left)),
+            (None, None, None) => return None,
         };
         Some(format!(
             "<system-reminder>\nYou have {what}. Wrap up: finish the most important change, check it, and end with \

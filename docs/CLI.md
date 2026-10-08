@@ -161,6 +161,10 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
   - `--max-turns N` caps model calls;
   - `--max-budget-usd X` caps spend; it fails closed when the model's pricing
     is unknown;
+  - `--max-time T` (`900`, `15m`, `1h`) tells the model its time limit up
+    front and warns it when a fifth of the time (at least a minute) is left.
+    It doesn't stop the run: the host that set the limit does (Forge
+    extension, used for benchmark runs);
   - `--fallback-model M` switches models on overload.
 - **Interrupting:** Ctrl-C stops the run; the result is written and the exit
   status is `130`.

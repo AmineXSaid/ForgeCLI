@@ -441,7 +441,10 @@ Tests:
   boundary, else from that record.
 
 **Budget reminder:** with `--max-turns` of at least 6, or `--max-budget-usd`,
-one reminder per turn when 3 calls (or 15% of the budget) are left.
+one reminder per turn when 3 calls (or 15% of the budget) are left. With
+`--max-time`, the first prompt states the time left, and the same reminder
+comes when a fifth of the time (at least a minute) is left. The limit is
+counted from the start of the session; the engine never stops on it.
 
 Tests:
 - `builtin::long_output_is_saved_in_full_and_pointed_to`;

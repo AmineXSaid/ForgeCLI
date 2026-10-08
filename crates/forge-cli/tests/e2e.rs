@@ -370,6 +370,22 @@ async fn max_turns_and_continue() {
 }
 
 #[tokio::test]
+async fn print_tells_the_model_its_time_limit() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("ok")]).await;
+    let (code, out, _) = run(&e, &api, &["-p", "--max-time", "15m", "hi"], None).await;
+    assert_eq!((code, out.trim()), (0, "ok"));
+    let first = api.requests()[0]["messages"][0].to_string();
+    assert!(first.contains("time limit (--max-time): about 15 minutes left"), "{first}");
+
+    for bad in ["0", "15x", "soon"] {
+        let (code, _, err) = run(&e, &api, &["-p", "--max-time", bad, "hi"], None).await;
+        assert_eq!(code, 2, "--max-time {bad}: {err}");
+    }
+    assert_eq!(api.requests().len(), 1, "a bad limit never reaches the API");
+}
+
+#[tokio::test]
 async fn version_and_help() {
     let out = std::process::Command::new(forge_bin()).arg("--version").output().unwrap();
     let v = String::from_utf8_lossy(&out.stdout);
@@ -383,6 +399,7 @@ async fn version_and_help() {
         "--allowedTools",
         "--resume",
         "--max-budget-usd",
+        "--max-time",
         "--json-schema",
     ] {
         assert!(h.contains(flag), "missing {flag}");

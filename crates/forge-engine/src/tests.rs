@@ -905,6 +905,41 @@ async fn the_model_is_told_when_turns_run_low() {
     assert!(last_user_text(&reqs[3]).contains("3 model calls left"));
 }
 
+#[tokio::test]
+async fn the_model_is_told_the_time_limit_and_warned_near_the_end() {
+    let first_text = |r: &forge_types::MessagesRequest| r.messages[0].text();
+
+    // Plenty of time: told the limit up front, never warned.
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "echo 1"})), MockTurn::text("done")]);
+    let cfg =
+        EngineConfig { time_limit: Some(TimeLimit::starting_now(Duration::from_secs(3600))), ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("job")).await;
+    let reqs = h.provider.requests();
+    assert!(
+        first_text(&reqs[0]).contains("time limit (--max-time): about 60 minutes left"),
+        "{}",
+        first_text(&reqs[0])
+    );
+    assert!(reqs.iter().all(|r| !last_user_text(r).contains("Wrap up")));
+
+    // Almost out of time: warned once, after the next tool result.
+    let h = Harness::new(vec![
+        MockTurn::tool("Bash", json!({"command": "echo 1"})),
+        MockTurn::tool("Bash", json!({"command": "echo 2"})),
+        MockTurn::text("wrapped up"),
+    ]);
+    let limit = TimeLimit { started: Instant::now() - Duration::from_secs(100), total: Duration::from_secs(110) };
+    let cfg = EngineConfig { time_limit: Some(limit), ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("job")).await;
+    assert_eq!(r.result.as_deref(), Some("wrapped up"), "the host enforces the limit, not the engine");
+    let reqs = h.provider.requests();
+    let warned: Vec<usize> = (0..reqs.len()).filter(|&i| last_user_text(&reqs[i]).contains("Wrap up")).collect();
+    assert_eq!(warned, vec![1], "once");
+    assert!(last_user_text(&reqs[1]).contains("less than a minute of the run's time left (--max-time)"));
+}
+
 /// Answers every prompt: questions get the first option, everything else is allowed.
 struct Answering;
 
