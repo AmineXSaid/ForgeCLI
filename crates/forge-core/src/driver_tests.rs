@@ -79,8 +79,10 @@ fn read_json(path: &Path) -> Value {
 async fn model_effort_and_fast_reach_the_request() {
     let mut t = driver();
     let d = &mut t.d;
+    // No built-in catalogue: an endpoint that lists no models shows only the current one.
     let list = local(d, "/model").await;
-    assert!(list.contains("Current model: Opus 5.5") && list.contains("claude-haiku-4-5"), "{list}");
+    assert_eq!(list, "Current model: claude-opus-5-5\n\nSwitch with /model <model id>.");
+    assert!(!list.contains("haiku") && !list.contains("Opus"), "{list}");
 
     let out = local(d, "/effort low").await;
     assert_eq!(out, "Set effort to low. (This session only.)");
@@ -95,7 +97,7 @@ async fn model_effort_and_fast_reach_the_request() {
 
     // Haiku has neither effort nor fast mode: both stop applying, and both say so.
     let out = local(d, "/model haiku").await;
-    assert!(out.contains("Set model to Haiku 4.5 (claude-haiku-4-5)."), "{out}");
+    assert!(out.contains("Set model to claude-haiku-4-5."), "{out}");
     assert!(out.contains("Effort low isn't available") && out.contains("Fast mode isn't available"), "{out}");
     assert!(d.engine.system()[0].text.contains("Haiku 4.5"), "the environment names the new model");
     assert_eq!(d.info.init.model, "claude-haiku-4-5");
@@ -104,7 +106,7 @@ async fn model_effort_and_fast_reach_the_request() {
     let req = &t.p.requests()[1];
     assert_eq!(req.model, "claude-haiku-4-5");
     assert!(req.speed.is_none() && req.betas.is_empty() && req.output_config.is_none());
-    assert!(fails(d, "/fast on").await.contains("isn't available for Haiku 4.5"));
+    assert!(fails(d, "/fast on").await.contains("isn't available for claude-haiku-4-5"));
     assert!(fails(d, "/effort high").await.contains("doesn't support effort"));
 
     local(d, "/model opus").await;
@@ -112,7 +114,7 @@ async fn model_effort_and_fast_reach_the_request() {
     assert_eq!(local(d, "/effort max").await, "Set effort to max. (max lasts for this session only.)");
     assert!(local(d, "/effort").await.starts_with("Effort: max"));
     local(d, "/effort auto").await;
-    assert!(local(d, "/effort status").await.contains("auto (Opus 5.5's default: medium)"));
+    assert!(local(d, "/effort status").await.contains("auto (claude-opus-5-5's default: medium)"));
     assert_eq!(local(d, "/fast off").await, "Fast mode off. (This session only.)");
 }
 
@@ -283,7 +285,7 @@ async fn rename_export_context_and_diff() {
     assert!(text.contains("(Parser drops last token)"), "the title is in the header");
 
     let ctx = local(d, "/context").await;
-    for want in ["System prompt", "Built-in tools", "Messages", "Free", "the last request measured"] {
+    for want in ["System prompt", "Built-in tools", "Messages", "Free", "The last request measured"] {
         assert!(ctx.contains(want), "{ctx}");
     }
     assert!(local(d, "/context all").await.contains("Tools:\n  "));
@@ -337,7 +339,9 @@ async fn interactive_surfaces_save_defaults() {
 }
 
 fn verdict(v: &str, reason: &str) -> MockTurn {
-    MockTurn::text(&serde_json::json!({"verdict": v, "reason": reason}).to_string())
+    // A pass must point at tool output.
+    let evidence: Vec<&str> = if v == "met" { vec![reason] } else { vec![] };
+    MockTurn::text(&serde_json::json!({"verdict": v, "evidence": evidence, "reason": reason}).to_string())
 }
 
 fn last_user_text(req: &forge_types::MessagesRequest) -> String {
@@ -367,8 +371,9 @@ async fn goal_runs_until_the_check_passes() {
     let reqs = t.p.requests();
     assert_eq!(reqs.len(), 6);
     assert!(last_user_text(&reqs[0]).contains("the tests pass"));
-    // The check runs on the small model, without tools, over the transcript.
-    assert_eq!(reqs[2].model, forge_api::models::SMALL_FAST_MODEL);
+    // The check runs on the session's model (not the small one), without tools, over the transcript.
+    assert_eq!(reqs[2].model, "claude-opus-5-5");
+    assert!(reqs[2].system[0].text.contains("AGENT lines are claims, not evidence"));
     assert!(reqs[2].tools.is_empty());
     let check = last_user_text(&reqs[2]);
     assert!(check.contains("Goal: the tests pass") && check.contains("TOOL CALL Glob"), "{check}");
@@ -868,7 +873,7 @@ async fn advisor_is_consulted_only_while_set() {
     assert!(!tool_names(&t.p.requests()[0]).contains(&"Advisor".to_string()), "hidden until set");
 
     let out = local(&mut t.d, "/advisor sonnet").await;
-    assert_eq!(out, "Advisor set to Sonnet 5.5 (claude-sonnet-5-5). Forge can now ask it for advice; each question is a request to that model. (This session only.)");
+    assert_eq!(out, "Advisor set to claude-sonnet-5-5. Forge can now ask it for advice; each question is a request to that model. (This session only.)");
     let cost_before = t.d.engine.state.total_cost_usd;
     t.p.push(MockTurn::tool("Advisor", serde_json::json!({"question": "Is splitting the lexer safe?"})));
     t.p.push(
@@ -1231,8 +1236,11 @@ async fn subtask_forks_the_conversation_and_reports_back() {
     let out = local(&mut t.d, "/subtask count the files").await;
     assert!(out.starts_with("Started subtask_1 in the background: count the files."), "{out}");
     subtasks_settle(&t.d).await;
-    // Any input hands it back first (a notice now, its report with the next prompt).
-    assert_eq!(local(&mut t.d, "/tasks").await, "No background tasks.");
+    // Any input hands it back first (a notice now, its report with the next prompt); /tasks
+    // still lists it, as finished.
+    let tasks = local(&mut t.d, "/tasks").await;
+    assert!(tasks.contains("subtask_1 [subtask, completed, took ") && tasks.contains("count the files"), "{tasks}");
+    assert_eq!(local(&mut t.d, "/tasks stop subtask_1").await, "subtask_1 has already finished and been reported.");
 
     let fork = &t.p.requests()[1];
     // The same prefix as the main conversation, so its prompt cache is read.
@@ -1285,4 +1293,555 @@ async fn subtasks_stop_on_request_and_are_orphaned_by_clear() {
     let next = serde_json::to_string(&t.p.requests().last().unwrap().messages).unwrap();
     assert!(!next.contains("subtask_2"), "{next}");
     assert!(!t.d.has_pending());
+}
+
+#[tokio::test]
+async fn pickers_list_choices_that_are_command_text() {
+    use crate::commands::picker::{picker, Pick};
+    let mut t = driver_with(accept_edits);
+    let a = t.proj.join("a.txt");
+    for turn in [write_turn(&a, "one"), MockTurn::text("created"), MockTurn::text("hi")] {
+        t.p.push(turn);
+    }
+    run(&mut t.d, "create a").await;
+    run(&mut t.d, "hello").await;
+
+    // Commands with an argument, and others, run as typed.
+    assert!(picker(&t.d, "/model opus").is_none() && picker(&t.d, "/status").is_none());
+    assert!(picker(&t.d, "/resume").is_none(), "nothing to resume: the command says so");
+
+    // The model picker shows the endpoint's own list (none here), the current model, and "another".
+    let m = picker(&t.d, "/model").unwrap();
+    assert_eq!(m.choices.len(), 2);
+    let cur = m.choices.iter().find(|c| c.current).unwrap();
+    assert_eq!(cur.pick, Pick::Run(format!("/model {}", t.d.engine.handle().model())));
+    assert_eq!(m.choices[1].pick, Pick::Edit("/model ".into()));
+
+    // Rewind: newest first; the second step lists actions for that prompt number.
+    let r = picker(&t.d, "/undo").unwrap();
+    assert_eq!(r.choices.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["hello", "create a"]);
+    assert_eq!(r.choices[1].pick, Pick::Step("/rewind 1".into()));
+    assert_eq!(r.choices[1].detail, "1 file(s) changed since");
+    let step = picker(&t.d, "/rewind 1").unwrap();
+    assert_eq!(step.choices.len(), 5);
+    assert_eq!(step.choices[0].pick, Pick::RunThenEdit { command: "/rewind 1 both".into(), edit: "create a".into() });
+    let no_code = picker(&t.d, "/rewind 2").unwrap();
+    assert!(no_code.choices.iter().all(|c| c.label != "Restore the code"), "nothing changed after prompt 2");
+    assert!(picker(&t.d, "/rewind 9").is_none());
+    // What a row runs is what a person could type.
+    let Pick::Run(cmd) = &step.choices[2].pick else { panic!() };
+    assert_eq!(local(&mut t.d, cmd).await, "Restored 0 file(s), deleted 1 new one(s). The conversation is unchanged.");
+
+    let s = picker(&t.d, "/output-style").unwrap();
+    assert!(s.choices.iter().any(|c| c.current && c.label == "default"));
+    local(&mut t.d, "/permissions add allow Bash(npm test:*) --scope session").await;
+    let p = picker(&t.d, "/allowed-tools").unwrap();
+    assert_eq!(p.choices[0].pick, Pick::Run("/permissions remove Bash(npm test:*)".into()));
+    assert!(p.choices.iter().any(|c| c.pick == Pick::Edit("/permissions add deny ".into())));
+
+    // Another conversation to resume.
+    local(&mut t.d, "/clear").await;
+    let r = picker(&t.d, "/resume").unwrap();
+    assert_eq!(r.choices.len(), 1);
+    assert!(matches!(&r.choices[0].pick, Pick::Run(c) if c.starts_with("/resume ")));
+}
+
+#[tokio::test]
+async fn tui_only_commands_save_theme_and_status_line() {
+    let mut t = driver();
+    let user = t._dir.path().join("home/settings.json");
+    t.d.info.user_settings = user.clone();
+    // Elsewhere they say where they work, and /help leaves them out.
+    for c in ["/theme light", "/statusline", "/copy", "/keybindings", "/terminal-setup"] {
+        assert!(fails(&mut t.d, c).await.ends_with("works only in the terminal UI."), "{c}");
+    }
+    assert!(!t.d.catalog.help(Surface::Repl).contains("/theme"));
+    assert!(t.d.catalog.help(Surface::Tui).contains("/theme [dark|light|none]"));
+    assert!(!t.d.catalog.names(Surface::Stream).contains(&"copy".to_string()));
+
+    t.d.surface = Surface::Tui;
+    let d = &mut t.d;
+    assert!(local(d, "/theme").await.starts_with("Theme: auto"));
+    assert!(fails(d, "/theme neon").await.contains("Choose auto, dark, light or none"));
+    assert!(local(d, "/theme light").await.starts_with("Theme set to light. Saved in user settings"));
+    assert_eq!(read_json(&user)["theme"], "light");
+    assert_eq!(d.info.settings.str("/theme"), Some("light"), "the loaded settings follow");
+    let p = crate::commands::picker::picker(d, "/theme").unwrap();
+    assert!(p.choices.iter().any(|c| c.current && c.label == "light"));
+
+    assert!(local(d, "/statusline").await.starts_with("No status line command"));
+    local(d, "/statusline echo hi").await;
+    assert_eq!(read_json(&user)["statusLine"], serde_json::json!({"type": "command", "command": "echo hi"}));
+    assert!(local(d, "/statusline").await.starts_with("Status line command: echo hi"));
+    local(d, "/statusline off").await;
+    assert!(read_json(&user).get("statusLine").is_none());
+}
+
+#[tokio::test]
+async fn bypass_needs_the_launch_flag_and_no_managed_ban() {
+    let t = driver();
+    assert!(!t.d.bypass_allowed(), "not launched with it");
+    let mut t = driver_with(|_, o| o.allow_dangerously_skip_permissions = true);
+    assert!(t.d.bypass_allowed());
+    // A managed ban wins over the flag.
+    let managed = t._dir.path().join("managed.json");
+    t.d.info.settings.apply(
+        SettingSource::Managed,
+        &managed,
+        &["permissions", "disableBypassPermissionsMode"],
+        Some(serde_json::json!("disable")),
+    );
+    assert!(!t.d.bypass_allowed());
+}
+
+#[tokio::test]
+async fn advisor_cost_uses_custom_pricing() {
+    let mut t = driver_with(|dir, o| {
+        let s = r#"{"modelPricing": {"house-advisor": {"input": 10, "output": 10, "cacheRead": 1, "cacheWrite": 10}}}"#;
+        std::fs::write(dir.join("proj/.forge/settings.json"), s).unwrap();
+        o.max_budget_usd = Some(100.0);
+    });
+    let out = local(&mut t.d, "/advisor house-advisor").await;
+    assert!(out.starts_with("Advisor set to house-advisor."), "{out}");
+    let before = t.d.engine.state.total_cost_usd;
+    t.p.push(MockTurn::tool("Advisor", serde_json::json!({"question": "Safe?"})));
+    t.p.push(MockTurn::text("Yes.").with_usage(forge_types::Usage { input_tokens: 1_000_000, ..Default::default() }));
+    t.p.push(MockTurn::text("Done."));
+    run(&mut t.d, "go").await;
+    // A million input tokens at $10 per million, from modelPricing.
+    let spent = t.d.engine.state.total_cost_usd - before;
+    assert!(spent >= 10.0, "advisor spend counted: {spent}");
+    assert!(t.d.engine.state.model_usage.contains_key("house-advisor"));
+}
+
+#[tokio::test]
+async fn subtask_edits_are_checkpointed_under_its_own_turn() {
+    use std::time::Duration;
+    let mut t = driver_with(|dir, o| {
+        accept_edits(dir, o);
+        let proj = dir.join("proj").canonicalize().unwrap();
+        let (a, b) = (proj.join("a.txt"), proj.join("b.txt"));
+        o.provider = Some(Arc::new(MockProvider::with_responder(move |req| {
+            let last = serde_json::to_string(req.messages.last().unwrap()).unwrap();
+            if last.contains("tool_result") {
+                // The main conversation's answer after its edit takes a while: the subtask edits meanwhile.
+                return MockTurn::text("done").with_delay(Duration::from_millis(150));
+            }
+            if last.contains("Task: write b") {
+                return write_turn(&b, "from the subtask").with_delay(Duration::from_millis(60));
+            }
+            if last.contains("create a") {
+                return write_turn(&a, "one");
+            }
+            write_turn(&a, "two")
+        })));
+    });
+    let (a, b) = (t.proj.join("a.txt"), t.proj.join("b.txt"));
+    run(&mut t.d, "create a").await;
+    local(&mut t.d, "/subtask write b").await;
+    run(&mut t.d, "change a").await;
+    subtasks_settle(&t.d).await;
+    t.d.deliver_subtasks();
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "from the subtask", "it wrote during prompt 2");
+    // Prompt 2's own changes go back; the subtask's edit isn't part of prompt 2.
+    local(&mut t.d, "/rewind 2 code").await;
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "one");
+    assert!(b.exists(), "the subtask's file stays");
+    // Before prompt 1 (and the subtask): everything goes.
+    local(&mut t.d, "/rewind 1 code").await;
+    assert!(!a.exists() && !b.exists());
+}
+
+#[tokio::test]
+async fn at_mentions_attach_files_to_plain_prompts() {
+    let mut t = driver_with(|dir, o| {
+        o.permission_mode = Some("acceptEdits".into());
+        let hook = format!("cat > {}", dir.join("hook-input.json").display());
+        let settings = serde_json::json!({
+            "verification": {"enabled": false},
+            "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": hook}]}]},
+        });
+        std::fs::write(dir.join("proj/.forge/settings.json"), settings.to_string()).unwrap();
+        std::fs::write(dir.join("outside.txt"), "far away").unwrap();
+    });
+    let notes = t.proj.join("notes.md");
+    std::fs::write(&notes, "the launch is on Tuesday").unwrap();
+    std::fs::write(t.proj.join("secret.txt"), "hunter2").unwrap();
+
+    // The request's last user message carries the file; the model edits it without a Read.
+    t.p.push(MockTurn::tool(
+        "Edit",
+        serde_json::json!({"file_path": notes, "old_string": "Tuesday", "new_string": "Wednesday"}),
+    ));
+    t.p.push(MockTurn::text("Moved it."));
+    let r = run(&mut t.d, "move @notes.md, and see @../outside.txt").await;
+    assert_eq!(r.result.as_deref(), Some("Moved it."));
+    let sent = last_user_text(&t.p.requests()[0]);
+    assert!(sent.contains("the launch is on Tuesday") && sent.contains("<system-reminder>"), "{sent}");
+    assert!(
+        sent.contains("outside.txt was not attached: outside the working directories; use Read")
+            && !sent.contains("far away"),
+        "{sent}"
+    );
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "the launch is on Wednesday", "Edit needed no Read");
+
+    // The prompt as typed: in the conversation's first text block, for hooks, and for /rewind.
+    let first = t.d.engine.state.messages.iter().find(|m| m.role == forge_types::Role::User).unwrap();
+    assert_eq!(first.content[0].as_text(), Some("move @notes.md, and see @../outside.txt"));
+    let hook: Value =
+        serde_json::from_str(&std::fs::read_to_string(t._dir.path().join("hook-input.json")).unwrap()).unwrap();
+    assert_eq!(hook["prompt"], "move @notes.md, and see @../outside.txt");
+
+    // A deny rule keeps a file out.
+    local(&mut t.d, "/permissions add deny Read(secret.txt) --scope session").await;
+    t.p.push(MockTurn::text("Can't see it."));
+    run(&mut t.d, "what is in @secret.txt?").await;
+    let sent = last_user_text(t.p.requests().last().unwrap());
+    assert!(!sent.contains("hunter2"), "{sent}");
+    assert!(sent.contains("secret.txt was not attached: blocked by a permission rule"), "{sent}");
+
+    let list = local(&mut t.d, "/rewind").await;
+    assert!(
+        list.contains("1. move @notes.md, and see @../outside.txt") && list.contains("2. what is in @secret.txt?"),
+        "{list}"
+    );
+}
+
+// ---- immediate commands mid-turn (C17) ----
+
+/// Answer an immediate command from the view, as front ends do while a turn runs.
+async fn immediate(v: &crate::view::SessionView, text: &str) -> (String, bool) {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    match crate::commands::execute_immediate(v, text, &cancel).await {
+        Some(crate::commands::Exec::Local { text, is_error }) => (text, is_error),
+        other => panic!("{text}: not answered locally: {other:?}"),
+    }
+}
+
+/// Poll `f` until it holds (at most 10 s).
+async fn wait_for(mut f: impl FnMut() -> bool) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !f() {
+        assert!(std::time::Instant::now() < end, "timed out");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn immediate_commands_answer_from_the_view_during_a_turn() {
+    let mut t = driver();
+    assert!(crate::commands::immediate("/cost", &t.d.catalog), "aliases count");
+    assert!(crate::commands::immediate("/mcp reconnect x", &t.d.catalog), "arguments don't matter");
+    assert!(!crate::commands::immediate("/model", &t.d.catalog) && !crate::commands::immediate("hi", &t.d.catalog));
+    let view = t.d.view();
+    let slow = std::time::Duration::from_millis(150);
+    t.p.push(MockTurn::tool("Glob", serde_json::json!({"pattern": "*"})));
+    t.p.push(MockTurn::text("Done looking.").with_delay(slow));
+    let snap = view.clone();
+    let during = async {
+        let (before, _) = immediate(&view, "/usage").await;
+        assert!(before.contains("0 model calls for 0 prompts"), "{before}");
+        // After the turn's first model call (and its tool batch), the view has moved on.
+        wait_for(|| snap.engine().turn.as_ref().is_some_and(|p| p.api_calls == 1 && p.tool_calls == 1)).await;
+        let (usage, _) = immediate(&view, "/usage").await;
+        assert!(usage.contains("1 model calls for 1 prompts · 1 tool calls"), "{usage}");
+        assert!(!usage.contains("Total cost:     $0.0000"), "{usage}");
+        let (status, _) = immediate(&view, "/status").await;
+        assert!(status.contains("Model:") && status.contains("Permissions:    default mode"), "{status}");
+        assert_eq!(immediate(&view, "/tasks").await, ("No background tasks.".to_string(), false));
+        assert!(immediate(&view, "/context").await.0.starts_with("Context: about"));
+        assert!(snap.engine().turn.is_some(), "still mid-turn");
+    };
+    let (r, ()) = tokio::join!(run(&mut t.d, "look around"), during);
+    assert_eq!(r.result.as_deref(), Some("Done looking."));
+    assert!(view.engine().turn.is_none());
+    let usage = local(&mut t.d, "/usage").await;
+    assert!(usage.contains("2 model calls for 1 prompts"), "{usage}");
+}
+
+#[tokio::test]
+async fn btw_mid_turn_answers_and_its_cost_counts_after_the_turn() {
+    let mut t = driver();
+    let view = t.d.view();
+    t.p.push(MockTurn::text("The main answer.").with_delay(std::time::Duration::from_millis(100)));
+    t.p.push(MockTurn::text("A side answer.").with_usage(forge_types::Usage {
+        input_tokens: 5_000,
+        output_tokens: 7,
+        ..Default::default()
+    }));
+    let requests = t.p.request_log();
+    let during = async {
+        wait_for(|| requests.lock().unwrap().len() == 1).await;
+        let (answer, is_error) = immediate(&view, "/btw what are you doing?").await;
+        assert_eq!((answer.as_str(), is_error), ("A side answer.", false));
+    };
+    let (r, ()) = tokio::join!(run(&mut t.d, "answer slowly"), during);
+    assert_eq!(r.result.as_deref(), Some("The main answer."));
+    let side = &t.p.requests()[1];
+    assert_eq!(side.tool_choice, Some(serde_json::json!({"type": "none"})));
+    assert!(serde_json::to_string(&side.messages).unwrap().contains("what are you doing?"));
+    // Recorded when the turn ended: the side question's tokens and the exchange.
+    let usage = local(&mut t.d, "/usage").await;
+    assert!(usage.contains("5,100 input"), "{usage}");
+    assert_eq!(t.d.side_questions, vec![("what are you doing?".to_string(), "A side answer.".to_string())]);
+    assert!(t.d.engine.state.messages.iter().all(|m| !m.text().contains("A side answer.")), "not in the conversation");
+}
+
+#[tokio::test]
+async fn mcp_changes_mid_turn_refresh_the_session_after_the_turn() {
+    if std::process::Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped: python3 not found");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("notes.py");
+    std::fs::write(&script, NOTES_SERVER).unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let resolved = forge_mcp::Resolved {
+        servers: vec![forge_mcp::NamedServer {
+            name: "notes".into(),
+            scope: forge_mcp::Scope::Settings,
+            config: forge_mcp::ServerConfig::Stdio {
+                command: "python3".into(),
+                args: vec![script.display().to_string()],
+                env: Default::default(),
+            },
+        }],
+        ..Default::default()
+    };
+    let m = Arc::new(forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(&proj)).await);
+    let mut t = driver_with(|_, o| o.mcp = Some(m.clone()));
+    let view = t.d.view();
+    let has_note = |d: &Driver| d.engine.system().iter().any(|b| b.text.contains("Notes keeps the team's notes."));
+    assert!(has_note(&t.d));
+    let slow = std::time::Duration::from_millis(100);
+
+    t.p.push(MockTurn::text("first").with_delay(slow));
+    let during = async {
+        let (out, _) = immediate(&view, "/mcp disable notes").await;
+        assert!(out.starts_with("Disabled notes"), "{out}");
+    };
+    tokio::join!(run(&mut t.d, "go on"), during);
+    assert!(!has_note(&t.d), "its instructions left with the turn's end");
+    assert_eq!(t.d.info.init.mcp_servers[0].status, "disabled");
+
+    t.p.push(MockTurn::text("second").with_delay(slow));
+    let during = async {
+        assert!(immediate(&view, "/mcp enable notes").await.0.starts_with("Enabled notes"));
+        assert!(immediate(&view, "/mcp reconnect notes").await.0.starts_with("Reconnected notes"));
+    };
+    tokio::join!(run(&mut t.d, "and again"), during);
+    assert!(has_note(&t.d), "back after the turn");
+    assert_eq!(t.d.info.init.mcp_servers[0].status, "connected");
+    m.shutdown().await;
+}
+
+// ---- screens (docs/TUI.md) ----
+
+#[tokio::test]
+async fn context_screen_and_text_share_their_numbers() {
+    let mut t = driver();
+    let text = local(&mut t.d, "/context").await;
+    let screen = crate::commands::screens::screen(&t.d, "/context").expect("a screen");
+    let rows: Vec<String> = screen.rows.iter().map(|r| r.plain()).collect();
+    let headline = text.lines().next().unwrap();
+    assert!(rows.iter().any(|r| r == headline), "{headline}\n{rows:#?}");
+    let system = text.lines().find(|l| l.trim_start().starts_with("System prompt")).unwrap();
+    let number = system.split_whitespace().nth(2).unwrap();
+    assert!(rows.iter().any(|r| r.contains("System prompt") && r.contains(number)), "{number}\n{rows:#?}");
+    assert!(crate::commands::screens::screen(&t.d, "/context all").is_none(), "with an argument: text");
+    assert!(crate::commands::screens::screen(&t.d, "/status").is_none());
+}
+
+#[tokio::test]
+async fn hooks_add_list_and_remove_through_settings() {
+    let mut t = driver();
+    t.d.info.user_settings = t._dir.path().join("home/settings.json");
+    let out = local(&mut t.d, "/hooks add PreToolUse Bash echo before-bash").await;
+    assert!(
+        out.starts_with("Added a PreToolUse hook for Bash: echo before-bash. Saved in local project settings"),
+        "{out}"
+    );
+    assert!(out.ends_with("It applies now."), "{out}");
+    let local_file = std::fs::read_to_string(t.proj.join(".forge/settings.local.json")).unwrap();
+    assert!(local_file.contains("echo before-bash") && local_file.contains("\"matcher\": \"Bash\""), "{local_file}");
+    assert!(t.d.engine.hooks().config.has(forge_hooks::HookEvent::PreToolUse), "the session reloaded");
+
+    let out = local(&mut t.d, "/hooks add Stop '' 'echo done' --scope project --timeout 5").await;
+    assert!(out.contains("Added a Stop hook: echo done. Saved in project settings"), "{out}");
+    local(&mut t.d, "/hooks add Stop * echo second --scope user").await;
+    assert!(std::fs::read_to_string(t._dir.path().join("home/settings.json")).unwrap().contains("echo second"));
+
+    let list = local(&mut t.d, "/hooks").await;
+    assert!(list.contains("PreToolUse:\n  1. [Bash] echo before-bash (timeout 60s, local)"), "{list}");
+    assert!(list.contains("  1. [*] echo done (timeout 5s, project)"), "{list}");
+
+    // The editor screen: an add form, and Enter on a hook asks before removing it.
+    let screen = crate::commands::screens::screen(&t.d, "/hooks").unwrap();
+    assert!(
+        matches!(&screen.rows[0].action, Some(crate::commands::screens::RowAction::Form(f)) if f.template.starts_with("/hooks add"))
+    );
+    let remove = screen.rows.iter().find_map(|r| match &r.action {
+        Some(crate::commands::screens::RowAction::Confirm { command, .. })
+            if command.starts_with("/hooks remove Stop") =>
+        {
+            Some(command.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(remove.as_deref(), Some("/hooks remove Stop 1"));
+
+    let out = local(&mut t.d, "/hooks remove PreToolUse 1").await;
+    assert!(out.starts_with("Removed the PreToolUse hook echo before-bash."), "{out}");
+    let local_file = std::fs::read_to_string(t.proj.join(".forge/settings.local.json")).unwrap();
+    assert!(!local_file.contains("PreToolUse"), "{local_file}");
+    assert!(!local(&mut t.d, "/hooks").await.contains("PreToolUse"));
+    assert!(!t.d.engine.hooks().config.has(forge_hooks::HookEvent::PreToolUse));
+
+    assert!(fails(&mut t.d, "/hooks add Nope x y").await.contains("Unknown hook event \"Nope\""));
+    assert!(fails(&mut t.d, "/hooks add PreToolUse Bash").await.starts_with("Usage: /hooks"));
+    assert!(fails(&mut t.d, "/hooks remove Stop 9").await.contains("No Stop hook 9"));
+    assert!(fails(&mut t.d, "/hooks add Stop x y --scope everywhere").await.contains("--scope takes"));
+    assert!(fails(&mut t.d, "/hooks frob").await.starts_with("Usage: /hooks"));
+}
+
+#[tokio::test]
+async fn agents_create_writes_a_definition_and_reloads() {
+    let mut t = driver();
+    t.d.info.user_settings = t._dir.path().join("home/settings.json");
+    let out = local(
+        &mut t.d,
+        "/agents create code-reviewer --description 'Reviews diffs for bugs' --tools Read,Grep --model sonnet",
+    )
+    .await;
+    let path = t.proj.join(".forge/agents/code-reviewer.md");
+    assert!(out.starts_with(&format!("Created the code-reviewer agent in {}. Reloaded:", path.display())), "{out}");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.starts_with(
+            "---\nname: code-reviewer\ndescription: Reviews diffs for bugs\ntools: Read, Grep\nmodel: sonnet\n---\n\n"
+        ),
+        "{text}"
+    );
+    let def = forge_agents::parse_agent_markdown(&text, forge_agents::AgentSource::Project).unwrap();
+    assert_eq!(def.tools, Some(vec!["Read".to_string(), "Grep".to_string()]));
+    assert!(t.d.catalog.agents.iter().any(|a| a.name == "code-reviewer"), "the session reloaded");
+    assert!(local(&mut t.d, "/agents").await.contains("code-reviewer (Project) - Reviews diffs for bugs [Read, Grep]"));
+
+    // The wizard's command: empty tools mean all tools, inherit means no model line; user scope.
+    let screen = crate::commands::screens::screen(&t.d, "/agents").unwrap();
+    let Some(crate::commands::screens::RowAction::Form(mut form)) = screen.rows[0].action.clone() else { panic!() };
+    form.fields[0].kind = crate::commands::screens::FieldKind::Text("notes-taker".into());
+    form.fields[1].kind = crate::commands::screens::FieldKind::Text("Takes notes".into());
+    if let crate::commands::screens::FieldKind::Choice { at, .. } = &mut form.fields[5].kind {
+        *at = 1;
+    }
+    let cmd = form.command();
+    assert_eq!(
+        cmd,
+        "/agents create notes-taker --description 'Takes notes' --prompt '' --tools '' --model inherit --scope user"
+    );
+    let out = local(&mut t.d, &cmd).await;
+    let user = t._dir.path().join("home/agents/notes-taker.md");
+    assert!(out.contains(&user.display().to_string()), "{out}");
+    let text = std::fs::read_to_string(&user).unwrap();
+    assert!(!text.contains("tools:") && !text.contains("model:") && text.contains("Takes notes"), "{text}");
+
+    assert!(fails(&mut t.d, "/agents create code-reviewer --description again").await.contains("already exists"));
+    assert!(fails(&mut t.d, "/agents create Bad_Name --description x").await.contains("lowercase"));
+    assert!(fails(&mut t.d, "/agents create x").await.contains("needs a description"));
+    assert!(fails(&mut t.d, "/agents create x --description y --tools Nope").await.contains("Unknown tool(s): Nope"));
+    assert!(fails(&mut t.d, "/agents create x --description y --model gpt-9").await.contains("Unknown model"));
+    assert!(fails(&mut t.d, "/agents frob").await.starts_with("Usage: /agents"));
+}
+
+#[tokio::test]
+async fn scheduled_prompts_attach_their_mentions() {
+    let mut t = driver();
+    fast_clock(&t.d, 3000.0);
+    std::fs::write(t.proj.join("status.txt"), "build 812 is red").unwrap();
+    t.p.push(MockTurn::text("red"));
+    run(&mut t.d, "/loop 5m summarize @status.txt").await;
+    assert!(last_user_text(t.p.requests().last().unwrap()).contains("build 812 is red"), "the first run");
+    std::fs::write(t.proj.join("status.txt"), "build 813 is green").unwrap();
+    t.p.push(MockTurn::text("green"));
+    fire_next(&mut t.d).await;
+    let sent = last_user_text(t.p.requests().last().unwrap());
+    assert!(sent.contains("build 813 is green") && sent.contains("summarize @status.txt"), "a scheduled run: {sent}");
+}
+
+#[tokio::test]
+async fn a_second_btw_in_the_same_turn_sees_the_first() {
+    let mut t = driver();
+    let view = t.d.view();
+    t.p.push(MockTurn::text("Main.").with_delay(std::time::Duration::from_millis(100)));
+    t.p.push(MockTurn::text("First side answer."));
+    t.p.push(MockTurn::text("Second side answer."));
+    let requests = t.p.request_log();
+    let during = async {
+        wait_for(|| requests.lock().unwrap().len() == 1).await;
+        assert_eq!(immediate(&view, "/btw first?").await.0, "First side answer.");
+        assert_eq!(immediate(&view, "/btw second?").await.0, "Second side answer.");
+        assert!(immediate(&view, "/btw").await.0.starts_with("/btw second?"), "the latest, not yet recorded");
+    };
+    tokio::join!(run(&mut t.d, "go"), during);
+    let second = serde_json::to_string(&t.p.requests()[2].messages).unwrap();
+    assert!(second.contains("first?") && second.contains("First side answer."), "{second}");
+    assert_eq!(t.d.side_questions.len(), 2);
+}
+
+#[tokio::test]
+async fn model_lists_only_what_the_endpoint_offers() {
+    let mut t = driver();
+    t.p.set_models(&["local-coder", "local-large"]);
+    let list = local(&mut t.d, "/model").await;
+    assert_eq!(
+        list,
+        "Current model: claude-opus-5-5\n\nModels this endpoint offers:\n* claude-opus-5-5\n  local-coder\n  local-large\n\nSwitch with /model <model id>."
+    );
+    let m = crate::commands::picker::picker(&t.d, "/model").unwrap();
+    let labels: Vec<&str> = m.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["claude-opus-5-5", "local-coder", "local-large", "Another model…"]);
+    assert!(local(&mut t.d, "/model local-coder").await.starts_with("Set model to local-coder."));
+    let m = crate::commands::picker::picker(&t.d, "/model").unwrap();
+    assert_eq!(m.choices.len(), 3, "the current model is in the list now");
+    assert!(m.choices[0].current);
+}
+
+#[tokio::test]
+async fn unknown_models_show_unknown_cost_and_a_guessed_window() {
+    let mut t = driver();
+    assert!(local(&mut t.d, "/model test-unpriced-model").await.starts_with("Set model to test-unpriced-model."));
+    t.p.push(forge_api::MockTurn::text("hi"));
+    run(&mut t.d, "hello").await;
+    let u = local(&mut t.d, "/usage").await;
+    assert!(u.contains("Total cost:     unknown: Forge has no price for test-unpriced-model"), "{u}");
+    assert!(u.contains("(price unknown)") && u.contains("a guess: Forge doesn't know"), "{u}");
+}
+
+#[tokio::test]
+async fn doctor_names_an_unknown_model_once_as_a_note() {
+    let mut t = driver();
+    local(&mut t.d, "/model test-unpriced-model").await;
+    t.d.info.warnings.push(crate::unknown_model_notice("test-unpriced-model", false));
+    t.d.info.warnings.push("hooks: bad matcher".into());
+    let out = run(&mut t.d, "/doctor").await.result.unwrap_or_default();
+    let row =
+        |name: &str| out.lines().find(|l| l[5..].starts_with(&format!("{name} "))).unwrap_or_default().to_string();
+    assert_eq!(row("session"), "FAIL session      hooks: bad matcher", "{out}");
+    let model = row("model");
+    assert!(model.starts_with("note model        test-unpriced-model: limits guessed (200,000 context"), "{model}");
+    assert!(model.contains("no price, so costs show as unknown"), "{model}");
+    assert_eq!(out.matches("doesn't know").count(), 0, "{out}");
+}
+
+#[test]
+fn unknown_model_notice_says_how_to_set_limits() {
+    let n = crate::unknown_model_notice("deep-thinking", false);
+    assert!(
+        n.starts_with("Forge doesn't know the model deep-thinking: it assumes a 200,000-token context window"),
+        "{n}"
+    );
+    assert!(n.contains("\"modelLimits\"") && n.contains("modelPricing") && n.contains("FORGE_CONTEXT_WINDOW"), "{n}");
 }

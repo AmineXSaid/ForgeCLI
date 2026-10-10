@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use forge_api::models::{model_info, model_info_or_default, MODELS};
+use forge_api::models::{model_info, model_info_or_default};
 use forge_config::SettingSource;
 use serde_json::{json, Value};
 
@@ -98,7 +98,7 @@ fn join(parts: &[String]) -> String {
     parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join(" ")
 }
 
-fn window_label(n: u64) -> String {
+pub(super) fn window_label(n: u64) -> String {
     if n >= 1_000_000 && n.is_multiple_of(1_000_000) {
         format!("{}M", n / 1_000_000)
     } else {
@@ -106,27 +106,23 @@ fn window_label(n: u64) -> String {
     }
 }
 
-const ALIASES: &[&str] = &["default", "opus", "sonnet", "haiku", "fable"];
-
-fn model_list(current: &str) -> String {
-    let info = model_info_or_default(current);
-    let mut s = format!("Current model: {} ({current})\n\nModels:\n", info.display_name);
-    for m in MODELS {
-        let aliases: Vec<&str> = ALIASES.iter().copied().filter(|a| forge_api::resolve_model(a) == m.id).collect();
-        let _ = writeln!(
-            s,
-            "{} {:<20} {:<10} {} context · ${}/${} per Mtok{}{}",
-            if m.id == current { "*" } else { " " },
-            m.id,
-            m.display_name,
-            window_label(m.context_window),
-            m.input_price,
-            m.output_price,
-            if m.supports_fast_mode { " · fast mode" } else { "" },
-            if aliases.is_empty() { String::new() } else { format!(" ({})", aliases.join(", ")) },
-        );
+/// `/model` with no argument: the current model and the endpoint's own list.
+/// Forge shows no built-in catalogue; any model id can be set by hand.
+fn model_list(d: &Driver, failure: Option<String>) -> String {
+    let current = d.engine.handle().model();
+    let mut s = format!("Current model: {current}\n");
+    let listed: Vec<String> = d.model_choices().into_iter().filter(|m| *m != current).collect();
+    if !listed.is_empty() {
+        s.push_str("\nModels this endpoint offers:\n");
+        let _ = writeln!(s, "* {current}");
+        for m in listed {
+            let _ = writeln!(s, "  {m}");
+        }
     }
-    s.push_str("\nSwitch with /model <alias or id>.");
+    if let Some(f) = failure {
+        let _ = writeln!(s, "\n(The list isn't available: {f}.)");
+    }
+    s.push_str("\nSwitch with /model <model id>.");
     s
 }
 
@@ -151,18 +147,19 @@ fn apply_model(d: &mut Driver, id: &str) -> Result<Vec<String>, String> {
     }
     if let Some(e) = &rt.effort {
         if !info.effort_levels.contains(&e.as_str()) {
-            notes.push(format!("Effort {e} isn't available on {}; it uses the model's default.", info.display_name));
+            notes.push(format!("Effort {e} isn't available on {}; it uses the model's default.", id));
         }
     }
     if rt.fast && !info.supports_fast_mode {
-        notes.push(format!("Fast mode isn't available on {}, so it's paused.", info.display_name));
+        notes.push(format!("Fast mode isn't available on {}, so it's paused.", id));
     }
     Ok(notes)
 }
 
-pub(super) fn model(d: &mut Driver, args: &str) -> Exec {
+pub(super) async fn model(d: &mut Driver, args: &str) -> Exec {
     if args.is_empty() {
-        return ok(model_list(&d.engine.handle().model()));
+        let failure = d.load_models().await;
+        return ok(model_list(d, failure));
     }
     let id = forge_api::resolve_model(args);
     let notes = match apply_model(d, &id) {
@@ -170,9 +167,7 @@ pub(super) fn model(d: &mut Driver, args: &str) -> Exec {
         Err(e) => return err(e),
     };
     let saved = save_default(d, Scope::User, &["model"], Some(json!(args)));
-    let name = model_info_or_default(&id).display_name;
-    let name = if model_info(&id).is_some() { format!("{name} ({id})") } else { id.clone() };
-    ok(join(&[format!("Set model to {name}."), notes.join(" "), saved]))
+    ok(join(&[format!("Set model to {id}."), notes.join(" "), saved]))
 }
 
 pub(super) fn effort(d: &mut Driver, args: &str) -> Exec {
@@ -184,19 +179,19 @@ pub(super) fn effort(d: &mut Driver, args: &str) -> Exec {
     match args {
         "" | "status" => {
             if levels.is_empty() {
-                return ok(format!("{} doesn't support effort levels.", info.display_name));
+                return ok(format!("{} doesn't support effort levels.", rt.model));
             }
             let now = match &rt.effort {
                 Some(e) => e.clone(),
-                None => format!("auto ({}'s default: {default})", info.display_name),
+                None => format!("auto ({}'s default: {default})", rt.model),
             };
-            ok(format!("Effort: {now}\nLevels for {}: {}, or auto.", info.display_name, levels.join(", ")))
+            ok(format!("Effort: {now}\nLevels for {}: {}, or auto.", rt.model, levels.join(", ")))
         }
-        _ if levels.is_empty() => err(format!("{} doesn't support effort levels.", info.display_name)),
+        _ if levels.is_empty() => err(format!("{} doesn't support effort levels.", rt.model)),
         "auto" => {
             h.set_effort(None);
             let saved = save_default(d, Scope::User, &["effortLevel"], None);
-            ok(join(&[format!("Effort set to auto ({}'s default: {default}).", info.display_name), saved]))
+            ok(join(&[format!("Effort set to auto ({}'s default: {default}).", rt.model), saved]))
         }
         level if levels.contains(&level) => {
             h.set_effort(Some(level.to_string()));
@@ -212,10 +207,6 @@ pub(super) fn effort(d: &mut Driver, args: &str) -> Exec {
     }
 }
 
-fn fast_models() -> String {
-    MODELS.iter().filter(|m| m.supports_fast_mode).map(|m| m.display_name).collect::<Vec<_>>().join(", ")
-}
-
 pub(super) fn fast(d: &mut Driver, args: &str) -> Exec {
     let h = d.engine.handle();
     let rt = h.runtime();
@@ -227,24 +218,20 @@ pub(super) fn fast(d: &mut Driver, args: &str) -> Exec {
         "off" => false,
         "status" => {
             return ok(match (rt.fast, supported) {
-                (true, true) => format!("Fast mode is on for {}.", info.display_name),
-                (true, false) => format!("Fast mode is on but paused: {} doesn't offer it.", info.display_name),
+                (true, true) => format!("Fast mode is on for {}.", rt.model),
+                (true, false) => format!("Fast mode is on but paused: {} doesn't offer it.", rt.model),
                 (false, _) => "Fast mode is off.".to_string(),
             })
         }
         _ => return err("Usage: /fast [on|off|status]"),
     };
     if on && !supported {
-        return err(format!(
-            "Fast mode isn't available for {}. Models with fast mode: {}.",
-            info.display_name,
-            fast_models()
-        ));
+        return err(format!("Fast mode isn't available for {}.", rt.model));
     }
     h.set_fast(on);
     let saved = save_default(d, Scope::User, &["fastMode"], Some(json!(on)));
     let text = if on {
-        format!("Fast mode on: faster output from {}, at a higher price per token.", info.display_name)
+        format!("Fast mode on: faster output from {}, at a higher price per token.", rt.model)
     } else {
         "Fast mode off.".to_string()
     };
@@ -616,7 +603,7 @@ pub(super) fn sandbox(d: &mut Driver, args: &str) -> Exec {
             ),
             (Some(p), None) => format!("Sandbox: {} requested, but no sandbox is available here.", p.mode.as_str()),
             (None, Some(b)) => format!("Sandbox: off ({b:?} is available). /sandbox on confines shell commands."),
-            (None, None) => "Sandbox: off. None is available: install bubblewrap (Linux).".into(),
+            (None, None) => format!("Sandbox: off. None is available: {}.", forge_tools::sandbox::unavailable_reason()),
         });
     }
     let wanted = if args == "on" { "workspace-write" } else { args };
@@ -624,11 +611,7 @@ pub(super) fn sandbox(d: &mut Driver, args: &str) -> Exec {
         return err("Usage: /sandbox [on|off|read-only|workspace-write|status]");
     };
     if mode.is_some() && backend.is_none() {
-        return err(if cfg!(target_os = "linux") {
-            "No sandbox is available here: install bubblewrap (bwrap) to confine shell commands."
-        } else {
-            "No sandbox is available on this system."
-        });
+        return err(format!("No sandbox is available here: {}.", forge_tools::sandbox::unavailable_reason()));
     }
     let st = &d.info.settings;
     ctx.set_sandbox(mode.map(|mode| forge_tools::sandbox::SandboxPolicy {
@@ -667,12 +650,8 @@ pub(super) fn advisor(d: &mut Driver, args: &str) -> Exec {
     let current = d.advisor.read().unwrap().clone();
     match args {
         "" | "status" => ok(match current {
-            Some(m) => format!(
-                "Advisor: {} ({m}). Forge can ask it for advice at key moments; /advisor off stops that.",
-                model_info_or_default(&m).display_name
-            ),
-            None => "No advisor is set. /advisor <model> lets Forge consult a second model (for example /advisor \
-                     opus) before risky changes, when stuck, and before calling work done."
+            Some(m) => format!("Advisor: {m}. Forge can ask it for advice at key moments; /advisor off stops that."),
+            None => "No advisor is set. /advisor <model id> lets Forge consult a second model before risky changes, when stuck, and before calling work done."
                 .to_string(),
         }),
         "off" | "none" => {
@@ -690,14 +669,70 @@ pub(super) fn advisor(d: &mut Driver, args: &str) -> Exec {
             }
             *d.advisor.write().unwrap() = Some(id.clone());
             let saved = save_default(d, Scope::User, &["advisorModel"], Some(json!(name)));
-            let shown = match model_info(&id) {
-                Some(m) => format!("{} ({id})", m.display_name),
-                None => id.clone(),
-            };
             ok(join(&[
-                format!("Advisor set to {shown}. Forge can now ask it for advice; each question is a request to that model."),
+                format!("Advisor set to {id}. Forge can now ask it for advice; each question is a request to that model."),
                 saved,
             ]))
+        }
+    }
+}
+
+/// The colour themes of the terminal UI.
+pub const THEMES: [(&str, &str); 4] = [
+    ("auto", "Follow the terminal's background (COLORFGBG), else dark"),
+    ("dark", "For dark terminal backgrounds"),
+    ("light", "For light backgrounds"),
+    ("none", "No colours: bold, dim and reverse only"),
+];
+
+fn tui_only(d: &Driver, name: &str) -> Option<Exec> {
+    (d.surface != Surface::Tui).then(|| err(format!("/{name} works only in the terminal UI.")))
+}
+
+/// `/theme [auto|dark|light|none]`: saved as `theme` in user settings; the UI applies it.
+pub(super) fn theme(d: &mut Driver, args: &str) -> Exec {
+    if let Some(e) = tui_only(d, "theme") {
+        return e;
+    }
+    let current = d.info.settings.str("/theme").unwrap_or("auto").to_string();
+    if args.is_empty() {
+        let mut s = format!("Theme: {current}\n");
+        for (name, what) in THEMES {
+            let _ = writeln!(s, "  {name:<6} {what}");
+        }
+        s.push_str("Choose one with /theme <name>.");
+        return ok(s);
+    }
+    let Some((name, _)) = THEMES.iter().find(|(n, _)| *n == args) else {
+        return err(format!("No theme {args:?}. Choose auto, dark, light or none."));
+    };
+    let saved = save_default(d, Scope::User, &["theme"], Some(json!(name)));
+    ok(join(&[format!("Theme set to {name}."), saved]))
+}
+
+/// `/statusline [command|off]`: the `statusLine` setting. The UI runs the
+/// command with the session as JSON on stdin and shows its first line.
+pub(super) fn statusline(d: &mut Driver, args: &str) -> Exec {
+    if let Some(e) = tui_only(d, "statusline") {
+        return e;
+    }
+    match args {
+        "" => ok(match d.info.settings.str("/statusLine/command") {
+            Some(c) => format!(
+                "Status line command: {c}\nIt gets the session as JSON on stdin; its first output line is shown. \
+                 /statusline off removes it."
+            ),
+            None => "No status line command. Set one with /statusline <command>: it gets the session as JSON on \
+                     stdin (model, cwd, session_id, cost, context) and its first output line is shown."
+                .into(),
+        }),
+        "off" | "remove" | "clear" => {
+            let saved = save_default(d, Scope::User, &["statusLine"], None);
+            ok(join(&["Status line command removed.".to_string(), saved]))
+        }
+        cmd => {
+            let saved = save_default(d, Scope::User, &["statusLine"], Some(json!({"type": "command", "command": cmd})));
+            ok(join(&[format!("Status line command set to: {cmd}"), saved]))
         }
     }
 }

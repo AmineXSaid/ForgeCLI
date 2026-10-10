@@ -13,6 +13,7 @@ pub enum ColorChoice {
 #[derive(Debug, Clone, Copy)]
 pub struct Term {
     pub stdin_tty: bool,
+    pub stdout_tty: bool,
     /// Use ANSI colors (decided from --color, NO_COLOR, FORCE_COLOR and the terminals).
     pub color: bool,
 }
@@ -44,6 +45,7 @@ pub fn init(choice: ColorChoice) -> Term {
     // The interactive display writes to stdout: color it only when stdout is a terminal too.
     let t = Term {
         stdin_tty: std::io::stdin().is_terminal(),
+        stdout_tty,
         color: color && (stdout_tty || choice == ColorChoice::Always),
     };
     let _ = TERM.set(t);
@@ -51,7 +53,7 @@ pub fn init(choice: ColorChoice) -> Term {
 }
 
 pub fn get() -> Term {
-    *TERM.get().unwrap_or(&Term { stdin_tty: false, color: false })
+    *TERM.get().unwrap_or(&Term { stdin_tty: false, stdout_tty: false, color: false })
 }
 
 /// Wrap `s` in an ANSI style when color is on.

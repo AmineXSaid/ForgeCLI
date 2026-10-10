@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+forge-platform.workspace = true
 futures.workspace = true
 regex.workspace = true
 serde.workspace = true

@@ -495,9 +495,11 @@ dependencies = [
  "forge-engine",
  "forge-hooks",
  "forge-permissions",
+ "forge-platform",
  "forge-session",
  "forge-tools",
  "forge-types",
+ "ignore",
  "regex",
  "serde",
  "serde_json",
@@ -532,6 +534,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "clap",
  "clap_complete",
  "crossterm",
@@ -543,12 +546,16 @@ dependencies = [
  "forge-eval",
  "forge-mcp",
  "forge-permissions",
+ "forge-platform",
  "forge-session",
  "forge-test-host",
  "forge-tools",
  "forge-types",
+ "futures",
+ "ignore",
  "ratatui",
  "serde_json",
+ "shlex 1.3.0",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -592,10 +599,12 @@ dependencies = [
  "forge-hooks",
  "forge-mcp",
  "forge-permissions",
+ "forge-platform",
  "forge-session",
  "forge-tools",
  "forge-types",
  "serde_json",
+ "shlex 1.3.0",
  "similar",
  "tempfile",
  "thiserror",
@@ -636,9 +645,11 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "forge-platform",
  "futures",
  "serde",
  "serde_json",
+ "shlex 1.3.0",
  "tempfile",
  "tokio",
 ]
@@ -647,6 +658,7 @@ dependencies = [
 name = "forge-git"
 version = "0.1.0"
 dependencies = [
+ "forge-platform",
  "tempfile",
 ]
 
@@ -654,6 +666,7 @@ dependencies = [
 name = "forge-hooks"
 version = "0.1.0"
 dependencies = [
+ "forge-platform",
  "futures",
  "regex",
  "serde",
@@ -672,6 +685,7 @@ dependencies = [
  "forge-api",
  "forge-config",
  "forge-permissions",
+ "forge-platform",
  "forge-tools",
  "forge-types",
  "futures",
@@ -690,11 +704,20 @@ name = "forge-permissions"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "forge-platform",
  "globset",
  "regex",
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "forge-platform"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -730,11 +753,11 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "forge-permissions",
+ "forge-platform",
  "forge-types",
  "futures",
  "globset",
  "ignore",
- "libc",
  "regex",
  "reqwest",
  "serde",

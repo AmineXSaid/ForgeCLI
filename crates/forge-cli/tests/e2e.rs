@@ -85,6 +85,20 @@ async fn print_json_and_piped_stdin() {
 }
 
 #[tokio::test]
+async fn print_attaches_at_mentions() {
+    let e = env();
+    std::fs::write(e.cwd.join("notes.md"), "Ship the parser on Friday.").unwrap();
+    let api = MockApi::start(vec![MockTurn::text("Friday.")]).await;
+    let (code, out, err) = run(&e, &api, &["-p", "summarize @notes.md"], None).await;
+    assert_eq!((code, out.trim()), (0, "Friday."), "stderr: {err}");
+    let content = api.requests()[0]["messages"][0]["content"].as_array().unwrap().clone();
+    let texts: Vec<&str> = content.iter().filter_map(|b| b["text"].as_str()).collect();
+    assert!(texts.contains(&"summarize @notes.md"), "{texts:?}");
+    let note = texts.last().unwrap();
+    assert!(note.starts_with("<system-reminder>") && note.contains("Ship the parser on Friday."), "{note}");
+}
+
+#[tokio::test]
 async fn print_errors() {
     let e = env();
     let api = MockApi::start(vec![]).await;
@@ -97,11 +111,11 @@ async fn print_errors() {
     assert!(err.contains("invalid --permission-mode"), "{err}");
     let api = MockApi::start(vec![MockTurn::http_error(401, "authentication_error")]).await;
     let (code, out, err) = run(&e, &api, &["-p", "--output-format", "json", "x"], None).await;
-    assert_eq!(code, 1);
+    assert_eq!(code, 3, "a refused key is a configuration problem");
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     assert_eq!(v["type"], "result");
     assert_eq!(v["subtype"], "error_during_execution");
-    assert_eq!(v["exit_code"], 1);
+    assert_eq!(v["exit_code"], 3);
     let msg = v["errors"][0].as_str().unwrap();
     assert!(msg.contains("401") && msg.contains("FORGE_API_KEY"), "the error names the next step: {msg}");
     assert!(!err.contains("{"), "stderr carries no JSON: {err}");
@@ -224,6 +238,11 @@ async fn host_controls_mode_model_and_interrupt() {
     h.send(json!({"type": "control_request", "request_id": "m2", "request": {"subtype": "set_permission_mode", "mode": "nope"}})).await;
     let r = h.until(|v| v["type"] == "control_response").await;
     assert_eq!(r["response"]["subtype"], "error");
+    // Bypassing permissions takes --allow-dangerously-skip-permissions at launch.
+    h.send(json!({"type": "control_request", "request_id": "m4", "request": {"subtype": "set_permission_mode", "mode": "bypassPermissions"}})).await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "m4").await;
+    assert_eq!(r["response"]["subtype"], "error");
+    assert!(r["response"]["error"].as_str().unwrap().contains("--allow-dangerously-skip-permissions"));
     h.send(
         json!({"type": "control_request", "request_id": "m3", "request": {"subtype": "set_model", "model": "sonnet"}}),
     )
@@ -237,10 +256,35 @@ async fn host_controls_mode_model_and_interrupt() {
     assert_eq!(r["stop_reason"], "interrupted");
     assert_eq!(r["subtype"], "success");
     assert_eq!(api.requests()[0]["model"], "claude-sonnet-5-5");
+    // The system prompt names the model the host switched to.
+    let system = api.requests()[0]["system"].to_string();
+    assert!(system.contains("Sonnet 5.5") && !system.contains("Opus 5.5"), "{system}");
     let unknown = json!({"type": "control_request", "request_id": "u", "request": {"subtype": "teleport"}});
     h.send(unknown).await;
     let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "u").await;
     assert_eq!(r["response"]["subtype"], "error");
+    let (code, _) = h.wait().await;
+    assert_eq!(code, 0);
+}
+
+#[tokio::test]
+async fn stream_json_answers_immediate_commands_mid_turn() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("A slow answer.").with_delay(Duration::from_millis(100))]).await;
+    let mut h = Host::spawn(command(&forge_bin(), &e.cwd, &e.home, &api.url, &stream_args(&[])));
+    let init = h.until(|v| v["type"] == "system" && v["subtype"] == "init").await;
+    // The turn streams for a while; the reader answers /status meanwhile.
+    h.send_user("take your time").await;
+    h.send_user("/status").await;
+    // The command's result comes first, marked immediate; the turn's own result follows.
+    let first = h.until_type("result").await;
+    assert_eq!((first["immediate"].clone(), first["num_turns"].clone()), (json!(true), json!(0)), "{first}");
+    assert!(first["result"].as_str().unwrap().contains("Model:"), "{first}");
+    assert_eq!(first["session_id"], init["session_id"]);
+    let second = h.until_type("result").await;
+    assert_eq!(second["result"], "A slow answer.");
+    assert!(second.get("immediate").is_none(), "{second}");
+    assert_eq!(api.requests().len(), 1, "/status never reached the model");
     let (code, _) = h.wait().await;
     assert_eq!(code, 0);
 }

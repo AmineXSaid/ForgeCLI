@@ -14,6 +14,7 @@ Dependencies point one way. Nothing lower in the list depends on anything
 higher.
 
 ```
+forge-platform                   OS differences: the shell commands run in, process trees, path display
 forge-types                      wire types (Messages API + stream-json protocol)
   ├─ forge-api                   Provider trait, Messages API SSE client, OpenAI-compatible adapter, mock, model table + pricing
   ├─ forge-config                settings layers, memory files (FORGE.md), resource search paths
@@ -469,6 +470,12 @@ Tests:
 - An unapproved server shows as `disabled` in `system/init`, with a warning
   on stderr.
 
+**The same rule for the endpoint:** `baseUrl`, `openai.baseUrl`,
+`apiKeyHelper` and `openai.apiKeyHelper` in the project's checked-in settings
+are ignored with a warning (`forge-core/src/endpoint.rs`). Otherwise cloning a
+repository could send the user's key to another host, or run a command at
+startup without approval.
+
 **Startup:**
 - All servers connect concurrently before the first turn: `initialize`,
   then `notifications/initialized`, then `tools/list` (paged).
@@ -529,8 +536,8 @@ are all generated from it.
 3. a skill, or a chain of up to six (`/a /b text`);
 4. an MCP prompt (`/mcp__server__prompt`).
 
-A name containing `/` or `\`, or one that is an existing root path, is an
-ordinary prompt. Anything else is `Unknown command: /name`. Commands the
+A name containing `/` or `\`, a name with a `.` (a file name), or one that
+is an existing root path, is an ordinary prompt when no command has that name. Anything else is `Unknown command: /name`. Commands the
 reference ties to its vendor's account or cloud are not registered, so they
 get the same answer.
 
@@ -542,8 +549,8 @@ front end (print, stream-json, REPL, TUI) passes each input to
   `is_error` on failure, so every output format and exit status works
   unchanged.
 - Commands need no front-end code. A command that needs a choice takes
-  its answer as arguments, so it works in `-p`; the TUI (M8) will draw a
-  picker that fills those arguments in.
+  its answer as arguments, so it works in `-p`; the TUI draws a picker
+  whose rows are those arguments (`commands::picker`).
 
 **Changing the running session.** Settings commands change the live
 objects and never rebuild the session:
@@ -604,24 +611,104 @@ for the tool list *and* for lookups, so a hidden tool can't run even if
 the model names it. Showing or hiding one changes the tool list, which
 costs one cache miss on the next request.
 
-**Immediate commands** (`/status`, `/usage`, `/tasks`, `/mcp`, `/context`) only read
-state, except `/mcp reconnect|enable|disable`, which is safe mid-turn because
-each server's changes are serialized and tool calls see a consistent state.
-They are marked in the registry so the TUI and stream-json hosts can run them
-while a turn is in progress; today every command still waits for the turn to
-finish, and stream-json hosts can use `mcp_reconnect` / `mcp_toggle`, which
-don't wait.
+**Immediate commands** (`/status`, `/usage` with `/cost` and `/stats`,
+`/tasks`, `/context`, `/mcp`, `/btw`, and the TUI's `/keybindings` and
+`/terminal-setup`) are marked `immediate` in the registry and answer at once,
+even while a turn is in progress. `commands::immediate(text, &catalog)`
+decides: an immediate built-in, aliases included. Arguments don't change it
+(`/mcp reconnect x`, `/tasks stop x` and `/context all` are immediate too),
+and built-ins win over custom commands, so the catalog never turns one into
+something else.
+
+*The session view* (`forge_core::view::SessionView`). A turn holds the
+driver mutably, so these commands never touch it. They read a view that is
+cheap to clone (an `Arc` inside) and survives session switches, as `Live`
+does. It has two parts, each an `Arc` replaced whole on every update:
+- **The driver's** (`ViewState`): session id, cwd, init facts, settings and
+  warnings, surface; the engine handle (runtime, permissions); the
+  transcript (title, schedule record); the tool context (working
+  directories, sandbox policy, background shells); the provider; a hooks
+  summary; start time and activity counters; `/btw` exchanges; skill names;
+  memory files; subtask rows (live `Arc`s: running state, tool calls, stop
+  token); finished subtasks; the shared scheduler; the MCP manager. The
+  driver publishes it when idle (`Driver::sync_view`, at the start and end of
+  every input and scheduled task, after a switch) and after each turn of an
+  input (`record`), so a goal's later turns see the earlier ones.
+- **The engine's** (`forge_engine::EngineSnapshot`, behind
+  `EngineHandle::snapshot()`): the conversation (`Arc<Vec<Message>>`),
+  cleared tool results, system blocks, tool specs, cost, usage, per-model
+  usage, context tokens, the configuration `/context` and `/btw` need, and
+  the turn in progress (`TurnProgress`: model calls, API time, tool calls so
+  far). The engine publishes it after each model call, after each tool batch
+  and at the end of a turn; the driver also asks for it when idle. Each
+  publish copies the conversation once; readers share it. Sub-agent engines
+  don't publish (nothing reads them).
+
+Readers clone the inner `Arc` and drop the lock at once: no guard is held
+for long, and none across `.await` (clippy's `await_holding_lock`, on by
+default in its `suspicious` group, checks it).
+
+*One implementation.* `/status`, `/usage`, `/tasks`, `/context`, `/mcp` and
+`/btw` live in `commands/immediate.rs` and take `&SessionView`. The idle
+path (`commands::execute`) syncs the view, runs the same function and syncs
+again, so idle output is what it always was. Mid-turn, `/usage` adds the
+turn in progress to the totals.
+
+*Deferred effects.* What needs the driver is recorded on the view as an
+`Effect` and applied by `sync_view` when the driver is next free (the end of
+the turn, or at once when idle; front ends' idle loops wake on
+`effect_recorded()`):
+- `RefreshMcp`: after `/mcp reconnect|enable|disable`, the servers'
+  instructions and the `system/init` facts. The manager itself changes at
+  once: it serializes each server's changes, and tool calls see a
+  consistent state;
+- `SideUsage`: `/btw`'s cost, priced by the engine (`record_side_usage`);
+- `SideQuestion`: the `/btw` exchange, kept for the next side question.
+  Until it is applied, `SessionView::side_questions` adds it to the
+  driver's, so a second `/btw` in the same turn sees the first.
+
+*`/btw` mid-turn* builds its request from the snapshot
+(`forge_engine::side_question_request`, shared with the engine's own
+requests): same system prompt and tools, `tool_choice: none`. A model reply
+whose tool calls have no results yet is left out. It uses the view's
+provider and a token of its own, so Esc interrupts the turn, not the side
+question. When idle, Ctrl-C cancels it as before.
+
+*Per surface:*
+- **TUI:** `App::submit` sends an immediate command at once while busy
+  (echoed, not queued). The session task drives `driver.input(..)` (and a
+  scheduled task's turn) as a pinned future in `select!` with `rx.recv()`:
+  an immediate input is answered from the view on a task of its own
+  (`UiEvent::Reply`), anything else waits in a local queue for the turn to
+  end. The spinner keeps running.
+- **Stream-json:** the stdin reader (`host::read_stdin`) answers an
+  immediate command in a `user` message (a single text block) at once, with
+  a `result` line in the usual shape (`num_turns: 0`, the current session
+  id) plus `"immediate": true`, and never forwards it to the turn loop. A
+  host tells it from the running turn's result by that field (the
+  reference's public docs don't describe mid-turn commands). Idle or not,
+  the reader answers them, so they never queue behind a prompt.
+  `mcp_status`, `mcp_reconnect` and `mcp_toggle` control requests don't wait
+  either.
+- **Line REPL:** reads stdin only between turns, so commands typed during a
+  turn run after it, as before.
+- **`-p` with one prompt:** unchanged (there is nothing to run beside).
 
 ### C18. Goals
 
 `/goal <condition>` sets a condition (at most 4,000 characters) and sends it
 as the prompt. After every model turn while the goal is active:
 
-1. A small model (`smallFastModel`) checks the conversation against the
-   condition. It sees the prompts, replies, tool calls and the end of each
-   tool result (the newest 60,000 characters), and answers
-   `{"verdict": "met" | "not_met" | "impossible", "reason": ...}`. Anything
-   it can't parse counts as `not_met`; text without JSON is never a pass.
+1. The session's model (`goalCheckModel` picks another) checks the
+   conversation against the condition. It sees the prompts, replies, tool
+   calls and the end of each tool result, each labelled with its tool (the
+   newest 60,000 characters), after a list of every failed tool call in the
+   session (errors, and sub-agent results that start with `FAILED`). Its
+   instructions: the agent's messages are claims, not evidence; failed work
+   counts as not done unless redone; details no tool result shows are
+   unverified. It answers `{"verdict": "met" | "not_met" | "impossible",
+   "evidence": [...], "reason": ...}`. A `met` with no evidence, anything it
+   can't parse, and text without JSON all count as `not_met`.
 2. **met:** the goal is achieved. **impossible:** it fails, with the reason.
 3. **not_met:** the driver starts another turn with a reminder that names
    the reason and the condition.
@@ -721,7 +808,10 @@ interval emits `system/scheduled`. `/tasks` lists scheduled tasks, and
   with a copy of the main conversation's rules and mode.
 - It shares the session's provider, hooks (SubagentStop at the end),
   sandbox, working directories and file checkpoints. Its edits get their own
-  checkpoint turn, so `/rewind` to an earlier prompt undoes them. Its
+  checkpoint turn, placed after the prompts made before it started, even
+  while a later prompt runs (`FileHistory::add_turn` / `snapshot_in`): a
+  `/rewind` to an earlier prompt undoes them, one to a later prompt doesn't,
+  and they never count as the running prompt's writes. Its
   transcript goes under the session's `agents/` directory, with a `forkOf`
   record.
 - With `--max-budget-usd` it may spend what was left when it started;
@@ -740,7 +830,7 @@ input, or the start of the next input or scheduled task):
 Starting one emits `system/subtask` with `status: started`, and the model
 hears of it with the next prompt.
 
-**Stopping.** `/tasks` lists subtasks; `/tasks stop <id>` interrupts one,
+**Stopping.** `/tasks` lists subtasks, running and (the last 20) handed back; `/tasks stop <id>` interrupts one,
 which is handed back as interrupted. `/clear` and `/resume` stop running
 subtasks and pass no report on (their spend still counts); `/branch`, `/cd`
 and the reloads keep them. Session end gives them 3 s, then aborts them.
@@ -792,3 +882,15 @@ text says.
 - **PDFs:** sent as `document` blocks, up to 32 MB. A PDF over 10 pages needs a
   `pages` range of at most 20 pages, given as a page count, not the raw file.
 - **Notebooks (`.ipynb`):** rendered cell by cell with their outputs.
+- **`@` mentions** (`forge_agents::attach`, attached by `Driver::input` to
+  plain prompts and by custom commands): 50,000 characters per file
+  (`truncate_middle`), at most 10 files and 200,000 characters per message,
+  directory listings of at most 200 entries; files over 10 MB, images, PDFs
+  and binaries (a NUL in the first 8 KB, or not UTF-8) get a one-line note to
+  use Read instead. The permission check is Read's decision on the path,
+  never a prompt: `ask` and `deny` both leave the file out. Attached files
+  are marked read (`FileState::record_read`) before the turn, and forgotten
+  again if a UserPromptSubmit hook blocks the prompt. A file's `</file>`,
+  `</directory>` and `</system-reminder>` are escaped so it can't close its
+  wrapper, and text the injection scan flags (as for Read output) gets a
+  note that it comes from the file, not the user.

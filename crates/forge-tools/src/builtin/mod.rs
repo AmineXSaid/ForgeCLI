@@ -1,6 +1,6 @@
 //! Built-in tools.
 
-mod bash;
+pub(crate) mod bash;
 mod edit;
 mod glob;
 mod grep;
@@ -30,7 +30,7 @@ use crate::ToolRegistry;
 
 /// The core file and shell tools.
 pub fn register_core(reg: &mut ToolRegistry) {
-    reg.register(Arc::new(Bash));
+    reg.register(Arc::new(Bash::default()));
     reg.register(Arc::new(BashOutput));
     reg.register(Arc::new(KillShell));
     reg.register(Arc::new(Glob));
@@ -45,6 +45,11 @@ pub fn register_core(reg: &mut ToolRegistry) {
     reg.register(Arc::new(AskUserQuestion));
     reg.register(Arc::new(EnterPlanMode));
     reg.register(Arc::new(ExitPlanMode));
+}
+
+/// Give the registry's Bash tool the session's shell (description and read-only rules).
+pub fn set_shell(reg: &mut ToolRegistry, shell: &crate::shells::ShellChoice) {
+    reg.wrap("Bash", |_| Arc::new(Bash::new(shell)));
 }
 
 fn str_arg<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {

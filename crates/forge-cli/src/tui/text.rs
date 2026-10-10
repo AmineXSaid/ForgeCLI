@@ -6,17 +6,49 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-/// Colours and emphasis. Without colour (`NO_COLOR`, `--color never`) only
-/// bold, dim and reverse are used.
+use super::palette::{self, Depth};
+
+/// Colours and emphasis: Forge's palette (`palette.rs`). Without colour
+/// (`NO_COLOR`, `--color never`, the `none` theme) only bold, dim and reverse are used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub color: bool,
+    /// Colours for a light background.
+    pub light: bool,
+    /// The accent colour chosen with `/color` for this session (`None`: Forge's own).
+    pub accent: Option<Color>,
+    /// How many colours the terminal shows.
+    pub depth: Depth,
 }
 
+/// `/color` names and their colours.
+pub const ACCENTS: &[(&str, Color)] = &[
+    ("red", Color::Red),
+    ("orange", Color::Rgb(0xe0, 0x8a, 0x3c)),
+    ("yellow", Color::Yellow),
+    ("green", Color::Green),
+    ("cyan", Color::Cyan),
+    ("blue", Color::Blue),
+    ("purple", Color::Rgb(0x9b, 0x7b, 0xf0)),
+    ("pink", Color::Rgb(0xe8, 0x7a, 0xb8)),
+];
+
 impl Theme {
-    fn fg(&self, c: Color) -> Style {
+    /// The theme named in settings (`dark`, `light`, `none`, or `auto`: what
+    /// the terminal says of its background, else dark), when colour is allowed at all.
+    pub fn named(name: &str, color_ok: bool, depth: Depth) -> Theme {
+        let light = match name {
+            "light" => true,
+            "auto" => palette::light_background().unwrap_or(false),
+            _ => false,
+        };
+        Theme { color: color_ok && name != "none", light, accent: None, depth }
+    }
+
+    /// A role's colour as a foreground, or no style without colour.
+    pub fn role(&self, r: palette::Role) -> Style {
         if self.color {
-            Style::default().fg(c)
+            Style::default().fg(r.color(self.depth, self.light))
         } else {
             Style::default()
         }
@@ -24,15 +56,50 @@ impl Theme {
 
     /// Forge's own colour: the prompt marker, the answer marker, selections.
     pub fn accent(&self) -> Style {
+        if let (true, Some(c)) = (self.color, self.accent) {
+            return Style::default().fg(c);
+        }
         if self.color {
-            Style::default().fg(Color::Rgb(0x9b, 0x7b, 0xf0))
+            self.role(palette::BRAND)
         } else {
             Style::default().add_modifier(Modifier::BOLD)
         }
     }
 
+    /// The brand a step brighter: the wordmark, headings in brand colour.
+    pub fn brand_strong(&self) -> Style {
+        if self.color && self.accent.is_none() {
+            self.role(palette::BRAND_STRONG)
+        } else {
+            self.accent()
+        }
+    }
+
+    /// Secondary text. A muted colour where there are enough colours, else dim.
     pub fn dim(&self) -> Style {
-        Style::default().add_modifier(Modifier::DIM)
+        if self.color && self.depth != Depth::Ansi16 {
+            self.role(palette::MUTED)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+    }
+
+    /// Placeholders and the quietest hints.
+    pub fn subtle(&self) -> Style {
+        if self.color && self.depth != Depth::Ansi16 {
+            self.role(palette::SUBTLE)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+    }
+
+    /// Rules and box edges that separate without drawing the eye.
+    pub fn hairline(&self) -> Style {
+        if self.color && self.depth != Depth::Ansi16 {
+            self.role(palette::HAIRLINE)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
     }
 
     pub fn bold(&self) -> Style {
@@ -41,27 +108,55 @@ impl Theme {
 
     pub fn error(&self) -> Style {
         if self.color {
-            self.fg(Color::Red)
+            self.role(palette::DANGER)
         } else {
             self.bold()
         }
     }
 
     pub fn warning(&self) -> Style {
-        self.fg(Color::Yellow)
+        self.role(palette::WARNING)
     }
 
     pub fn success(&self) -> Style {
-        self.fg(Color::Green)
+        self.role(palette::SUCCESS)
+    }
+
+    /// Links, paths and what is running now.
+    pub fn info(&self) -> Style {
+        self.role(palette::INFO)
+    }
+
+    /// A removed line in a diff.
+    pub fn removed(&self) -> Style {
+        self.role(palette::REMOVED)
+    }
+
+    /// An added line in a diff.
+    pub fn added(&self) -> Style {
+        self.role(palette::ADDED)
+    }
+
+    /// The colour of part `i` of the context window (`/context` grid).
+    pub fn part(&self, i: u8) -> Style {
+        if !self.color {
+            return Style::default();
+        }
+        let r = match i {
+            0 => palette::BRAND,
+            1 => palette::INFO,
+            2 => palette::BRAND_STRONG,
+            3 => palette::WARNING,
+            4 => palette::CODE,
+            5 => palette::SUCCESS,
+            _ => return self.subtle(),
+        };
+        self.role(r)
     }
 
     /// Inline `code`.
     pub fn code(&self) -> Style {
-        if self.color {
-            self.fg(Color::Cyan)
-        } else {
-            Style::default()
-        }
+        self.role(palette::CODE)
     }
 
     /// The highlighted row of a menu or dialog.
@@ -73,41 +168,149 @@ impl Theme {
         }
     }
 
-    /// The person's own prompts in the transcript.
+    /// The person's own prompts in the transcript: a raised surface.
     pub fn user(&self) -> Style {
         if self.color {
-            Style::default().bg(Color::Rgb(0x3a, 0x3a, 0x44)).fg(Color::Rgb(0xe8, 0xe8, 0xf0))
+            Style::default()
+                .bg(palette::PROMPT_BG.color(self.depth, self.light))
+                .fg(palette::PROMPT_FG.color(self.depth, self.light))
         } else {
             self.dim()
         }
     }
+
+    /// The working shimmer: `level` 0 is the resting tone, 3 the brightest.
+    pub fn shimmer(&self, level: u8) -> Style {
+        if !self.color || self.depth == Depth::Ansi16 {
+            return match level {
+                0 => Style::default().add_modifier(Modifier::DIM),
+                3 => self.bold(),
+                _ => Style::default(),
+            };
+        }
+        let (base, peak) = (palette::SHIMMER_BASE, palette::SHIMMER_PEAK);
+        let pick = |r: palette::Role| if self.light { r.light } else { r.dark };
+        let (a, b) = (pick(base), pick(peak));
+        let mix = |shift: u32| -> u32 {
+            let (x, y) = ((a >> shift) & 0xff, (b >> shift) & 0xff);
+            (x * (3 - level.min(3) as u32) + y * level.min(3) as u32) / 3
+        };
+        let hex = (mix(16) << 16) | (mix(8) << 8) | mix(0);
+        Style::default().fg(palette::ink(hex, self.depth, Color::Reset))
+    }
 }
 
-/// Markdown, one line at a time: code fences, headings, `**bold**` and `` `code` ``.
+/// Markdown, one line at a time: code fences, headings, `**bold**`, `` `code` ``
+/// and tables. Table rows are held until the table ends, so its columns line up.
 #[derive(Debug, Clone, Default)]
 pub struct Markdown {
     in_fence: bool,
+    table: Vec<String>,
+}
+
+/// A table row: `| a | b |`.
+fn is_table_row(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with('|') && t.len() > 1
+}
+
+fn cells(row: &str) -> Vec<String> {
+    let t = row.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+fn is_separator(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let c = c.trim_matches(':');
+            !c.is_empty() && c.chars().all(|ch| ch == '-')
+        })
 }
 
 impl Markdown {
-    pub fn line(&mut self, raw: &str, t: &Theme) -> Line<'static> {
+    /// The lines `raw` becomes: none while a table or a fence marker is being
+    /// read, the finished table when a table ends, else one line.
+    pub fn push(&mut self, raw: &str, t: &Theme) -> Vec<Line<'static>> {
+        if !self.in_fence && is_table_row(raw) {
+            self.table.push(raw.to_string());
+            return vec![];
+        }
+        let mut out = self.finish(t);
+        if let Some(l) = self.line(raw, t) {
+            out.push(l);
+        }
+        out
+    }
+
+    /// A table still being held, drawn now (at the end of a message).
+    pub fn finish(&mut self, t: &Theme) -> Vec<Line<'static>> {
+        if self.table.is_empty() {
+            return vec![];
+        }
+        let rows: Vec<Vec<String>> = std::mem::take(&mut self.table).iter().map(|r| cells(r)).collect();
+        let n = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let mut widths = vec![0usize; n];
+        for r in rows.iter().filter(|r| !is_separator(r)) {
+            for (i, c) in r.iter().enumerate() {
+                let plain: String = inline(c, t).iter().map(|s| s.content.as_ref()).collect();
+                widths[i] = widths[i].max(width(&plain));
+            }
+        }
+        let bar = || Span::styled(" │ ", t.dim());
+        let mut out = vec![];
+        for (ri, r) in rows.iter().enumerate() {
+            if is_separator(r) {
+                let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+                out.push(Line::from(Span::styled(rule.join("─┼─"), t.dim())));
+                continue;
+            }
+            let header = ri == 0 && rows.get(1).is_some_and(|r| is_separator(r));
+            let mut spans = vec![];
+            for (i, w) in widths.iter().enumerate() {
+                if i > 0 {
+                    spans.push(bar());
+                }
+                let c = r.get(i).map(String::as_str).unwrap_or("");
+                let mut cell = inline(c, t);
+                if header {
+                    for s in &mut cell {
+                        s.style = s.style.patch(t.bold());
+                    }
+                }
+                let used: usize = cell.iter().map(|s| width(&s.content)).sum();
+                spans.extend(cell);
+                if i + 1 < widths.len() {
+                    spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+                }
+            }
+            out.push(Line::from(spans));
+        }
+        out
+    }
+
+    /// One line, or none for a fence marker (code shows as indented, coloured
+    /// lines; the backticks aren't drawn).
+    pub fn line(&mut self, raw: &str, t: &Theme) -> Option<Line<'static>> {
         let trimmed = raw.trim_start();
         if trimmed.starts_with("```") {
             self.in_fence = !self.in_fence;
-            return Line::from(Span::styled(raw.to_string(), t.dim()));
+            return None;
         }
         if self.in_fence {
-            return Line::from(Span::styled(format!("  {raw}"), t.code()));
+            return Some(Line::from(Span::styled(format!("  {raw}"), t.code())));
         }
         if let Some(rest) = trimmed.strip_prefix('#') {
             let text = rest.trim_start_matches('#').trim();
-            return Line::from(Span::styled(text.to_string(), t.bold()));
+            return Some(Line::from(Span::styled(text.to_string(), t.bold())));
         }
-        Line::from(inline(raw, t))
+        Some(Line::from(inline(raw, t)))
     }
 
     pub fn reset(&mut self) {
         self.in_fence = false;
+        self.table.clear();
     }
 }
 
@@ -133,7 +336,12 @@ pub fn inline(s: &str, t: &Theme) -> Vec<Span<'static>> {
                 if !plain.is_empty() {
                     spans.push(Span::raw(std::mem::take(&mut plain)));
                 }
-                spans.push(Span::styled(body[..end].to_string(), style));
+                // Without colour, code keeps its backticks: nothing else sets it apart.
+                let text = match marker {
+                    "`" if !t.color => format!("`{}`", &body[..end]),
+                    _ => body[..end].to_string(),
+                };
+                spans.push(Span::styled(text, style));
                 rest = &body[end + marker.len()..];
             }
             _ => {
@@ -154,6 +362,52 @@ pub fn width(s: &str) -> usize {
 }
 
 /// Wrap styled lines to `width` columns, breaking at spaces where it can.
+/// The indent a wrapped row continues at: the line's leading spaces plus a
+/// leading marker (`● `, `└ `, `❯ `, `- `, `* `, `> `, `12. `), so lists,
+/// answers and tool results wrap under their text, not at column 0.
+fn hanging_indent(cells: &[(char, Style)], max: usize) -> usize {
+    let text: String = cells.iter().map(|(c, _)| *c).collect();
+    let lead = text.len() - text.trim_start_matches(' ').len();
+    let rest = &text[lead..];
+    let marker = ["● ", "└ ", "❯ ", "▲ ", "✕ ", "· ", "• ", "› ", "↳ ", "- ", "* ", "> ", "‖ ", "» "]
+        .iter()
+        .find(|m| rest.starts_with(**m))
+        .map(|m| m.chars().count())
+        .or_else(|| {
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            (digits > 0 && digits < 4 && rest[digits..].starts_with(". ")).then_some(digits + 2)
+        })
+        .unwrap_or(0);
+    // Spaces after the marker belong to it too (`↳  text`).
+    let after = rest.chars().skip(marker).take_while(|c| *c == ' ').count();
+    let start = lead + marker + if marker > 0 { after } else { 0 };
+    // Columns (`Ctrl+R      Search earlier prompts`, `Model:   x`, `ok   git   found`):
+    // continue under the last one that starts near the left, so a wrapped
+    // value doesn't look like a key. Columns are set apart by 2+ spaces.
+    let chars: Vec<char> = text.chars().collect();
+    let limit = start + COLUMN_LIMIT.min(max.saturating_sub(start));
+    let mut column = None;
+    let mut i = start;
+    while i < chars.len() && i < limit {
+        if chars[i] != ' ' {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < chars.len() && chars[j] == ' ' {
+            j += 1;
+        }
+        if j - i >= 2 && j < chars.len() && j <= limit {
+            column = Some(j);
+        }
+        i = j;
+    }
+    width(&chars[..column.unwrap_or(start).min(chars.len())].iter().collect::<String>())
+}
+
+/// How far from the text's start a value column may begin and still be used as the indent.
+const COLUMN_LIMIT: usize = 28;
+
 pub fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
     let width = (width as usize).max(1);
     let mut out = vec![];
@@ -165,8 +419,13 @@ pub fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
             out.push(Line::default());
             continue;
         }
+        // Continuation rows start under the text; never more than half the width.
+        let indent = hanging_indent(&cells, width / 2).min(width / 2);
         let mut start = 0;
+        let mut first = true;
         while start < cells.len() {
+            let room = if first { width } else { width - indent };
+            let width = room.max(1);
             let mut w = 0;
             let mut end = start;
             let mut last_space = None;
@@ -183,17 +442,33 @@ pub fn wrap(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
             }
             let mut next = end;
             if end < cells.len() {
-                if let Some(sp) = last_space.filter(|sp| *sp > start) {
+                // On the first row, a break inside the padding before the value
+                // column would leave a bare label: break the long value instead.
+                let label = |sp: usize| first && width_of(&cells[start..sp]) <= indent;
+                if let Some(sp) = last_space.filter(|sp| *sp > start && !label(*sp)) {
                     // Break after the space; the space ends this row.
                     end = sp;
                     next = sp + 1;
                 }
             }
-            out.push(spans_of(&cells[start..end]));
+            let mut row = spans_of(&cells[start..end]);
+            if !first && indent > 0 {
+                row.spans.insert(0, Span::raw(" ".repeat(indent)));
+            }
+            out.push(row);
+            first = false;
             start = next;
+            // A continuation row doesn't start with the space it broke at.
+            while start < cells.len() && cells[start].0 == ' ' && indent > 0 {
+                start += 1;
+            }
         }
     }
     out
+}
+
+fn width_of(cells: &[(char, Style)]) -> usize {
+    cells.iter().map(|(c, _)| c.width().unwrap_or(0)).sum()
 }
 
 fn spans_of(cells: &[(char, Style)]) -> Line<'static> {
@@ -207,7 +482,8 @@ fn spans_of(cells: &[(char, Style)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// A line's text without styles (tests, copying).
+/// A line's text without styles (tests).
+#[cfg(test)]
 pub fn plain(line: &Line) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
@@ -216,21 +492,36 @@ pub fn plain(line: &Line) -> String {
 mod tests {
     use super::*;
 
-    const T: Theme = Theme { color: true };
+    const T: Theme = Theme { color: true, light: false, accent: None, depth: Depth::True };
 
     #[test]
     fn markdown_lines_keep_track_of_fences() {
         let mut md = Markdown::default();
-        assert_eq!(plain(&md.line("## Plan", &T)), "Plan");
-        let l = md.line("Run `cargo test` and **check** it", &T);
+        assert_eq!(plain(&md.line("## Plan", &T).unwrap()), "Plan");
+        let l = md.line("Run `cargo test` and **check** it", &T).unwrap();
         assert_eq!(plain(&l), "Run cargo test and check it");
         assert_eq!(l.spans[1].style, T.code());
         assert_eq!(l.spans[3].style, T.bold());
-        md.line("```rust", &T);
-        assert_eq!(plain(&md.line("# not a heading", &T)), "  # not a heading");
+        let mono = Theme { color: false, ..T };
+        let l = Markdown::default().line("Run `cargo test` and **check** it", &mono).unwrap();
+        assert_eq!(plain(&l), "Run `cargo test` and check it", "without colour, code keeps its backticks");
+        assert!(md.line("```rust", &T).is_none(), "fence markers aren't drawn");
+        assert_eq!(plain(&md.line("# not a heading", &T).unwrap()), "  # not a heading");
         md.line("```", &T);
-        assert_eq!(plain(&md.line("# heading", &T)), "heading");
-        assert_eq!(plain(&md.line("a ` lone backtick", &T)), "a ` lone backtick");
+        assert_eq!(plain(&md.line("# heading", &T).unwrap()), "heading");
+        assert_eq!(plain(&md.line("a ` lone backtick", &T).unwrap()), "a ` lone backtick");
+    }
+
+    #[test]
+    fn tables_line_up_when_they_end() {
+        let mut md = Markdown::default();
+        assert!(md.push("| Check | Result |", &T).is_empty());
+        assert!(md.push("| --- | --- |", &T).is_empty());
+        assert!(md.push("| `cargo test` | 12 passed |", &T).is_empty());
+        let out: Vec<String> = md.push("After.", &T).iter().map(plain).collect();
+        assert_eq!(out, ["Check      │ Result", "───────────┼──────────", "cargo test │ 12 passed", "After."]);
+        assert!(md.push("| a | b |", &T).is_empty());
+        assert_eq!(md.finish(&T).len(), 1, "a table at the end of a message is drawn by finish");
     }
 
     #[test]
@@ -243,6 +534,24 @@ mod tests {
         let rows: Vec<String> = wrap(vec![Line::from("日本語のテキスト")], 6).iter().map(plain).collect();
         assert_eq!(rows, ["日本語", "のテキ", "スト"]);
         assert_eq!(wrap(vec![Line::default()], 5).len(), 1);
+        // Lists, answers and results wrap under their text.
+        let rows: Vec<String> = wrap(vec![Line::from("  - one two three four")], 12).iter().map(plain).collect();
+        assert_eq!(rows, ["  - one two", "    three", "    four"]);
+        let rows: Vec<String> = wrap(vec![Line::from("  ↳  alpha beta gamma")], 14).iter().map(plain).collect();
+        assert_eq!(rows, ["  ↳  alpha", "     beta", "     gamma"]);
+        let rows: Vec<String> = wrap(vec![Line::from("12. aaaa bbbb")], 9).iter().map(plain).collect();
+        assert_eq!(rows, ["12. aaaa", "    bbbb"]);
+        // Two columns: the description wraps under itself.
+        let rows: Vec<String> =
+            wrap(vec![Line::from("Ctrl+C    clear the input or exit")], 24).iter().map(plain).collect();
+        assert_eq!(rows, ["Ctrl+C    clear the", "          input or exit"]);
+        // A doctor row continues under its detail; a long path breaks in place.
+        let rows: Vec<String> =
+            wrap(vec![Line::from("FAIL session      no key was sent anywhere")], 40).iter().map(plain).collect();
+        assert_eq!(rows, ["FAIL session      no key was sent", "                  anywhere"]);
+        let rows: Vec<String> =
+            wrap(vec![Line::from("Directory:   /tmp/a-long/path/to/proj")], 30).iter().map(plain).collect();
+        assert_eq!(rows, ["Directory:   /tmp/a-long/path/", "             to/proj"]);
         // Styles survive the wrap.
         let l = Line::from(vec![Span::raw("aa "), Span::styled("bbbb", T.bold())]);
         let w = wrap(vec![l], 4);

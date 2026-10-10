@@ -10,6 +10,7 @@ name = "forge"
 path = "src/main.rs"
 
 [dependencies]
+forge-platform.workspace = true
 forge-types.workspace = true
 forge-api.workspace = true
 forge-config.workspace = true
@@ -30,6 +31,9 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+futures.workspace = true
+ignore.workspace = true
+base64.workspace = true
 # The interactive UI (docs/TUI.md).
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
@@ -37,6 +41,7 @@ unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+shlex.workspace = true
 forge-test-host.workspace = true
 forge-eval.workspace = true
 

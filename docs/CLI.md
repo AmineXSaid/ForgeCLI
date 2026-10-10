@@ -15,6 +15,7 @@ a note in `CHANGELOG.md`.
 | Machine output | `--output-format json` writes exactly one JSON document; `--output-format stream-json` writes NDJSON. Neither ever contains banners, colors or logs. |
 | Color | Color is on when stdout and stderr are terminals and `TERM` isn't `dumb`. `NO_COLOR` (non-empty) turns it off, and `FORCE_COLOR` / `CLICOLOR_FORCE` turn it on. `--color auto\|always\|never` overrides all of these. Machine output is never colored. |
 | Quiet and verbose | `-q/--quiet`: errors only on stderr. `--verbose`: adds informational diagnostics. Both affect stderr only, never stdout. `-d/--debug` and `--debug-file <path>` turn on debug logs. |
+| No terminal UI | `--no-tui` (or `FORGE_TUI=0`): interactive mode uses the line-based prompt. |
 | No input | `--no-input` (or `FORGE_NO_INPUT=1`): Forge never waits for a person. Permission prompts are denied, and interactive mode refuses to start. |
 | Confirmations | Forge has no `--yes`. Tool permissions are granted only by `--permission-mode`, `--allowedTools` or settings rules, never by a blanket yes. |
 | Secrets | Values whose key looks secret (`*key*`, `*token*`, `*secret*`, `*password*`, `*auth*`, ...) and values that look like credentials (`sk-…`, `Bearer …`) are printed as `<redacted>` in `config` output and diagnostics. |
@@ -26,7 +27,7 @@ a note in `CHANGELOG.md`.
 | `0` | Success. This includes a turn interrupted by an IDE host over the control channel. |
 | `1` | The run failed: an API error, a tool or agent failure, or a prompt blocked by a hook. Also `config get` on a key that isn't set. |
 | `2` | Usage error: an unknown flag, an invalid value, a missing prompt, or a command that needs a terminal (or input) and has none. |
-| `3` | Configuration or credentials are missing or invalid: no API key, an unreadable `--settings`, a session that doesn't exist, or an unknown model with a budget. Also `doctor` when it finds a problem. |
+| `3` | Configuration or credentials are missing or invalid: no API key, a key the endpoint refuses (HTTP 401 or 403, also mid-run), an invalid endpoint URL, a key helper that fails, an unreadable `--settings`, a session that doesn't exist, or an unknown model with a budget. Also `doctor` when it finds a problem. |
 | `4` | A limit ended the run: `--max-turns` or `--max-budget-usd`. |
 | `130` | Interrupted by Ctrl-C (SIGINT). The current turn's result is still written. |
 
@@ -36,18 +37,103 @@ a note in `CHANGELOG.md`.
 
 - **Purpose:** work with the agent in a project, in conversation.
 - **Example:** `forge "add a --dry-run flag to the export command"`
-- **Input:** the optional first prompt, then lines typed at the terminal.
-  Slash commands work here and in `-p` (see "Slash commands" below); `/exit`
-  quits.
-- **Output:** the conversation, on stdout. Warnings go to stderr.
+- **Input:** the optional first prompt, then what you type. Slash commands
+  work here and in `-p` (see "Slash commands" below); `/exit` quits.
 - **Needs a terminal on stdin.** Without one, or with `--no-input`, Forge exits
   with status `2` and suggests `-p`.
-- **Interrupting:** Ctrl-C interrupts the current turn without killing the
-  process; `/exit` or end-of-file quits.
 - **Side effects:**
   - files change as the agent's tools allow;
   - a session transcript and file checkpoints are written to the state
-    directory.
+    directory;
+  - each prompt you send is added to `<state>/history.jsonl` (mode 0600),
+    which Up and Down browse, per project directory.
+
+**The terminal UI** opens when stdin and stdout are both terminals. Finished
+output (your prompts, answers, tool calls) goes into the terminal's own
+scrollback, so scrolling and search work as in any shell. A small region at
+the bottom shows the answer being written, a spinner, dialogs, queued
+messages, the input box, the `/` menu and a status line (permission mode,
+model, context used, cost). Design and key table: `docs/TUI.md`.
+
+| Key | Does |
+| --- | --- |
+| Enter | Send. While a turn runs, the message is queued and sent when it ends |
+| Shift+Enter, Alt+Enter, Ctrl+J, `\` then Enter | New line |
+| Esc | Interrupt the turn; close the menu; cancel a dialog. Twice on an empty prompt: `/rewind` |
+| Ctrl+C | Clear the input; interrupt the turn; twice on an empty prompt: exit |
+| Ctrl+D | Exit (empty prompt) |
+| Shift+Tab | Cycle the permission mode: default, accept edits, plan |
+| Up / Down | Move between lines; earlier prompts from the first or last line; move in menus and dialogs |
+| Tab | Complete the highlighted command or `@` path |
+| Ctrl+R | Search earlier prompts; Ctrl+R again for older ones, Esc to cancel |
+| Ctrl+L | Redraw |
+
+`/model`, `/resume`, `/rewind`, `/output-style` and `/permissions` without
+an argument open a picker (type to filter, Enter to choose). Each choice runs
+the same command with its argument, as you could type it. Typing `@` and part
+of a path lists matching project files.
+
+**Key bindings.** `keybindings.json` in the config directory (`forge config
+paths` shows it; `$FORGE_HOME` when set) maps keys to actions:
+
+```json
+{"ctrl+s": "submit", "alt+r": "historySearch", "ctrl+g": "none"}
+```
+
+A key is modifiers (`ctrl`, `alt` or `meta`, `shift`) and a key name joined
+by `+`: a character, `enter`, `tab`, `esc`, `backspace`, `delete`, `up`,
+`down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space`,
+`f1`-`f12`. `"none"` unbinds a key. A bound key does what the action's
+default key does, everywhere (dialogs and screens too); default keys keep
+working unless they are bound to something else or to `"none"`. A bad entry
+(unknown key or action, invalid JSON) is a warning at start and is skipped.
+`/keybindings` (and `?`) show the keys in effect. The actions:
+
+| Action | Default keys | Does |
+| --- | --- | --- |
+| `submit` | Enter | Send the prompt |
+| `newline` | Shift+Enter, Alt+Enter, Ctrl+J | New line |
+| `cancel` | Esc | Interrupt the turn; close a menu or dialog; twice: `/rewind` |
+| `interrupt` | Ctrl+C | Clear the input; interrupt; twice on an empty prompt: exit |
+| `exit` | Ctrl+D | Exit (empty prompt) |
+| `cycleMode` | Shift+Tab | Cycle the permission mode |
+| `historySearch` | Ctrl+R | Search earlier prompts |
+| `complete` | Tab | Complete a `/` command or an `@` path |
+| `lineStart`, `lineEnd` | Ctrl+A / Home, Ctrl+E / End | Start, end of line |
+| `deleteWord` | Ctrl+W, Alt+Backspace | Delete the word before the cursor |
+| `killToStart`, `killToEnd` | Ctrl+U, Ctrl+K | Delete to the start, end of the line |
+| `wordLeft`, `wordRight` | Alt+B / Ctrl+Left, Alt+F / Ctrl+Right | Word left, right |
+| `redraw` | Ctrl+L | Redraw the screen |
+| `showKeys` | `?` | Show the shortcuts (empty prompt) |
+
+When you leave, Forge prints `Resume this conversation with: forge --resume <id>`.
+
+**The line REPL** (`--no-tui`, or `FORGE_TUI=0`, or when stdout isn't a
+terminal) reads one line at a time and prints the conversation on stdout;
+warnings go to stderr. Ctrl-C interrupts the current turn without killing
+the process; `/exit` or end-of-file quits. It reads input only between
+turns, so a command typed during a turn runs after it. In the terminal UI,
+`/status`, `/usage`, `/tasks`, `/context`, `/mcp` and `/btw` answer at once,
+even mid-turn.
+
+**`@` mentions** (every mode: TUI, REPL, `-p`, stream-json). A prompt that
+names `@path` (at the start or after a space; `@"name with spaces.md"`
+quoted; `~/` for the home directory, other paths from the working directory)
+gets that file's contents attached, so the model needn't Read it. Your text
+is kept as typed (history, `/rewind` and hooks see it so); the contents
+follow in a separate system-reminder block, one `<file path="...">` each.
+A directory gets a listing (at most 200 entries, `.gitignore` respected).
+Images, PDFs and binary files aren't inlined: a note tells the model to use
+Read. Limits: 50,000 characters per file (the middle is cut), 10 files and
+200,000 characters per message; what doesn't fit gets a note. An attachment
+is a read: it follows Read's permission rules without prompting, so a file
+outside the working directories or matched by an ask or deny rule isn't
+attached (the note says why). Attached files count as read, so the model can
+Edit them at once. `@name` with no such file, and emails, are left alone. In
+stream-json only a message that is a single text block is scanned. A
+`/loop` prompt and each scheduled run of it are scanned too (each run reads
+the files as they are then). Other slash commands and `!shell` lines aren't scanned (custom commands attach the
+`@path`s in their own body).
 
 ### `forge -p [prompt]`: print mode, for scripts and CI
 
@@ -97,7 +183,9 @@ a note in `CHANGELOG.md`.
   - `control_request` messages: `initialize`, `interrupt`,
     `set_permission_mode`, `set_model`, `set_max_thinking_tokens`,
     `mcp_status`, `mcp_reconnect` (`serverName`), `mcp_toggle`
-    (`serverName`, `enabled`), `rewind_files`;
+    (`serverName`, `enabled`), `rewind_files`. `set_permission_mode` to
+    `bypassPermissions` needs `--allow-dangerously-skip-permissions` (or a
+    launch in that mode) and is refused when managed settings disable it;
   - `control_response` answers to Forge's `can_use_tool` requests.
 - **Output:** NDJSON on stdout, as in print mode, plus `control_request` and
   `control_response` lines.
@@ -106,18 +194,54 @@ a note in `CHANGELOG.md`.
   `--permission-prompts none` or `--no-input` they are denied.
 - **Ends** at end-of-file on stdin. `--replay-user-messages` echoes each user
   message with the uuid it was stored under; `rewind_files` takes that uuid.
+- **Immediate commands:** a `user` message that is one of `/status`,
+  `/usage` (`/cost`, `/stats`), `/tasks`, `/context`, `/mcp`, `/btw` (one
+  text block) is answered at once, even while a turn runs, and never queues
+  behind it. The answer is a `result` line with `num_turns: 0`, the current
+  `session_id` and `"immediate": true`; the running turn's own result comes
+  later without that field. `/btw`'s cost and `/mcp`'s effect on the system
+  prompt and `system/init` are applied when the turn ends.
 
-### `forge doctor`
+### `forge doctor [--probe]`
 
 Checks the local setup:
 - settings files;
-- credentials (whether they're present, never their value);
-- the endpoint;
-- git;
-- the config and state directories.
+- `provider`: the Messages API or an OpenAI-compatible endpoint, and what chose it;
+- `endpoint`: the URL and the variable or settings file it came from;
+- `credentials`: which variable or helper supplies the key and how it is sent,
+  masked to its last four characters; a key set for the other provider is
+  named as the likely mistake;
+- git, and the shell commands will run in;
+- the sandbox, and the config and state directories.
 
 Prints one line per check to stdout. Exits `0` when everything passes and `3`
-when anything fails. It never makes network calls.
+when anything fails. Without `--probe` it makes no network calls and runs no
+key helper. `--probe` adds one authenticated request that changes nothing
+(the endpoint's model list), running the key helper first if there is one, to
+check that the URL and key work.
+
+### Which key goes where
+
+| Endpoint | Chosen by | Key | Sent as |
+| --- | --- | --- | --- |
+| OpenAI-compatible | `FORGE_OPENAI_BASE_URL`, else `openai.baseUrl` | `FORGE_OPENAI_API_KEY`, else `openai.apiKeyHelper` | `Authorization: Bearer` |
+| Messages API | `FORGE_BASE_URL`, else `baseUrl`, else the default host | `FORGE_API_KEY` and/or `FORGE_AUTH_TOKEN`, else `apiKeyHelper` | `x-api-key` / `Authorization: Bearer` |
+
+- A key is never sent to the other kind of endpoint. With an OpenAI-compatible
+  endpoint and only `FORGE_API_KEY` set, Forge warns at startup, and a 401
+  names `FORGE_OPENAI_API_KEY`.
+- The OpenAI-compatible endpoint may need no key (a local server): Forge
+  starts without one, silently for `localhost` and private addresses, with a
+  warning otherwise. The Messages API always needs one.
+- Values wrapped in quotes (what `set X="..."` leaves in cmd.exe) are
+  unquoted, with a warning. A key with spaces or control characters, or a URL
+  that isn't `http(s)://`, stops startup with exit `3`.
+- `baseUrl`, `openai.baseUrl`, `apiKeyHelper` and `openai.apiKeyHelper` are
+  read from your user, local, `--settings` and managed settings only. In a
+  project's checked-in `.forge/settings.json` they are ignored with a warning:
+  a repository can't choose where your key goes or run a command for it.
+- A key helper must print the key and nothing else on one line; any failure
+  (exit status, stderr, empty or extra output) is reported and stops startup.
 
 ### `forge config list [--origin] | get <key> | paths`
 
@@ -213,6 +337,18 @@ which file layers load.
 **Invalid files** are skipped with a warning on stderr; `forge doctor` reports
 them.
 
+**Models Forge doesn't know** (a gateway's or a local server's): Forge needs
+the context window to compact in time, and prices to show costs.
+- `modelLimits`: `{"<model id>": {"contextWindow": 131072, "maxOutputTokens": 8192}}`.
+  `FORGE_CONTEXT_WINDOW` sets the window for every model without one.
+- An OpenAI-compatible endpoint's model list is read for the window when it
+  reports one (`context_length`, `max_model_len`, `max_input_tokens`, ...).
+- `modelPricing`: `{"<model id>": {"input": 0.3, "output": 1.2}}`, USD per
+  million tokens.
+- Without these, Forge assumes 200,000 tokens of context and 32,000 of output,
+  says so once at startup, shows the cost as `cost ?` (or `$1.20+` when only
+  part of it is known) and marks `/usage`'s context figure as a guess.
+
 **Locations:**
 
 | Kind | Default | Override |
@@ -233,15 +369,20 @@ them.
 | `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint instead |
 | `FORGE_MODEL` | Default model |
 | `FORGE_MAX_OUTPUT_TOKENS` | Per-request output cap |
+| `FORGE_CONTEXT_WINDOW` | Context window, in tokens, for models Forge doesn't know (see `modelLimits`) |
 | `FORGE_MAX_THINKING_TOKENS` | Thinking budget |
 | `FORGE_MAX_RETRIES` | API retries (default 3) |
+| `FORGE_MAX_CONCURRENT_REQUESTS` | Model requests in flight at once for the whole session (default 4; also `maxConcurrentRequests`) |
+| `FORGE_MAX_PARALLEL_AGENTS` | Task sub-agents running at once (default 4; also `maxParallelAgents`) |
 | `FORGE_PROMPTS_DIR` | A local prompt set |
 | `FORGE_HOME` | One root for config, state and cache |
 | `FORGE_SANDBOX` | Same as `--sandbox` |
+| `FORGE_SHELL` | The shell commands run in: a full path, or a name on PATH (bash, sh, zsh, pwsh, powershell). Also read from the settings `env` block. See "Shells" below |
 | `FORGE_VERIFY` | `0` turns the verification loop off |
 | `FORGE_DISABLE_CRON` | `1` turns scheduled prompts off (`/loop`, `CronCreate`, ...) |
 | `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT` | MCP connect and call timeouts, in milliseconds (30 s, 10 min) |
 | `FORGE_NO_INPUT` | Same as `--no-input` |
+| `FORGE_TUI` | `0`, `false`, `off` or `no`: interactive mode uses the line REPL (same as `--no-tui`) |
 | `FORGE_LOG` | Log filter, with `--debug` (`/debug` turns logging on partway through a session) |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |
 
@@ -259,10 +400,13 @@ them all. The built-ins so far:
 | `/clear [name]` (`/reset`, `/new`) | Starts a new conversation (a new session id); the old one stays resumable, under `name` if given |
 | `/doctor` (`/checkup`) | `forge doctor` plus this session's MCP, model and warnings |
 | `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin` | What is loaded, and from where |
+| `/hooks add <Event> <matcher> <command> [--scope local\|project\|user] [--timeout <s>]` | Adds a command hook to that scope's settings file (default `local`, `.forge/settings.local.json`) and reloads the session so it applies at once. `''` or `*` as the matcher matches everything; the words after the matcher are the command |
+| `/agents create <name> --description <text> [--prompt <text>] [--tools a,b] [--model <model\|inherit>] [--scope project\|user]` | Writes `<name>.md` (project: `.forge/agents/`, user: the config directory's `agents/`) and reloads, so the Task tool offers it at once. No tools picked means all tools; no instructions means instructions from the description. Names are lowercase letters, digits and dashes; an existing file is never overwritten |
+| `/hooks remove <Event> <n>` | Removes hook `n` of that event, as `/hooks` numbers it (each line shows its source: user, project, local, flag, managed or plugin). Only user, project and local hooks can be removed |
 | `/mcp [reconnect\|enable\|disable <server\|all>]` | Each MCP server's status. `reconnect` restarts a server from the config it started with; `disable` stops it, hides its tools and prompts, and saves that in `.forge/settings.local.json` (`disabledMcpjsonServers`); `enable` reverses it. Tools a server didn't offer when the session started join after `/reload-plugins`. `--mcp-config` and plugin servers change for the session only |
 | `/tasks [stop <id>]` (`/bashes`) | Background shells, scheduled tasks and subtasks; `stop` ends one |
 | `/subtask <task>` | Hands the task to a background agent that starts from this conversation; you keep going. Its report reaches the model with your next prompt (and is shown when it finishes). In `-p`, Forge waits for it, then runs one more turn with the report |
-| `/model [model]` | Lists the models, or switches (an alias such as `sonnet`, or an id) |
+| `/model [model]` | Shows the current model and the models your endpoint lists (`GET {baseUrl}/models` on an OpenAI-compatible endpoint; the default backend lists none), or switches to the given model id |
 | `/effort [low\|medium\|high\|xhigh\|max\|auto]` | Shows or sets reasoning effort; `max` lasts for the session only |
 | `/fast [on\|off]` | Fast mode, on models that offer it |
 | `/config [key=value ...] [--scope user\|project\|local]` (`/settings`) | Shows the settings Forge can change, or changes them; `key=` restores the default; `/config --help` lists the keys |
@@ -291,6 +435,14 @@ them all. The built-ins so far:
 | `/feedback [description]` (`/bug`, `/share`) | Saves a bug-report bundle in `<state>/feedback/` (report, doctor checks, this session's transcript and settings, with secrets masked). Nothing is uploaded |
 | `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, Forge reads the log and diagnoses it |
 | `/release-notes` | The changelog |
+| `/color [name\|default]` | Terminal UI only: the accent colour (prompt and answer markers, selections, dialog borders) for this session: red, orange, yellow, green, cyan, blue, purple, pink; `default` is Forge's own. Not saved |
+| `/focus [on\|off]` | Terminal UI only: keeps tool calls and their results out of the scrollback until turned off (the spinner still names the running tool) |
+| `/diff`, `/context`, `/hooks`, `/agents` with no arguments | Terminal UI: a screen instead of the text answer (TUI.md, "Screens"): the diff viewer, the context grid, the hooks editor, the agents wizard |
+| `/theme [dark\|light\|none]` | Terminal UI only: the colour theme, saved as `theme` in user settings; without an argument, a picker. `NO_COLOR` still wins |
+| `/copy [n]` | Terminal UI only: the latest answer (or the nth latest) to the clipboard through the terminal (OSC 52; inside tmux, `set -g set-clipboard on`) |
+| `/keybindings` | Terminal UI only: the keyboard shortcuts (also `?` on an empty prompt) |
+| `/statusline [command\|off]` | Terminal UI only: shows the first output line of `command` on the right of the status line. It runs after each turn (at most 3 s) with the session as JSON on stdin: `session_id`, `cwd`, `model.id`, `model.display_name`, `workspace.current_dir`, `cost.total_cost_usd`, `context.used_percentage`, `permission_mode`, `version`. Saved as `statusLine` in user settings; off while `disableAllHooks` is set |
+| `/terminal-setup` | Terminal UI only: whether Shift+Enter works here, and how to get it (or use Alt+Enter, Ctrl+J or `\` Enter) |
 | `/exit` (`/quit`) | Ends the session |
 | `/<custom> [args]` | A custom command from `commands/*.md` |
 | `/<skill> [args]` | Loads a skill; `/a /b text` chains up to six |
@@ -307,7 +459,8 @@ a limit that stops it while tasks are still scheduled exits with status 4.
 Contract C19 has the details.
 
 **Goals:** `/goal <condition>` sends the condition as the prompt. After each
-turn a small model checks the conversation against it, and Forge keeps going
+turn the model checks the conversation against it, trusting tool output rather
+than the agent's own summary (a pass must cite the evidence), and Forge keeps going
 until the check says it is met or can't be met. It pauses after three turns
 without a tool call, an interrupt or an error, and resumes with your next
 prompt. In `-p` the whole loop runs in one invocation: one `result` per turn
@@ -341,7 +494,8 @@ The optional frontmatter takes `description`, `argument-hint` and
 - `$ARGUMENTS` and `$1`..`$9` are replaced by the arguments;
 - ``!`cmd` `` runs `cmd` and inserts its output, only when `allowed-tools`
   permits it (e.g. `Bash(git status:*)`);
-- `@path` attaches a file.
+- `@path` attaches a file (same rules as `@` mentions in prompts, without the
+  permission check: the command's author chose the files).
 
 **Bundled skills** ship with Forge:
 - `/init` writes FORGE.md.
@@ -418,6 +572,34 @@ listed in the system prompt's environment section.
   is data and not to follow it. Nothing is removed. This is OWASP LLM01:
   prompt injection.
 
+## Shells
+
+Every command Forge runs (the Bash tool, `!command`, hooks, `apiKeyHelper`,
+the status line, `!` lines in custom commands) runs in one shell, chosen at
+startup:
+1. `FORGE_SHELL`, from the environment, else from a settings `env` block. A
+   value that names no program, or a program Forge can't drive (cmd, fish),
+   is an error, never silently skipped.
+2. **Windows:** Git Bash: next to `git.exe` on PATH, then the standard install
+   directories (`%ProgramFiles%\Git`, `%LOCALAPPDATA%\Programs\Git`, scoop),
+   then a `bash.exe` on PATH that isn't the WSL launcher. Without Git Bash:
+   PowerShell 7 (`pwsh`), then Windows PowerShell 5.1. cmd.exe is never used.
+   **Unix:** bash, then sh.
+
+The tool keeps the name `Bash` (permission rules and hooks match on it); its
+description and the model's environment prompt say which shell it is, and on
+Windows how to write paths for it.
+
+**With no shell,** Forge starts anyway: it warns once on stderr, `forge doctor`
+fails its `shell` row with the places it looked, and the Bash tool answers
+every call with that message and tells the model not to retry, instead of
+failing with an OS error.
+
+On Windows, a command is stopped with everything it started (a job object), so
+the timeout, Esc and KillShell end it; paths are shown without the `\\?\`
+prefix; and Git Bash paths (`/c/Users/me`) are understood by the file tools
+and permission rules, which compare paths without regard to case.
+
 ## Sandbox
 
 `--sandbox <mode>`, `FORGE_SANDBOX` or the `sandbox.mode` setting (in that
@@ -444,6 +626,7 @@ operating system, not a rule, limits what it can touch.
 - Linux: bubblewrap (`bwrap`). Install it with your package manager.
 - macOS: `sandbox-exec` with a generated Seatbelt profile. This backend is
   untested.
+- Windows: none. Run Forge inside WSL 2 to confine commands.
 
 `forge doctor` reports which backend was found.
 
@@ -467,6 +650,24 @@ Settings example:
   `forge ... | head`, or when a host exits.
 - **SIGPIPE stays ignored**, so a hook or MCP server that exits before
   reading its input can't kill the process.
+
+## Rate limits
+
+Every model request in a session (the main agent, Task sub-agents,
+`/subtask`, compaction, goal checks, `/btw`) shares one limit on requests in
+flight: `maxConcurrentRequests` or `FORGE_MAX_CONCURRENT_REQUESTS`, default 4.
+A request over the limit waits for a slot instead of failing.
+
+When the endpoint answers 429 anyway, Forge halves the limit (never below 1),
+says so once on stderr or in the UI, waits (`Retry-After` when the endpoint
+sends one, otherwise 2, 4, 8... seconds, at most 60) and sends the request
+again, up to 6 times on top of the provider's own retries. After 8 requests in
+a row succeed, the limit grows back by one.
+
+`maxParallelAgents` (or `FORGE_MAX_PARALLEL_AGENTS`, default 4) caps how many
+Task sub-agents run at once; the others wait their turn. A sub-agent that
+fails returns a result starting with `FAILED:` that tells the model its task
+is not done.
 
 ## Network behaviour
 

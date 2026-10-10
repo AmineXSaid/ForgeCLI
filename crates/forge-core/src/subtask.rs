@@ -177,11 +177,74 @@ impl Subtask {
     pub fn tool_calls(&self) -> usize {
         self.calls.load(Ordering::Relaxed)
     }
+
+    /// A row for the session view: it follows this subtask (running state, tool calls) and can stop it.
+    pub fn row(&self) -> SubtaskRow {
+        SubtaskRow {
+            id: self.id.clone(),
+            task: self.task.clone(),
+            started: self.started,
+            calls: self.calls.clone(),
+            stop: self.stop.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
 }
+
+/// A subtask as the session view sees it (`/tasks` mid-turn). Cheap to clone.
+#[derive(Clone)]
+pub struct SubtaskRow {
+    pub id: String,
+    pub task: String,
+    pub started: Instant,
+    calls: Arc<AtomicUsize>,
+    stop: CancellationToken,
+    outcome: Arc<Mutex<Option<Outcome>>>,
+}
+
+impl SubtaskRow {
+    pub fn is_running(&self) -> bool {
+        self.outcome.lock().unwrap().is_none()
+    }
+
+    pub fn tool_calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
+/// `/tasks stop <id>` for a subtask: what happened, or `None` when there is no such subtask.
+pub fn stop_row(rows: &[SubtaskRow], finished: &[FinishedSubtask], id: &str) -> Option<String> {
+    if finished.iter().any(|f| f.id == id) {
+        return Some(format!("{id} has already finished and been reported."));
+    }
+    let t = rows.iter().find(|t| t.id == id)?;
+    Some(if t.is_running() {
+        t.stop.cancel();
+        format!("Stopping {id}. It ends after its current step; what it did so far is handed back.")
+    } else {
+        format!("{id} has already finished; its report is handed back with your next prompt.")
+    })
+}
+
+/// A subtask that was handed back, for `/tasks`.
+#[derive(Debug, Clone)]
+pub struct FinishedSubtask {
+    pub id: String,
+    pub task: String,
+    /// `completed`, `interrupted` or `error`.
+    pub status: &'static str,
+    pub duration: Duration,
+    pub tool_calls: usize,
+}
+
+/// Handed-back subtasks `/tasks` keeps listing.
+const KEEP_FINISHED: usize = 20;
 
 /// The session's subtasks: running, or finished and not yet handed back.
 pub struct Subtasks {
     list: Vec<Subtask>,
+    /// Handed back already, newest last (at most [`KEEP_FINISHED`]).
+    finished: Vec<FinishedSubtask>,
     count: u32,
     /// Bumped each time one finishes. Front ends hold receivers: move this registry, never rebuild it.
     changed: Arc<watch::Sender<u64>>,
@@ -189,7 +252,7 @@ pub struct Subtasks {
 
 impl Default for Subtasks {
     fn default() -> Self {
-        Subtasks { list: vec![], count: 0, changed: Arc::new(watch::channel(0).0) }
+        Subtasks { list: vec![], finished: vec![], count: 0, changed: Arc::new(watch::channel(0).0) }
     }
 }
 
@@ -215,6 +278,11 @@ impl Subtasks {
 
     pub fn iter(&self) -> impl Iterator<Item = &Subtask> {
         self.list.iter()
+    }
+
+    /// Subtasks already handed back, oldest first.
+    pub fn finished(&self) -> &[FinishedSubtask] {
+        &self.finished
     }
 
     pub(crate) fn next_id(&mut self) -> String {
@@ -252,13 +320,12 @@ impl Subtasks {
 
     /// `/tasks stop <id>`.
     pub fn stop(&self, id: &str) -> Option<String> {
-        let t = self.list.iter().find(|t| t.id == id)?;
-        Some(if t.is_running() {
-            t.stop.cancel();
-            format!("Stopping {id}. It ends after its current step; what it did so far is handed back.")
-        } else {
-            format!("{id} has already finished; its report is handed back with your next prompt.")
-        })
+        stop_row(&self.rows(), &self.finished, id)
+    }
+
+    /// Rows for the session view, oldest first.
+    pub fn rows(&self) -> Vec<SubtaskRow> {
+        self.list.iter().map(Subtask::row).collect()
     }
 
     /// The conversation changed under them (`/clear`, `/resume`): stop the running ones, and
@@ -275,12 +342,25 @@ impl Subtasks {
         let (done, running): (Vec<Subtask>, Vec<Subtask>) =
             std::mem::take(&mut self.list).into_iter().partition(|t| !t.is_running());
         self.list = running;
-        done.into_iter()
+        let out: Vec<(Subtask, Outcome)> = done
+            .into_iter()
             .map(|t| {
                 let o = t.outcome.lock().unwrap().clone().unwrap_or_else(Outcome::lost);
                 (t, o)
             })
-            .collect()
+            .collect();
+        for (t, o) in &out {
+            self.finished.push(FinishedSubtask {
+                id: t.id.clone(),
+                task: t.task.clone(),
+                status: o.status,
+                duration: o.duration,
+                tool_calls: t.tool_calls(),
+            });
+        }
+        let extra = self.finished.len().saturating_sub(KEEP_FINISHED);
+        self.finished.drain(..extra);
+        out
     }
 
     /// Session end: stop them all, give them `grace` to wind down, abort the rest.

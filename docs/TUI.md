@@ -11,20 +11,19 @@ terminals. `--no-tui` (or `FORGE_TUI=0`) keeps the line REPL
 | Prompt editor: multiline text, word moves, kill commands, history | done, tested | `crates/forge-cli/src/tui/editor.rs` |
 | Theme, one-line markdown, wrapping by display width | done, tested | `crates/forge-cli/src/tui/text.rs` |
 | UI state machine: keys, streaming into scrollback, tool lines, `/` menu, permission/question/plan dialogs, queued input, Esc/Ctrl-C/Shift+Tab | done, tested | `crates/forge-cli/src/tui/app.rs` |
-| Session task (owns the Driver), `TuiSink`, `TuiPrompter` | to do (phase 1) | `crates/forge-cli/src/tui/session.rs` |
-| Renderer for the live region (`LiveView`) | to do (phase 1) | `crates/forge-cli/src/tui/render.rs` |
-| Terminal loop, inline viewport, scrollback writes, panic-safe restore | to do (phase 1) | `crates/forge-cli/src/tui/mod.rs` |
-| Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | to do (phase 1) | `crates/forge-cli/src/main.rs`, `args.rs` |
-| Pickers, Ctrl+R search, `@file` completion | to do (phase 2) | |
-| UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | to do (phase 3) | |
+| Session task (owns the Driver), `TuiSink`, `TuiPrompter` | done, tested | `crates/forge-cli/src/tui/session.rs` |
+| Renderer for the live region (`LiveView`) | done, tested | `crates/forge-cli/src/tui/render.rs` |
+| Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/forge-cli/src/tui/mod.rs` |
+| Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | done | `crates/forge-cli/src/main.rs`, `args.rs` |
+| Pickers, Ctrl+R search, `@file` completion | done, tested | `crates/forge-core/src/commands/picker.rs`, `tui/app.rs`, `tui/session.rs` |
+| Screens: the scrolling viewer and forms; `/diff`, `/context`, `/hooks`, `/agents`; key rebinding; `/color`, `/focus` (Phase 4) | done, tested | `forge-core` `commands/screens.rs`, `tui/app.rs` (`Viewer`, `Form`), `tui/render.rs` |
+| UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | done, tested | `forge-core` `commands/settings.rs` (`/theme`, `/statusline`), `tui/session.rs` (the others) |
 
 Dependencies are in `crates/forge-cli/Cargo.toml`:
 - `ratatui` 0.29 (MIT);
 - `crossterm` 0.28 with `event-stream` (MIT);
-- `unicode-width` 0.2 (MIT or Apache-2.0).
-
-`tui/mod.rs` declares the modules with `#![allow(dead_code)]` until the loop
-uses them. Remove that attribute when phase 1 is wired in.
+- `unicode-width` 0.2 (MIT or Apache-2.0);
+- `futures` (the workspace's), for `EventStream`.
 
 ## Decision
 
@@ -48,7 +47,7 @@ output behind. The live region grows and shrinks with what it shows.
                            Screen: live viewport draw + insert_before(scrollback)
 ```
 
-### Session task (`tui/session.rs`, to do)
+### Session task (`tui/session.rs`)
 
 ```rust
 pub enum ToSession { Input(String), Exit }
@@ -63,20 +62,31 @@ pub async fn run(mut driver: forge_core::Driver,
   - `let _ = *finished.borrow_and_update();` (where `finished = driver.subtasks.watch()`);
   - `driver.deliver_subtasks();`
   - send `UiEvent::Status(..)` and `UiEvent::Idle`.
-- Then `select!` on:
+  - `driver.sync_view()`: apply what immediate commands left (ARCHITECTURE.md, C17).
+- Then take the next input from the local queue (inputs that arrived during a
+  turn), or `select!` on:
   - `rx.recv()`:
-    - `Input(text)` runs `driver.input(MessageContent::Text(text), &mut report).await`;
+    - `Input(text)` runs `driver.input(MessageContent::Text(text), &mut report)` through
+      `while_busy` (below);
     - if that returns `Flow::Exit`, send `UiEvent::Exit` and break;
     - `Exit` or a closed channel breaks.
-  - `sleep(driver.next_wait())` when it is `Some`: run `driver.run_due(&mut report)` if `driver.task_due()`.
-    A due task makes the session busy too, so the UI gets no `Idle` until it ends.
+  - `sleep(driver.next_wait())` when it is `Some`: run `driver.run_due(&mut report)` if `driver.task_due()`,
+    also through `while_busy`. A due task makes the session busy too: the task sends `UiEvent::Busy`
+    first, so the spinner shows, and the UI gets no `Idle` until it ends.
   - `finished.changed()`: continue (the next idle pass hands the subtask back).
+  - `view.effect_recorded()`: continue (an immediate command finished after its turn).
+- **`while_busy`** pins the turn's future and `select!`s it with `rx.recv()`. An
+  immediate command (`commands::immediate`) is answered from `driver.view()`
+  on a task of its own, which sends `UiEvent::Reply`; the turn and the
+  spinner go on. Any other message goes to the local queue. A closed channel
+  queues `Exit` for after the turn.
 - After the loop, `driver.shutdown("prompt_input_exit").await`.
 
 **The `report` callback** turns each `TurnResult` into what the UI shows:
 - a local command result (`num_turns == 0 && stop_reason.is_none()`) becomes
   `UiEvent::Reply { text: result, is_error }`;
 - a blocked prompt (`prompt_blocked`) becomes `Reply { is_error: true }`;
+- an interrupted turn becomes `Reply { text: "Interrupted · What should Forge do instead?" }`;
 - a model turn that errored becomes `Reply { text: errors or result, is_error: true }`;
 - a successful model turn sends nothing: its text already streamed.
 
@@ -90,8 +100,9 @@ pub async fn run(mut driver: forge_core::Driver,
 
 Also send `UiEvent::Commands` from `driver.catalog.catalog_json(Surface::Tui)`
 (fields `name`, `argumentHint`, `description`). Send it once at start and
-again whenever `driver.info.session_id` changes (`/clear`, `/resume`,
-`/branch`, `/cd` and the reloads change commands).
+again whenever the list changes: `/clear`, `/resume`, `/branch`, `/cd` and
+the reloads (`/reload-skills`, and `/hooks add` or `/agents create`, which
+reload) can change it, and a reload keeps the session id.
 
 **`TuiSink`** (an `EventSink`) sends every `EngineEvent` as
 `UiEvent::Engine(e)`. The channel is unbounded, so it never blocks the engine.
@@ -138,7 +149,7 @@ Public surface the loop uses:
 | `SetMode(m)` | `live.handle().set_permission_mode(m)` |
 | `Exit` | `to_session.send(ToSession::Exit)`, then wait (at most 5 s) for the session task to end |
 
-### Renderer (`tui/render.rs`, to do)
+### Renderer (`tui/render.rs`)
 
 ```rust
 pub struct LiveView { pub lines: Vec<Line<'static>>, pub cursor: Option<(u16, u16)> }
@@ -149,10 +160,17 @@ The live region, top to bottom (each part only when present):
 1. `app.live`, the unfinished answer line, rendered with
    `text::Markdown::line` and wrapped. At most 3 rows, the last ones.
 2. The spinner while `busy`:
-   - frames `· ✢ ✳ ✶ ✻ ✽`, advanced every 120 ms from `busy_since`;
-   - then `{activity}… ({secs}s · esc to interrupt)`, in the accent style.
+   - braille frames `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` (`forge_core::glyphs::SPINNER`),
+     advanced every 80 ms from `busy_since`;
+   - then `{activity}… ({secs}s · esc to interrupt)`, in the accent style;
+     while a permission, plan or question dialog is open,
+     `Waiting for your answer… ({secs}s)` instead.
 3. A dialog: a rounded box (`Block::bordered().border_type(Rounded)`) with:
-   - the title (`dialog_text().0`) and body lines;
+   - the title (`dialog_text().0`) and body lines; a permission dialog for
+     Edit, MultiEdit or Write shows the lines it removes (`  - `, red) and
+     adds (`  + `, green), at most 8 of each; Bash shows the command and its
+     description; the generic reason "this tool requires permission" is left
+     out;
    - the numbered options from `dialog_options()`, the selected one marked
      `❯` and styled `theme.selected()`, descriptions dimmed on the right;
    - a footer `Enter to select · Esc to cancel`.
@@ -168,15 +186,16 @@ The live region, top to bottom (each part only when present):
    then the description (dim). The selected row uses `theme.selected()`.
 7. The status line:
    - left: the hint if one is fresh (under 2 s), else the mode:
-     - `⏵⏵ accept edits on (shift+tab to cycle)`;
-     - `⏸ plan mode on (shift+tab to cycle)`;
+     - `» accept edits on (shift+tab to cycle)`;
+     - `‖ plan mode on (shift+tab to cycle)`;
+     - `! bypass permissions on`;
      - `? for shortcuts` for the default mode;
    - right: `{model} · {ctx}% context · ${cost:.2}`.
 
 If the lines exceed `max_height` (the terminal height minus 1), drop rows
 from part 1, then part 4, never from the dialog or the input.
 
-### Terminal (`tui/mod.rs`, to do)
+### Terminal (`tui/mod.rs`)
 
 ```rust
 pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail>
@@ -192,8 +211,9 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail>
 - restore the same way on every exit path, through a guard whose `Drop`
   restores.
 
-**`Screen`** wraps `Terminal<CrosstermBackend<Stdout>>` with
-`Viewport::Inline(h)`:
+**`Screen<B: Backend>`** wraps a `Terminal<B>` with `Viewport::Inline(h)`
+and a function that makes a fresh backend (so tests run it on a
+`TestBackend`):
 - `set_height(h)`: when `h` differs, call `terminal.clear()` (the cursor
   goes to the viewport's top and everything below is cleared), drop the
   terminal, and create a new one with `Viewport::Inline(h)`. ratatui 0.29
@@ -203,7 +223,8 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail>
   `terminal.insert_before(n, |buf| Paragraph::new(lines).render(buf.area, buf))`
   in chunks of at most 100 rows.
 - `draw(&LiveView)`: render the lines with a `Paragraph` into the frame and
-  set the cursor.
+  set the cursor. A view shorter than the viewport (it hasn't shrunk yet) is
+  drawn at its bottom, so the input box doesn't jump.
 
 **The loop**, with frames drawn at most every 16 ms:
 
@@ -252,17 +273,30 @@ with `{"text", "cwd"}`:
 ## Rendering rules (implemented in `app.rs` and `text.rs`)
 
 - **Assistant text** streams into `app.live`. Each complete line moves to
-  scrollback. The first line of a text block gets `⏺ `, the others two
+  scrollback. The first line of a text block gets `• `, the others two
   spaces.
-- **Markdown**, one line at a time:
+- **Markdown**, one line at a time (`text::Markdown::push`):
   - headings and `**bold**` are bold;
   - `` `code` `` uses the code style;
-  - fence lines are dim, and fenced lines are indented and coloured as code.
-- **Tool calls**: `⏺ Name(main argument)` (`app::summarize`). Their results:
-  `  ⎿  first line (+N lines)`, red on error.
+  - fence markers aren't drawn; fenced lines are indented and coloured as code;
+  - table rows are held until the table ends, then drawn with aligned
+    columns, `│` between cells, a `─┼─` rule and a bold header.
+- **Wrapping** (`text::wrap`): a wrapped row continues under the text, past
+  the line's indent and its marker (`• `, `› `, `↳ `, `- `, `1. `).
+- **Tool calls**: `› Name(main argument)` (`app::summarize`). Their results
+  (`app::result_lines`), red on error:
+  - Read: `Read 40 lines` or `Read 40 of 120 lines`;
+  - Edit, MultiEdit, Write: `Updated calc.py: 1 addition, 1 removal`, then the
+    changed lines with their numbers, `-` red and `+` green (at most 16);
+    a new file: `Wrote 12 lines to new.txt`;
+  - Bash: the first 3 output lines, then `… +N lines`, or `(no output)`;
+  - anything else: `first line (+N lines)`.
 - Events of sub-agents (those with a `parent_tool_use_id`) are not shown.
 - **Your prompts**: `> text`, in the user style.
-- **Local command output**: `  ⎿  ` on the first line, then indented.
+- **Local command output**: `  ↳  ` on the first line, then indented.
+- **Glyphs** live in `forge_core::glyphs` (answer `•`, tool `›`, result `↳`,
+  the spinner, the mode marks), so `/export` and the line REPL use the same
+  marks.
 - **Notices**: dim, yellow (warning) or red (error).
 - **System events**: `compact_boundary` shows "Conversation compacted.", and
   `model_fallback` a warning.
@@ -273,41 +307,110 @@ with `{"text", "cwd"}`:
 
 | Key | Does |
 | --- | --- |
-| Enter | Send (queued while a turn runs); in the `/` menu, run the command, or complete it when it takes arguments |
+| Enter | Send. While a turn runs, a message is queued, but an immediate command (`/status`, `/usage`, `/tasks`, `/context`, `/mcp`, `/btw`, `/keybindings`, `/terminal-setup`) is answered at once. In the `/` menu, run the command, or complete it when it takes arguments |
 | Shift+Enter, Alt+Enter, Ctrl+J, `\` then Enter | New line |
 | Esc | Interrupt the turn; close the menu; cancel a dialog (its last option); twice on an empty prompt: `/rewind` |
 | Ctrl+C | Clear the input; interrupt the turn (and deny an open dialog); twice on an empty prompt: exit |
 | Ctrl+D | Exit (empty prompt) |
 | Shift+Tab | Next permission mode: default, acceptEdits, plan |
 | Up / Down | Line up/down; history on the first/last line; menu or dialog selection |
-| Tab | Complete the highlighted `/` command |
+| Tab | Complete the highlighted `/` command or `@` path |
+| Ctrl+R | Search prompt history |
 | Ctrl+A / Ctrl+E, Home / End | Start / end of line |
 | Ctrl+W, Alt+Backspace | Delete the word before the cursor |
 | Ctrl+U / Ctrl+K | Delete to the start / end of the line |
 | Alt+B / Alt+F, Ctrl+Left / Ctrl+Right | Word left / right |
 | 1-9 in a dialog | Choose that option |
 | Space in a multi-select question | Toggle the option |
-| Ctrl+L | Redraw (loop, to do) |
+| Ctrl+L | Redraw |
 
 Pasted text (bracketed paste) is inserted as typed, newlines included.
+
+**Rebinding** (`tui/keys.rs`): `keybindings.json` (CLI.md, "Key bindings")
+is read once at start into a `Keymap`. Every key event goes through
+`Keymap::translate` before `App::on_key` (and before the loop's Ctrl+L
+check): a bound key becomes its action's default key, an unbound one is
+dropped, anything else passes. So `on_key` keeps one set of keys, and the
+bindings work in dialogs and screens too. `keys_text` shows each action's
+keys in effect, the file and the unbound keys.
 
 ## Dialogs (implemented in `app.rs`)
 
 | Dialog | Options | Answer |
 | --- | --- | --- |
 | Permission | 1. Yes | `Allow` |
-| | 2. Yes, and don't ask again for `<rule>` (only when the prompt has suggestions) | `Allow` with the suggestions as `updated_permissions` |
+| | 2. Yes, and don't ask again for `<rule>`, or "Yes, and allow all edits this session (shift+tab)" for an edit (only when the prompt has suggestions) | `Allow` with the suggestions as `updated_permissions` |
 | | 3. No, and tell Forge what to do instead (Esc) | `Deny { interrupt: true }` |
 | AskUserQuestion | The options, then "Type an answer"; multi-select toggles with Space | `Allow` with `input.answers = {question: answer}` (the shape `LinePrompter` uses) |
 | Plan approval (the plan goes to scrollback first) | 1. Yes, and accept edits without asking | `Allow` plus `setMode acceptEdits` (session) |
 | | 2. Yes, and ask before each edit | `Allow` |
 | | 3. No, keep planning (Esc) | `Deny { interrupt: true }` |
 
+## Screens
+
+A screen is what a command typed without arguments shows instead of its
+text answer: `/diff`, `/context`, `/hooks`, `/agents`. It stays an inline
+viewport: a screen is a dialog in the live region, at most the terminal
+height minus the status line, and long content scrolls inside it.
+
+- **Data** comes from forge-core (`commands::screens`), as pickers do:
+  a `Screen` is a title and rows of tagged text (`Tone`: plain, dim, bold,
+  accent, added, removed, or a context part). A row may have an action:
+  - `Jump(row)`: Enter moves there (a file in `/diff`); Esc comes back;
+  - `Run(text)`: Enter runs the command text, as if typed;
+  - `Confirm { question, command }`: a Yes/No picker first;
+  - `Form(form)`: opens a form.
+- **Forms** are fields (free text, one-of choice, any-of multi-select) and a
+  command template; `{0}`, `{1}`, ... are replaced by the values,
+  shell-quoted. Tab and Up/Down move between fields, Left/Right choose,
+  Space toggles, Enter runs, Esc cancels. The form shows the command it will
+  run.
+- **Everything a screen changes is command text** the person could type
+  (`/hooks remove PreToolUse 1`), so the text commands stay the answer on
+  every other surface (`-p`, stream-json, the line REPL) and their tests
+  don't change.
+- **The session task** answers a bare screen command with
+  `UiEvent::Screen(..)`, after pickers. `/context` is immediate, so it opens
+  mid-turn too, built from the `SessionView`.
+- **Questions win:** a screen or picker that arrives while a permission
+  prompt or question waits for its answer (a `/context` typed mid-turn) is
+  held and shows once the question is answered. Replacing that dialog would
+  drop its reply, which the engine reads as "the UI closed".
+- **Keys:** Up/Down move the highlighted row; PageUp/PageDown (and Space) move
+  by the rows shown; Home/End; Enter (or Right) acts on the row; Esc (or
+  Left) goes back from a jump, else closes; `q` closes.
+- **Drawing** (`render::viewer`, `render::form`): rows are cut to the width,
+  never wrapped, so scrolling counts rows exactly. The footer shows the rows
+  shown ("12-30 of 200") and the keys. The highlighted row keeps its colours
+  and turns bold, with `❯` in front. Without colour, diffs keep their `+`
+  and `-` markers and the context grid uses a letter per part.
+
+The screens:
+- **`/diff`:** git's uncommitted changes (`git diff HEAD`), or outside git
+  the files Forge changed against how they were. First the files, each with
+  `+added -removed` (Enter jumps to its hunks), untracked files and the files
+  each prompt changed; then each file's hunks: additions green, deletions
+  red, hunk headers dim. Built from the same data as the text `/diff`.
+- **`/context`:** a 10×10 grid, each cell 1% of the window, coloured by the
+  part that fills it (system prompt, built-in tools, MCP tools, skills,
+  memory, messages, free; a used part shows at least one cell), then the
+  legend with the numbers of the text `/context` (same `ContextData`), the
+  auto-compact point and suggestions. `/context all` stays text.
+- **`/hooks`:** "+ Add hook…" (a form: event, matcher, command, scope, which
+  runs `/hooks add ...`), then every event with its hooks, numbered as
+  `/hooks` numbers them, each with its source and timeout. Enter on a user,
+  project or local hook asks, then runs `/hooks remove <Event> <n>`. The
+  session reloads after a change, so the hook applies at once.
+- **`/agents`:** "+ Create an agent…" (a form: name, description,
+  instructions, tools as a multi-select of the session's tools, model,
+  scope, which runs `/agents create ...`), then each agent with its source,
+  model and tools.
+
 ## Testing
 
-- **Unit tests, done (9):** `tui::editor`, `tui::text` and `tui::app`.
+- **Unit tests, done:** `tui::editor`, `tui::text` and `tui::app`.
   Run them with `cargo test -p forge-cli --bin forge tui`.
-- **Renderer (to do):** `ratatui::backend::TestBackend` snapshot tests of
+- **Renderer (done, `tui::render::tests`):** `ratatui::backend::TestBackend` snapshot tests of
   `live_view` drawn into a fixed area:
   - idle;
   - busy with a spinner and queued input;
@@ -316,7 +419,7 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
   - a narrow width (20 columns);
   - `Theme { color: false }`.
   Compare `buffer` text rows; colours are checked through a few cells.
-- **Session (to do):** build a session with `MockProvider` (as
+- **Session (done, `tui::session::tests`):** build a session with `MockProvider` (as
   `crates/forge-core/src/driver_tests.rs` does in `driver_with`), run
   `session::run` on a task, and drive it through the channels:
   - a text turn ends with `Idle`, and `Engine` events carry the text;
@@ -325,7 +428,7 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
     tool;
   - a queued input is sent after `Idle`;
   - `/exit` gives `Exit`.
-- **Terminal (to do):** keep `mod.rs` thin. Test `Screen::commit`'s chunking
+- **Terminal (done, `tui::tests`):** keep `mod.rs` thin. Test `Screen::commit`'s chunking
   and wrapping through a `TestBackend` with `Viewport::Inline`; `insert_before`
   works on it. Check by hand in a real terminal (the checklist below).
 
@@ -341,23 +444,50 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
      - `docs/PARITY.md`: TUI rows;
      - `CHANGELOG.md`;
      - `docs/CHECKLIST.md`: the manual steps below.
-2. **Pickers.** A `Picker` dialog (title, rows, filter by typing). It is
-   filled from data the session sends on request
-   (`ToSession::Picker(kind)` → `UiEvent::Picker { kind, rows }`):
-   - `/model` with no argument: `forge_api::models::MODELS`;
+2. **Pickers** (done). A `Picker` dialog (title, rows, filter by typing).
+   The rows come from `forge_core::commands::picker::picker(driver, text)`,
+   so they number and name things exactly as the commands do. Each row is a
+   `Pick`: `Run(text)`, `RunThenEdit` (run, then put the rewound prompt back
+   in the input box), `Step(text)` (a second picker) or `Edit(text)` (put
+   a command in the input box to finish by hand).
+   - The session task answers an input that is one of these commands
+     without its argument with `UiEvent::Picker(..)` instead of running it,
+     so aliases (`/undo`, `/allowed-tools`) open pickers too.
+   - A `Step` is `ToSession::Picker(text)`, answered the same way.
+
+   The pickers:
+   - `/model` with no argument: `driver.model_choices()`, the models the
+     endpoint lists (`Provider::list_models`, asked once per session) with
+     the current one first, plus "Another model…" (puts `/model ` in the
+     input box). Forge shows no built-in catalogue;
    - `/resume`: `forge_session::SessionStore::list(cwd)`;
    - `/rewind`: `driver.engine.prompt_points()`, then a second step for the
      action (both, conversation, code, summarize from, summarize to);
    - `/output-style`: `driver.catalog.styles`;
-   - `/permissions`: the rules, with add and remove.
+   - `/permissions`: each rule (choosing it removes it), "Add an allow/ask/deny
+     rule…" (puts `/permissions add <behavior> ` in the input box), and the
+     full list.
 
-   Choosing a row sends the existing argument form (`/model opus`,
-   `/resume 3`, `/rewind 2 code`, ...), so the commands don't change. Also in
+   Choosing a row sends the existing argument form (`/model <id>`,
+   `/resume <id>`, `/rewind 2 code`, ...), so the commands don't change. Also in
    this phase:
-   - Ctrl+R reverse history search in the input box;
-   - `@` file completion (a menu of paths from the `ignore` crate's walk of
-     the project, filtered as you type).
-3. **UI-only commands.**
+   - Ctrl+R reverse history search: typing searches back through prompts
+     (newest first), Ctrl+R again goes older, Enter or any editing key keeps
+     the match in the input box, Esc or Ctrl+G goes back to what was typed;
+   - `@` file completion: a menu of paths from the `ignore` crate's walk of
+     the project (`.gitignore` respected, at most 20,000 paths, walked again
+     after `/cd`), file-name matches first. Tab or Enter completes, quoting a
+     path with spaces (`@"my notes.md"`). Sending attaches the file (the
+     driver does it for every surface; docs/CLI.md, "`@` mentions"), and the
+     scrollback shows a dim `(attached: a.rs, b.rs)` under the prompt.
+3. **UI-only commands** (done). `/theme` and `/statusline` are forge-core
+   commands (they save settings through the driver); the session task sends
+   `UiEvent::Theme` when the `theme` setting changes and runs the
+   `statusLine` command after each input (`UiEvent::StatusLine`). `/copy`,
+   `/keybindings` and `/terminal-setup` need the terminal, so the session task
+   answers them before the driver sees them; the driver answers "works only
+   in the terminal UI" on other surfaces. `?` on an empty prompt shows the
+   key table too.
    - `/theme`: dark, light, no colour; saved as `theme` in user settings.
    - `/copy [N]`: the Nth latest answer to the clipboard via OSC 52.
    - `/keybindings`: shows the key table.
@@ -369,22 +499,22 @@ Pasted text (bracketed paste) is inserted as typed, newlines included.
 
    Register them in `BUILTINS` with `Surfaces` set to the TUI only, so
    `/help` in other modes leaves them out.
+4. **Screens and settings** (done). The pattern is in "Screens" above:
+   forge-core builds a `Screen` (and any `Form`), the TUI draws it in the
+   live region, and every change is command text.
+   - A scrolling viewer dialog (`DialogKind::Viewer`) and a form dialog
+     (`DialogKind::Form`), with `TestBackend` tests at 40 and 100 columns,
+     colour and no colour.
+   - `/diff` viewer, `/context` grid, `/hooks` editor
+     (`/hooks add|remove` argument forms), `/agents` wizard
+     (`/agents create`).
+   - Key rebinding from `keybindings.json` ("Keys", "Rebinding").
+   - `/color <name>` (the accent colour for this session) and `/focus` (tool
+     calls stay out of the scrollback), answered by the app itself like
+     `/keybindings`. `/tui` and `/scroll-speed` are out: Forge has one UI,
+     and the terminal scrolls its own scrollback.
 
-## Manual checks (add to docs/CHECKLIST.md when phase 1 lands)
+## Manual checks
 
-1. `forge` in a real terminal: the prompt box and the status line appear at
-   the bottom. `hello` streams an answer, and scrolling up with the mouse or
-   Shift+PageUp shows the whole conversation.
-2. During a long answer, press Esc. The turn stops and
-   `[Request interrupted by user]` is in the transcript (`/export`).
-3. Type a second message while a turn runs. It shows as queued and is sent
-   when the turn ends.
-4. Ask for a shell command in default mode. The permission dialog appears;
-   option 2 adds the rule (`/permissions` lists it).
-5. Shift+Tab twice shows plan mode. Asking for a change ends with the plan
-   dialog, and option 1 switches to accept-edits.
-6. `NO_COLOR=1 forge` uses no colours. A 40-column terminal wraps without
-   breaking the box.
-7. Leave with `/exit`, with Ctrl-D and with Ctrl-C twice. Each time the
-   shell works normally afterwards: typed text echoes, and `stty -a` shows
-   `icanon echo`.
+The terminal itself (raw mode, the keyboard protocol, scrollback in a real
+emulator) is checked by hand: `docs/CHECKLIST.md`, "Terminal UI".

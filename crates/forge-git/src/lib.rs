@@ -3,14 +3,22 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// `git` with no console window (Windows) and no optional locks.
+fn git_cmd() -> Command {
+    let mut c = Command::new("git");
+    forge_platform::process::no_window(&mut c);
+    c
+}
+
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(dir).env("GIT_OPTIONAL_LOCKS", "0").output().ok()?;
+    let out = git_cmd().args(args).current_dir(dir).env("GIT_OPTIONAL_LOCKS", "0").output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
 /// Top of the working tree containing `dir`.
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
-    git(dir, &["rev-parse", "--show-toplevel"]).map(PathBuf::from)
+    // git prints `C:/x` on Windows; Forge compares it with native paths.
+    git(dir, &["rev-parse", "--show-toplevel"]).map(|s| forge_platform::path::native(&s))
 }
 
 pub fn is_repo(dir: &Path) -> bool {
@@ -77,7 +85,7 @@ pub fn uncommitted(dir: &Path) -> Option<(String, Vec<String>)> {
 
 /// Create a worktree at `path` on a new branch from HEAD.
 pub fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<(), String> {
-    let out = Command::new("git")
+    let out = git_cmd()
         .args(["worktree", "add", "-b", branch])
         .arg(path)
         .arg("HEAD")
@@ -131,12 +139,7 @@ pub fn is_dirty(dir: &Path) -> bool {
 }
 
 pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), String> {
-    let out = Command::new("git")
-        .args(["worktree", "remove"])
-        .arg(path)
-        .current_dir(repo)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = git_cmd().args(["worktree", "remove"]).arg(path).current_dir(repo).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {

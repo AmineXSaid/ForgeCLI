@@ -44,6 +44,10 @@ pub struct MessagesConfig {
     /// Longest silence allowed between reads of a response.
     pub timeout: Duration,
     pub user_agent: String,
+    /// The variable or setting that chose `base_url` (`None`: the default host).
+    pub url_from: Option<&'static str>,
+    /// Set when `api_key` came from a helper command (its setting name).
+    pub key_helper: Option<&'static str>,
 }
 
 impl Default for MessagesConfig {
@@ -58,6 +62,8 @@ impl Default for MessagesConfig {
             // No total deadline (long generations stream for many minutes); a stall of this long between reads fails the request.
             timeout: Duration::from_secs(300),
             user_agent: format!("forgecli/{}", env!("CARGO_PKG_VERSION")),
+            url_from: None,
+            key_helper: None,
         }
     }
 }
@@ -70,6 +76,7 @@ impl MessagesConfig {
         let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
         if let Some(u) = get("FORGE_BASE_URL") {
             c.base_url = u;
+            c.url_from = Some("FORGE_BASE_URL");
         }
         c.api_key = get("FORGE_API_KEY");
         c.auth_token = get("FORGE_AUTH_TOKEN");
@@ -86,15 +93,22 @@ impl MessagesConfig {
         self.api_key.is_some() || self.auth_token.is_some()
     }
 
+    /// The endpoint and where its key came from, for error hints.
+    pub fn origin(&self) -> crate::auth::Origin {
+        use crate::auth::KeyFrom;
+        let key_from = match (self.key_helper, self.api_key.is_some(), self.auth_token.is_some()) {
+            (Some(h), true, _) => KeyFrom::Helper(h),
+            (_, true, true) => KeyFrom::ApiKeyAndToken,
+            (_, true, false) => KeyFrom::ApiKey,
+            (_, false, true) => KeyFrom::AuthToken,
+            (_, false, false) => KeyFrom::None,
+        };
+        crate::auth::Origin { backend: crate::auth::Backend::Messages, url_from: self.url_from, key_from }
+    }
+
     /// Where the credential came from, for `system/init.apiKeySource`.
     pub fn key_source(&self) -> &'static str {
-        if self.api_key.is_some() {
-            "FORGE_API_KEY"
-        } else if self.auth_token.is_some() {
-            "FORGE_AUTH_TOKEN"
-        } else {
-            "none"
-        }
+        self.origin().api_key_source()
     }
 }
 
@@ -118,7 +132,7 @@ impl MessagesProvider {
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(config.timeout)
             .build()
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(|e| ApiError::network(e.to_string()))?;
         Ok(MessagesProvider { config, http })
     }
 
@@ -181,7 +195,7 @@ impl MessagesProvider {
 
 /// A transport failure with its root cause ("connection refused", "timed out", ...).
 pub(crate) fn network_error(e: reqwest::Error) -> ApiError {
-    ApiError::Network(describe_network_error(&e))
+    ApiError::network(describe_network_error(&e))
 }
 
 /// "could not connect to <url>: <root cause>", for any reqwest failure.
@@ -194,7 +208,7 @@ pub fn describe_network_error(e: &reqwest::Error) -> String {
         "request failed".to_string()
     };
     if let Some(url) = e.url() {
-        msg.push_str(&format!(" to {}", url.as_str().split('?').next().unwrap_or("")));
+        msg.push_str(&format!(" to {}", crate::auth::display_url(url.as_str())));
     }
     let mut source = std::error::Error::source(e);
     let mut last = None;
@@ -215,6 +229,7 @@ fn header_value(v: &str) -> Result<HeaderValue, ApiError> {
 /// Turn a non-2xx response into an [`ApiError::Http`].
 pub(crate) async fn http_error(resp: reqwest::Response) -> ApiError {
     let status = resp.status().as_u16();
+    let url = crate::auth::display_url(resp.url().as_str());
     let retry_after = resp
         .headers()
         .get("retry-after")
@@ -229,7 +244,7 @@ pub(crate) async fn http_error(resp: reqwest::Response) -> ApiError {
         ),
         Err(_) => ("error".to_string(), text),
     };
-    ApiError::Http { status, kind, message, retry_after }
+    ApiError::Http { status, kind, message, retry_after, url, origin: None }
 }
 
 /// Parse one SSE payload; `Ok(None)` for event types this client does not know.
@@ -263,7 +278,7 @@ where
             let (events, finished) = match chunk {
                 Some(Ok(bytes)) => (decoder.push(&bytes), false),
                 Some(Err(e)) => {
-                    let _ = tx.send(Err(ApiError::Network(e.to_string()))).await;
+                    let _ = tx.send(Err(ApiError::network(e.to_string()))).await;
                     return;
                 }
                 None => (decoder.finish().into_iter().collect(), true),
@@ -289,10 +304,39 @@ impl Provider for MessagesProvider {
         "messages"
     }
 
+    fn origin(&self) -> Option<crate::auth::Origin> {
+        Some(self.config.origin())
+    }
+
+    async fn probe(&self) -> Option<Result<usize, ApiError>> {
+        let r = async {
+            let res = self
+                .http
+                .get(self.endpoint("/v1/models"))
+                .headers(self.headers(&[])?)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(network_error)?;
+            if !res.status().is_success() {
+                return Err(http_error(res).await);
+            }
+            let body: Value = res.json().await.map_err(|e| ApiError::Parse(e.to_string()))?;
+            Ok(body.get("data").and_then(Value::as_array).map(Vec::len).unwrap_or(0))
+        }
+        .await;
+        Some(r.map_err(|e| e.with_origin(self.config.origin())))
+    }
+
+    fn base_url(&self) -> Option<String> {
+        self.config.url_from.map(|_| crate::auth::display_url(&self.config.base_url))
+    }
+
     async fn stream(&self, mut request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {
         if !self.config.has_credentials() {
             return Err(ApiError::MissingCredentials);
         }
+        let origin = self.config.origin();
         request.stream = true;
         let body = serde_json::to_value(&request).map_err(|e| ApiError::Parse(e.to_string()))?;
         let mut attempt = 0;
@@ -318,7 +362,7 @@ impl Provider for MessagesProvider {
                         _ = tokio::time::sleep(wait) => {}
                     }
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.with_origin(origin)),
             }
         };
         Ok(spawn_sse_pump(resp, cancel, |ev| match parse_event(&ev.data) {

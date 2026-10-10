@@ -11,18 +11,20 @@ mod events;
 mod exec;
 pub mod prompts;
 pub mod request;
+mod snapshot;
 mod stuck;
 pub mod verify;
 
 pub use engine::{
-    CompactInfo, Engine, EngineConfig, EngineError, EngineHandle, EngineParts, Pricing, PromptPoint, TurnResult,
-    TurnState, FAST_MODE_BETA,
+    CompactInfo, Engine, EngineConfig, EngineError, EngineHandle, EngineParts, Pricing, PromptPoint, Runtime,
+    TurnResult, TurnState, FAST_MODE_BETA,
 };
 pub use events::{
     DenyPrompter, EngineEvent, EventSink, ForwardSink, NoticeLevel, NullSink, PermissionAnswer, PermissionPrompt,
     PermissionPrompter, SerializedPrompter, VecSink,
 };
 pub use prompts::{build_system, EnvInfo, SystemPromptOptions};
+pub use snapshot::{side_question_request, EngineSnapshot, TurnProgress};
 pub use verify::{detect_checks, VerifyConfig};
 
 /// Synthetic user text recorded when a turn is interrupted (contract C3).

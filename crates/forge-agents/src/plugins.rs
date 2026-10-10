@@ -39,7 +39,7 @@ impl Plugin {
 }
 
 pub fn load_plugin(dir: &Path) -> Result<Plugin, String> {
-    let dir = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = forge_platform::path::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
     }

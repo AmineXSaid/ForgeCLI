@@ -44,6 +44,8 @@ pub struct ToolContext {
     /// The session's transcript file (`None` without session persistence), for
     /// tools that look at the conversation so far (Advisor).
     pub transcript_path: Option<PathBuf>,
+    /// The shell commands run in (Bash, `!` commands); `Err` when none was found.
+    pub shell: crate::shells::ShellChoice,
 }
 
 impl ToolContext {
@@ -64,6 +66,7 @@ impl ToolContext {
             sandbox: Arc::new(RwLock::new(None)),
             spill_dir: None,
             transcript_path: None,
+            shell: forge_platform::shell::detect().clone(),
         }
     }
 

@@ -23,6 +23,23 @@ pub struct OpenAiConfig {
     pub extra_headers: Vec<(String, String)>,
     pub max_retries: u32,
     pub timeout: Duration,
+    /// The variable or setting that chose `base_url`.
+    pub url_from: Option<&'static str>,
+    /// Set when `api_key` came from a helper command (its setting name).
+    pub key_helper: Option<&'static str>,
+}
+
+impl OpenAiConfig {
+    /// The endpoint and where its key came from, for error hints.
+    pub fn origin(&self) -> crate::auth::Origin {
+        use crate::auth::KeyFrom;
+        let key_from = match (self.api_key.is_some(), self.key_helper) {
+            (false, _) => KeyFrom::None,
+            (true, Some(h)) => KeyFrom::Helper(h),
+            (true, None) => KeyFrom::OpenAiKey,
+        };
+        crate::auth::Origin { backend: crate::auth::Backend::OpenAi, url_from: self.url_from, key_from }
+    }
 }
 
 impl Default for OpenAiConfig {
@@ -33,6 +50,8 @@ impl Default for OpenAiConfig {
             extra_headers: vec![],
             max_retries: 2,
             timeout: Duration::from_secs(300),
+            url_from: None,
+            key_helper: None,
         }
     }
 }
@@ -48,7 +67,7 @@ impl OpenAiProvider {
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(config.timeout)
             .build()
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(|e| ApiError::network(e.to_string()))?;
         Ok(OpenAiProvider { config, http })
     }
 }
@@ -293,10 +312,85 @@ impl ChunkTranslator {
     }
 }
 
+/// Model ids from an OpenAI-style `GET /models` answer (`{"data": [{"id": ...}]}`), sorted.
+pub fn model_ids(body: &Value) -> Vec<String> {
+    let mut ids: Vec<String> =
+        body["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// The limits a model-list entry reports, under the names gateways use
+/// (OpenRouter `context_length`, vLLM `max_model_len`, LiteLLM `max_input_tokens`, ...).
+pub fn listed_limits(entry: &Value) -> crate::models::Limits {
+    let first = |paths: &[&str]| paths.iter().find_map(|p| entry.pointer(p).and_then(Value::as_u64)).filter(|n| *n > 0);
+    crate::models::Limits {
+        context_window: first(&[
+            "/context_length",
+            "/context_window",
+            "/max_model_len",
+            "/max_context_length",
+            "/max_input_tokens",
+            "/top_provider/context_length",
+            "/model_info/max_input_tokens",
+        ]),
+        max_output: first(&[
+            "/max_output_tokens",
+            "/max_completion_tokens",
+            "/top_provider/max_completion_tokens",
+            "/model_info/max_output_tokens",
+        ])
+        .map(|n| n.min(u64::from(u32::MAX)) as u32),
+    }
+}
+
+/// Record the limits each listed model reports, so compaction uses the real window.
+pub fn record_listed_limits(body: &Value) {
+    for m in body["data"].as_array().into_iter().flatten() {
+        if let Some(id) = m["id"].as_str() {
+            let l = listed_limits(m);
+            if l != crate::models::Limits::default() {
+                crate::models::listed_limits(id, l);
+            }
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai"
+    }
+
+    fn origin(&self) -> Option<crate::auth::Origin> {
+        Some(self.config.origin())
+    }
+
+    fn base_url(&self) -> Option<String> {
+        Some(crate::auth::display_url(&self.config.base_url))
+    }
+
+    async fn list_models(&self) -> Option<Result<Vec<String>, ApiError>> {
+        let url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
+        let mut rb = self.http.get(&url).timeout(Duration::from_secs(15));
+        if let Some(k) = &self.config.api_key {
+            rb = rb.bearer_auth(k);
+        }
+        for (k, v) in &self.config.extra_headers {
+            rb = rb.header(k, v);
+        }
+        let r = async {
+            let res = rb.send().await.map_err(crate::messages::network_error)?;
+            if !res.status().is_success() {
+                return Err(http_error(res).await);
+            }
+            let body: Value = res.json().await.map_err(|e| ApiError::Parse(e.to_string()))?;
+            record_listed_limits(&body);
+            Ok(model_ids(&body))
+        }
+        .await;
+        Some(r.map_err(|e| e.with_origin(self.config.origin())))
     }
 
     async fn stream(&self, request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {
@@ -323,10 +417,18 @@ impl Provider for OpenAiProvider {
             match res {
                 Ok(r) => break r,
                 Err(e) if e.is_retryable() && attempt < self.config.max_retries => {
-                    tokio::time::sleep(backoff_delay(attempt, None)).await;
+                    let retry_after = match &e {
+                        ApiError::Http { retry_after, .. } => *retry_after,
+                        _ => None,
+                    };
+                    tracing::warn!(attempt, error = %e, "retrying API request");
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Err(ApiError::Cancelled),
+                        _ = tokio::time::sleep(backoff_delay(attempt, retry_after)) => {}
+                    }
                     attempt += 1;
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.with_origin(self.config.origin())),
             }
         };
         let mut tr = ChunkTranslator::new(&request.model);
@@ -341,6 +443,29 @@ impl Provider for OpenAiProvider {
 mod tests {
     use super::*;
     use crate::MessageAccumulator;
+
+    #[test]
+    fn reads_context_windows_from_a_models_listing() {
+        let body = json!({"data": [
+            {"id": "router-model", "context_length": 163_840, "top_provider": {"max_completion_tokens": 8192}},
+            {"id": "vllm-model", "max_model_len": 32_768},
+            {"id": "plain"}
+        ]});
+        let l = listed_limits(&body["data"][0]);
+        assert_eq!((l.context_window, l.max_output), (Some(163_840), Some(8192)));
+        assert_eq!(listed_limits(&body["data"][1]).context_window, Some(32_768));
+        assert_eq!(listed_limits(&body["data"][2]), crate::models::Limits::default());
+        record_listed_limits(&body);
+        assert_eq!(crate::models::model_info_or_default("vllm-model").context_window, 32_768);
+    }
+
+    #[test]
+    fn reads_model_ids_from_a_models_listing() {
+        let body =
+            json!({"object": "list", "data": [{"id": "qwen3-coder"}, {"id": "llama-4"}, {"id": "llama-4"}, {"x": 1}]});
+        assert_eq!(model_ids(&body), ["llama-4", "qwen3-coder"]);
+        assert!(model_ids(&json!({})).is_empty());
+    }
     use forge_types::{SystemBlock, ToolSpec};
 
     #[test]

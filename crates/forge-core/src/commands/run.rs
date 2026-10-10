@@ -3,9 +3,8 @@
 use std::fmt::Write as _;
 
 use forge_types::MessageContent;
-use serde_json::Value;
 
-use super::{parse, Builtin, Invocation};
+use super::{parse, Builtin, Invocation, BUILTINS};
 use crate::driver::Driver;
 
 /// What a command asks the driver to do next.
@@ -34,10 +33,11 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Invocation::NotACommand => return Exec::Submit(MessageContent::Text(text.to_string())),
         Invocation::Unknown(name) => return err(format!("Unknown command: /{name}")),
         Invocation::Custom { def, args } => {
-            return match forge_agents::commands::expand(def, args, &cwd).await {
+            let shell = d.engine.tool_ctx().shell.clone();
+            return match forge_agents::commands::expand(def, args, &cwd, &shell).await {
                 Ok(p) => Exec::Submit(MessageContent::Text(p)),
                 Err(e) => err(e),
-            }
+            };
         }
         Invocation::Skills { chain, args } => {
             let prompts: Vec<String> = chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args)).collect();
@@ -63,11 +63,18 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             Ok(info) => ok(format!("Compacted the conversation (about {} tokens before).", info.pre_tokens)),
             Err(e) => err(format!("Could not compact: {e}")),
         },
-        Builtin::Usage => ok(usage(d)),
-        Builtin::Status => ok(status(d)),
+        // Immediate commands read the session view, idle or mid-turn (C17): one implementation.
+        Builtin::Usage | Builtin::Status | Builtin::Tasks | Builtin::Context | Builtin::Mcp | Builtin::Btw => {
+            d.sync_view();
+            // Ctrl-C (or a host's interrupt) stops a side question, as it stops a turn.
+            let cancel = if id == Builtin::Btw { d.handle().new_token() } else { Default::default() };
+            let r = super::immediate::run(&d.view(), id, args, &cancel).await;
+            d.sync_view();
+            r
+        }
         Builtin::Skills => ok(skills(d)),
-        Builtin::Agents => ok(agents(d)),
-        Builtin::Hooks => ok(hooks(d)),
+        Builtin::Agents => super::agents::run(d, args).await,
+        Builtin::Hooks => super::hooks::run(d, args).await,
         Builtin::Memory => ok(memory(d)),
         Builtin::Doctor => doctor(d),
         Builtin::ReleaseNotes => ok(release_notes()),
@@ -75,10 +82,8 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             "" | "list" => ok(plugins(d)),
             _ => err("Plugin marketplaces aren't supported. Load a plugin directory with --plugin-dir or the pluginDirs setting."),
         },
-        Builtin::Mcp => super::mcp::run(d, args).await,
-        Builtin::Tasks => tasks(d, args),
         Builtin::Subtask => subtask(d, args),
-        Builtin::Model => super::settings::model(d, args),
+        Builtin::Model => super::settings::model(d, args).await,
         Builtin::Effort => super::settings::effort(d, args),
         Builtin::Fast => super::settings::fast(d, args),
         Builtin::Config => super::settings::config(d, args),
@@ -91,12 +96,10 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             "" => super::session::diff(d),
             _ => err("Usage: /diff"),
         },
-        Builtin::Context => super::session::context(d, args),
         Builtin::Debug => super::session::debug(d, args),
         Builtin::Permissions => super::session::permissions(d, args),
         Builtin::AddDir => super::session::add_dir(d, args),
         Builtin::Goal => super::session::goal(d, args),
-        Builtin::Btw => super::session::btw(d, args).await,
         Builtin::Recap => match args {
             "" => super::session::recap(d).await,
             _ => err("Usage: /recap"),
@@ -110,6 +113,13 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
         Builtin::Resume => super::switching::resume(d, args).await,
         Builtin::Branch => super::switching::branch(d, args).await,
         Builtin::Cd => super::switching::cd(d, args).await,
+        Builtin::Theme => super::settings::theme(d, args),
+        Builtin::Statusline => super::settings::statusline(d, args),
+        // The terminal UI answers these itself: they need the terminal.
+        Builtin::Copy | Builtin::Keybindings | Builtin::TerminalSetup | Builtin::Color | Builtin::Focus => {
+            let name = BUILTINS.iter().find(|c| c.id == id).map(|c| c.name).unwrap_or("");
+            err(format!("/{name} works only in the terminal UI."))
+        }
         Builtin::ReloadSkills | Builtin::ReloadPlugins => {
             if !d.can_switch() {
                 return err("Reloading isn't available here.");
@@ -141,110 +151,6 @@ pub(crate) fn duration(d: std::time::Duration) -> String {
     }
 }
 
-fn usage(d: &Driver) -> String {
-    let st = &d.engine.state;
-    let tool_calls: usize = st.messages.iter().map(|m| m.tool_uses().count()).sum();
-    let mut s = String::new();
-    let _ = writeln!(s, "Total cost:     ${:.4}", st.total_cost_usd);
-    let _ = writeln!(
-        s,
-        "Duration:       {} wall, {} API · {} model calls for {} prompts · {} tool calls in this conversation",
-        duration(d.started.elapsed()),
-        duration(d.activity.api_time),
-        d.activity.turns,
-        d.activity.prompts,
-        tool_calls
-    );
-    if st.model_usage.is_empty() {
-        let _ = writeln!(s, "Usage by model: none yet");
-    } else {
-        let _ = writeln!(s, "Usage by model:");
-        for (model, u) in &st.model_usage {
-            let n = |k: &str| thousands(u.get(k).and_then(Value::as_u64).unwrap_or(0));
-            let _ = writeln!(
-                s,
-                "  {model}: {} input, {} output, {} cache read, {} cache write (${:.4})",
-                n("inputTokens"),
-                n("outputTokens"),
-                n("cacheReadInputTokens"),
-                n("cacheCreationInputTokens"),
-                u.get("costUSD").and_then(Value::as_f64).unwrap_or(0.0)
-            );
-        }
-    }
-    let model = d.handle().model();
-    let window = forge_api::models::model_info_or_default(&model).context_window;
-    let _ = write!(s, "Context now:    about {} of {} tokens", thousands(st.context_tokens), thousands(window));
-    s
-}
-
-fn status(d: &Driver) -> String {
-    let h = d.handle();
-    let rt = h.runtime.read().unwrap().clone();
-    let mode = h.permissions.read().unwrap().mode;
-    let info = &d.info;
-    let mut s = String::new();
-    let _ = writeln!(s, "ForgeCLI {}", crate::VERSION);
-    let title = d.engine.transcript().title();
-    let _ = writeln!(s, "Session:        {}{}", info.session_id, title.map(|t| format!(" ({t})")).unwrap_or_default());
-    let _ = writeln!(s, "Directory:      {}", info.cwd.display());
-    let dirs: Vec<String> =
-        d.engine.tool_ctx().working_dirs.read().unwrap().iter().skip(1).map(|p| p.display().to_string()).collect();
-    if !dirs.is_empty() {
-        let _ = writeln!(s, "Also allowed:   {}", dirs.join(", "));
-    }
-    let _ = writeln!(
-        s,
-        "Model:          {} · effort {} · thinking {}",
-        rt.model,
-        rt.effort.as_deref().unwrap_or("default"),
-        match rt.max_thinking_tokens {
-            None => "default".to_string(),
-            Some(0) => "off".to_string(),
-            Some(n) => format!("{n} tokens"),
-        }
-    );
-    let _ = writeln!(s, "Permissions:    {} mode", mode.as_str());
-    let _ = writeln!(s, "Output style:   {}", info.init.output_style);
-    let sandbox = match d.engine.tool_ctx().sandbox_policy() {
-        Some(p) => format!("{} (network {})", p.mode.as_str(), if p.network { "on" } else { "off" }),
-        None => "off".into(),
-    };
-    let _ = writeln!(s, "Sandbox:        {sandbox}");
-    let _ = writeln!(s, "API:            {} via {}", info.init.api_key_source, d.engine.provider_name());
-    let files: Vec<String> = info
-        .settings
-        .layers
-        .iter()
-        .map(|l| match &l.path {
-            Some(p) => format!("{} ({})", p.display(), l.source.as_str()),
-            None => l.source.as_str().to_string(),
-        })
-        .collect();
-    let _ = writeln!(s, "Settings:       {}", if files.is_empty() { "none".into() } else { files.join(", ") });
-    let memory = forge_config::load_memory(&info.cwd);
-    let _ = writeln!(s, "Memory:         {} file(s)", memory.len());
-    if let Some(m) = &d.catalog.mcp {
-        let st = m.status();
-        let count = |w: &str| st.iter().filter(|(_, s)| s == w).count();
-        let _ = writeln!(
-            s,
-            "MCP servers:    {} connected, {} failed, {} disabled",
-            count("connected"),
-            count("failed"),
-            count("disabled")
-        );
-    }
-    let hooks = d.engine.hooks();
-    let n: usize = hooks.config.events.values().map(|m| m.iter().map(|x| x.hooks.len()).sum::<usize>()).sum();
-    let _ = write!(
-        s,
-        "Hooks:          {}",
-        if hooks.disabled { "disabled".to_string() } else { format!("{n} configured") }
-    );
-    s
-}
-
 pub(super) fn tokens_of(text: &str) -> usize {
     text.len() / 4
 }
@@ -274,46 +180,6 @@ fn skills(d: &Driver) -> String {
     s.trim_end().to_string()
 }
 
-fn agents(d: &Driver) -> String {
-    let mut s = String::from("Subagents:\n");
-    for a in &d.catalog.agents {
-        let tools = a.tools.as_ref().map(|t| t.join(", ")).unwrap_or_else(|| "all tools".into());
-        let _ = writeln!(s, "  {} ({:?}) - {} [{}]", a.name, a.source, a.description, tools);
-    }
-    s.push_str(
-        "\nTo add one, ask Forge to create it, or write .forge/agents/<name>.md (a `---` header with name, \
-         description and optional tools and model, then its instructions).",
-    );
-    s
-}
-
-fn hooks(d: &Driver) -> String {
-    let h = d.engine.hooks();
-    if h.disabled {
-        return "Hooks are disabled (--bare, --safe-mode or disableAllHooks).".into();
-    }
-    if h.config.is_empty() {
-        return "No hooks configured. Add them under \"hooks\" in a settings file.".into();
-    }
-    let mut s = String::new();
-    for event in forge_hooks::HookEvent::ALL {
-        let Some(matchers) = h.config.events.get(&event).filter(|m| !m.is_empty()) else { continue };
-        let _ = writeln!(s, "{}:", event.as_str());
-        for m in matchers {
-            for cmd in &m.hooks {
-                let _ = writeln!(
-                    s,
-                    "  [{}] {} (timeout {}s)",
-                    m.pattern.as_deref().unwrap_or("*"),
-                    cmd.command,
-                    cmd.timeout.as_secs()
-                );
-            }
-        }
-    }
-    s.trim_end().to_string()
-}
-
 fn memory(d: &Driver) -> String {
     let files = forge_config::load_memory(&d.info.cwd);
     if files.is_empty() {
@@ -336,28 +202,51 @@ fn doctor(d: &Driver) -> Exec {
 /// `forge doctor`'s checks plus this session's: warnings, MCP servers, model pricing.
 pub(super) fn doctor_checks(d: &Driver) -> Vec<crate::doctor::Check> {
     let mut checks = crate::doctor::checks(&d.info.cwd);
+    // The model row below says what an unknown model means; don't say it twice.
+    let warnings: Vec<&String> =
+        d.info.warnings.iter().filter(|w| !w.starts_with(crate::UNKNOWN_MODEL_PREFIX)).collect();
     checks.push(crate::doctor::Check {
-        ok: d.info.warnings.is_empty(),
+        note: false,
+        ok: warnings.is_empty(),
         name: "session",
-        detail: if d.info.warnings.is_empty() { "no warnings".into() } else { d.info.warnings.join("; ") },
+        detail: if warnings.is_empty() {
+            "no warnings".into()
+        } else {
+            warnings.iter().map(|w| w.as_str()).collect::<Vec<_>>().join("; ")
+        },
     });
     if let Some(m) = &d.catalog.mcp {
         let failed = m.warnings();
         checks.push(crate::doctor::Check {
+            note: false,
             ok: failed.is_empty(),
             name: "mcp",
             detail: if failed.is_empty() { format!("{} server(s) fine", m.servers.len()) } else { failed.join("; ") },
         });
     }
     let model = d.handle().model();
-    let priced = forge_api::models::model_info(&model).is_some();
+    let priced = d.engine.has_price(&model);
+    let guessed = forge_api::models::limits_source(&model) == forge_api::models::LimitsSource::Guessed;
+    let mut unknown = vec![];
+    if guessed {
+        let info = forge_api::models::model_info_or_default(&model);
+        unknown.push(format!(
+            "limits guessed ({} context, {} output; set \"modelLimits\")",
+            thousands(info.context_window),
+            thousands(u64::from(info.max_output))
+        ));
+    }
+    if !priced {
+        unknown.push("no price, so costs show as unknown (set \"modelPricing\")".into());
+    }
     checks.push(crate::doctor::Check {
-        ok: priced,
+        note: !unknown.is_empty(),
+        ok: true,
         name: "model",
-        detail: if priced {
-            format!("{model} (known pricing)")
+        detail: if unknown.is_empty() {
+            format!("{model} (known limits and pricing)")
         } else {
-            format!("{model}: unknown pricing; costs show as $0 and --max-budget-usd refuses it")
+            format!("{model}: {}", unknown.join("; "))
         },
     });
     checks
@@ -377,59 +266,6 @@ fn plugins(d: &Driver) -> String {
         let _ = writeln!(s, "  {}{version} - {} ({})", p.name, p.description, p.dir.display());
     }
     s.trim_end().to_string()
-}
-
-fn tasks(d: &Driver, args: &str) -> Exec {
-    let shells = &d.engine.tool_ctx().shells;
-    if let Some(id) = args.strip_prefix("stop").map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(msg) = super::looping::stop(d, id) {
-            return ok(msg);
-        }
-        if let Some(msg) = d.subtasks.stop(id) {
-            return ok(msg);
-        }
-        return match shells.get(id) {
-            Some(sh) => {
-                sh.kill();
-                ok(format!("Stopped {id}."))
-            }
-            None => err(format!("No background task {id}.")),
-        };
-    }
-    if !args.is_empty() {
-        return err("Usage: /tasks [stop <id>]");
-    }
-    let list = shells.list();
-    let scheduled = super::looping::listing(d);
-    if list.is_empty() && scheduled.is_empty() && d.subtasks.is_empty() {
-        return ok("No background tasks.");
-    }
-    let mut s = String::from("Background tasks:\n");
-    for t in d.subtasks.iter() {
-        let state = if t.is_running() { "running" } else { "done, reported with your next prompt" };
-        let _ = writeln!(
-            s,
-            "  {} [subtask, {state}, {}, {} tool calls] {}",
-            t.id,
-            duration(t.started.elapsed()),
-            t.tool_calls(),
-            t.task.chars().take(100).collect::<String>()
-        );
-    }
-    for sh in list {
-        let _ = writeln!(
-            s,
-            "  {} [{}, {}] {}",
-            sh.id,
-            sh.status().label(),
-            duration(sh.started.elapsed()),
-            sh.command.chars().take(100).collect::<String>()
-        );
-    }
-    for line in scheduled {
-        let _ = writeln!(s, "{line}");
-    }
-    ok(s.trim_end())
 }
 
 fn subtask(d: &mut Driver, args: &str) -> Exec {

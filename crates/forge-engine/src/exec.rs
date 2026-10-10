@@ -254,7 +254,8 @@ async fn run_one(
                 PermissionAnswer::Deny { message, interrupt } => {
                     let text = if message.is_empty() {
                         format!(
-                            "The user rejected this {name} call; nothing was run. Do not retry it; ask how to proceed."
+                            "The user rejected this {name} call; nothing was run. Don't run it again or reach the same \
+                             result another way (another command, shell or tool); ask what they want instead."
                         )
                     } else {
                         message
@@ -346,7 +347,15 @@ async fn run_one(
     // 7. Output that carries instructions for an agent is marked as data (OWASP LLM01).
     if !output.is_error && !matches!(name, "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "TodoWrite") {
         if let Some(why) = forge_tools::injection::suspicious(&output.text_content()) {
-            output = append_text(output, &forge_tools::injection::note(name, &why));
+            // Once per source: re-reading the same file or page isn't news.
+            let source = ["file_path", "path", "url", "pattern", "command", "query"]
+                .iter()
+                .find_map(|k| input.get(*k).and_then(Value::as_str))
+                .unwrap_or("");
+            let key = format!("{name}\u{0}{source}\u{0}{why}");
+            if shared.injection_noted.lock().unwrap().insert(key) {
+                output = append_text(output, &forge_tools::injection::note(name, &why));
+            }
         }
     }
     CallResult { id: id.into(), output, denial: None, interrupt_turn: false, stop, writes_after: 0 }

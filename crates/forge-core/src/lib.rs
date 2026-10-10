@@ -5,12 +5,15 @@ pub mod commands;
 pub mod debug;
 pub mod doctor;
 pub mod driver;
+pub mod endpoint;
+pub mod glyphs;
 pub mod goal;
 pub mod import;
 pub mod prompt;
 pub mod schedule;
 pub mod schedule_tools;
 pub mod subtask;
+pub mod view;
 pub mod web;
 
 pub use driver::{Driver, Flow, Report};
@@ -115,13 +118,15 @@ pub struct LaunchOptions {
 }
 
 /// WebFetch (always) and WebSearch (when the provider can search), backed by a small model.
-fn web_tools(provider: &Arc<dyn Provider>, settings: &LoadedSettings) -> Vec<Arc<dyn forge_tools::Tool>> {
+fn web_tools(provider: &Arc<dyn Provider>, settings: &LoadedSettings, model: &str) -> Vec<Arc<dyn forge_tools::Tool>> {
     let backend = Arc::new(web::ProviderWeb {
         provider: provider.clone(),
-        model: settings
-            .str("/smallFastModel")
-            .map(forge_api::resolve_model)
-            .unwrap_or_else(|| forge_api::models::SMALL_FAST_MODEL.to_string()),
+        // An OpenAI-compatible endpoint may not serve the default small model: use the session's.
+        model: match settings.str("/smallFastModel") {
+            Some(m) => forge_api::resolve_model(m),
+            None if provider.name() == "openai" => model.to_string(),
+            None => forge_api::models::SMALL_FAST_MODEL.to_string(),
+        },
         search: provider.name() != "openai",
         search_tool: settings.str("/webSearch/toolType").unwrap_or("web_search_20250305").to_string(),
     });
@@ -160,7 +165,7 @@ fn enter_worktree(cwd: &Path, name: &str, session_id: Option<&str>) -> Result<Wo
             .map_err(|e| CoreError::Config(format!("--worktree: git could not create it: {e}")))?;
         let _ = forge_git::exclude(&root, ".forge/worktrees/");
     }
-    Ok(Worktree { name, path: path.canonicalize().unwrap_or(path), main_repo: root })
+    Ok(Worktree { name, path: forge_platform::path::canonicalize(&path).unwrap_or(path), main_repo: root })
 }
 
 /// Load the session's settings the way [`build_session`] does.
@@ -175,7 +180,7 @@ fn session_settings(opts: &LaunchOptions, cwd: &Path) -> LoadedSettings {
 
 /// Which MCP servers this session would start (contract C16). `--bare` keeps only `--mcp-config`.
 pub fn resolve_mcp(opts: &LaunchOptions) -> forge_mcp::Resolved {
-    let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
     let settings = session_settings(opts, &cwd);
     // Plugin servers count as explicitly chosen, like --mcp-config.
     let mut configs: Vec<String> = session_plugins(opts, &settings, &cwd, &mut vec![])
@@ -205,7 +210,7 @@ fn session_plugins(
 /// Connect the session's MCP servers. Failures are reported in the manager, never fatal.
 pub async fn connect_mcp(opts: &LaunchOptions) -> (Arc<forge_mcp::McpManager>, Vec<String>) {
     let resolved = resolve_mcp(opts);
-    let cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
     let manager = forge_mcp::McpManager::connect(&resolved, &forge_mcp::ConnectOptions::new(&cwd)).await;
     let mut warnings = resolved.warnings;
     warnings.extend(manager.warnings());
@@ -259,47 +264,181 @@ fn env_nonempty(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.trim().is_empty())
 }
 
-/// The provider for this session: an OpenAI-compatible endpoint when one is
-/// configured, the Messages API otherwise.
-pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<dyn Provider>, CoreError> {
-    let openai_url =
-        env_nonempty("FORGE_OPENAI_BASE_URL").or_else(|| settings.str("/openai/baseUrl").map(str::to_string));
-    if let Some(url) = openai_url {
-        let cfg = OpenAiConfig { base_url: url, api_key: env_nonempty("FORGE_OPENAI_API_KEY"), ..Default::default() };
-        return Ok(Arc::new(OpenAiProvider::new(cfg)?));
-    }
-    let mut cfg = MessagesConfig::from_env();
-    if cfg.base_url == forge_api::messages::DEFAULT_BASE_URL {
-        if let Some(u) = settings.str("/baseUrl") {
-            cfg.base_url = u.to_string();
-        }
-    }
-    if !cfg.has_credentials() {
-        if let Some(helper) = settings.str("/apiKeyHelper") {
-            cfg.api_key = run_key_helper(helper);
-        }
-    }
-    if !cfg.has_credentials() {
-        return Err(CoreError::Auth(
-            "no API credentials found. Set FORGE_API_KEY (or FORGE_AUTH_TOKEN for a gateway), or \
-             FORGE_OPENAI_BASE_URL for an OpenAI-compatible endpoint; `forge doctor` shows the current setup"
-                .into(),
-        ));
-    }
-    cfg.betas = betas.to_vec();
-    Ok(Arc::new(MessagesProvider::new(cfg)?))
+/// The session's model: `--model`, `FORGE_MODEL`, the `model` setting, else the default.
+fn session_model(opts: &LaunchOptions, settings: &LoadedSettings) -> String {
+    forge_api::resolve_model(
+        &opts
+            .model
+            .clone()
+            .or_else(|| env_nonempty("FORGE_MODEL"))
+            .or_else(|| settings.str("/model").map(str::to_string))
+            .unwrap_or_else(|| "default".into()),
+    )
 }
 
-/// `apiKeyHelper`: a command whose stdout is the key.
-fn run_key_helper(cmd: &str) -> Option<String> {
-    let out = std::process::Command::new("/bin/sh").arg("-c").arg(cmd).output().ok()?;
-    let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !key.is_empty()).then_some(key)
+/// Concurrent model requests per session unless `maxConcurrentRequests` or
+/// `FORGE_MAX_CONCURRENT_REQUESTS` says otherwise; 429s lower it further.
+pub const DEFAULT_CONCURRENT_REQUESTS: usize = 4;
+
+/// Task agents running at once unless `maxParallelAgents` or `FORGE_MAX_PARALLEL_AGENTS` says otherwise.
+pub const DEFAULT_PARALLEL_AGENTS: usize = 4;
+
+/// The provider for this session: an OpenAI-compatible endpoint when one is
+/// configured, the Messages API otherwise (see [`endpoint`] for the rules).
+pub fn make_provider(settings: &LoadedSettings, betas: &[String]) -> Result<Arc<dyn Provider>, CoreError> {
+    make_provider_with_shell(settings, betas, &session_shell(settings), &mut vec![])
+}
+
+fn make_provider_with_shell(
+    settings: &LoadedSettings,
+    betas: &[String],
+    shell: &forge_platform::shell::ShellChoice,
+    warnings: &mut Vec<String>,
+) -> Result<Arc<dyn Provider>, CoreError> {
+    let r = endpoint::resolve(settings, &|k| std::env::var(k).ok());
+    if let Some(p) = r.problems.first() {
+        // The session won't start, so its warnings would never show: they may be the cause.
+        let notes: String = r.warnings.iter().map(|w| format!("\n  note: {w}")).collect();
+        return Err(CoreError::Auth(format!("{p}{notes}")));
+    }
+    warnings.extend(r.warnings.iter().cloned());
+    let mut key = r.key.clone();
+    let mut helper_name = None;
+    if key.is_none() && r.token.is_none() {
+        if let Some((cmd, setting, _)) = &r.helper {
+            key = Some(run_key_helper(cmd, setting, shell).map_err(CoreError::Auth)?);
+            helper_name = Some(*setting);
+        }
+    }
+    match r.backend() {
+        forge_api::auth::Backend::OpenAi => {
+            let mut cfg = OpenAiConfig {
+                base_url: r.url.clone().unwrap_or_default(),
+                api_key: key,
+                url_from: r.url_from,
+                key_helper: helper_name,
+                ..Default::default()
+            };
+            if let Some(n) = env_nonempty("FORGE_MAX_RETRIES").and_then(|v| v.trim().parse().ok()) {
+                cfg.max_retries = n;
+            }
+            Ok(Arc::new(OpenAiProvider::new(cfg)?))
+        }
+        forge_api::auth::Backend::Messages => {
+            let mut cfg = MessagesConfig::from_env();
+            if let Some(u) = &r.url {
+                cfg.base_url = u.clone();
+            }
+            cfg.url_from = r.url_from;
+            cfg.api_key = key;
+            cfg.auth_token = r.token.clone();
+            cfg.key_helper = helper_name;
+            cfg.betas = betas.to_vec();
+            Ok(Arc::new(MessagesProvider::new(cfg)?))
+        }
+    }
+}
+
+/// A key helper (`apiKeyHelper`, `openai.apiKeyHelper`): a command that prints
+/// the key. Every way it can fail is named, with the command redacted.
+fn run_key_helper(cmd: &str, setting: &str, shell: &forge_platform::shell::ShellChoice) -> Result<String, String> {
+    let c = forge_config::redact_text(cmd);
+    let fail = |why: String| format!("{setting} failed: {why}; run the command yourself to see what it prints");
+    let shell = shell.as_ref().map_err(|m| fail(format!("could not run `{c}`: {m}")))?;
+    let (mut command, _script) =
+        shell.command(&shell.script(cmd, None)).map_err(|e| fail(format!("could not run `{c}`: {e}")))?;
+    forge_platform::process::no_window(&mut command);
+    let out =
+        command.stdin(std::process::Stdio::null()).output().map_err(|e| fail(format!("could not run `{c}`: {e}")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let first = err.lines().map(str::trim).find(|l| !l.is_empty()).map(forge_config::redact_text);
+        let status = match out.status.code() {
+            Some(n) => format!("exited with status {n}"),
+            None => "was stopped by a signal".into(),
+        };
+        return Err(fail(match first {
+            Some(l) => format!("`{c}` {status}: {l}"),
+            None => format!("`{c}` {status}"),
+        }));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    match lines.as_slice() {
+        [] => Err(fail(format!("`{c}` printed nothing; it must print the key"))),
+        [key] if key.chars().all(|ch| ch.is_ascii_graphic()) => Ok(key.to_string()),
+        [_] => Err(fail(format!(
+            "what `{c}` printed contains a space or a control character, so it can't be sent as a key"
+        ))),
+        more => Err(fail(format!("`{c}` printed {} lines; it must print only the key", more.len()))),
+    }
+}
+
+/// The shell for a session: `FORGE_SHELL` from the environment, else from the
+/// settings `env` block, else the platform's search (forge_platform::shell).
+pub fn session_shell(settings: &LoadedSettings) -> forge_platform::shell::ShellChoice {
+    let from_settings = settings.env().into_iter().find(|(k, _)| k == "FORGE_SHELL").map(|(_, v)| v);
+    forge_platform::shell::resolve(&forge_platform::shell::ShellConfig {
+        env_override: env_nonempty("FORGE_SHELL"),
+        settings_override: from_settings.filter(|v| !v.trim().is_empty()),
+        posix_only: false,
+    })
 }
 
 /// Tools named in `--disallowedTools` without a specifier are removed outright.
 fn removed_tools(disallowed: &[String]) -> Vec<String> {
     disallowed.iter().flat_map(|s| forge_permissions::split_rule_list(s)).filter(|r| !r.contains('(')).collect()
+}
+
+/// `modelLimits`: `{"<model id>": {"contextWindow": 131072, "maxOutputTokens": 8192}}`.
+/// Returns warnings for entries that can't be used.
+fn apply_model_limits(s: &LoadedSettings) -> Vec<String> {
+    let mut warnings = vec![];
+    let Some(m) = s.get("/modelLimits").and_then(Value::as_object) else { return warnings };
+    for (model, v) in m {
+        let n = |k: &str| v.get(k).and_then(Value::as_u64).filter(|n| *n > 0);
+        let l = forge_api::models::Limits {
+            context_window: n("contextWindow"),
+            max_output: n("maxOutputTokens").map(|n| n.min(u64::from(u32::MAX)) as u32),
+        };
+        if l == forge_api::models::Limits::default() {
+            warnings.push(format!(
+                "modelLimits.{model}: set \"contextWindow\" and/or \"maxOutputTokens\" to positive token counts"
+            ));
+            continue;
+        }
+        forge_api::models::configure_limits(&forge_api::resolve_model(model), l);
+    }
+    warnings
+}
+
+/// How [`unknown_model_notice`] starts, so `/doctor` can tell it apart.
+pub const UNKNOWN_MODEL_PREFIX: &str = "Forge doesn't know the model ";
+
+/// Shown once when the session's model is in no table and nothing set its limits.
+pub fn unknown_model_notice(model: &str, priced: bool) -> String {
+    let info = forge_api::models::model_info_or_default(model);
+    let price = if priced { "" } else { ", and has no price for it" };
+    format!(
+        "{UNKNOWN_MODEL_PREFIX}{model}: it assumes a {}-token context window and {} output tokens{price}. \
+         Set its limits with \"modelLimits\" in settings{}, or FORGE_CONTEXT_WINDOW for every unknown model.",
+        group(info.context_window),
+        group(u64::from(info.max_output)),
+        if priced { "" } else { " (and its price with \"modelPricing\")" }
+    )
+}
+
+/// 200000 -> "200,000".
+fn group(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn pricing_from_settings(s: &LoadedSettings) -> HashMap<String, Pricing> {
@@ -348,7 +487,7 @@ pub fn build_session(
     sink: Arc<dyn EventSink>,
     prompter: Arc<dyn PermissionPrompter>,
 ) -> Result<Session, CoreError> {
-    let mut cwd = opts.cwd.canonicalize().unwrap_or(opts.cwd.clone());
+    let mut cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
     let mut warnings = vec![];
     let worktree = match &opts.worktree {
         Some(name) => {
@@ -363,9 +502,29 @@ pub fn build_session(
     let settings = session_settings(&opts, &cwd);
     warnings.extend(settings.errors.iter().map(|e| format!("settings: {e}")));
 
+    // The shell every command runs in (Bash, `!`, hooks, apiKeyHelper, status line).
+    let shell = session_shell(&settings);
+    if let Err(m) = &shell {
+        warnings.push(format!("shell: {m}"));
+    }
+
     let provider = match opts.provider.clone() {
         Some(p) => p,
-        None => make_provider(&settings, &opts.betas)?,
+        None => make_provider_with_shell(&settings, &opts.betas, &shell, &mut warnings)?,
+    };
+    // One limit on concurrent requests for everything in the session (main agent, sub-agents,
+    // compaction, goal checks): requests wait for a slot, and 429s lower the limit.
+    let provider: Arc<dyn Provider> = {
+        let max = env_nonempty("FORGE_MAX_CONCURRENT_REQUESTS")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .or_else(|| settings.get("/maxConcurrentRequests").and_then(Value::as_u64).map(|n| n as usize))
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_CONCURRENT_REQUESTS);
+        let sink = sink.clone();
+        let notify: forge_api::limit::Notifier = Arc::new(move |text| {
+            sink.emit(forge_engine::EngineEvent::Notice { level: forge_engine::NoticeLevel::Warning, text })
+        });
+        Arc::new(forge_api::limit::LimitedProvider::new(provider, forge_api::limit::Limiter::new(max), Some(notify)))
     };
 
     // Plugins, commands, skills and output styles (M5).
@@ -510,7 +669,8 @@ pub fn build_session(
     // Tools.
     let mut tools = ToolRegistry::new();
     forge_tools::builtin::register_core(&mut tools);
-    let web_tools = web_tools(&provider, &settings);
+    forge_tools::builtin::set_shell(&mut tools, &shell);
+    let web_tools = web_tools(&provider, &settings, &session_model(&opts, &settings));
     for t in &web_tools {
         tools.register(t.clone());
     }
@@ -552,6 +712,7 @@ pub fn build_session(
     tools.retain(|n| !removed.iter().any(|r| Rule::parse(r).map(|rule| rule.covers_tool(n)).unwrap_or(false)));
 
     let mut tool_ctx = ToolContext::new(&cwd);
+    tool_ctx.shell = shell.clone();
     if let Some(shells) = &opts.shells {
         tool_ctx.shells = shells.clone();
     }
@@ -577,7 +738,7 @@ pub fn build_session(
                 warnings.push(format!(
                     "sandbox {} requested but unavailable ({}); shell commands will ask for approval instead",
                     mode.as_str(),
-                    if cfg!(target_os = "linux") { "install bubblewrap (bwrap)" } else { "no sandbox-exec" }
+                    forge_tools::sandbox::unavailable_reason()
                 ));
             } else {
                 tool_ctx.set_sandbox(Some(forge_tools::sandbox::SandboxPolicy {
@@ -612,6 +773,7 @@ pub fn build_session(
         },
     );
     hooks.disabled = opts.bare || settings.bool("/disableAllHooks") == Some(true);
+    hooks.shell = Some(shell.clone());
     if let Some(agent) = &main_agent {
         if let Some(allowed) = &agent.tools {
             tools.retain(|n| allowed.iter().any(|a| a == n));
@@ -619,14 +781,24 @@ pub fn build_session(
     }
 
     // Model and system prompt.
-    let model = forge_api::resolve_model(
-        &opts
-            .model
-            .clone()
-            .or_else(|| env_nonempty("FORGE_MODEL"))
-            .or_else(|| settings.str("/model").map(str::to_string))
-            .unwrap_or_else(|| "default".into()),
-    );
+    let model = session_model(&opts, &settings);
+    // Limits for models the built-in table doesn't know (C9 compaction needs the real window).
+    let pricing = pricing_from_settings(&settings);
+    let autocompact_window = match opts.autocompact.as_deref() {
+        Some(v) => parse_autocompact(v)?,
+        None => settings.get("/autoCompactWindow").and_then(Value::as_u64),
+    };
+    warnings.extend(apply_model_limits(&settings));
+    if forge_api::models::limits_source(&model) == forge_api::models::LimitsSource::Guessed && opts.provider.is_none() {
+        warnings.push(unknown_model_notice(&model, pricing.contains_key(&model)));
+        // An OpenAI-compatible endpoint may report the window in its model list.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let p = provider.clone();
+            rt.spawn(async move {
+                let _ = p.list_models().await;
+            });
+        }
+    }
     let fallback_models: Vec<String> = opts
         .fallback_models
         .iter()
@@ -637,6 +809,7 @@ pub fn build_session(
         .collect();
     let verify = verify_config(&settings, &cwd);
     let mut env_info = EnvInfo::collect(&cwd, &add_dirs, &model);
+    env_info.shell = forge_platform::shell::env_line(&shell);
     if let Some(v) = &verify {
         env_info.checks = v.commands.clone();
     }
@@ -674,6 +847,14 @@ pub fn build_session(
         working_dirs: tool_ctx.working_dirs.clone(),
         env: tool_ctx.env.clone(),
         sandbox: tool_ctx.sandbox.clone(),
+        shell: shell.clone(),
+        agent_slots: Arc::new(tokio::sync::Semaphore::new(
+            env_nonempty("FORGE_MAX_PARALLEL_AGENTS")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .or_else(|| settings.get("/maxParallelAgents").and_then(Value::as_u64).map(|n| n as usize))
+                .filter(|n| *n > 0)
+                .unwrap_or(DEFAULT_PARALLEL_AGENTS),
+        )),
         extra_tools: web_tools
             .iter()
             .cloned()
@@ -685,7 +866,9 @@ pub fn build_session(
         sink: sink.clone(),
         base: EngineConfig {
             max_output_tokens: env_nonempty("FORGE_MAX_OUTPUT_TOKENS").and_then(|v| v.parse().ok()).unwrap_or(32_000),
-            pricing: pricing_from_settings(&settings),
+            pricing: pricing.clone(),
+            autocompact_window,
+            auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
             ..Default::default()
         },
         memory_context: memory.clone(),
@@ -710,13 +893,10 @@ pub fn build_session(
         max_turns: opts.max_turns,
         max_budget_usd: opts.max_budget_usd,
         json_schema: opts.json_schema.clone(),
-        pricing: pricing_from_settings(&settings),
+        pricing,
         initial_context: (!initial.is_empty()).then(|| initial.join("\n\n")),
         metadata_user_id: None,
-        autocompact_window: match opts.autocompact.as_deref() {
-            Some(v) => parse_autocompact(v)?,
-            None => settings.get("/autoCompactWindow").and_then(Value::as_u64),
-        },
+        autocompact_window,
         auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
         is_subagent: false,
         verify,
@@ -778,7 +958,7 @@ pub fn build_session(
             ..Default::default()
         }
         .names(commands::Surface::Stream),
-        api_key_source: if opts.provider.is_some() { "none".into() } else { key_source(&settings) },
+        api_key_source: provider.origin().map(|o| o.api_key_source()).unwrap_or("none").into(),
         forge_version: VERSION.into(),
         output_style: style.name.clone(),
         agents: agents.iter().map(|a| a.name.clone()).collect(),
@@ -821,19 +1001,6 @@ pub fn parse_autocompact(v: &str) -> Result<Option<u64>, CoreError> {
     match n {
         Some(n) if (100_000..=1_000_000).contains(&n) => Ok(Some(n)),
         _ => Err(CoreError::Config(format!("--autocompact must be auto or 100k-1M tokens, got {v:?}"))),
-    }
-}
-
-fn key_source(settings: &LoadedSettings) -> String {
-    let c = MessagesConfig::from_env();
-    if env_nonempty("FORGE_OPENAI_BASE_URL").is_some() {
-        "FORGE_OPENAI_API_KEY".into()
-    } else if c.has_credentials() {
-        c.key_source().into()
-    } else if settings.str("/apiKeyHelper").is_some() {
-        "apiKeyHelper".into()
-    } else {
-        "none".into()
     }
 }
 

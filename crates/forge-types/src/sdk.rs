@@ -196,6 +196,10 @@ pub struct ResultMessage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
     pub uuid: String,
+    /// `true` on the answer to an immediate command a stream-json host sent (C17): it was
+    /// answered at once, beside any turn in progress, and is not that turn's result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub immediate: Option<bool>,
 }
 
 /// `{"type":"control_request","request_id":..,"request":{"subtype":..,...}}`

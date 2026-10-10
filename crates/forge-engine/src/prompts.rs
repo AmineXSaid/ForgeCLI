@@ -37,6 +37,9 @@ pub struct EnvInfo {
     pub git_status: Option<String>,
     /// The project's check commands (verification loop), shown to the model.
     pub checks: Vec<String>,
+    /// The shell commands run in, when it isn't plain bash on Unix (Git Bash,
+    /// PowerShell, sh) or when there is none; `None` keeps the usual prompt.
+    pub shell: Option<String>,
 }
 
 impl EnvInfo {
@@ -52,6 +55,7 @@ impl EnvInfo {
             date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             git_status: forge_git::status_snapshot(cwd),
             checks: vec![],
+            shell: None,
         }
     }
 
@@ -63,6 +67,9 @@ impl EnvInfo {
             std::env::consts::OS,
             self.date
         );
+        if let Some(sh) = &self.shell {
+            s.push_str(&format!("Shell: {sh}\n"));
+        }
         if !self.additional_dirs.is_empty() {
             let dirs: Vec<String> = self.additional_dirs.iter().map(|d| d.display().to_string()).collect();
             s.push_str(&format!("Additional working directories: {}\n", dirs.join(", ")));
@@ -101,6 +108,7 @@ fn fill(text: &str, env: &EnvInfo) -> String {
         .replace("{{model_name}}", &env.model_name)
         .replace("{{platform}}", std::env::consts::OS)
         .replace("{{is_git}}", if env.git_status.is_some() { "Yes" } else { "No" })
+        .replace("{{shell}}", env.shell.as_deref().unwrap_or("bash"))
 }
 
 /// Tool description overrides from `<prompts_dir>/tools/<Name>.md`.
@@ -155,6 +163,7 @@ mod tests {
             date: "2026-10-06".into(),
             git_status: None,
             checks: vec![],
+            shell: None,
         }
     }
 
@@ -166,6 +175,11 @@ mod tests {
         assert!(t.contains("<env>") && t.contains("Working directory: /w"));
         assert!(deferred.is_none());
         assert!(blocks[0].cache_control.is_some());
+        assert!(!t.contains("Shell:"), "plain bash on Unix keeps the prompt unchanged");
+        let mut e = env();
+        e.shell = Some(r"Git Bash (C:\Program Files\Git\bin\bash.exe)".into());
+        let (blocks, _) = build_system(&SystemPromptOptions::default(), &e);
+        assert!(blocks[0].text.contains("\nShell: Git Bash (C:\\Program Files\\Git\\bin\\bash.exe)\n"));
     }
 
     #[test]

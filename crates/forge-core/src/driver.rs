@@ -9,7 +9,7 @@
 //! starting turns until it is met (contract C18). Every turn's result goes
 //! to the front end as it finishes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,7 @@ use forge_config::LoadedSettings;
 use forge_engine::{Engine, EngineHandle, EventSink, NoticeLevel, PermissionPrompter, TurnResult};
 use forge_session::{Entry, FileHistory, LoadedSession};
 use forge_types::sdk::{InitInfo, ResultSubtype};
-use forge_types::MessageContent;
+use forge_types::{ContentBlock, MessageContent};
 
 use crate::commands::{self, Catalog, Surface};
 use crate::goal::{self, Goal, Status, Verdict};
@@ -109,6 +109,8 @@ pub struct Driver {
     /// Earlier `/btw` questions and answers, oldest first.
     pub side_questions: Vec<(String, String)>,
     live: Live,
+    /// What immediate commands read while a turn holds the driver (C17).
+    view: crate::view::SessionView,
     rebuild: Option<Rebuild>,
     /// Scheduled prompts (`None` when FORGE_DISABLE_CRON is set).
     pub scheduler: Option<crate::schedule_tools::SharedScheduler>,
@@ -122,6 +124,8 @@ pub struct Driver {
     pub(crate) agent_rt: Arc<forge_agents::AgentRuntime>,
     /// Background subtasks: running, or finished and not yet handed back.
     pub subtasks: crate::subtask::Subtasks,
+    /// The models the endpoint lists, once asked (`/model`); empty when it lists none.
+    models: Option<Vec<String>>,
 }
 
 /// Book-keeping for a self-paced loop: did the iteration reschedule or stop?
@@ -160,7 +164,8 @@ impl Driver {
         let cost = s.engine.state.total_cost_usd;
         let goal = s.resumed.as_ref().and_then(|r| r.goal.as_ref()).and_then(|g| Goal::restore(g, cost));
         let live = Live::new(&s.engine, &s.session_id);
-        Driver {
+        let view = crate::view::SessionView::new(view_state_of(&s.engine, &s.session_id, &s.init, surface));
+        let mut d = Driver {
             engine: s.engine,
             catalog: Catalog {
                 commands: s.commands,
@@ -185,6 +190,7 @@ impl Driver {
             goal,
             side_questions: vec![],
             live,
+            view,
             rebuild: None,
             scheduler: s.scheduler,
             self_paced: None,
@@ -192,11 +198,102 @@ impl Driver {
             advisor: s.advisor,
             agent_rt: s.agent_rt,
             subtasks: Default::default(),
+            models: None,
+        };
+        d.sync_view();
+        d
+    }
+
+    /// The read-only session view, for commands that run while a turn is in progress (C17).
+    /// It stays valid across session switches.
+    pub fn view(&self) -> crate::view::SessionView {
+        self.view.clone()
+    }
+
+    /// Apply what immediate commands left for the driver ([`crate::view::Effect`]), then
+    /// publish the engine's and the driver's state into the view. Call it while idle.
+    pub fn sync_view(&mut self) {
+        let mut mcp = false;
+        for e in self.view.take_effects() {
+            match e {
+                crate::view::Effect::RefreshMcp => mcp = true,
+                crate::view::Effect::SideUsage { model, usage } => self.engine.record_side_usage(&model, &usage),
+                crate::view::Effect::SideQuestion { question, answer } => {
+                    self.side_questions.push((question, answer));
+                    let extra = self.side_questions.len().saturating_sub(MAX_SIDE_QUESTIONS);
+                    self.side_questions.drain(..extra);
+                }
+            }
         }
+        if mcp {
+            self.refresh_mcp();
+        }
+        self.engine.publish();
+        self.publish_view();
+    }
+
+    /// Publish the driver's part of the view (the engine publishes its own during a turn).
+    fn publish_view(&self) {
+        let hooks = self.engine.hooks();
+        let state = crate::view::ViewState {
+            session_id: self.info.session_id.clone(),
+            cwd: self.info.cwd.clone(),
+            init: self.info.init.clone(),
+            settings: self.info.settings.clone(),
+            warnings: self.info.warnings.clone(),
+            surface: self.surface,
+            can_switch: self.can_switch(),
+            handle: self.engine.handle(),
+            transcript: self.engine.transcript().clone(),
+            tool_ctx: self.engine.tool_ctx().clone(),
+            provider: self.engine.provider(),
+            hooks_disabled: hooks.disabled,
+            hook_count: hooks.config.events.values().map(|m| m.iter().map(|x| x.hooks.len()).sum::<usize>()).sum(),
+            started: self.started,
+            activity: self.activity.clone(),
+            side_questions: self.side_questions.clone(),
+            skills: self.catalog.skills.iter().map(|k| (k.name.clone(), k.description.clone())).collect(),
+            memory: forge_config::load_memory(&self.info.cwd),
+            subtasks: self.subtasks.rows(),
+            finished_subtasks: self.subtasks.finished().to_vec(),
+            scheduler: self.scheduler.clone(),
+            mcp: self.catalog.mcp.clone(),
+        };
+        self.view.publish(state);
     }
 
     pub fn handle(&self) -> EngineHandle {
         self.engine.handle()
+    }
+
+    /// Ask the endpoint which models it offers (once per session). `/model`
+    /// lists only these: the provider's own catalogue, never a built-in one.
+    /// Returns why the listing failed, when it did.
+    pub async fn load_models(&mut self) -> Option<String> {
+        if self.models.is_some() {
+            return None;
+        }
+        let (list, failure) = match self.engine.provider().list_models().await {
+            None => (vec![], None),
+            Some(Ok(ids)) => (ids, None),
+            Some(Err(e)) => (vec![], Some(format!("could not list the endpoint's models: {}", e.describe()))),
+        };
+        // A failed listing is asked again next time.
+        if failure.is_none() {
+            self.models = Some(list);
+        }
+        failure
+    }
+
+    /// The models to choose from: the endpoint's list (after [`Driver::load_models`]),
+    /// with the current model first when the list leaves it out.
+    pub fn model_choices(&self) -> Vec<String> {
+        let current = self.engine.handle().model();
+        let mut out = self.models.clone().unwrap_or_default();
+        if !out.contains(&current) {
+            out.insert(0, current);
+        }
+        out
     }
 
     /// The current session, for Ctrl-C handlers and SDK control requests.
@@ -212,6 +309,28 @@ impl Driver {
         prompter: Arc<dyn PermissionPrompter>,
     ) {
         self.rebuild = Some(Rebuild { opts, sink, prompter });
+        self.publish_view();
+    }
+
+    /// May the permission mode become `bypassPermissions` now (an SDK host's
+    /// `set_permission_mode`)? Only when the session was launched in it or with
+    /// `--allow-dangerously-skip-permissions`, and managed settings allow it.
+    pub fn bypass_allowed(&self) -> bool {
+        let disabled = self
+            .info
+            .settings
+            .managed()
+            .and_then(|m| m.pointer("/permissions/disableBypassPermissionsMode"))
+            .and_then(serde_json::Value::as_str)
+            == Some("disable");
+        let launched = self.rebuild.as_ref().is_some_and(|r| {
+            r.opts.dangerously_skip_permissions
+                || r.opts.allow_dangerously_skip_permissions
+                || r.opts.permission_mode.as_deref() == Some("bypassPermissions")
+        });
+        let now = self.engine.handle().permissions.read().unwrap().mode
+            == forge_permissions::PermissionMode::BypassPermissions;
+        !disabled && (launched || now)
     }
 
     pub fn can_switch(&self) -> bool {
@@ -399,7 +518,10 @@ impl Driver {
         next.rebuild = self.rebuild.take();
         next.live = self.live.clone();
         next.live.set(&next.engine, &next.info.session_id);
+        // The view too: front ends hold it. Effects still waiting apply to the new session.
+        next.view = self.view.clone();
         *self = next;
+        self.sync_view();
         Ok(())
     }
 
@@ -407,6 +529,7 @@ impl Driver {
     pub async fn input(&mut self, content: MessageContent, report: &mut Report<'_>) -> Flow {
         // Subtasks that finished since the last input are handed back first: their reports ride along with it.
         self.deliver_subtasks();
+        self.sync_view();
         // Shell mode is for a person at the keyboard: on print and stream surfaces the
         // prompt usually comes from a program, so `!...` is an ordinary prompt there.
         let shell = shell_command(&content).filter(|_| matches!(self.surface, Surface::Repl | Surface::Tui));
@@ -414,9 +537,13 @@ impl Driver {
             self.shell(&cmd).await
         } else {
             match commands::command_text(&content) {
-                None => (self.engine.submit(content).await, true),
+                None => (self.submit_attached(content).await, true),
                 Some(text) => match commands::execute(self, &text).await {
-                    commands::Exec::Submit(prompt) => (self.engine.submit(prompt).await, true),
+                    // A loop's prompt attaches its @ mentions now, as each scheduled run will.
+                    commands::Exec::Submit(prompt) if text.trim_start().starts_with("/loop") => {
+                        (self.submit_attached(prompt).await, true)
+                    }
+                    commands::Exec::Submit(prompt) => (self.submit(prompt).await, true),
                     commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
                     commands::Exec::Exit => return Flow::Exit,
                 },
@@ -432,7 +559,54 @@ impl Driver {
             }
         }
         self.after_turn(result, engine_turn, report).await;
+        self.sync_view();
         Flow::Continue
+    }
+
+    /// Submit a prompt with its `@path` mentions attached. The model sees those files, so it may
+    /// Edit them without a Read; that is undone, for files not read before, if a hook erases
+    /// the prompt.
+    async fn submit_attached(&mut self, content: MessageContent) -> forge_engine::TurnResult {
+        let (content, read) = self.attach_mentions(content);
+        let files = self.engine.tool_ctx().files.clone();
+        let fresh: Vec<PathBuf> = read.into_iter().filter(|p| files.check_writable(p).is_err()).collect();
+        for p in &fresh {
+            files.record_read(p);
+        }
+        let result = self.submit(content).await;
+        if result.prompt_blocked.is_some() {
+            for p in &fresh {
+                files.forget(p);
+            }
+        }
+        result
+    }
+
+    /// A prompt's `@path` mentions, attached (docs/CLI.md, "`@` mentions"): the text stays as
+    /// typed, and the contents follow in a system reminder of their own. Only a message that is
+    /// a single piece of text is scanned. Also returns the files attached whole or in part.
+    fn attach_mentions(&self, content: MessageContent) -> (MessageContent, Vec<PathBuf>) {
+        use forge_agents::attach;
+        use forge_permissions::{Decision, Reason, Request, Subject};
+        let Some(text) = commands::command_text_any(&content) else { return (content, vec![]) };
+        // An attachment is a read: the Read tool's decision on the path, without prompting.
+        let perm = self.engine.handle().permissions.read().unwrap().clone();
+        let allowed = |path: &Path| -> Result<(), String> {
+            let req = Request::new("Read", Subject::Path { path: path.to_path_buf(), write: false }, true);
+            match perm.decide(&req) {
+                Decision::Allow { .. } => Ok(()),
+                Decision::Ask { reason: Reason::OutsideWorkingDirs(_), .. }
+                | Decision::Deny { reason: Reason::OutsideWorkingDirs(_) } => {
+                    Err("outside the working directories".into())
+                }
+                Decision::Deny { .. } => Err("blocked by a permission rule".into()),
+                Decision::Ask { .. } => Err("reading it needs permission".into()),
+            }
+        };
+        let atts = attach::at_mentions(&text, &self.info.cwd, &allowed);
+        let Some(note) = attach::reminder(&atts) else { return (content, vec![]) };
+        let read = atts.into_iter().filter(|a| a.kind == attach::Kind::File).map(|a| a.path).collect();
+        (MessageContent::Blocks(vec![ContentBlock::text(text), ContentBlock::text(note)]), read)
     }
 
     /// After a turn: check an active goal, then settle a self-paced loop iteration.
@@ -487,13 +661,19 @@ impl Driver {
         }
         let (result, engine_turn) = if task.prompt.trim_start().starts_with("/loop") {
             match commands::execute(self, task.prompt.trim()).await {
-                commands::Exec::Submit(p) => (self.engine.submit(p).await, true),
+                commands::Exec::Submit(p) => (self.submit(p).await, true),
                 commands::Exec::Local { text, is_error } => (self.engine.local_result(text, is_error), false),
                 commands::Exec::Exit => return true,
             }
         } else {
             let prompt = commands::scheduled_prompt(self, &task.prompt).await;
-            (self.engine.submit(prompt).await, true)
+            // A plain scheduled prompt attaches its @ mentions, as typed prompts do; a custom
+            // command attached its own already.
+            if task.prompt.trim_start().starts_with('/') {
+                (self.submit(prompt).await, true)
+            } else {
+                (self.submit_attached(prompt).await, true)
+            }
         };
         if let Some(it) = self.self_paced.as_mut() {
             it.fallback = is_fallback;
@@ -501,6 +681,7 @@ impl Driver {
         self.record(&result, false);
         report(&result);
         self.after_turn(result, engine_turn, report).await;
+        self.sync_view();
         true
     }
 
@@ -538,13 +719,14 @@ impl Driver {
             prompter: Arc::new(SubtaskPrompter),
             sink: Arc::new(SubtaskSink::new(&id, self.agent_rt.sink.clone(), calls.clone())),
             seed: Some(&self.engine.state),
+            checkpoint_turn: Some(format!("{id}-{}", self.info.session_id)),
         })?;
         child.engine.transcript().append_meta(serde_json::json!({
             "forkOf": {"sessionId": self.info.session_id, "leafUuid": self.engine.transcript().last_uuid()},
         }));
-        // Its edits get a checkpoint turn of their own (sub-agents never begin one), so a rewind
-        // to an earlier prompt undoes them too.
-        self.engine.history().begin_turn(&format!("{id}-{}", child.id));
+        // Its edits get a checkpoint turn of their own, in order after the prompts so far: a
+        // rewind to an earlier prompt undoes them, one to a later prompt doesn't.
+        self.engine.history().add_turn(&format!("{id}-{}", self.info.session_id));
         self.subtasks.spawn(id.clone(), task, child.engine, subtask::prompt(task), calls);
         self.engine.remind(subtask::started_note(&id, task));
         self.engine.announce("subtask", serde_json::json!({"id": id, "status": "started", "task": task}));
@@ -596,7 +778,7 @@ impl Driver {
         if self.deliver_subtasks() == 0 {
             return false;
         }
-        let result = self.engine.submit(MessageContent::Text(crate::subtask::CONTINUE_PROMPT.into())).await;
+        let result = self.submit(MessageContent::Text(crate::subtask::CONTINUE_PROMPT.into())).await;
         self.record(&result, false);
         report(&result);
         self.after_turn(result, true, report).await;
@@ -648,6 +830,8 @@ impl Driver {
             self.activity.turns += r.num_turns;
             self.activity.api_time += Duration::from_millis(r.duration_api_ms);
         }
+        // Between the turns of one input (a goal), immediate commands see the totals so far.
+        self.publish_view();
     }
 
     fn notice(&self, level: NoticeLevel, text: impl Into<String>) {
@@ -717,7 +901,8 @@ impl Driver {
             let cancel = self.engine.handle().turn_token();
             let transcript = goal::evaluator_transcript(&self.engine.state.messages);
             let user = format!("Goal: {condition}\n\nTranscript:\n{transcript}");
-            let answer = commands::side_request_with(self, goal::EVALUATOR_PROMPT, user, 400, &cancel).await;
+            let model = commands::goal_model(self);
+            let answer = commands::side_request_on(self, &model, goal::EVALUATOR_PROMPT, user, 800, &cancel).await;
             if cancel.is_cancelled() {
                 self.pause("interrupted", "Goal paused: interrupted. Send a message to continue.");
                 return true;
@@ -779,8 +964,7 @@ impl Driver {
                     }
                     // --max-turns counts across the whole goal loop, not per turn.
                     self.engine.cfg.max_turns = max_turns.map(|m| m - used);
-                    let next =
-                        self.engine.submit(MessageContent::Text(goal::continue_prompt(&condition, &reason))).await;
+                    let next = self.submit(MessageContent::Text(goal::continue_prompt(&condition, &reason))).await;
                     self.engine.cfg.max_turns = max_turns;
                     ran_any = true;
                     used += next.num_turns;
@@ -811,7 +995,9 @@ impl Driver {
     async fn shell(&mut self, cmd: &str) -> (TurnResult, bool) {
         let ctx = self.engine.tool_ctx().clone();
         let cancel = self.engine.handle().new_token();
-        let run = forge_tools::shells::run_command(cmd, &ctx.shell_cwd(), &ctx.env, SHELL_TIMEOUT, &cancel, None).await;
+        let run =
+            forge_tools::shells::run_command(&ctx.shell, cmd, &ctx.shell_cwd(), &ctx.env, SHELL_TIMEOUT, &cancel, None)
+                .await;
         let (code, output) = match run {
             Ok(r) if r.interrupted => return (self.engine.local_result("Interrupted.", true), false),
             Ok(r) => {
@@ -827,7 +1013,7 @@ impl Driver {
                 }
                 (r.code.unwrap_or(-1), text)
             }
-            Err(e) => (-1, format!("could not start the shell: {e}")),
+            Err(e) => (-1, e.to_string()),
         };
         let output = forge_tools::truncate_middle(output.trim_end(), SHELL_OUTPUT_CHARS);
         // The output can't close its wrapper early and pass as the user's own words.
@@ -846,10 +1032,22 @@ impl Driver {
         if !output.is_empty() {
             self.notice(NoticeLevel::Info, format!("$ {cmd}\n{output}"));
         }
-        (self.engine.submit(MessageContent::Text(note)).await, true)
+        (self.submit(MessageContent::Text(note)).await, true)
     }
 
     /// Rebuild the system prompt from [`Driver::prompt`] after changing it.
+    /// Start a model turn. A model set from outside the driver (an SDK host's
+    /// `set_model`) first reaches the system prompt, which names the model.
+    async fn submit(&mut self, content: MessageContent) -> forge_engine::TurnResult {
+        let model = self.engine.handle().model();
+        if self.prompt.env.model != model {
+            self.prompt.set_model(&model);
+            self.rebuild_system();
+            self.info.init.model = model;
+        }
+        self.engine.submit(content).await
+    }
+
     pub fn rebuild_system(&mut self) {
         self.engine.set_system(self.prompt.build().0);
     }
@@ -899,4 +1097,32 @@ fn shell_command(content: &MessageContent) -> Option<String> {
     let text = commands::command_text_any(content)?;
     let cmd = text.trim_start().strip_prefix('!')?.trim();
     (!cmd.is_empty()).then(|| cmd.to_string())
+}
+
+/// The first view, before the driver exists: it is published again at once.
+fn view_state_of(engine: &Engine, session_id: &str, init: &InitInfo, surface: Surface) -> crate::view::ViewState {
+    crate::view::ViewState {
+        session_id: session_id.to_string(),
+        cwd: engine.tool_ctx().project_dir.clone(),
+        init: init.clone(),
+        settings: LoadedSettings::default(),
+        warnings: vec![],
+        surface,
+        can_switch: false,
+        handle: engine.handle(),
+        transcript: engine.transcript().clone(),
+        tool_ctx: engine.tool_ctx().clone(),
+        provider: engine.provider(),
+        hooks_disabled: false,
+        hook_count: 0,
+        started: Instant::now(),
+        activity: Activity::default(),
+        side_questions: vec![],
+        skills: vec![],
+        memory: vec![],
+        subtasks: vec![],
+        finished_subtasks: vec![],
+        scheduler: None,
+        mcp: None,
+    }
 }

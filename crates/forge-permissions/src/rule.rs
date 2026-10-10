@@ -209,14 +209,27 @@ fn resolve_pattern(pattern: &str, cwd: &Path) -> String {
 }
 
 fn path_matches(pattern: &str, path: &Path, cwd: &Path) -> bool {
+    path_matches_on(cfg!(windows), pattern, path, cwd)
+}
+
+/// On Windows the filesystem ignores case and accepts both separators, so a
+/// rule must too (a deny on `./secrets/**` also covers `.\Secrets\key`).
+fn path_matches_on(windows: bool, pattern: &str, path: &Path, cwd: &Path) -> bool {
     let target: PathBuf = normalize(path, cwd);
     let resolved = resolve_pattern(pattern, cwd);
+    let (target, resolved) = if windows {
+        (PathBuf::from(crate::paths::fold(&target)), crate::paths::fold(Path::new(&resolved)))
+    } else {
+        (target, resolved)
+    };
     let has_glob = resolved.contains(['*', '?', '[', '{']);
     if !has_glob {
         let p = PathBuf::from(&resolved);
         return target == p || target.starts_with(&p);
     }
-    let Ok(glob) = GlobBuilder::new(&resolved).literal_separator(true).build() else { return false };
+    let Ok(glob) = GlobBuilder::new(&resolved).literal_separator(true).backslash_escape(!windows).build() else {
+        return false;
+    };
     let m = glob.compile_matcher();
     // A directory pattern (`src/**`) also matches the directory itself.
     m.is_match(&target) || resolved.strip_suffix("/**").map(|d| target == Path::new(d)).unwrap_or(false)
@@ -229,4 +242,19 @@ pub fn host_of(url: &str) -> Option<String> {
     let host = host_port.rsplit_once('@').map(|(_, h)| h).unwrap_or(host_port);
     let host = host.split(':').next()?;
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn windows_rules_ignore_case_and_take_git_bash_paths() {
+        let cwd = Path::new(r"C:\Users\me\proj");
+        assert!(path_matches("./secrets/**", Path::new(r".\Secrets\key.pem"), cwd));
+        assert!(path_matches("./secrets/**", Path::new(r"C:\USERS\me\proj\secrets\key.pem"), cwd));
+        assert!(path_matches("./secrets/**", Path::new("/c/Users/me/proj/secrets/key.pem"), cwd));
+        assert!(path_matches("*.env", Path::new(r"src\Prod.ENV"), cwd));
+        assert!(!path_matches("./secrets/**", Path::new(r".\public\key.pem"), cwd));
+    }
 }

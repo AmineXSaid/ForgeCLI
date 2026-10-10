@@ -335,11 +335,16 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Input>();
     let mut control: Option<Arc<ControlContext>> = None;
     if stream_in {
-        let models: Vec<Value> = forge_api::models::MODELS
-            .iter()
-            .map(|m| {
-                json!({"value": m.id, "displayName": m.display_name, "supportsEffort": m.supports_effort(),
-                            "supportedEffortLevels": m.effort_levels})
+        // The endpoint's own models (none built in), with what Forge knows about each.
+        let _ = driver.load_models().await;
+        let models: Vec<Value> = driver
+            .model_choices()
+            .into_iter()
+            .map(|id| {
+                let m = forge_api::models::model_info(&id);
+                json!({"value": id, "displayName": id,
+                       "supportsEffort": m.is_some_and(|m| m.supports_effort()),
+                       "supportedEffortLevels": m.map(|m| m.effort_levels).unwrap_or_default()})
             })
             .collect();
         let ctx = Arc::new(ControlContext {
@@ -347,6 +352,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             pending: pending.clone(),
             live: live.clone(),
             mcp: Some(mcp.clone()),
+            bypass_allowed: driver.bypass_allowed(),
             init_response: json!({
                 "commands": driver.catalog.catalog_json(surface),
                 "output_style": driver.info.init.output_style.clone(),
@@ -355,6 +361,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                 "pid": std::process::id(),
             }),
             tasks: Mutex::new(vec![]),
+            view: driver.view(),
         });
         control = Some(ctx.clone());
         tokio::spawn(host::read_stdin(ctx, tx));
@@ -374,6 +381,7 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let mut closed = false;
     // Changes each time a subtask finishes (C20).
     let mut finished = driver.subtasks.watch();
+    let view = driver.view();
     loop {
         // Mark subtask news seen before looking at the subtasks: one that ends after this line
         // still wakes the waits below.
@@ -427,6 +435,11 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     continue;
                 }
                 _ = finished.changed(), if stream_in => continue,
+                // An immediate command left work for the driver (/btw's cost, /mcp's refresh).
+                _ = view.effect_recorded(), if stream_in => {
+                    driver.sync_view();
+                    continue;
+                }
             };
             match input {
                 Some(Input::User(content)) => {
@@ -547,12 +560,27 @@ async fn sleep_unless(d: Duration, interrupted: &std::sync::atomic::AtomicBool) 
     }
 }
 
-fn run_doctor() -> Result<i32, Fail> {
+/// The terminal UI, unless `--no-tui` or `FORGE_TUI=0|false|off`, or stdout isn't a terminal.
+fn use_tui(o: &Opts, t: term::Term) -> bool {
+    let env_off = std::env::var("FORGE_TUI")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"))
+        .unwrap_or(false);
+    t.stdin_tty && t.stdout_tty && !o.no_tui && !env_off
+}
+
+async fn run_doctor(probe: bool) -> Result<i32, Fail> {
     let cwd = std::env::current_dir().map_err(|e| Fail::config(e.to_string()))?;
     outln!("ForgeCLI {}", forge_core::VERSION);
-    let checks = forge_core::doctor::checks(&cwd);
+    let mut checks = forge_core::doctor::checks(&cwd);
+    if probe {
+        checks.push(forge_core::doctor::probe(&cwd).await);
+    }
     for c in &checks {
-        let mark = if c.ok { term::paint("32", "ok  ") } else { term::red("FAIL") };
+        let mark = match (c.ok, c.note) {
+            (false, _) => term::red("FAIL"),
+            (true, true) => term::paint("33", "note"),
+            (true, false) => term::paint("32", "ok  "),
+        };
         outln!("{mark} {:<12} {}", c.name, c.detail);
     }
     Ok(if checks.iter().all(|c| c.ok) { exit::OK } else { exit::CONFIG })
@@ -628,7 +656,7 @@ fn main() {
     };
     let result = rt.block_on(async move {
         match cli.command {
-            Some(Command::Doctor) => run_doctor(),
+            Some(Command::Doctor { probe }) => run_doctor(probe).await,
             Some(Command::Config { action }) => run_config(action),
             Some(Command::Completion { shell }) => {
                 let mut script = vec![];
@@ -647,6 +675,8 @@ fn main() {
                     Err(Fail::usage("interactive mode needs a terminal on stdin").with_hint(
                         "For scripts and pipes use print mode: forge -p \"<prompt>\", or: echo \"<prompt>\" | forge -p",
                     ))
+                } else if use_tui(&cli.opts, t) {
+                    tui::run(cli.prompt, cli.opts).await
                 } else {
                     repl::run(cli.prompt, cli.opts).await
                 }

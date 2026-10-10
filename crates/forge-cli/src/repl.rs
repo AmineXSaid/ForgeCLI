@@ -167,7 +167,7 @@ impl EventSink for PrintSink {
                         let _ = writeln!(
                             so,
                             "{} {}{}",
-                            crate::term::dim("●"),
+                            crate::term::dim(forge_core::glyphs::TOOL),
                             crate::term::bold(name),
                             summarize_input(name, input)
                         );
@@ -181,7 +181,7 @@ impl EventSink for PrintSink {
                         let first = text.lines().next().unwrap_or("").chars().take(160).collect::<String>();
                         let more = text.lines().count().saturating_sub(1);
                         let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
-                        let line = format!("  ⎿ {first}{more}");
+                        let line = format!("  {} {first}{more}", forge_core::glyphs::RESULT);
                         let styled =
                             if is_error == &Some(true) { crate::term::red(&line) } else { crate::term::dim(&line) };
                         let _ = writeln!(so, "{styled}");

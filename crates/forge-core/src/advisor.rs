@@ -94,20 +94,9 @@ impl Tool for Advisor {
             Err(e) => return ToolOutput::error(format!("The advisor couldn't answer: {}", e.describe())),
         };
         let answer = msg.content.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("").trim().to_string();
-        let u = &msg.usage;
-        let cost = forge_api::models::model_info(&model).map(|m| m.cost(u)).unwrap_or(0.0);
-        let usage = json!({
-            "costUsd": cost,
-            "usage": u,
-            "modelUsage": {model.clone(): {
-                "inputTokens": u.input_tokens,
-                "outputTokens": u.output_tokens,
-                "cacheReadInputTokens": u.cache_read_input_tokens,
-                "cacheCreationInputTokens": u.cache_creation_input_tokens,
-                "costUSD": cost,
-            }},
-        });
         let text = if answer.is_empty() { "(the advisor gave no answer)".to_string() } else { answer };
-        ToolOutput::text(text).with_structured(json!({"advisorModel": model, "subagentUsage": usage}))
+        // The engine prices the request with its own table, `modelPricing` included.
+        let side = json!({"model": model, "usage": msg.usage});
+        ToolOutput::text(text).with_structured(json!({"advisorModel": model, "sideUsage": side}))
     }
 }

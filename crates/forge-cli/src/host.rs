@@ -120,8 +120,12 @@ pub struct ControlContext {
     pub live: forge_core::driver::Live,
     pub mcp: Option<Arc<forge_mcp::McpManager>>,
     pub init_response: Value,
-    /// `mcp_reconnect` and `mcp_toggle` still running; awaited before exit.
+    /// `set_permission_mode` may choose `bypassPermissions` (`Driver::bypass_allowed`).
+    pub bypass_allowed: bool,
+    /// `mcp_reconnect` and `mcp_toggle` still running, and immediate commands; awaited before exit.
     pub tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// What immediate commands read (C17): they are answered here, beside the turn.
+    pub view: forge_core::view::SessionView,
 }
 
 impl ControlContext {
@@ -139,6 +143,25 @@ impl ControlContext {
             Err(e) => SdkMessage::error(id, e),
         };
         self.out.line(&msg);
+    }
+
+    /// Answer an immediate command (`/status`, `/usage`, ...) at once, from the session view,
+    /// with a `result` line marked `"immediate": true`. It never reaches the turn loop, so a
+    /// turn in progress goes on; its own result comes later, without the mark.
+    fn answer_immediate(&self, text: String) {
+        let (out, view, live) = (self.out.clone(), self.view.clone(), self.live.clone());
+        let task = tokio::spawn(async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let Some(forge_core::commands::Exec::Local { text, is_error }) =
+                forge_core::commands::execute_immediate(&view, &text, &cancel).await
+            else {
+                return;
+            };
+            let mut msg = crate::output::result_message(&view.local_result(text, is_error), &live.session_id());
+            msg.immediate = Some(true);
+            out.line(&SdkMessage::Result(msg));
+        });
+        self.tasks.lock().unwrap().push(task);
     }
 
     /// Handle one control request from the host.
@@ -159,6 +182,12 @@ impl ControlContext {
                 self.answer(id, Ok(None));
             }
             "set_permission_mode" => match b.get_str("mode").and_then(PermissionMode::parse) {
+                Some(PermissionMode::BypassPermissions) if !self.bypass_allowed => self.answer(
+                    id,
+                    Err("bypassPermissions needs --allow-dangerously-skip-permissions at launch, and managed \
+                         settings must not disable it"
+                        .into()),
+                ),
                 Some(m) => {
                     self.live.handle().set_permission_mode(m);
                     self.answer(id, Ok(None));
@@ -258,7 +287,13 @@ pub async fn read_stdin(ctx: Arc<ControlContext>, tx: mpsc::UnboundedSender<Inpu
         };
         match msg {
             SdkMessage::User(u) => {
-                let _ = tx.send(Input::User(u.message.content));
+                let cat = forge_core::commands::Catalog::default();
+                match forge_core::commands::command_text(&u.message.content) {
+                    Some(text) if forge_core::commands::immediate(&text, &cat) => ctx.answer_immediate(text),
+                    _ => {
+                        let _ = tx.send(Input::User(u.message.content));
+                    }
+                }
             }
             SdkMessage::ControlRequest(req) => ctx.handle_request(&req, &tx),
             SdkMessage::ControlResponse(resp) => {

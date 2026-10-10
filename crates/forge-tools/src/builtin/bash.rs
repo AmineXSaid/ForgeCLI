@@ -4,8 +4,9 @@ use forge_permissions::Subject;
 use serde_json::{json, Value};
 
 use super::str_arg;
-use crate::shells::{run_command, ShellStatus};
+use crate::shells::{run_command, ShellChoice, ShellKind, ShellStatus, StartError};
 use crate::{fit_output, truncate_middle, Tool, ToolContext, ToolOutput, INTERRUPTED};
+use forge_platform::shell::Os;
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
@@ -55,7 +56,126 @@ pub fn command_is_read_only(command: &str) -> bool {
         })
 }
 
-pub struct Bash;
+/// The shell tool. Its name stays `Bash` whatever the shell (permission rules,
+/// hooks and hosts match on it); its description and read-only check follow the shell.
+pub struct Bash {
+    kind: Option<ShellKind>,
+    description: String,
+}
+
+impl Default for Bash {
+    fn default() -> Self {
+        Bash::new(forge_platform::shell::detect())
+    }
+}
+
+impl Bash {
+    pub fn new(shell: &ShellChoice) -> Self {
+        Bash { kind: shell.as_ref().ok().map(|s| s.kind), description: description(shell) }
+    }
+}
+
+const BASE_DESCRIPTION: &str = "Run a shell command in a persistent working directory and return its output.\n\n\
+     - The working directory carries over between calls while it stays inside the project's working \
+       directories; otherwise it is reset to the project directory.\n\
+     - Quote paths that contain spaces. Prefer absolute paths over `cd`.\n\
+     - Default timeout 2 minutes, maximum 10 minutes (`timeout` in milliseconds).\n\
+     - Output beyond 30,000 characters is truncated in the middle.\n\
+     - Use `run_in_background` for long-running processes (servers, watchers) and read their output \
+       later with BashOutput.\n\
+     - Prefer the dedicated tools for reading (Read), searching (Grep, Glob) and editing (Edit, Write) \
+       files instead of cat, grep, find, sed or echo redirection.\n\
+     - Chain dependent commands with `&&`; independent commands can be separate calls.";
+
+/// The tool description for the session's shell. Unix bash keeps the base text unchanged.
+pub fn description(shell: &ShellChoice) -> String {
+    let mut s = BASE_DESCRIPTION.to_string();
+    match shell {
+        Ok(sh) if sh.os == Os::Windows && sh.is_posix() => s.push_str(&format!(
+            "\n\nThis machine runs Windows; commands run in {}. Use bash syntax and the Unix tools it \
+             provides. Write paths with forward slashes (C:/Users/me/project or /c/Users/me/project): a \
+             backslash is an escape character in bash. To run a cmd.exe built-in, use `cmd //c <command>`.",
+            sh.describe()
+        )),
+        Ok(sh) if sh.kind == ShellKind::PowerShell => {
+            s = s.replace("Chain dependent commands with `&&`", "Chain dependent commands (see below)");
+            s.push_str(&format!(
+                "\n\n{}Commands run in {}, whatever this tool is called. Write PowerShell, not bash: \
+                 Get-ChildItem (ls), Get-Content (cat), Select-String (grep), $env:NAME for environment \
+                 variables, `;` between commands.",
+                if sh.os == Os::Windows { "This machine runs Windows and has no bash. " } else { "" },
+                sh.describe()
+            ));
+            if sh.label() == "Windows PowerShell 5.1" {
+                s.push_str(" This is PowerShell 5.1: there is no `&&` or `||`; write `cmd1; if ($?) { cmd2 }`.");
+            } else {
+                s.push_str(" `&&` and `||` work.");
+            }
+        }
+        Ok(sh) if sh.kind == ShellKind::Posix => s.push_str(&format!(
+            "\n\nCommands run in {}: POSIX sh, not bash, so avoid bash-only syntax.",
+            sh.describe()
+        )),
+        Ok(_) => {}
+        Err(m) => s.push_str(&format!("\n\nNo shell was found, so this tool can't run commands: {m}")),
+    }
+    s
+}
+
+/// The result text when no command can run: names the cause and tells the model to stop.
+pub fn unavailable(reason: &str) -> String {
+    format!(
+        "Bash can't run commands in this session: {reason}\n\
+         This is a problem with the user's setup, not with your command: every command fails the same way \
+         until it is fixed. Don't call Bash again in this session and don't look for another way to run \
+         commands. Continue with the other tools where they are enough, and tell the user the fix above."
+    )
+}
+
+/// PowerShell: read-only only for a plain call of a reading cmdlet, with nothing
+/// that could run another command inside it (subexpressions, script blocks,
+/// pipelines, redirection, call operators, escapes).
+pub fn powershell_is_read_only(command: &str) -> bool {
+    const READERS: &[&str] = &[
+        "get-childitem",
+        "gci",
+        "ls",
+        "dir",
+        "get-content",
+        "gc",
+        "cat",
+        "type",
+        "get-location",
+        "gl",
+        "pwd",
+        "test-path",
+        "get-item",
+        "gi",
+        "select-string",
+        "sls",
+        "resolve-path",
+        "rvpa",
+        "get-command",
+        "gcm",
+        "where.exe",
+        "whoami",
+        "hostname",
+    ];
+    let c = command.trim();
+    if c.is_empty() || c.contains(['(', ')', '{', '}', '$', '@', '&', ';', '|', '>', '<', '`', '\n', '\r']) {
+        return false;
+    }
+    let mut words = c.split_whitespace();
+    match words.next().map(str::to_ascii_lowercase).as_deref() {
+        Some("git") => {
+            let rest: Vec<&str> = words.collect();
+            let rest = rest.join(" ");
+            READ_ONLY_GIT.iter().any(|g| rest == *g || rest.starts_with(&format!("{g} "))) && !rest.contains("--output")
+        }
+        Some(w) => READERS.contains(&w),
+        None => false,
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for Bash {
@@ -64,18 +184,7 @@ impl Tool for Bash {
     }
 
     fn description(&self) -> String {
-        "Run a shell command in a persistent working directory and return its output.\n\n\
-         - The working directory carries over between calls while it stays inside the project's working \
-           directories; otherwise it is reset to the project directory.\n\
-         - Quote paths that contain spaces. Prefer absolute paths over `cd`.\n\
-         - Default timeout 2 minutes, maximum 10 minutes (`timeout` in milliseconds).\n\
-         - Output beyond 30,000 characters is truncated in the middle.\n\
-         - Use `run_in_background` for long-running processes (servers, watchers) and read their output \
-           later with BashOutput.\n\
-         - Prefer the dedicated tools for reading (Read), searching (Grep, Glob) and editing (Edit, Write) \
-           files instead of cat, grep, find, sed or echo redirection.\n\
-         - Chain dependent commands with `&&`; independent commands can be separate calls."
-            .into()
+        self.description.clone()
     }
 
     fn input_schema(&self) -> Value {
@@ -95,11 +204,21 @@ impl Tool for Bash {
 
     fn is_read_only(&self, input: &Value) -> bool {
         !input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false)
-            && command_is_read_only(str_arg(input, "command"))
+            && match self.kind {
+                Some(ShellKind::PowerShell) => powershell_is_read_only(str_arg(input, "command")),
+                _ => command_is_read_only(str_arg(input, "command")),
+            }
     }
 
     fn permission_subject(&self, input: &Value, _ctx: &ToolContext) -> Subject {
         Subject::Command(str_arg(input, "command").to_string())
+    }
+
+    fn validate(&self, input: &Value, ctx: &ToolContext) -> Result<(), String> {
+        if let Err(m) = &ctx.shell {
+            return Err(unavailable(&m.to_string()));
+        }
+        crate::validate_required(&self.input_schema(), input)
     }
 
     fn sandboxed(&self, input: &Value, ctx: &ToolContext) -> bool {
@@ -116,22 +235,30 @@ impl Tool for Bash {
         let sandbox = if self.sandboxed(&input, ctx) { ctx.sandbox_now() } else { None };
 
         if input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
-            return match ctx.shells.spawn(&command, &cwd, &ctx.env, sandbox.as_ref()) {
+            return match ctx.shells.spawn(&ctx.shell, &command, &cwd, &ctx.env, sandbox.as_ref()) {
                 Ok(sh) => ToolOutput::text(format!(
                     "Command running in background with ID: {}. Use BashOutput to read its output.",
                     sh.id
                 ))
                 .with_structured(json!({"backgroundTaskId": sh.id, "stdout": "", "stderr": "", "interrupted": false})),
-                Err(e) => ToolOutput::error(format!("Failed to start command: {e}")),
+                Err(e) => start_failed(&e),
             };
         }
 
         let ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS);
-        let res = match run_command(&command, &cwd, &ctx.env, Duration::from_millis(ms), &ctx.cancel, sandbox.as_ref())
-            .await
+        let res = match run_command(
+            &ctx.shell,
+            &command,
+            &cwd,
+            &ctx.env,
+            Duration::from_millis(ms),
+            &ctx.cancel,
+            sandbox.as_ref(),
+        )
+        .await
         {
             Ok(r) => r,
-            Err(e) => return ToolOutput::error(format!("Failed to run command: {e}")),
+            Err(e) => return start_failed(&e),
         };
 
         let mut note = String::new();
@@ -183,6 +310,16 @@ impl Tool for Bash {
                 ToolOutput::error(msg).with_structured(structured)
             }
         }
+    }
+}
+
+fn start_failed(e: &StartError) -> ToolOutput {
+    if e.is_setup_problem() {
+        ToolOutput::error(unavailable(&e.to_string())).with_structured(json!({
+            "stdout": "", "stderr": e.to_string(), "interrupted": false, "exitCode": null, "shellUnavailable": true
+        }))
+    } else {
+        ToolOutput::error(format!("The command did not start: {e}"))
     }
 }
 

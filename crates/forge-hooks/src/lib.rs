@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use forge_platform::shell::ShellChoice;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -286,11 +287,13 @@ pub struct HookRunner {
     pub base: HookBase,
     /// `--bare` / `--safe-mode`: hooks never run.
     pub disabled: bool,
+    /// The session's shell; `None` uses the one found from the process environment.
+    pub shell: Option<ShellChoice>,
 }
 
 impl HookRunner {
     pub fn new(config: HooksConfig, base: HookBase) -> Self {
-        HookRunner { config, base, disabled: false }
+        HookRunner { config, base, disabled: false, shell: None }
     }
 
     pub fn enabled_for(&self, event: HookEvent) -> bool {
@@ -331,7 +334,8 @@ impl HookRunner {
             a.extend(b);
         }
         let stdin = serde_json::to_string(&input).unwrap_or_default();
-        let runs = commands.iter().map(|c| run_one(c, &stdin, &self.base, cancel));
+        let shell = self.shell.as_ref().unwrap_or_else(|| forge_platform::shell::detect());
+        let runs = commands.iter().map(|c| run_one(shell, c, &stdin, &self.base, cancel));
         for (cmd, (code, stdout, stderr)) in commands.iter().zip(futures::future::join_all(runs).await) {
             out.absorb(event, code, &stdout, &stderr, &cmd.command);
         }
@@ -340,15 +344,26 @@ impl HookRunner {
 }
 
 async fn run_one(
+    shell: &ShellChoice,
     cmd: &HookCommand,
     stdin: &str,
     base: &HookBase,
     cancel: &CancellationToken,
 ) -> (Option<i32>, String, String) {
-    let mut c = Command::new("/bin/sh");
-    c.arg("-c")
-        .arg(&cmd.command)
-        .current_dir(&base.cwd)
+    let not_started = |why: String| (Some(1), String::new(), format!("could not start hook `{}`: {why}", cmd.command));
+    let shell = match shell {
+        Ok(s) => s,
+        Err(m) => return not_started(m.to_string()),
+    };
+    // Windows: the script file must outlive the process.
+    let (std_cmd, _script) = match shell.command(&shell.script(&cmd.command, None)) {
+        Ok(c) => c,
+        Err(e) => return not_started(e.to_string()),
+    };
+    let mut std_cmd = std_cmd;
+    forge_platform::process::no_window(&mut std_cmd);
+    let mut c = Command::from(std_cmd);
+    c.current_dir(&base.cwd)
         .env("FORGE_PROJECT_DIR", &base.project_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -356,7 +371,7 @@ async fn run_one(
         .kill_on_drop(true);
     let mut child = match c.spawn() {
         Ok(ch) => ch,
-        Err(e) => return (Some(1), String::new(), format!("could not start hook: {e}")),
+        Err(e) => return not_started(format!("could not start {}: {e}", shell.program.display())),
     };
     if let Some(mut si) = child.stdin.take() {
         let data = stdin.as_bytes().to_vec();

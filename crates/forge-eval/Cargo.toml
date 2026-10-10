@@ -10,6 +10,7 @@ name = "forge-eval"
 path = "src/main.rs"
 
 [dependencies]
+forge-platform.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -20,3 +21,4 @@ futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+shlex.workspace = true

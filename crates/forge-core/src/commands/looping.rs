@@ -109,32 +109,15 @@ pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
 /// MCP prompts) reaches the model as plain text.
 pub(crate) async fn scheduled_prompt(d: &Driver, prompt: &str) -> MessageContent {
     match parse(prompt, &d.catalog) {
-        Invocation::Custom { def, args } => match forge_agents::commands::expand(def, args, &d.info.cwd).await {
-            Ok(p) => MessageContent::Text(p),
-            Err(_) => MessageContent::Text(prompt.to_string()),
-        },
+        Invocation::Custom { def, args } => {
+            match forge_agents::commands::expand(def, args, &d.info.cwd, &d.engine.tool_ctx().shell).await {
+                Ok(p) => MessageContent::Text(p),
+                Err(_) => MessageContent::Text(prompt.to_string()),
+            }
+        }
         Invocation::Skills { chain, args } if chain.iter().all(|s| s.model_invocable) => MessageContent::Text(
             chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args)).collect::<Vec<_>>().join("\n\n"),
         ),
         _ => MessageContent::Text(prompt.to_string()),
     }
-}
-
-/// Scheduled tasks for `/tasks`.
-pub(super) fn listing(d: &Driver) -> Vec<String> {
-    let Some(s) = &d.scheduler else { return vec![] };
-    s.lock()
-        .unwrap()
-        .tasks
-        .iter()
-        .map(|t| format!("  {} [scheduled, {}] next {}: {}", t.id, t.describe(), t.due.format("%H:%M"), t.prompt))
-        .collect()
-}
-
-/// `/tasks stop <id>` for a scheduled task.
-pub(super) fn stop(d: &Driver, id: &str) -> Option<String> {
-    let s = d.scheduler.as_ref()?;
-    let t = s.lock().unwrap().delete(id)?;
-    d.save_schedule();
-    Some(format!("Deleted scheduled task {} ({}).", t.id, t.describe()))
 }

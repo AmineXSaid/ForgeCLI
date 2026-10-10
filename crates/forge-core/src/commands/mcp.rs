@@ -8,11 +8,16 @@ use forge_mcp::{Outcome, ServerAction, Status};
 
 use super::run::{err, ok};
 use super::{Exec, Surface};
-use crate::driver::Driver;
+use crate::view::{Effect, SessionView, ViewState};
 
 const USAGE: &str = "Usage: /mcp [reconnect|enable|disable <server|all>]";
 
-pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
+/// `/mcp`, from the session view: it runs mid-turn too. The manager serializes each server's
+/// changes, so tool calls in flight see a consistent state; what the session derives from the
+/// servers (instructions, `system/init`) is refreshed by the driver afterwards.
+pub(super) async fn run(v: &SessionView, args: &str) -> Exec {
+    let d = v.state();
+    let d = d.as_ref();
     if args.is_empty() {
         return ok(listing(d));
     }
@@ -20,7 +25,7 @@ pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
     let (Some(action), [_, target]) = (words.first().copied().and_then(ServerAction::parse), words.as_slice()) else {
         return err(USAGE);
     };
-    let m = match d.catalog.mcp.clone() {
+    let m = match d.mcp.clone() {
         Some(m) if !m.servers.is_empty() => m,
         _ => return err("No MCP servers configured. Add one with `forge mcp add`."),
     };
@@ -28,7 +33,7 @@ pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
         Ok(r) => r,
         Err(e) => return err(e),
     };
-    d.refresh_mcp();
+    v.record(Effect::RefreshMcp);
     let all = *target == "all";
     let mut lines = vec![];
     let mut failed = false;
@@ -60,7 +65,7 @@ pub(super) async fn run(d: &mut Driver, args: &str) -> Exec {
 }
 
 /// One server's line, and whether it reports a failure.
-fn describe(d: &Driver, action: ServerAction, o: &Outcome) -> (String, bool) {
+fn describe(d: &ViewState, action: ServerAction, o: &Outcome) -> (String, bool) {
     let name = &o.server;
     let counts = format!("connected, {} tools, {} prompts", o.tools, o.prompts);
     let saved = match &o.saved {
@@ -87,7 +92,7 @@ fn describe(d: &Driver, action: ServerAction, o: &Outcome) -> (String, bool) {
         let _ = write!(text, " No longer offered: {}.", o.gone_tools.join(", "));
     }
     if !o.new_tools.is_empty() {
-        let when = if d.can_switch() && matches!(d.surface, Surface::Repl | Surface::Tui | Surface::Stream) {
+        let when = if d.can_switch && matches!(d.surface, Surface::Repl | Surface::Tui | Surface::Stream) {
             "after /reload-plugins"
         } else {
             "in a new session"
@@ -95,7 +100,7 @@ fn describe(d: &Driver, action: ServerAction, o: &Outcome) -> (String, bool) {
         let _ = write!(text, " New tools join {when}: {}.", o.new_tools.join(", "));
     }
     if action == ServerAction::Enable && !o.unchanged {
-        for layer in forge_mcp::config::disabled_in(&d.info.settings, name) {
+        for layer in forge_mcp::config::disabled_in(&d.settings, name) {
             if layer.source == forge_config::SettingSource::User {
                 let file =
                     layer.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "your user settings".into());
@@ -107,8 +112,8 @@ fn describe(d: &Driver, action: ServerAction, o: &Outcome) -> (String, bool) {
 }
 
 /// Each server and how it is.
-fn listing(d: &Driver) -> String {
-    let Some(m) = &d.catalog.mcp else { return "No MCP servers configured.".into() };
+fn listing(d: &ViewState) -> String {
+    let Some(m) = &d.mcp else { return "No MCP servers configured.".into() };
     if m.servers.is_empty() {
         return "No MCP servers configured. Add one with `forge mcp add`.".into();
     }

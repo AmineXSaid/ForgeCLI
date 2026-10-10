@@ -6,28 +6,35 @@
 //! 3. a skill, or a chain of up to six (`/a /b text`);
 //! 4. an MCP prompt (`/mcp__server__prompt`).
 //!
-//! A name containing `/`, or matching an existing root path (`/tmp is full`),
-//! is an ordinary prompt. Anything else is `Unknown command: /name`.
+//! A name containing `/`, a file name (`/package.json is stale`) or an
+//! existing root path (`/tmp is full`) that names no command is an ordinary
+//! prompt. Anything else is `Unknown command: /name`.
 //!
 //! [`BUILTINS`] is the only list of built-ins. `/help`, `system/init`
 //! `slash_commands` and the stream-json `initialize` `commands` are all
 //! generated from it.
 
+mod agents;
 mod feedback;
+mod hooks;
+mod immediate;
 mod importing;
 mod looping;
 mod mcp;
+pub mod picker;
 mod run;
+pub mod screens;
 mod session;
 mod settings;
 mod switching;
 
+pub use immediate::{execute_immediate, immediate};
 pub(crate) use looping::scheduled_prompt;
 pub(crate) use run::duration;
 pub use run::{execute, Exec};
-pub(crate) use session::side_request_with;
 pub use session::{clean_title, render_conversation};
-pub use settings::Scope;
+pub(crate) use session::{goal_model, side_request_on};
+pub use settings::{Scope, THEMES};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -114,7 +121,13 @@ macro_rules! cmd {
 builtins! {
     (AddDir, "add-dir", [], "<path> [--save]", "Add a working directory for this session"),
     (Advisor, "advisor", [], "[model|off]", "Let Forge consult a second model for advice at key moments"),
-    (Agents, "agents", [], "", "List subagents, and how to add your own"),
+    (
+        Agents,
+        "agents",
+        [],
+        "[create <name> --description <text> ...]",
+        "List subagents, or create one"
+    ),
     (
         Autocompact,
         "autocompact",
@@ -134,9 +147,27 @@ builtins! {
     ),
     (Cd, "cd", [], "<directory>", "Move this conversation to another directory"),
     (Clear, "clear", ["reset", "new"], "[name]", "Start a new conversation; the current one stays resumable"),
+    (
+        Color,
+        "color",
+        [],
+        "[name|default]",
+        "Set the accent colour for this session",
+        Surfaces::TUI,
+        true
+    ),
     (Compact, "compact", [], "[instructions]", "Free context by summarizing the conversation so far"),
     (Config, "config", ["settings"], "[key=value ...]", "Show the settings, or change them with key=value"),
     (Context, "context", [], "[all]", "Show what fills the context window", Surfaces::ALL, true),
+    (
+        Copy,
+        "copy",
+        [],
+        "[n]",
+        "Copy the latest answer (or the nth latest) to the clipboard",
+        Surfaces::TUI,
+        false
+    ),
     (Debug, "debug", [], "[description]", "Turn on debug logging, and have Forge read the log to find a problem"),
     (Diff, "diff", [], "", "Show uncommitted changes, and the files each prompt changed"),
     (Doctor, "doctor", ["checkup"], "", "Check the installation and this session's setup"),
@@ -151,9 +182,24 @@ builtins! {
         "[description]",
         "Save a bug-report bundle on this machine (nothing is uploaded)"
     ),
+    (
+        Focus,
+        "focus",
+        [],
+        "[on|off]",
+        "Keep tool calls out of the scrollback until turned off",
+        Surfaces::TUI,
+        true
+    ),
     (Goal, "goal", [], "[condition|clear]", "Set a goal Forge keeps working toward until a check finds it met"),
     (Help, "help", [], "", "Show help and the available commands"),
-    (Hooks, "hooks", [], "", "View the configured hooks"),
+    (
+        Hooks,
+        "hooks",
+        [],
+        "[add <Event> <matcher> <command> | remove <Event> <n>]",
+        "View the configured hooks, or add or remove one"
+    ),
     (
         Import,
         "import",
@@ -161,6 +207,7 @@ builtins! {
         "[codex|gemini|cursor] [--yes]",
         "Bring MCP servers and instructions over from other coding agents"
     ),
+    (Keybindings, "keybindings", [], "", "Show the keyboard shortcuts", Surfaces::TUI, true),
     (
         Loop,
         "loop",
@@ -211,6 +258,15 @@ builtins! {
     ),
     (Skills, "skills", [], "", "List available skills"),
     (Status, "status", [], "", "Show version, model, session and setup status", Surfaces::ALL, true),
+    (
+        Statusline,
+        "statusline",
+        [],
+        "[command|off]",
+        "Show a command's output in the status line",
+        Surfaces::TUI,
+        false
+    ),
     (Subtask, "subtask", [], "<task>", "Hand a task to a background agent that starts from this conversation"),
     (
         Tasks,
@@ -221,6 +277,16 @@ builtins! {
         Surfaces::ALL,
         true
     ),
+    (
+        TerminalSetup,
+        "terminal-setup",
+        [],
+        "",
+        "How to get Shift+Enter for new lines in your terminal",
+        Surfaces::TUI,
+        true
+    ),
+    (Theme, "theme", [], "[dark|light|none]", "Choose the colour theme", Surfaces::TUI, false),
     (
         Usage,
         "usage",
@@ -389,8 +455,8 @@ pub fn parse<'a>(text: &'a str, cat: &'a Catalog) -> Invocation<'a> {
     if cat.mcp_prompts().iter().any(|p| p == name) {
         return Invocation::McpPrompt { name, args };
     }
-    // "/tmp is full": a path, not a command.
-    if Path::new(&format!("/{name}")).exists() {
+    // "/tmp is full" and "/package.json is stale": a path or a file name, not a command.
+    if name.contains('.') || Path::new(&format!("/{name}")).exists() {
         return Invocation::NotACommand;
     }
     Invocation::Unknown(name)
@@ -459,6 +525,9 @@ mod tests {
         assert_eq!(parse("hello /help", &cat), Invocation::NotACommand, "only at the start");
         assert_eq!(parse("/usr/bin/env python", &cat), Invocation::NotACommand);
         assert_eq!(parse("/tmp is full", &cat), Invocation::NotACommand, "an existing root path");
+        assert_eq!(parse("/package.json has the wrong version", &cat), Invocation::NotACommand, "a file name");
+        assert_eq!(parse("/.env is missing", &cat), Invocation::NotACommand);
+        assert_eq!(parse("/compact.", &cat), Invocation::NotACommand, "not /compact");
         assert!(
             matches!(parse("  /compact keep the API", &cat), Invocation::Builtin { spec, args: "keep the API" } if spec.id == Builtin::Compact)
         );

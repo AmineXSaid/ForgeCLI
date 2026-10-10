@@ -7,22 +7,26 @@ use std::path::{Path, PathBuf};
 use forge_types::{ContentBlock, Message, MessageContent, MessagesRequest, Role, SystemBlock};
 use serde_json::{json, Value};
 
-use super::run::{err, ok, thousands, tokens_of};
+use super::run::{err, ok};
 use super::settings::{save, Scope};
 use super::Exec;
 use crate::driver::Driver;
 
 /// The model for side requests: `smallFastModel`, else the default small
-/// model; an OpenAI-compatible endpoint uses the session's model.
+/// model; an OpenAI-compatible endpoint (which may not serve that model) uses
+/// the session's model unless `smallFastModel` names one.
 fn small_model(d: &Driver) -> String {
-    if d.engine.provider_name() == "openai" {
-        return d.engine.handle().model();
+    match d.info.settings.str("/smallFastModel") {
+        Some(m) => forge_api::resolve_model(m),
+        None if d.engine.provider_name() == "openai" => d.engine.handle().model(),
+        None => forge_api::models::SMALL_FAST_MODEL.to_string(),
     }
-    d.info
-        .settings
-        .str("/smallFastModel")
-        .map(forge_api::resolve_model)
-        .unwrap_or_else(|| forge_api::models::SMALL_FAST_MODEL.to_string())
+}
+
+/// The model that judges `/goal`: `goalCheckModel`, else the session's model.
+/// A small model is too easily convinced by the agent's own summary.
+pub(crate) fn goal_model(d: &Driver) -> String {
+    d.info.settings.str("/goalCheckModel").map(forge_api::resolve_model).unwrap_or_else(|| d.engine.handle().model())
 }
 
 /// A one-off request with no tools, outside the conversation. Its cost counts toward the session.
@@ -44,6 +48,19 @@ pub(crate) async fn side_request_with(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<String, String> {
     let model = small_model(d);
+    side_request_on(d, &model, system, user, max_tokens, cancel).await
+}
+
+/// [`side_request_with`] on a given model.
+pub(crate) async fn side_request_on(
+    d: &mut Driver,
+    model: &str,
+    system: &str,
+    user: String,
+    max_tokens: u32,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<String, String> {
+    let model = model.to_string();
     let req = MessagesRequest {
         model: model.clone(),
         max_tokens,
@@ -83,7 +100,7 @@ fn tool_call_line(name: &str, input: &Value) -> String {
             }
         })
         .unwrap_or_default();
-    format!("⏺ {name}({arg})")
+    format!("{} {name}({arg})", crate::glyphs::TOOL)
 }
 
 /// The conversation as plain text, as `/export` writes it.
@@ -106,7 +123,7 @@ pub fn render_conversation(messages: &[Message]) -> String {
                     let first = text.lines().next().unwrap_or_default().chars().take(100).collect::<String>();
                     let tag = if *is_error == Some(true) { "error: " } else { "" };
                     let more = if n > 1 { format!(" (+{} lines)", n - 1) } else { String::new() };
-                    let _ = writeln!(out, "  ⎿  {tag}{first}{more}\n");
+                    let _ = writeln!(out, "  {}  {tag}{first}{more}\n", crate::glyphs::RESULT);
                 }
                 (Role::Assistant, ContentBlock::Text { text, .. }) if !text.trim().is_empty() => {
                     let _ = writeln!(out, "{}\n", text.trim());
@@ -192,48 +209,47 @@ fn rel(p: &Path, cwd: &Path) -> String {
     p.strip_prefix(cwd).unwrap_or(p).display().to_string()
 }
 
-pub(super) fn diff(d: &Driver) -> Exec {
+/// What `/diff` shows, for the text and the screen alike.
+struct DiffData {
+    /// `Some(diff)` in a git repository (`git diff HEAD`); `None` outside git.
+    git: Option<String>,
+    untracked: Vec<String>,
+    /// Outside git: unified diffs of the files Forge changed, against how they were.
+    own: String,
+    /// "1. \"prompt\": a.rs, b.rs", one per prompt that changed files.
+    by_prompt: Vec<String>,
+}
+
+fn diff_data(d: &Driver) -> DiffData {
     let cwd = &d.info.cwd;
     let history = d.engine.history();
-    let mut out = String::new();
-    match forge_git::uncommitted(cwd) {
-        Some((diff, untracked)) => {
-            if diff.is_empty() && untracked.is_empty() {
-                out.push_str("No uncommitted changes.\n");
-            } else {
-                if !diff.is_empty() {
-                    let _ = writeln!(out, "Uncommitted changes (git diff HEAD):\n{diff}");
-                }
-                if !untracked.is_empty() {
-                    let _ = writeln!(out, "\nUntracked files: {}", untracked.join(", "));
-                }
+    let (git, untracked) = match forge_git::uncommitted(cwd) {
+        Some((diff, untracked)) => (Some(diff), untracked),
+        None => (None, vec![]),
+    };
+    let mut own = String::new();
+    if git.is_none() {
+        // No git: diff the files Forge changed against how they were before.
+        for (path, before) in history.originals() {
+            let before = before.map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            let after = std::fs::read_to_string(&path).unwrap_or_default();
+            if before == after {
+                continue;
             }
-        }
-        None => {
-            // No git: diff the files Forge changed against how they were before.
-            for (path, before) in history.originals() {
-                let before = before.map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-                let after = std::fs::read_to_string(&path).unwrap_or_default();
-                if before == after {
-                    continue;
-                }
-                let name = rel(&path, cwd);
-                let udiff = similar::TextDiff::from_lines(&before, &after)
-                    .unified_diff()
-                    .header(&format!("a/{name}"), &format!("b/{name}"))
-                    .to_string();
-                out.push_str(&udiff);
-            }
-            if out.is_empty() {
-                out.push_str("Not a git repository, and Forge hasn't changed any files in this session.\n");
-            }
+            let name = rel(&path, cwd);
+            let udiff = similar::TextDiff::from_lines(&before, &after)
+                .unified_diff()
+                .header(&format!("a/{name}"), &format!("b/{name}"))
+                .to_string();
+            own.push_str(&udiff);
         }
     }
-    let turns = history.turns();
-    if !turns.is_empty() {
-        out.push_str("\nFiles Forge changed, by prompt:\n");
-        let st = &d.engine.state;
-        for (i, (turn, files)) in turns.iter().enumerate() {
+    let st = &d.engine.state;
+    let by_prompt = history
+        .turns()
+        .iter()
+        .enumerate()
+        .map(|(i, (turn, files))| {
             let prompt = st
                 .uuids
                 .iter()
@@ -249,116 +265,55 @@ pub(super) fn diff(d: &Driver) -> Exec {
                 })
                 .unwrap_or_else(|| "(an earlier prompt)".into());
             let names: Vec<String> = files.iter().map(|f| rel(f, cwd)).collect();
-            let _ = writeln!(out, "  {}. \"{prompt}\": {}", i + 1, names.join(", "));
+            format!("{}. \"{prompt}\": {}", i + 1, names.join(", "))
+        })
+        .collect();
+    DiffData { git, untracked, own, by_prompt }
+}
+
+pub(super) fn diff(d: &Driver) -> Exec {
+    let data = diff_data(d);
+    let mut out = String::new();
+    match &data.git {
+        Some(diff) => {
+            if diff.is_empty() && data.untracked.is_empty() {
+                out.push_str("No uncommitted changes.\n");
+            } else {
+                if !diff.is_empty() {
+                    let _ = writeln!(out, "Uncommitted changes (git diff HEAD):\n{diff}");
+                }
+                if !data.untracked.is_empty() {
+                    let _ = writeln!(out, "\nUntracked files: {}", data.untracked.join(", "));
+                }
+            }
+        }
+        None => {
+            out.push_str(&data.own);
+            if out.is_empty() {
+                out.push_str("Not a git repository, and Forge hasn't changed any files in this session.\n");
+            }
+        }
+    }
+    if !data.by_prompt.is_empty() {
+        out.push_str("\nFiles Forge changed, by prompt:\n");
+        for line in &data.by_prompt {
+            let _ = writeln!(out, "  {line}");
         }
     }
     ok(out.trim_end())
 }
 
-fn pct(n: u64, of: u64) -> String {
-    if of == 0 {
-        return "-".into();
-    }
-    format!("{:.1}%", n as f64 * 100.0 / of as f64)
-}
-
-pub(super) fn context(d: &Driver, args: &str) -> Exec {
-    let all = match args {
-        "" => false,
-        "all" => true,
-        _ => return err("Usage: /context [all]"),
+/// `/diff` as a screen: the changed files, then each file's hunks.
+pub(super) fn diff_screen(d: &Driver) -> super::screens::Screen {
+    let data = diff_data(d);
+    let (title, unified) = match &data.git {
+        Some(diff) => ("Uncommitted changes (git diff HEAD)", diff.as_str()),
+        None => ("Files Forge changed (not a git repository)", data.own.as_str()),
     };
-    let model = d.engine.handle().model();
-    let window = d.engine.context_window(&model);
-    let est = |s: &str| tokens_of(s) as u64;
-    let system: u64 = d.engine.system().iter().map(|b| est(&b.text)).sum();
-    let specs = d.engine.tools().specs();
-    let size = |s: &forge_types::ToolSpec| est(&serde_json::to_string(s).unwrap_or_default());
-    let (mut builtin, mut mcp, mut skills) = (0u64, 0u64, 0u64);
-    for s in &specs {
-        match s.name.as_str() {
-            n if n.starts_with("mcp__") => mcp += size(s),
-            "Skill" => skills += size(s),
-            _ => builtin += size(s),
-        }
+    super::screens::Screen {
+        title: title.into(),
+        rows: super::screens::diff_rows(unified, &data.untracked, &data.by_prompt),
     }
-    let memory_files = forge_config::load_memory(&d.info.cwd);
-    let memory: u64 = memory_files.iter().map(|f| est(&f.content)).sum();
-    let messages: u64 =
-        d.engine.state.messages.iter().map(|m| est(&serde_json::to_string(m).unwrap_or_default())).sum();
-    // Memory files ride in the first prompt: part of the messages once one is sent.
-    let pending_memory = if d.engine.state.messages.is_empty() { memory } else { 0 };
-    let total = system + builtin + mcp + skills + messages + pending_memory;
-    let measured = d.engine.state.context_tokens;
-
-    let mut s = format!(
-        "Context: about {} of {} tokens ({}) for {model}",
-        thousands(total),
-        thousands(window),
-        pct(total, window)
-    );
-    if measured > 0 {
-        let _ = write!(s, "; the last request measured {}", thousands(measured));
-    }
-    s.push_str("\n\n");
-    let mut row = |name: &str, n: u64| {
-        let _ = writeln!(s, "  {name:<20} {:>10}  {:>6}", thousands(n), pct(n, window));
-    };
-    row("System prompt", system);
-    row("Built-in tools", builtin);
-    row("MCP tools", mcp);
-    row("Skills (listing)", skills);
-    if pending_memory > 0 {
-        row("Memory files", memory);
-    }
-    row("Messages", messages);
-    if memory > 0 && pending_memory == 0 {
-        row("  of which memory", memory);
-    }
-    row("Free", window.saturating_sub(total));
-    if d.engine.cfg.auto_compact {
-        let _ = writeln!(s, "\nAuto-compact runs at about {} tokens.", thousands(d.engine.autocompact_at(&model)));
-    }
-    if all {
-        s.push_str("\nTools:\n");
-        let mut sorted: Vec<_> = specs.iter().map(|t| (t.name.clone(), size(t))).collect();
-        sorted.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-        for (name, n) in sorted {
-            let _ = writeln!(s, "  {name:<40} {:>8}", thousands(n));
-        }
-        if !memory_files.is_empty() {
-            s.push_str("\nMemory files:\n");
-            for f in &memory_files {
-                let _ = writeln!(s, "  {:<40} {:>8}", f.path.display(), thousands(est(&f.content)));
-            }
-        }
-        if !d.catalog.skills.is_empty() {
-            s.push_str("\nSkills (only names and descriptions are loaded until one is used):\n");
-            for sk in &d.catalog.skills {
-                let _ = writeln!(s, "  {:<40} {:>8}", sk.name, thousands(est(&sk.description)));
-            }
-        }
-    }
-    let mut tips = vec![];
-    if mcp * 5 > total && mcp > 10_000 {
-        tips.push("MCP tools take a large share; turn off servers you don't need for this task.".to_string());
-    }
-    if let Some(f) = memory_files.iter().find(|f| est(&f.content) > 5_000) {
-        tips.push(format!(
-            "{} is long (over 5k tokens); trimming it saves context on every request.",
-            f.path.display()
-        ));
-    }
-    if total * 10 > window * 6 {
-        tips.push("Over 60% full: /compact now keeps what matters before automatic compaction does.".to_string());
-    }
-    if !tips.is_empty() {
-        let _ = write!(s, "\nSuggestions:\n  - {}", tips.join("\n  - "));
-    }
-    if !all {
-        s.push_str("\n/context all lists each tool, memory file and skill.");
-    }
-    ok(s.trim_end())
 }
 
 const DEBUG_PROMPT: &str = "Debug logging is on for this session and writes to {log}. The user reports this \
@@ -610,7 +565,7 @@ pub(super) fn add_dir(d: &mut Driver, args: &str) -> Exec {
         return err("Usage: /add-dir <path> [--save]");
     }
     let path = forge_tools::expand_path(raw, &d.info.cwd);
-    let dir: PathBuf = match path.canonicalize() {
+    let dir: PathBuf = match forge_platform::path::canonicalize(&path) {
         Ok(p) if p.is_dir() => p,
         Ok(_) => return err(format!("{} is not a directory.", path.display())),
         Err(e) => return err(format!("{}: {e}", path.display())),
@@ -694,25 +649,6 @@ pub(super) fn goal(d: &mut Driver, args: &str) -> Exec {
     d.goal = Some(Goal::new(args, d.engine.state.total_cost_usd));
     d.goal_changed();
     Exec::Submit(MessageContent::Text(args.to_string()))
-}
-
-pub(super) async fn btw(d: &mut Driver, args: &str) -> Exec {
-    if args.is_empty() {
-        return match d.side_questions.last() {
-            Some((q, a)) => ok(format!("/btw {q}\n\n{a}")),
-            None => ok("No side questions yet. Ask one with /btw <question>: Forge answers from the conversation, without tools, and leaves the conversation as it was."),
-        };
-    }
-    let earlier = d.side_questions.clone();
-    match d.engine.side_question(args, &earlier).await {
-        Ok(answer) => {
-            d.side_questions.push((args.to_string(), answer.clone()));
-            let extra = d.side_questions.len().saturating_sub(crate::driver::MAX_SIDE_QUESTIONS);
-            d.side_questions.drain(..extra);
-            ok(answer)
-        }
-        Err(e) => err(format!("Could not answer: {e}")),
-    }
 }
 
 const RECAP_PROMPT: &str = "You summarize coding sessions. Given a conversation between a user and a coding agent, \

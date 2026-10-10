@@ -17,7 +17,8 @@ use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::events::{EngineEvent, EventSink, NoticeLevel, PermissionPrompter};
-use crate::request::{apply_cache_breakpoints, normalize, thinking_params};
+use crate::request::{apply_cache_breakpoints, normalize};
+use crate::snapshot::{EngineSnapshot, RequestParts, TurnProgress};
 use crate::{INTERRUPT_MARKER, INTERRUPT_MARKER_TOOLS};
 
 /// USD per million tokens (settings `modelPricing` override).
@@ -120,11 +121,6 @@ pub enum EngineError {
     UnknownPricing(String),
 }
 
-/// Sent with a `/btw` question.
-const SIDE_QUESTION_NOTE: &str = "<system-reminder>\nThis is a side question from the user. Answer it briefly from \
-what you already know of this conversation. You can't use tools for it, and neither the question nor your answer \
-becomes part of the main conversation.\n</system-reminder>";
-
 /// The beta flag fast mode needs.
 pub const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 /// Fast mode's price over the model's standard rates (input and output alike).
@@ -147,6 +143,8 @@ pub struct EngineHandle {
     pub permissions: Arc<RwLock<PermEngine>>,
     pub runtime: Arc<RwLock<Runtime>>,
     transcript: Arc<Transcript>,
+    /// The engine's state as last published, replaced whole (C17, immediate commands).
+    snapshot: Arc<RwLock<Arc<EngineSnapshot>>>,
 }
 
 impl EngineHandle {
@@ -197,6 +195,12 @@ impl EngineHandle {
     pub fn model(&self) -> String {
         self.runtime.read().unwrap().model.clone()
     }
+
+    /// The engine's state as last published ([`Engine::publish`]). The lock is held only to
+    /// clone the `Arc`.
+    pub fn snapshot(&self) -> Arc<EngineSnapshot> {
+        self.snapshot.read().unwrap().clone()
+    }
 }
 
 /// The parts an engine is assembled from (built by `forge-core`).
@@ -231,6 +235,9 @@ pub(crate) struct Shared {
     pub history: Arc<FileHistory>,
     /// Persists accepted permission updates (`updatedPermissions`) to settings.
     pub on_permission_update: Mutex<Option<PermissionUpdateHandler>>,
+    /// Injection notes already given (tool and source), so the same file or
+    /// page isn't flagged again on every read.
+    pub injection_noted: Mutex<HashSet<String>>,
 }
 
 /// Conversation state that persists across turns.
@@ -245,7 +252,12 @@ pub struct TurnState {
     pub total_usage: Usage,
     pub total_cost_usd: f64,
     pub model_usage: Map<String, Value>,
+    /// The context size the last response reported (0: the server reports none).
     pub context_tokens: u64,
+    /// How many of `messages` `context_tokens` covers; later ones are estimated.
+    pub counted: usize,
+    /// Models used without a known price (their cost counts as 0).
+    pub unpriced: std::collections::BTreeSet<String>,
 }
 
 /// Outcome of one [`Engine::submit`].
@@ -269,6 +281,9 @@ pub struct TurnResult {
     /// The turn failed in a way the next turn would too: credentials, billing,
     /// a missing model, or a conversation too long even after compaction.
     pub fatal: bool,
+    /// The endpoint refused the credentials (401/403) or none were set: print
+    /// mode exits with the configuration status.
+    pub auth_failed: bool,
     /// Tool calls the model made in this turn.
     pub tool_calls: u32,
 }
@@ -353,6 +368,7 @@ impl Engine {
             permissions: permissions.clone(),
             runtime: Arc::new(RwLock::new(runtime)),
             transcript: parts.transcript.clone(),
+            snapshot: Default::default(),
         };
         let shared = Arc::new(Shared {
             provider: parts.provider,
@@ -366,6 +382,7 @@ impl Engine {
             transcript: parts.transcript,
             history: parts.history,
             on_permission_update: Mutex::new(None),
+            injection_noted: Mutex::new(HashSet::new()),
         });
         let session_context = cfg.initial_context.clone();
         Ok(Engine {
@@ -435,12 +452,31 @@ impl Engine {
         self.state.microcompacted = from.microcompacted.clone();
         // Automatic compaction measures this before the first request.
         self.state.context_tokens = from.context_tokens;
+        self.state.counted = from.counted;
         self.session_started = !self.state.messages.is_empty();
     }
 
     /// Tell the model something with the next prompt (a system reminder).
     pub fn remind(&mut self, text: impl Into<String>) {
         self.reminders.push(text.into());
+    }
+
+    /// The context the next request will carry: the last size the server reported plus an
+    /// estimate for messages added since. With no reported size (some servers send no usage),
+    /// an estimate of the whole request.
+    pub fn projected_context_tokens(&self) -> u64 {
+        let msgs = &self.state.messages;
+        if self.state.context_tokens == 0 {
+            if msgs.is_empty() {
+                return 0;
+            }
+            let system: usize = self.system.iter().map(|b| b.text.len()).sum();
+            let tools: usize =
+                self.shared.tools.specs().iter().map(|t| t.description.len() + t.input_schema.to_string().len()).sum();
+            return forge_compact::estimate_tokens(msgs) + ((system + tools) / 4) as u64;
+        }
+        let from = self.state.counted.min(msgs.len());
+        self.state.context_tokens + forge_compact::estimate_tokens(&msgs[from..])
     }
 
     /// The window compaction is measured against, for `model`.
@@ -548,6 +584,11 @@ impl Engine {
         self.shared.permissions.read().unwrap().mode.as_str()
     }
 
+    /// Forge knows `model`'s price (built in, or `modelPricing`).
+    pub fn has_price(&self, model: &str) -> bool {
+        self.pricing_for(model).is_some()
+    }
+
     fn pricing_for(&self, model: &str) -> Option<Pricing> {
         self.cfg.pricing.get(model).copied().or_else(|| model_info(model).map(Pricing::from_model))
     }
@@ -602,45 +643,62 @@ impl Engine {
 
     fn build_request(&self, model: &str) -> MessagesRequest {
         let rt = self.handle.runtime.read().unwrap().clone();
-        let info = forge_api::models::model_info_or_default(model);
-        let (thinking, output_config, max_tokens) = thinking_params(
-            &info,
-            rt.max_thinking_tokens,
-            rt.effort.as_deref(),
-            self.output_cap.unwrap_or(self.cfg.max_output_tokens),
-        );
-        let mut output_config = output_config;
-        if let Some(schema) = &self.cfg.json_schema {
-            let oc = output_config.get_or_insert_with(|| json!({}));
-            oc["format"] = json!({"type": "json_schema", "schema": schema});
+        crate::snapshot::assemble(
+            model,
+            &rt,
+            RequestParts {
+                messages: &self.state.messages,
+                microcompacted: &self.state.microcompacted,
+                system: &self.system,
+                tools: self.shared.tools.specs(),
+                max_output_tokens: self.output_cap.unwrap_or(self.cfg.max_output_tokens),
+                json_schema: self.cfg.json_schema.as_ref(),
+                metadata_user_id: self.cfg.metadata_user_id.as_deref(),
+                provider_name: self.shared.provider.name(),
+            },
+        )
+    }
+
+    /// Publish the state for readers outside the turn ([`EngineHandle::snapshot`]): the driver
+    /// calls this while idle; the engine itself after each model call, each tool batch and at
+    /// the end of a turn.
+    pub fn publish(&self) {
+        self.publish_with(None);
+    }
+
+    fn publish_with(&self, turn: Option<TurnProgress>) {
+        // Nobody reads a sub-agent's snapshot (its caller reports for it): skip the copy.
+        if self.cfg.is_subagent {
+            return;
         }
-        // Fast mode only where the model offers it; elsewhere the flag is ignored.
-        let fast = self.sends_fast(model);
-        let mut messages = normalize(&self.state.messages, &self.state.microcompacted);
-        apply_cache_breakpoints(&mut messages);
-        let mut tools = self.shared.tools.specs();
-        if let Some(last) = tools.last_mut() {
-            last.cache_control = Some(forge_types::CacheControl::ephemeral());
-        }
-        let mut system = self.system.clone();
-        if let Some(last) = system.last_mut() {
-            last.cache_control = Some(forge_types::CacheControl::ephemeral());
-        }
-        MessagesRequest {
-            model: model.to_string(),
-            max_tokens,
-            messages,
-            system,
-            tools,
-            tool_choice: None,
-            thinking,
-            temperature: None,
-            metadata: self.cfg.metadata_user_id.as_ref().map(|u| json!({"user_id": u})),
-            output_config,
-            speed: fast.then(|| "fast".to_string()),
-            stream: true,
-            betas: if fast { vec![FAST_MODE_BETA.to_string()] } else { vec![] },
-        }
+        let snap = EngineSnapshot {
+            messages: Arc::new(self.state.messages.clone()),
+            microcompacted: Arc::new(self.state.microcompacted.clone()),
+            system: Arc::new(self.system.clone()),
+            tools: Arc::new(self.shared.tools.specs()),
+            total_usage: self.state.total_usage.clone(),
+            total_cost_usd: self.state.total_cost_usd,
+            model_usage: self.state.model_usage.clone(),
+            unpriced: self.state.unpriced.iter().cloned().collect(),
+            context_tokens: self.projected_context_tokens(),
+            turn,
+            provider_name: self.shared.provider.name().to_string(),
+            max_output_tokens: self.cfg.max_output_tokens,
+            json_schema: self.cfg.json_schema.clone(),
+            metadata_user_id: self.cfg.metadata_user_id.clone(),
+            autocompact_window: self.cfg.autocompact_window,
+            auto_compact: self.cfg.auto_compact,
+        };
+        *self.handle.snapshot.write().unwrap() = Arc::new(snap);
+    }
+
+    fn publish_turn(&self, started: Instant, turn: &TurnAcc) {
+        self.publish_with(Some(TurnProgress {
+            started,
+            api_calls: turn.api_calls,
+            api_ms: turn.api_ms,
+            tool_calls: turn.tool_calls,
+        }));
     }
 
     /// Stream one model response, emitting events. Keeps a usable partial on interrupt.
@@ -706,21 +764,28 @@ impl Engine {
 
     /// Requests for `model` go out in fast mode: it's on and the model offers it.
     fn sends_fast(&self, model: &str) -> bool {
-        self.handle.runtime().fast
-            && model_info(model).is_some_and(|m| m.supports_fast_mode)
-            && self.shared.provider.name() != "openai"
+        crate::snapshot::sends_fast(&self.handle.runtime(), model, self.shared.provider.name())
     }
 
     fn record_usage(&mut self, model: &str, usage: &Usage, turn: &mut TurnAcc) {
         turn.usage.add(usage);
         self.state.total_usage.add(usage);
-        self.state.context_tokens = usage.context_tokens();
-        let mut cost = self.pricing_for(model).map(|p| p.cost(usage)).unwrap_or(0.0);
+        // A server that reports no input tokens reports no usable size: 0 makes
+        // `projected_context_tokens` estimate the whole request instead.
+        let input = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+        self.state.context_tokens = if input == 0 { 0 } else { usage.context_tokens() };
+        // The reply this usage belongs to is pushed right after.
+        self.state.counted = self.state.messages.len() + 1;
+        let pricing = self.pricing_for(model);
+        if pricing.is_none() && (usage.input_tokens > 0 || usage.output_tokens > 0) {
+            self.state.unpriced.insert(model.to_string());
+        }
+        let mut cost = pricing.map(|p| p.cost(usage)).unwrap_or(0.0);
         if self.sends_fast(model) {
             cost *= FAST_PRICE_MULTIPLIER;
         }
         self.state.total_cost_usd += cost;
-        let window = model_info(model).map(|m| m.context_window).unwrap_or(0);
+        let window = self.compact_window(model);
         let e = self.state.model_usage.entry(model.to_string()).or_insert_with(|| {
             json!({"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
                    "webSearchRequests": 0, "costUSD": 0.0, "contextWindow": window})
@@ -752,7 +817,9 @@ impl Engine {
     ) {
         let window = self.compact_window(model);
         let max_out = self.cfg.max_output_tokens;
-        let used = self.state.context_tokens;
+        // What the next request will hold: the last reported size plus everything added since
+        // (a batch of large tool results can push it over the window in one step).
+        let used = self.projected_context_tokens();
         if used > forge_compact::micro_threshold(window, max_out) {
             let ids = forge_compact::micro_candidates(&self.state.messages, &self.state.microcompacted);
             if !ids.is_empty() {
@@ -858,6 +925,7 @@ impl Engine {
             self.shared.transcript.append_system("todos", json!({"todos": todos}));
         }
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.counted = self.state.messages.len();
         self.shared.tool_ctx.files.forget_all_views();
         Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
@@ -904,6 +972,7 @@ impl Engine {
         self.state.messages.truncate(index);
         self.state.uuids.truncate(index);
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.counted = self.state.messages.len();
         self.shared.tool_ctx.files.forget_all_views();
         self.shared.transcript.set_leaf(self.state.uuids.last().cloned());
         self.shared.transcript.append_system("rewind", json!({"to": to}));
@@ -1032,6 +1101,7 @@ impl Engine {
         self.state.uuids = uuids;
         self.state.messages = messages;
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.counted = self.state.messages.len();
         self.shared.tool_ctx.files.forget_all_views();
         self.settle_after_rewrite();
         Ok(CompactInfo { trigger: "partial".into(), pre_tokens, summary })
@@ -1047,6 +1117,7 @@ impl Engine {
         self.state.uuids.clear();
         self.state.microcompacted.clear();
         self.state.context_tokens = 0;
+        self.state.counted = 0;
         self.shared.tool_ctx.todos.lock().unwrap().clear();
         self.shared.tool_ctx.files.forget_all_views();
         self.reattach_context = self.session_context.is_some();
@@ -1070,6 +1141,7 @@ impl Engine {
             structured_output: None,
             prompt_blocked: None,
             fatal: false,
+            auth_failed: false,
             tool_calls: 0,
         }
     }
@@ -1107,37 +1179,31 @@ impl Engine {
     /// Count a request made beside the conversation (a goal check, a title)
     /// toward the session's cost, without changing the context size.
     pub fn record_side_usage(&mut self, model: &str, usage: &Usage) {
-        let context = self.state.context_tokens;
+        let (context, counted) = (self.state.context_tokens, self.state.counted);
         self.record_usage(model, usage, &mut TurnAcc::default());
-        self.state.context_tokens = context;
+        (self.state.context_tokens, self.state.counted) = (context, counted);
     }
 
     /// ride along. The request keeps the conversation's system prompt and
     /// tools, so the cached prefix is reused; its cost counts toward the session.
     pub async fn side_question(&mut self, question: &str, earlier: &[(String, String)]) -> Result<String, String> {
         let model = self.handle.model();
-        let mut req = self.build_request(&model);
-        let mut extra = vec![];
-        for (q, a) in earlier {
-            extra.push(Message::user_text(q.clone()));
-            extra.push(Message::assistant(vec![ContentBlock::text(a.clone())]));
-        }
-        extra.push(Message::user_text(format!("{SIDE_QUESTION_NOTE}\n\n{question}")));
-        for m in extra {
-            match req.messages.last_mut() {
-                Some(last) if last.role == m.role => last.content.extend(m.content),
-                _ => req.messages.push(m),
-            }
-        }
-        req.tool_choice = Some(json!({"type": "none"}));
+        self.publish();
+        let req = crate::snapshot::side_question_request(
+            &self.handle.snapshot(),
+            &self.handle.runtime(),
+            question,
+            earlier,
+            None,
+        );
         let cancel = self.new_turn_token();
         let msg = forge_api::complete(self.shared.provider.as_ref(), req, &cancel).await.map_err(|e| match e {
             ApiError::Cancelled => "interrupted".to_string(),
             e => e.describe(),
         })?;
-        let context = self.state.context_tokens;
+        let (context, counted) = (self.state.context_tokens, self.state.counted);
         self.record_usage(&model, &msg.usage, &mut TurnAcc::default());
-        self.state.context_tokens = context;
+        (self.state.context_tokens, self.state.counted) = (context, counted);
         let text = msg.to_message().text();
         if text.trim().is_empty() {
             return Err("the model gave no answer".into());
@@ -1157,7 +1223,12 @@ impl Engine {
         let cancel = self.new_turn_token();
         let mut turn = TurnAcc::default();
         let mut blocks = prompt.into_blocks();
-        let prompt_text: String = blocks.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("\n");
+        // Hooks see the prompt as typed: reminders that ride along with it (`@path` attachments)
+        // are left out, unless they are all there is.
+        let texts: Vec<&str> = blocks.iter().filter_map(|b| b.as_text()).collect();
+        let typed: Vec<&str> =
+            texts.iter().copied().filter(|t| !t.trim_start().starts_with("<system-reminder>")).collect();
+        let prompt_text = if typed.is_empty() { texts.join("\n") } else { typed.join("\n") };
 
         // Sub-agents get their context but no session hooks.
         if !self.session_started && self.cfg.is_subagent {
@@ -1270,7 +1341,9 @@ impl Engine {
             }
             if let Some(max) = self.cfg.max_turns {
                 if turn.api_calls >= max {
-                    turn.errors.push(format!("Reached maximum number of turns ({max})"));
+                    let text = format!("Reached maximum number of turns ({max})");
+                    self.notice(NoticeLevel::Error, text.clone());
+                    turn.errors.push(text);
                     return self.finish(
                         started,
                         turn,
@@ -1350,6 +1423,7 @@ impl Engine {
                         Ok(_) => continue,
                         Err(err) => {
                             let text = format!("API Error: {e} (compaction failed: {err})");
+                            self.notice(NoticeLevel::Error, text.clone());
                             turn.errors.push(text.clone());
                             let mut r = self.finish(
                                 started,
@@ -1393,6 +1467,7 @@ impl Engine {
                     );
                     // Still too long after compacting: the next turn would fail the same way.
                     r.fatal = e.is_unrecoverable() || (e.is_prompt_too_long() && compacted_for_length);
+                    r.auth_failed = e.is_auth_failure();
                     return r;
                 }
             };
@@ -1409,6 +1484,7 @@ impl Engine {
             let tool_uses: Vec<(String, String, Value)> =
                 msg.to_message().tool_uses().map(|(a, b, c)| (a.to_string(), b.to_string(), c.clone())).collect();
             self.push_assistant(msg);
+            self.publish_turn(started, &turn);
 
             // Budget (contract C7): checked after every call.
             if let Some(budget) = self.cfg.max_budget_usd {
@@ -1425,7 +1501,9 @@ impl Engine {
                             false,
                         );
                     }
-                    turn.errors.push(format!("Reached maximum budget (${budget})"));
+                    let text = format!("Reached maximum budget (${budget})");
+                    self.notice(NoticeLevel::Error, text.clone());
+                    turn.errors.push(text);
                     return self.finish(
                         started,
                         turn,
@@ -1487,6 +1565,13 @@ impl Engine {
                     if let Some(sub) = r.output.structured.as_ref().and_then(|s| s.get("subagentUsage")) {
                         self.record_subagent_usage(sub);
                     }
+                    // A request a tool made itself (the Advisor): priced here, custom pricing included.
+                    if let Some(side) = r.output.structured.as_ref().and_then(|s| s.get("sideUsage")) {
+                        let model = side["model"].as_str().unwrap_or_default().to_string();
+                        if let Ok(u) = serde_json::from_value::<Usage>(side["usage"].clone()) {
+                            self.record_side_usage(&model, &u);
+                        }
+                    }
                     let block = ContentBlock::ToolResult {
                         tool_use_id: r.id.clone(),
                         content: r.output.content.clone(),
@@ -1495,6 +1580,7 @@ impl Engine {
                     };
                     self.push_user(Message::user(vec![block]), false, r.output.structured.clone(), true);
                 }
+                self.publish_turn(started, &turn);
                 if let (Some(s), false) = (stuck.first(), interrupted) {
                     self.system_event("loop_guard", s.record());
                     self.push_user(Message::user_text(s.text()), true, None, true);
@@ -1702,6 +1788,7 @@ impl Engine {
             None
         };
         let is_error = subtype != ResultSubtype::Success;
+        self.publish();
         TurnResult {
             subtype,
             is_error,
@@ -1718,6 +1805,7 @@ impl Engine {
             structured_output,
             prompt_blocked,
             fatal: false,
+            auth_failed: false,
             tool_calls: turn.tool_calls,
         }
     }

@@ -77,6 +77,20 @@ pub fn backend() -> Option<Backend> {
     })
 }
 
+/// Why no sandbox backend is available here, and what would give one.
+pub fn unavailable_reason() -> &'static str {
+    unavailable_reason_for(std::env::consts::OS)
+}
+
+fn unavailable_reason_for(os: &str) -> &'static str {
+    match os {
+        "linux" => "install bubblewrap (bwrap) to confine shell commands",
+        "macos" => "/usr/bin/sandbox-exec was not found",
+        "windows" => "Forge has no sandbox on Windows; run Forge inside WSL 2 to confine shell commands",
+        _ => "no sandbox backend exists for this system",
+    }
+}
+
 /// Paths under a writable root that sandboxed commands must not change:
 /// Forge's own settings and hooks, and git hooks (which would run unsandboxed later).
 fn protected_under(root: &Path) -> Vec<PathBuf> {
@@ -187,6 +201,7 @@ mod tests {
         SandboxPolicy { mode, network: false, writable_roots: vec![root.to_path_buf()], extra_writable: vec![] }
     }
 
+    #[cfg(unix)]
     #[test]
     fn bwrap_arguments() {
         let d = tempfile::tempdir().unwrap();
@@ -213,5 +228,12 @@ mod tests {
         assert_eq!(SandboxMode::parse("workspace-write"), Some(Some(SandboxMode::WorkspaceWrite)));
         assert_eq!(SandboxMode::parse("off"), Some(None));
         assert_eq!(SandboxMode::parse("bogus"), None);
+    }
+
+    #[test]
+    fn unavailable_reason_names_the_fix_per_os() {
+        assert!(unavailable_reason_for("linux").contains("bubblewrap"));
+        assert!(unavailable_reason_for("windows").contains("WSL 2"));
+        assert!(unavailable_reason_for("macos").contains("sandbox-exec"));
     }
 }

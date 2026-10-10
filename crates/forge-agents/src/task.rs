@@ -33,6 +33,10 @@ pub struct AgentRuntime {
     /// The session's shell sandbox, inherited by sub-agents.
     /// The parent session's sandbox, shared so `/sandbox` reaches sub-agents too.
     pub sandbox: forge_tools::SandboxCell,
+    /// The session's shell (Bash tool), the same for sub-agents.
+    pub shell: forge_tools::shells::ShellChoice,
+    /// Task agents that may run at once (`maxParallelAgents`); more wait their turn.
+    pub agent_slots: Arc<tokio::sync::Semaphore>,
     /// Tools beyond the built-ins (MCP servers' tools), offered to sub-agents too.
     pub extra_tools: Vec<Arc<dyn Tool>>,
     /// Where sub-agent transcripts go (`None` = not persisted).
@@ -58,6 +62,22 @@ pub struct ChildSpec<'a> {
     pub sink: Arc<dyn EventSink>,
     /// A fork starts from this conversation; `None` starts it empty.
     pub seed: Option<&'a TurnState>,
+    /// Checkpoint its edits under this turn of the session's file history
+    /// (added with `FileHistory::add_turn`), not the user's current turn: a
+    /// background subtask's edits aren't part of whatever prompt runs meanwhile.
+    pub checkpoint_turn: Option<String>,
+}
+
+/// Snapshots files under one fixed turn of the session's file history.
+struct TurnCheckpointer {
+    history: Arc<FileHistory>,
+    turn: String,
+}
+
+impl forge_tools::Checkpointer for TurnCheckpointer {
+    fn before_write(&self, path: &std::path::Path) {
+        self.history.snapshot_in(&self.turn, path);
+    }
 }
 
 /// A child engine and its id (its transcript's session id).
@@ -108,7 +128,11 @@ impl AgentRuntime {
         tool_ctx.working_dirs = self.working_dirs.clone();
         tool_ctx.env = self.env.clone();
         tool_ctx.sandbox = self.sandbox.clone();
+        tool_ctx.shell = self.shell.clone();
         tool_ctx.session_id = self.session_id.clone();
+        if let Some(turn) = spec.checkpoint_turn {
+            tool_ctx.checkpointer = Some(Arc::new(TurnCheckpointer { history: parent.history.clone(), turn }));
+        }
         let mut cfg = spec.cfg;
         cfg.is_subagent = true;
         let permissions = parent.handle.permissions.read().unwrap().clone();
@@ -223,6 +247,7 @@ impl TaskTool {
     fn registry_for(&self, agent: &AgentDef) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         forge_tools::builtin::register_core(&mut reg);
+        forge_tools::builtin::set_shell(&mut reg, &self.rt.shell);
         for t in &self.rt.extra_tools {
             reg.register(t.clone());
         }
@@ -310,13 +335,22 @@ impl Tool for TaskTool {
         let agent = self.agent(input.get("subagent_type").and_then(Value::as_str).unwrap_or("")).cloned().unwrap();
         let prompt = input.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
         let started = Instant::now();
+        // At most `maxParallelAgents` run at once; the others wait here, without spending anything.
+        let _slot = tokio::select! {
+            _ = ctx.cancel.cancelled() => return ToolOutput::error(forge_tools::INTERRUPTED),
+            p = self.rt.agent_slots.clone().acquire_owned() => match p {
+                Ok(p) => p,
+                Err(_) => return ToolOutput::error("Sub-agents are not available in this session."),
+            },
+        };
 
         let model = match &agent.model {
             Some(m) => forge_api::resolve_model(m),
             None => parent.handle.model(),
         };
         let dirs: Vec<PathBuf> = self.rt.working_dirs.read().unwrap().iter().skip(1).cloned().collect();
-        let env = EnvInfo::collect(&self.rt.project_dir, &dirs, &model);
+        let mut env = EnvInfo::collect(&self.rt.project_dir, &dirs, &model);
+        env.shell = forge_platform::shell::env_line(&self.rt.shell);
         let mut sys = forge_types::SystemBlock::text(format!("{}\n\n{}", agent.prompt, env.render()));
         sys.cache_control = Some(forge_types::CacheControl::ephemeral());
         let spec = ChildSpec {
@@ -326,6 +360,7 @@ impl Tool for TaskTool {
             prompter: parent.prompter.clone(),
             sink: Arc::new(ForwardSink { parent: self.rt.sink.clone(), parent_tool_use_id: ctx.tool_use_id.clone() }),
             seed: None,
+            checkpoint_turn: None,
         };
         let Child { id: child_id, engine: mut child } = match self.rt.child(spec) {
             Ok(c) => c,
@@ -359,7 +394,14 @@ impl Tool for TaskTool {
         let text = result.result.clone().unwrap_or_default();
         if result.is_error {
             let detail = if text.is_empty() { result.errors.join("; ") } else { text };
-            return ToolOutput::error(format!("The {} agent failed: {detail}", agent.name)).with_structured(structured);
+            return ToolOutput::error(format!(
+                "FAILED: the {} agent did not finish its task. {detail}\n\
+                 Nothing it was asked to do can be counted as done, and it wrote no report. Run it again (after \
+                 the cause is fixed), do the work yourself, or tell the user it failed; never describe its task \
+                 as completed.",
+                agent.name
+            ))
+            .with_structured(structured);
         }
         if result.stop_reason.as_deref() == Some("interrupted") {
             return ToolOutput::error(forge_tools::INTERRUPTED).with_structured(structured);

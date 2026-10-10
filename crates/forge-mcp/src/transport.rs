@@ -175,7 +175,15 @@ impl StdioTransport {
         cwd: &Path,
         roots: Vec<String>,
     ) -> Result<Self, McpError> {
-        let mut child = Command::new(command)
+        // Windows: `npx` is `npx.cmd`, which `Command::new` doesn't find by itself.
+        let program = if cfg!(windows) && !command.contains(['/', '\\']) {
+            forge_platform::process::find_program(command).unwrap_or_else(|| command.into())
+        } else {
+            command.into()
+        };
+        let mut std_cmd = std::process::Command::new(program);
+        forge_platform::process::no_window(&mut std_cmd);
+        let mut child = Command::from(std_cmd)
             .args(args)
             .envs(env)
             .current_dir(cwd)
@@ -184,7 +192,14 @@ impl StdioTransport {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| McpError::Transport(format!("could not start `{command}`: {e}")))?;
+            .map_err(|e| {
+                let hint = if cfg!(windows) && e.kind() == std::io::ErrorKind::NotFound {
+                    format!(" (looked on PATH for {command}.exe, .cmd and .bat)")
+                } else {
+                    String::new()
+                };
+                McpError::Transport(format!("could not start `{command}`: {e}{hint}"))
+            })?;
         let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take().expect("piped stdin")));
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
