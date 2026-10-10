@@ -354,7 +354,9 @@
   (`FORGE_HARBOR_CA_BUNDLE`), for networks that inspect TLS; such jobs are
   named `-hostca` and are for local comparisons only.
 - The Harbor agent rewrites a `localhost` endpoint to this machine's address
-  (`FORGE_HARBOR_HOST_IP` to set it), so self-hosted models can be used.
+  (`FORGE_HARBOR_HOST_IP` to set it), so self-hosted models can be used. A
+  login in the URL is kept, and when the address can't be found the error
+  says to set `FORGE_HARBOR_HOST_IP`.
 - `evals/harbor/`: a Harbor agent that runs ForgeCLI on Terminal-Bench, with
   a static (musl) build script and a run script for a 10-task subset or the
   full 5-attempt run, each job named after its commit.

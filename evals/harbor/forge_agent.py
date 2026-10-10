@@ -119,9 +119,15 @@ def host_ip() -> str:
     ip = os.environ.get("FORGE_HARBOR_HOST_IP")
     if ip:
         return ip
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.connect(("10.255.255.255", 1))  # picks the outgoing interface; sends nothing
-        return s.getsockname()[0]
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))  # picks the outgoing interface; sends nothing
+            return s.getsockname()[0]
+    except OSError as e:
+        raise RuntimeError(
+            f"cannot find this machine's address for a localhost endpoint ({e}); "
+            "set FORGE_HARBOR_HOST_IP to an address task containers can reach"
+        ) from e
 
 
 def container_url(url: str) -> str:
@@ -129,7 +135,10 @@ def container_url(url: str) -> str:
     parts = urlparse(url)
     if (parts.hostname or "").lower() not in LOOPBACK and not (parts.hostname or "").startswith("127."):
         return url
-    netloc = host_ip() + (f":{parts.port}" if parts.port else "")
+    ip = host_ip()
+    userinfo = parts.netloc.rpartition("@")[0]
+    netloc = (f"{userinfo}@" if userinfo else "") + (f"[{ip}]" if ":" in ip else ip)
+    netloc += f":{parts.port}" if parts.port else ""
     return parts._replace(netloc=netloc).geturl()
 
 
