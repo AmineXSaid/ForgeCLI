@@ -1,0 +1,15 @@
+{
+    "task": {
+        "path": "largest-eigenval",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source": "terminal-bench"
+    },
+    "trial_name": "largest-eigenval__Ha72rFh",
+    "trials_dir": "jobs/forgecli-subset-quick-thinking-02195fd-hostca-20261009-125959",
+    "agent": {
+        "name": "forge_agent:ForgeCLI",
+        "model_name": "openai/quick-thinking"
+    },
+    "job_id": "89b1b3b7-bcf5-4804-8d3e-200f8d3cd38f"
+}

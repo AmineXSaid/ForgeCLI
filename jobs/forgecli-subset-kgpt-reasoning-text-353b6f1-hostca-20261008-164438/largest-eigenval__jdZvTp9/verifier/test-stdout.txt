@@ -1,0 +1,662 @@
+Collecting pytest==8.4.1
+  Downloading pytest-8.4.1-py3-none-any.whl.metadata (7.7 kB)
+Collecting pytest-json-ctrf==0.3.5
+  Downloading pytest_json_ctrf-0.3.5-py3-none-any.whl.metadata (3.3 kB)
+Collecting iniconfig>=1 (from pytest==8.4.1)
+  Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+Collecting packaging>=20 (from pytest==8.4.1)
+  Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest==8.4.1)
+  Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+Collecting pygments>=2.7.2 (from pytest==8.4.1)
+  Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Downloading pytest-8.4.1-py3-none-any.whl (365 kB)
+Downloading pytest_json_ctrf-0.3.5-py3-none-any.whl (6.8 kB)
+Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+Downloading packaging-26.3-py3-none-any.whl (129 kB)
+Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 3.6 MB/s  0:00:00
+Installing collected packages: pygments, pluggy, packaging, iniconfig, pytest, pytest-json-ctrf
+
+Successfully installed iniconfig-2.3.1 packaging-26.3 pluggy-1.6.0 pygments-2.21.0 pytest-8.4.1 pytest-json-ctrf-0.3.5
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+============================= test session starts ==============================
+platform linux -- Python 3.13.16, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 27 items
+
+../tests/test_outputs.py ...F.FFFF...F..FFFFFFFFFFFF                     [100%]
+
+=================================== FAILURES ===================================
+______________________________ test_eigen_pair[5] ______________________________
+
+size = 5
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_eigen_pair(size):
+        """Verify the eigen pair is valid."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)
+        # sanity eigen checks
+        assert not np.allclose(eigenvec, 0), "eigenvector is zero"
+        assert not np.isnan(eigenval), "eigenvalue is NaN"
+        assert not np.isinf(eigenval), "eigenvalue is Inf"
+        # assert eigen pair satisfies definition Ax = λx
+        # compute residual only for error message, not used for assert
+        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)
+        relative_residual = absolute_residual / np.linalg.norm(eigenvec)
+>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (
+            f"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, "
+            f"absolute residual {absolute_residual:.6e}, "
+            f"relative residual {relative_residual:.6e}"
+        )
+E       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (5, 5), absolute residual 7.181355e-01, relative residual 7.181355e-01
+E       assert False
+E        +  where False = <function allclose at 0x7b74c2d35b70>((array([[ 1.76405235,  0.40015721,  0.97873798,  2.2408932 ,  1.86755799],\n       [-0.97727788,  0.95008842, -0.1513572...907, -0.20515826,  0.3130677 , -0.85409574],\n       [-2.55298982,  0.6536186 ,  0.8644362 , -0.74216502,  2.26975462]]) @ array([-0.17894488+0.62287946j, -0.21949189-0.01829969j,\n       -0.17079571+0.22873335j,  0.0587203 -0.05771764j,\n       -0.63985682+0.18385339j])), (np.complex128(2.208399762432223+1.843535817722558j) * array([-0.17894488+0.62287946j, -0.21949189-0.01829969j,\n       -0.17079571+0.22873335j,  0.0587203 -0.05771764j,\n       -0.63985682+0.18385339j])))
+E        +    where <function allclose at 0x7b74c2d35b70> = np.allclose
+
+/tests/test_outputs.py:63: AssertionError
+______________________________ test_eigen_pair[7] ______________________________
+
+size = 7
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_eigen_pair(size):
+        """Verify the eigen pair is valid."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)
+        # sanity eigen checks
+        assert not np.allclose(eigenvec, 0), "eigenvector is zero"
+        assert not np.isnan(eigenval), "eigenvalue is NaN"
+        assert not np.isinf(eigenval), "eigenvalue is Inf"
+        # assert eigen pair satisfies definition Ax = λx
+        # compute residual only for error message, not used for assert
+        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)
+        relative_residual = absolute_residual / np.linalg.norm(eigenvec)
+>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (
+            f"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, "
+            f"absolute residual {absolute_residual:.6e}, "
+            f"relative residual {relative_residual:.6e}"
+        )
+E       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (7, 7), absolute residual 1.898037e-05, relative residual 1.898037e-05
+E       assert False
+E        +  where False = <function allclose at 0x7b74c2d35b70>((array([[ 1.76405235,  0.40015721,  0.97873798,  2.2408932 ,  1.86755799,\n        -0.97727788,  0.95008842],\n       [-0...42001794],\n       [-1.70627019,  1.9507754 , -0.50965218, -0.4380743 , -1.25279536,\n         0.77749036, -1.61389785]]) @ array([ 0.00258247+0.32414113j,  0.00290378+0.36455563j,\n       -0.00212511-0.26715116j, -0.0021222 -0.26643454j,\n       -0.00465607-0.58482818j, -0.00285362-0.35858259j,\n       -0.00307381-0.38601262j])), (np.complex128(-3.854345673396114+8.17764437725105e-07j) * array([ 0.00258247+0.32414113j,  0.00290378+0.36455563j,\n       -0.00212511-0.26715116j, -0.0021222 -0.26643454j,\n       -0.00465607-0.58482818j, -0.00285362-0.35858259j,\n       -0.00307381-0.38601262j])))
+E        +    where <function allclose at 0x7b74c2d35b70> = np.allclose
+
+/tests/test_outputs.py:63: AssertionError
+______________________________ test_eigen_pair[8] ______________________________
+
+size = 8
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_eigen_pair(size):
+        """Verify the eigen pair is valid."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)
+        # sanity eigen checks
+        assert not np.allclose(eigenvec, 0), "eigenvector is zero"
+        assert not np.isnan(eigenval), "eigenvalue is NaN"
+        assert not np.isinf(eigenval), "eigenvalue is Inf"
+        # assert eigen pair satisfies definition Ax = λx
+        # compute residual only for error message, not used for assert
+        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)
+        relative_residual = absolute_residual / np.linalg.norm(eigenvec)
+>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (
+            f"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, "
+            f"absolute residual {absolute_residual:.6e}, "
+            f"relative residual {relative_residual:.6e}"
+        )
+E       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (8, 8), absolute residual 5.026114e-03, relative residual 5.026114e-03
+E       assert False
+E        +  where False = <function allclose at 0x7b74c2d35b70>((array([[ 1.76405235,  0.40015721,  0.97873798,  2.2408932 ,  1.86755799,\n        -0.97727788,  0.95008842, -0.15135721...     [ 0.06651722,  0.3024719 , -0.63432209, -0.36274117, -0.67246045,\n        -0.35955316, -0.81314628, -1.7262826 ]]) @ array([-0.27457746+0.20877759j, -0.14498577+0.11008367j,\n        0.38084205-0.28834193j,  0.38520204-0.29194613j,\n       -0.01497655+0.01081339j, -0.40625681+0.3081938j ,\n       -0.27764405+0.21016026j,  0.05325647-0.04032263j])), (np.complex128(-2.882014817940851+0.0017315690311869858j) * array([-0.27457746+0.20877759j, -0.14498577+0.11008367j,\n        0.38084205-0.28834193j,  0.38520204-0.29194613j,\n       -0.01497655+0.01081339j, -0.40625681+0.3081938j ,\n       -0.27764405+0.21016026j,  0.05325647-0.04032263j])))
+E        +    where <function allclose at 0x7b74c2d35b70> = np.allclose
+
+/tests/test_outputs.py:63: AssertionError
+______________________________ test_eigen_pair[9] ______________________________
+
+size = 9
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_eigen_pair(size):
+        """Verify the eigen pair is valid."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)
+        # sanity eigen checks
+        assert not np.allclose(eigenvec, 0), "eigenvector is zero"
+        assert not np.isnan(eigenval), "eigenvalue is NaN"
+        assert not np.isinf(eigenval), "eigenvalue is Inf"
+        # assert eigen pair satisfies definition Ax = λx
+        # compute residual only for error message, not used for assert
+        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)
+        relative_residual = absolute_residual / np.linalg.norm(eigenvec)
+>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (
+            f"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, "
+            f"absolute residual {absolute_residual:.6e}, "
+            f"relative residual {relative_residual:.6e}"
+        )
+E       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (9, 9), absolute residual 1.096270e-03, relative residual 1.096270e-03
+E       assert False
+E        +  where False = <function allclose at 0x7b74c2d35b70>((array([[ 1.76405235,  0.40015721,  0.97873798,  2.2408932 ,  1.86755799,\n        -0.97727788,  0.95008842, -0.15135721...0068, -1.23482582,  0.40234164, -0.68481009, -0.87079715,\n        -0.57884966, -0.31155253,  0.05616534, -1.16514984]]) @ array([-0.13251857-0.01739536j,  0.04192189+0.00548715j,\n       -0.44983411-0.05915806j,  0.29946945+0.03940557j,\n    ...93j,  0.46331409+0.06096772j,\n        0.23142267+0.03045834j,  0.04771167+0.00616431j,\n        0.46889312+0.06173743j])), (np.complex128(-3.9314644787244526-0.00017355721679102043j) * array([-0.13251857-0.01739536j,  0.04192189+0.00548715j,\n       -0.44983411-0.05915806j,  0.29946945+0.03940557j,\n    ...93j,  0.46331409+0.06096772j,\n        0.23142267+0.03045834j,  0.04771167+0.00616431j,\n        0.46889312+0.06173743j])))
+E        +    where <function allclose at 0x7b74c2d35b70> = np.allclose
+
+/tests/test_outputs.py:63: AssertionError
+_____________________________ test_eigen_pair[10] ______________________________
+
+size = 10
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_eigen_pair(size):
+        """Verify the eigen pair is valid."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, eigenvec = find_dominant_eigenvalue_and_eigenvector(A)
+        # sanity eigen checks
+        assert not np.allclose(eigenvec, 0), "eigenvector is zero"
+        assert not np.isnan(eigenval), "eigenvalue is NaN"
+        assert not np.isinf(eigenval), "eigenvalue is Inf"
+        # assert eigen pair satisfies definition Ax = λx
+        # compute residual only for error message, not used for assert
+        absolute_residual = np.linalg.norm(A @ eigenvec - eigenval * eigenvec)
+        relative_residual = absolute_residual / np.linalg.norm(eigenvec)
+>       assert np.allclose(A @ eigenvec, eigenval * eigenvec), (
+            f"Failed to satisfy eigenvalue equation Ax = λx for {A.shape}, "
+            f"absolute residual {absolute_residual:.6e}, "
+            f"relative residual {relative_residual:.6e}"
+        )
+E       AssertionError: Failed to satisfy eigenvalue equation Ax = λx for (10, 10), absolute residual 1.991634e+00, relative residual 1.991634e+00
+E       assert False
+E        +  where False = <function allclose at 0x7b74c2d35b70>((array([[ 1.76405235,  0.40015721,  0.97873798,  2.2408932 ,  1.86755799,\n        -0.97727788,  0.95008842, -0.15135721...4507,  0.20827498,  0.97663904,  0.3563664 ,\n         0.70657317,  0.01050002,  1.78587049,  0.12691209,  0.40198936]]) @ array([ 0.1398139 -0.17539337j, -0.05244903-0.12458599j,\n        0.31091156-0.19283871j, -0.06294699+0.1266204j ,\n    ...29j,\n        0.02853506+0.13938052j, -0.31257504-0.20168715j,\n        0.40509611+0.00206574j,  0.02530627+0.07463435j])), (np.complex128(-0.48856252123775623+3.0564512962116157j) * array([ 0.1398139 -0.17539337j, -0.05244903-0.12458599j,\n        0.31091156-0.19283871j, -0.06294699+0.1266204j ,\n    ...29j,\n        0.02853506+0.13938052j, -0.31257504-0.20168715j,\n        0.40509611+0.00206574j,  0.02530627+0.07463435j])))
+E        +    where <function allclose at 0x7b74c2d35b70> = np.allclose
+
+/tests/test_outputs.py:63: AssertionError
+_________________________ test_dominance_eigenvalue[5] _________________________
+
+size = 5
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_dominance_eigenvalue(size):
+        """Test that eigenvalue (potentially complex) has the largest magnitude."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, _ = find_dominant_eigenvalue_and_eigenvector(A)
+        # computing the reference
+        all_eigenvals = _np_linalg_eigvals(A)
+        ref_max_eigenval = all_eigenvals[np.argmax(np.abs(all_eigenvals))]
+>       assert np.isclose(np.abs(eigenval), np.abs(ref_max_eigenval)), (
+            f"|{eigenval}| is not the largest, reference |{ref_max_eigenval}|"
+        )
+E       AssertionError: |(2.208399762432223+1.843535817722558j)| is not the largest, reference |(2.2913072991273356+2.129147169190678j)|
+E       assert np.False_
+E        +  where np.False_ = <function isclose at 0x7b74c2d35c70>(np.float64(2.876743614216721), np.float64(3.1278358024530126))
+E        +    where <function isclose at 0x7b74c2d35c70> = np.isclose
+E        +    and   np.float64(2.876743614216721) = <ufunc 'absolute'>(np.complex128(2.208399762432223+1.843535817722558j))
+E        +      where <ufunc 'absolute'> = np.abs
+E        +    and   np.float64(3.1278358024530126) = <ufunc 'absolute'>(np.complex128(2.2913072991273356+2.129147169190678j))
+E        +      where <ufunc 'absolute'> = np.abs
+
+/tests/test_outputs.py:79: AssertionError
+_________________________ test_dominance_eigenvalue[8] _________________________
+
+size = 8
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_dominance_eigenvalue(size):
+        """Test that eigenvalue (potentially complex) has the largest magnitude."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, _ = find_dominant_eigenvalue_and_eigenvector(A)
+        # computing the reference
+        all_eigenvals = _np_linalg_eigvals(A)
+        ref_max_eigenval = all_eigenvals[np.argmax(np.abs(all_eigenvals))]
+>       assert np.isclose(np.abs(eigenval), np.abs(ref_max_eigenval)), (
+            f"|{eigenval}| is not the largest, reference |{ref_max_eigenval}|"
+        )
+E       AssertionError: |(-2.882014817940851+0.0017315690311869858j)| is not the largest, reference |(-2.8807235138712226+0j)|
+E       assert np.False_
+E        +  where np.False_ = <function isclose at 0x7b74c2d35c70>(np.float64(2.882015338120522), np.float64(2.8807235138712226))
+E        +    where <function isclose at 0x7b74c2d35c70> = np.isclose
+E        +    and   np.float64(2.882015338120522) = <ufunc 'absolute'>(np.complex128(-2.882014817940851+0.0017315690311869858j))
+E        +      where <ufunc 'absolute'> = np.abs
+E        +    and   np.float64(2.8807235138712226) = <ufunc 'absolute'>(np.complex128(-2.8807235138712226+0j))
+E        +      where <ufunc 'absolute'> = np.abs
+
+/tests/test_outputs.py:79: AssertionError
+_________________________ test_dominance_eigenvalue[9] _________________________
+
+size = 9
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_dominance_eigenvalue(size):
+        """Test that eigenvalue (potentially complex) has the largest magnitude."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, _ = find_dominant_eigenvalue_and_eigenvector(A)
+        # computing the reference
+        all_eigenvals = _np_linalg_eigvals(A)
+        ref_max_eigenval = all_eigenvals[np.argmax(np.abs(all_eigenvals))]
+>       assert np.isclose(np.abs(eigenval), np.abs(ref_max_eigenval)), (
+            f"|{eigenval}| is not the largest, reference |{ref_max_eigenval}|"
+        )
+E       AssertionError: |(-3.9314644787244526-0.00017355721679102043j)| is not the largest, reference |(-3.9315066556841973+0j)|
+E       assert np.False_
+E        +  where np.False_ = <function isclose at 0x7b74c2d35c70>(np.float64(3.931464482555354), np.float64(3.9315066556841973))
+E        +    where <function isclose at 0x7b74c2d35c70> = np.isclose
+E        +    and   np.float64(3.931464482555354) = <ufunc 'absolute'>(np.complex128(-3.9314644787244526-0.00017355721679102043j))
+E        +      where <ufunc 'absolute'> = np.abs
+E        +    and   np.float64(3.9315066556841973) = <ufunc 'absolute'>(np.complex128(-3.9315066556841973+0j))
+E        +      where <ufunc 'absolute'> = np.abs
+
+/tests/test_outputs.py:79: AssertionError
+________________________ test_dominance_eigenvalue[10] _________________________
+
+size = 10
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_dominance_eigenvalue(size):
+        """Test that eigenvalue (potentially complex) has the largest magnitude."""
+        _np_random_seed(0)
+        A = _np_random_normal(size=(size, size)).astype(np.float64)
+        eigenval, _ = find_dominant_eigenvalue_and_eigenvector(A)
+        # computing the reference
+        all_eigenvals = _np_linalg_eigvals(A)
+        ref_max_eigenval = all_eigenvals[np.argmax(np.abs(all_eigenvals))]
+>       assert np.isclose(np.abs(eigenval), np.abs(ref_max_eigenval)), (
+            f"|{eigenval}| is not the largest, reference |{ref_max_eigenval}|"
+        )
+E       AssertionError: |(-0.48856252123775623+3.0564512962116157j)| is not the largest, reference |(-0.1884386181322752+3.3737457778120654j)|
+E       assert np.False_
+E        +  where np.False_ = <function isclose at 0x7b74c2d35c70>(np.float64(3.0952524716526533), np.float64(3.3790042447603312))
+E        +    where <function isclose at 0x7b74c2d35c70> = np.isclose
+E        +    and   np.float64(3.0952524716526533) = <ufunc 'absolute'>(np.complex128(-0.48856252123775623+3.0564512962116157j))
+E        +      where <ufunc 'absolute'> = np.abs
+E        +    and   np.float64(3.3790042447603312) = <ufunc 'absolute'>(np.complex128(-0.1884386181322752+3.3737457778120654j))
+E        +      where <ufunc 'absolute'> = np.abs
+
+/tests/test_outputs.py:79: AssertionError
+_______________________________ test_speedup[2] ________________________________
+
+size = 2
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000201 seconds/call > 0.000018 seconds/call
+E       assert 0.00020120301633141935 < 1.792947296053171e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 2x2 (ref): 0.000018 seconds
+Median time for 2x2: 0.000201 seconds
+_______________________________ test_speedup[3] ________________________________
+
+size = 3
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000210 seconds/call > 0.000025 seconds/call
+E       assert 0.00020957199740223587 < 2.476951340213418e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 3x3 (ref): 0.000025 seconds
+Median time for 3x3: 0.000210 seconds
+_______________________________ test_speedup[4] ________________________________
+
+size = 4
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000211 seconds/call > 0.000022 seconds/call
+E       assert 0.0002111555077135563 < 2.188450889661908e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 4x4 (ref): 0.000022 seconds
+Median time for 4x4: 0.000211 seconds
+_______________________________ test_speedup[5] ________________________________
+
+size = 5
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000216 seconds/call > 0.000023 seconds/call
+E       assert 0.0002157274866476655 < 2.320148632861674e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 5x5 (ref): 0.000023 seconds
+Median time for 5x5: 0.000216 seconds
+_______________________________ test_speedup[6] ________________________________
+
+size = 6
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000239 seconds/call > 0.000043 seconds/call
+E       assert 0.00023890347802080214 < 4.3403502786532044e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 6x6 (ref): 0.000043 seconds
+Median time for 6x6: 0.000239 seconds
+_______________________________ test_speedup[7] ________________________________
+
+size = 7
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000226 seconds/call > 0.000030 seconds/call
+E       assert 0.00022629849263466895 < 2.9543996788561344e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 7x7 (ref): 0.000030 seconds
+Median time for 7x7: 0.000226 seconds
+_______________________________ test_speedup[8] ________________________________
+
+size = 8
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000228 seconds/call > 0.000032 seconds/call
+E       assert 0.00022787050693295896 < 3.213397576473653e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 8x8 (ref): 0.000032 seconds
+Median time for 8x8: 0.000228 seconds
+_______________________________ test_speedup[9] ________________________________
+
+size = 9
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000244 seconds/call > 0.000035 seconds/call
+E       assert 0.0002441980177536607 < 3.538647433742881e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 9x9 (ref): 0.000035 seconds
+Median time for 9x9: 0.000244 seconds
+_______________________________ test_speedup[10] _______________________________
+
+size = 10
+
+    @pytest.mark.parametrize("size", MAT_SIZES)
+    def test_speedup(size):
+        """Make sure new implementation is faster than reference."""
+        _np_random_seed(0)
+        matrices = [
+            _np_random_normal(size=(size, size)).astype(np.float64) for _ in range(N)
+        ]
+    
+        with ProcessPoolExecutor(max_workers=1) as executor:
+            ref_future = executor.submit(
+                _time_function_isolated,
+                ref_solution,
+                matrices,
+            )
+            ref_dts = ref_future.result(timeout=30)
+            ref_dt = np.median(ref_dts).item() if ref_dts else float("inf")
+            print(f"Median time for {size}x{size} (ref): {ref_dt:.6f} seconds")
+    
+            candidate_future = executor.submit(
+                _time_function_isolated,
+                find_dominant_eigenvalue_and_eigenvector,
+                matrices,
+            )
+            dts = candidate_future.result(timeout=30)
+            dt = np.median(dts).item() if dts else float("inf")
+            print(f"Median time for {size}x{size}: {dt:.6f} seconds")
+    
+>       assert dt < ref_dt, f"{dt:.6f} seconds/call > {ref_dt:.6f} seconds/call"
+E       AssertionError: 0.000228 seconds/call > 0.000040 seconds/call
+E       assert 0.00022790199727751315 < 4.023447399958968e-05
+
+/tests/test_outputs.py:111: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Median time for 10x10 (ref): 0.000040 seconds
+Median time for 10x10: 0.000228 seconds
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_eigen_pair[2]
+PASSED ../tests/test_outputs.py::test_eigen_pair[3]
+PASSED ../tests/test_outputs.py::test_eigen_pair[4]
+PASSED ../tests/test_outputs.py::test_eigen_pair[6]
+PASSED ../tests/test_outputs.py::test_dominance_eigenvalue[2]
+PASSED ../tests/test_outputs.py::test_dominance_eigenvalue[3]
+PASSED ../tests/test_outputs.py::test_dominance_eigenvalue[4]
+PASSED ../tests/test_outputs.py::test_dominance_eigenvalue[6]
+PASSED ../tests/test_outputs.py::test_dominance_eigenvalue[7]
+FAILED ../tests/test_outputs.py::test_eigen_pair[5] - AssertionError: Failed ...
+FAILED ../tests/test_outputs.py::test_eigen_pair[7] - AssertionError: Failed ...
+FAILED ../tests/test_outputs.py::test_eigen_pair[8] - AssertionError: Failed ...
+FAILED ../tests/test_outputs.py::test_eigen_pair[9] - AssertionError: Failed ...
+FAILED ../tests/test_outputs.py::test_eigen_pair[10] - AssertionError: Failed...
+FAILED ../tests/test_outputs.py::test_dominance_eigenvalue[5] - AssertionErro...
+FAILED ../tests/test_outputs.py::test_dominance_eigenvalue[8] - AssertionErro...
+FAILED ../tests/test_outputs.py::test_dominance_eigenvalue[9] - AssertionErro...
+FAILED ../tests/test_outputs.py::test_dominance_eigenvalue[10] - AssertionErr...
+FAILED ../tests/test_outputs.py::test_speedup[2] - AssertionError: 0.000201 s...
+FAILED ../tests/test_outputs.py::test_speedup[3] - AssertionError: 0.000210 s...
+FAILED ../tests/test_outputs.py::test_speedup[4] - AssertionError: 0.000211 s...
+FAILED ../tests/test_outputs.py::test_speedup[5] - AssertionError: 0.000216 s...
+FAILED ../tests/test_outputs.py::test_speedup[6] - AssertionError: 0.000239 s...
+FAILED ../tests/test_outputs.py::test_speedup[7] - AssertionError: 0.000226 s...
+FAILED ../tests/test_outputs.py::test_speedup[8] - AssertionError: 0.000228 s...
+FAILED ../tests/test_outputs.py::test_speedup[9] - AssertionError: 0.000244 s...
+FAILED ../tests/test_outputs.py::test_speedup[10] - AssertionError: 0.000228 ...
+========================= 18 failed, 9 passed in 1.09s =========================

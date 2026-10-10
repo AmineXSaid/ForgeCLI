@@ -1,0 +1,60 @@
+{
+    "id": "d0aa0744-847e-4ae3-9470-dfe3327854c0",
+    "started_at": "2026-10-09T15:46:06.258998",
+    "updated_at": "2026-10-09T15:02:10.637822Z",
+    "finished_at": null,
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 10,
+        "n_errored_trials": 9,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 2,
+        "n_retries": 0,
+        "evals": {
+            "ante__quick-thinking__terminal-bench": {
+                "n_trials": 8,
+                "n_errors": 9,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "llm-inference-batching-scheduler__PdzndKa",
+                            "break-filter-js-from-html__ne8jjDZ",
+                            "reshard-c4-data__YFAkUFb",
+                            "write-compressor__wWfAoim",
+                            "merge-diff-arc-agi-task__cg53rmq",
+                            "gpt2-codegolf__FKMSgKN",
+                            "log-summary-date-ranges__jj7B2dk",
+                            "pytorch-model-cli__Fsjwgsi"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "NonZeroAgentExitCodeError": [
+                        "llm-inference-batching-scheduler__PdzndKa",
+                        "break-filter-js-from-html__ne8jjDZ",
+                        "reshard-c4-data__YFAkUFb",
+                        "write-compressor__wWfAoim",
+                        "merge-diff-arc-agi-task__cg53rmq",
+                        "log-summary-date-ranges__jj7B2dk",
+                        "pytorch-model-cli__Fsjwgsi"
+                    ],
+                    "CancelledError": [
+                        "winning-avg-corewars__oRxJZsr",
+                        "largest-eigenval__KXyiDqq"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null
+    }
+}

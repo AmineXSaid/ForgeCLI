@@ -1,0 +1,25 @@
+❖ Ante
+  I'll analyze the log files. Let me first inspect the format of a log file.
+  
+
+❖ Ante
+  The format is clear: `YYYY-MM-DD HH:MM:SS [SEVERITY] message`. I'll write a script to count severities per date range using the filename dates.
+  
+
+❖ Ante
+  The counts are computed. Let me verify the written CSV file.
+  
+
+❖ Ante
+  The summary CSV has been written to `/app/summary.csv` with all severity counts across the requested date ranges.
+  
+  | period | ERROR | WARNING | INFO |
+  |---|---|---|---|
+  | today | 370 | 463 | 1433 |
+  | last_7_days | 2969 | 4020 | 12203 |
+  | last_30_days | 9594 | 12847 | 38702 |
+  | month_to_date | 4682 | 6327 | 19420 |
+  | total | 14160 | 18772 | 56621 |
+  
+  Counts were derived from the date embedded in each filename, with today's reference date as 2025-08-12.
+

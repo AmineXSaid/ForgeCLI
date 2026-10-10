@@ -1,0 +1,40 @@
+{
+    "schema_version": 2,
+    "task": {
+        "name": "gpt2-codegolf",
+        "type": "git",
+        "digest": "sha256:47287db05e8bda0de6704fd43a2550a62c9180c6d0f1f339b71724a1cd607398",
+        "source": "terminal-bench",
+        "path": "gpt2-codegolf",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c"
+    },
+    "install_only": false,
+    "timeout_multiplier": 1.0,
+    "agent": {
+        "name": "forge_agent:ForgeCLI",
+        "model_name": "openai/deep-thinking",
+        "skills": [],
+        "resume_trajectory": false,
+        "extra_allowed_hosts": [],
+        "kwargs": {},
+        "mcp_servers": []
+    },
+    "bridge_inputs": {},
+    "skills": [],
+    "environment": {
+        "type": "docker",
+        "force_build": false,
+        "delete": true,
+        "stream": false,
+        "cpu_enforcement_policy": "auto",
+        "memory_enforcement_policy": "auto",
+        "extra_docker_compose": [],
+        "kwargs": {},
+        "extra_allowed_hosts": []
+    },
+    "verifier": {
+        "disable": false,
+        "environment_mode": "shared"
+    }
+}

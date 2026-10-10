@@ -1,0 +1,53 @@
+{
+    "id": "241aaa72-5545-4c30-bd7c-cccdfddcd941",
+    "started_at": "2026-10-08T16:44:42.316880",
+    "updated_at": "2026-10-08T17:03:44.195515",
+    "finished_at": "2026-10-08T17:03:44.195515",
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 10,
+        "n_errored_trials": 2,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "forgecli__kgpt-reasoning-text__terminal-bench": {
+                "n_trials": 10,
+                "n_errors": 2,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__7NFV8BG",
+                            "llm-inference-batching-scheduler__L5Pa8KA",
+                            "break-filter-js-from-html__JRjE27X",
+                            "reshard-c4-data__GAwrNuJ",
+                            "write-compressor__UQ4iozN",
+                            "merge-diff-arc-agi-task__zDjWxkb",
+                            "winning-avg-corewars__u9sMgvy",
+                            "log-summary-date-ranges__u6Q4uNH",
+                            "pytorch-model-cli__j8snjBx",
+                            "largest-eigenval__jdZvTp9"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "NonZeroAgentExitCodeError": [
+                        "llm-inference-batching-scheduler__L5Pa8KA",
+                        "largest-eigenval__jdZvTp9"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 4577871,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 146545,
+        "cost_usd": 0.0
+    }
+}

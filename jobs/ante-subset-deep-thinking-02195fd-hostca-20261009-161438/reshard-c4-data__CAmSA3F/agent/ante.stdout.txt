@@ -1,0 +1,89 @@
+❖ Ante
+  I'll start by inspecting the environment and the sample data structure.
+  
+
+❖ Ante
+  The sample is a flat directory of 9,898 small JSONL files (~800 MB total, each well under 15 MB). I'll build the two scripts around a balanced-tree resharing design. Let me verify the toolchain first.
+  
+
+❖ Ante
+  Good — flat structure, 9,898 files, ~800 MB, all well under 15 MB. I'll build the scripts around a balanced-tree with a JSON manifest (so decompress restores structure exactly, and files that ever exceed 15 MB get split and reassembled). Starting with the code.
+  
+
+❖ Ante
+  I overcomplicated decompress.py. Let me rewrite both cleanly — compress stores relative shard paths, and decompress handles deletion properly.
+  
+
+❖ Ante
+  I have offset-semantics bugs in both. Let me rewrite them cleanly with correct per-segment byte offsets and a per-file manifest structure.
+  
+
+❖ Ante
+  I'm overcomplicating this with leftover experimental code. Let me write both scripts cleanly in one pass.
+  
+
+❖ Ante
+  The compress logic is clean now. Rewriting decompress to match the manifest schema exactly:
+  
+
+❖ Ante
+  Decompress currently leaves the shard files behind, which would mean the result isn't the "original structure exactly." Let me fix it to remove the shard files too.
+  
+
+❖ Ante
+  Now let me set up the uv project (pyproject.toml + venv) in /app. The scripts use only the standard library, so no external dependencies are needed.
+  
+
+❖ Ante
+  Environment is ready. Now let me test the logic on a small synthetic tree (nested dirs, empty dirs, empty files, and a file larger than 15 MB to exercise splitting), verifying a perfect round-trip.
+  
+
+❖ Ante
+  Empty directories get pruned incorrectly. Let me preserve originally-empty dirs during pruning.
+  
+
+❖ Ante
+  Synthetic round-trip is byte-identical, including empty dirs, empty files, and a >15 MB split file. Now let me test on the real c4_sample with constraint checks.
+  
+
+❖ Ante
+  The compress run is processing 800 MB; I'll wait for it to finish.
+  
+
+❖ Ante
+  Compress produced 52 shards from 9,898 files. Let me verify both constraints on the output tree, then decompress and check a byte-exact round-trip.
+  
+
+❖ Ante
+  Constraints verified (≤30 entries/dir, files capped at exactly 15 MiB). Now the round-trip: decompress and compare a content hash of every restored file against the original.
+  
+  
+  
+
+❖ Ante
+  All 9,898 files restored byte-for-byte (SHA-256 match), and every shard/manifest artifact cleaned up (only the root remains). Let me do a final review of both scripts and confirm the uv setup is complete.
+  
+
+❖ Ante
+  Let me clean up the test artifacts in /tmp.
+  
+
+❖ Ante
+  Both scripts are complete, tested, and verified on the real `c4_sample/` data.
+  
+  ## What I built
+  
+  **`/app/compress.py`** — `python compress.py <input_dir> <output_dir>`. Scans the tree (handles nested dirs, empty dirs, empty files), packs file bytes in order into "shard" files, and places those shards in a bottom-up balanced directory tree so every directory holds ≤30 entries. Any file bigger than 15 MB — or that doesn't fit the current shard's remaining space — is split across consecutive shards. Writes `.manifest.json` recording the exact file→segment mapping (paths stored relative so the dir can be moved before decompressing).
+  
+  **`/app/decompress.py`** — `python decompress.py <resharded_dir>`. Reads the manifest, recreates every original file byte-for-byte at its original path, restores empty dirs, then removes the manifest and shard files and prunes emptied directories — restoring the original structure exactly.
+  
+  **Environment** — `pyproject.toml` + `uv.lock` + `.venv` in `/app` (`uv sync` done). Scripts use only the stdlib, so no extra deps; `uv run` installs nothing further.
+  
+  ## Verified
+  
+  - Synthetic tree (nested dirs, empty dir, empty file, a >15 MB file) → `diff -r` identical.
+  - **`c4_sample/`**: 9,898 files (~817 MB) → 52 shards in 13.6 s. Constraints held: max 30 entries/dir, max file size exactly 15 MiB, no violations.
+  - Decompressed, then whole-tree SHA-256 of all 9,898 files **matches** the original, with all shards/manifests removed.
+  
+  Both are also transient-dir-safe: `os.walk` (not `.iterdir()`), bounded reads, and path-based planning.
+

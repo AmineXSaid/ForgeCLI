@@ -1,0 +1,62 @@
+{
+    "id": "89b1b3b7-bcf5-4804-8d3e-200f8d3cd38f",
+    "started_at": "2026-10-09T13:00:01.912202",
+    "updated_at": "2026-10-09T14:16:22.494629",
+    "finished_at": "2026-10-09T14:16:22.494629",
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 10,
+        "n_errored_trials": 7,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "forgecli__quick-thinking__terminal-bench": {
+                "n_trials": 10,
+                "n_errors": 7,
+                "metrics": [
+                    {
+                        "mean": 0.2
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__VwLYnkA",
+                            "llm-inference-batching-scheduler__EbNLnAt",
+                            "break-filter-js-from-html__RVr5mcT",
+                            "reshard-c4-data__M5r5UbP",
+                            "write-compressor__rLX4DK5",
+                            "winning-avg-corewars__kqGFC3C",
+                            "log-summary-date-ranges__9xgCgKX",
+                            "pytorch-model-cli__qvvs2Kw"
+                        ],
+                        "1.0": [
+                            "merge-diff-arc-agi-task__q6UDkES",
+                            "largest-eigenval__Ha72rFh"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "NonZeroAgentExitCodeError": [
+                        "gpt2-codegolf__VwLYnkA",
+                        "llm-inference-batching-scheduler__EbNLnAt",
+                        "break-filter-js-from-html__RVr5mcT",
+                        "reshard-c4-data__M5r5UbP",
+                        "write-compressor__rLX4DK5",
+                        "log-summary-date-ranges__9xgCgKX"
+                    ],
+                    "AgentTimeoutError": [
+                        "winning-avg-corewars__kqGFC3C"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 2005753,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 175852,
+        "cost_usd": 0.0
+    }
+}

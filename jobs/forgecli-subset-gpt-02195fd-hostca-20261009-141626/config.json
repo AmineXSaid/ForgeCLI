@@ -1,0 +1,17 @@
+{
+    "job_name": "forgecli-subset-gpt-02195fd-hostca-20261009-141626",
+    "n_concurrent_trials": 2,
+    "agents": [
+        {
+            "name": "forge_agent:ForgeCLI",
+            "model_name": "openai/gpt"
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0",
+            "n_tasks": 10
+        }
+    ]
+}

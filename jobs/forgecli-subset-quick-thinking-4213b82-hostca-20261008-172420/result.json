@@ -1,0 +1,61 @@
+{
+    "id": "9d95cea9-6115-4037-a40d-855fe1fd93b5",
+    "started_at": "2026-10-08T17:24:24.894977",
+    "updated_at": "2026-10-09T09:30:09.060615",
+    "finished_at": "2026-10-09T09:30:09.060615",
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 10,
+        "n_errored_trials": 8,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "forgecli__quick-thinking__terminal-bench": {
+                "n_trials": 10,
+                "n_errors": 8,
+                "metrics": [
+                    {
+                        "mean": 0.1
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__sNmvRuF",
+                            "llm-inference-batching-scheduler__K9dphhQ",
+                            "break-filter-js-from-html__vscMobk",
+                            "reshard-c4-data__Nu36WBv",
+                            "write-compressor__JgR7cXN",
+                            "merge-diff-arc-agi-task__q5tHGZ9",
+                            "winning-avg-corewars__8iT4ywd",
+                            "pytorch-model-cli__UwzY9e9",
+                            "largest-eigenval__vhd9Txc"
+                        ],
+                        "1.0": [
+                            "log-summary-date-ranges__qQiFs6o"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "NonZeroAgentExitCodeError": [
+                        "gpt2-codegolf__sNmvRuF",
+                        "llm-inference-batching-scheduler__K9dphhQ",
+                        "break-filter-js-from-html__vscMobk",
+                        "reshard-c4-data__Nu36WBv",
+                        "write-compressor__JgR7cXN",
+                        "merge-diff-arc-agi-task__q5tHGZ9",
+                        "winning-avg-corewars__8iT4ywd",
+                        "largest-eigenval__vhd9Txc"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 2108448,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 358857,
+        "cost_usd": 0.0
+    }
+}

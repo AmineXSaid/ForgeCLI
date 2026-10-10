@@ -1,0 +1,47 @@
+❖ Ante
+  I'll start by inspecting the checkpoints and the .bpe file to understand the data format I need to parse.
+  
+
+❖ Ante
+  The .ckpt is a TensorFlow checkpoint. Let me examine its structure to understand how to parse it without TensorFlow. GPT-2 124M is a well-known model, so I know its architecture, but I need to figure out how to read the TF checkpoint format in C.
+  
+  Let me check what tools are available.
+  
+
+❖ Ante
+  No python3, no tensorflow, no xxd/file. Let me use `od` to inspect the checkpoint. First, let me understand the TF checkpoint format.
+  
+  A TF checkpoint (.ckpt) file has a specific binary format:
+  1. It starts with a header, then a record structure. Modern TF checkpoints (V2 format) use the format where after the header there's a `BundleHeaderProto`, then tensor data described by `BundleEntryProto` messages.
+  
+  Actually, the file `gpt2-124M.ckpt` — this naming suggests it might be a single checkpoint file. The typical GPT-2 `model.ckpt` comes as `model.ckpt.index`, `model.ckpt.data-00000-of-00001`, but here it's a single combined file. Let me look at the actual bytes.
+  
+  Let me check whether this is a V1 or V2 checkpoint. Let me inspect the header with od.
+  
+
+❖ Ante
+  The file starts directly with float data (floats like `3ef5e603` = ~0.48). This is not a standard TF checkpoint with headers. The file begins immediately with raw float weights. This looks like it might be a custom/raw binary dump of the weights, OR a TF V1 checkpoint stored in a single `data` file.
+  
+  Wait — actually let me reconsider. A standard TF `.ckpt` file (V1 `Saver`) is a single file that contains a header + records. The header would be text/protobuf. But here we start immediately with float data.
+  
+  Let me look for text markers or structure deeper. The first bytes `03 ef f5 3e` — the first byte 0x03 at offset 0 might be a length prefix from the TF record format (record written via `io::RecordWriter` where each record has a 8-byte header: 4-byte length + CRC, 4-byte masked CRC). 
+  
+  Actually in TensorFlow's Sstable-based checkpoint writer, data is stored as records. Each record has format: [8-byte header][data][4-byte footer]. The header is "length (uint32 low bits) | mask (uint32) | crc32c (uint32) | mask". 
+  
+  Let me look more carefully. The first 4 bytes `03 ef f5 3e` = 0x3EF5EF03 little endian = big number, not a small length. Hmm.
+  
+  Let me reconsider. This could be the "data" portion of a V2 checkpoint that was merged with everything else, OR it's a raw float dump.
+  
+  Actually, let me reconsider the whole thing. This is a challenge-style problem. The file is 497MB. GPT-2 124M has ~124M parameters. At 4 bytes each that's ~496MB. So 497759232 bytes / 4 = 124,439,808 float32 values ≈ 124M params. So this file is essentially exactly the raw float weights concatenated! 
+  
+  So the .ckpt here is a raw dump of all the model weights in float32, likely in a specific deterministic order. I need to figure out the exact order to assign them to the correct tensors.
+  
+  Let me look at the "index" typically... but there's no index file. Hmm. Without an index, how do I know the order of tensors? 
+  
+  Let me check the beginning more carefully and also check if there's an index embedded. Let me look for the number of parameters.
+  
+  124439808 params. Let me figure out GPT-2 124M architecture layout.
+  
+  Let me check the exact byte count first and confirm divisibility by 4.The file appears to start directly with float weights (~124M params at 4 bytes = ~497MB, which matches). Let me verify the exact parameter count and check for any embedded structure.
+  
+

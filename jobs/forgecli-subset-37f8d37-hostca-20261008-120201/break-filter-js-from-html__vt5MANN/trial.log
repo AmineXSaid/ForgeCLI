@@ -1,0 +1,24 @@
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --model deep-thinking --max-time 1170 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command outputs captured
+Collecting main service artifacts

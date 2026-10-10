@@ -1,0 +1,227 @@
+Downloading aiohttp (1.8MiB)
+Downloading numpy (15.9MiB)
+Downloading pygments (1.2MiB)
+Downloading hf-xet (4.0MiB)
+Downloading pyarrow (51.4MiB)
+Downloading pandas (10.3MiB)
+ Downloading aiohttp
+ Downloading hf-xet
+ Downloading pygments
+ Downloading pandas
+ Downloading numpy
+ Downloading pyarrow
+Installed 41 packages in 5.35s
+============================= test session starts ==============================
+platform linux -- Python 3.13.7, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5, anyio-4.15.1
+collected 1 item
+
+../tests/test_outputs.py E                                               [100%]
+
+==================================== ERRORS ====================================
+_____________ ERROR at setup of test_compress_decompress_workflow ______________
+
+    @pytest.fixture(scope="session")
+    def generate_test_data():
+        """Generate C4 test data from shard 00009 (unseen by agent)"""
+        print("Generating test data.")
+    
+        # Clean up any existing test directories
+        if os.path.exists(TEST_INPUT_DIR):
+            shutil.rmtree(TEST_INPUT_DIR)
+        if os.path.exists(TEST_OUTPUT_DIR):
+            shutil.rmtree(TEST_OUTPUT_DIR)
+    
+        # Load C4 shard 00009 (agent only sees shard 00000)
+>       dataset = load_dataset(
+            "allenai/c4",
+            data_files={"train": ["en/c4-train.00009-of-01024.json.gz"]},
+            split="train",
+        )
+
+/tests/test_outputs.py:34: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/load.py:2084: in load_dataset
+    builder_instance.download_and_prepare(
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/builder.py:925: in download_and_prepare
+    self._download_and_prepare(
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/builder.py:979: in _download_and_prepare
+    split_generators = self._split_generators(dl_manager, **split_generators_kwargs)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/packaged_modules/json/json.py:78: in _split_generators
+    data_files = dl_manager.download_and_extract(self.config.data_files)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/download/download_manager.py:326: in download_and_extract
+    return self.extract(self.download(url_or_urls))
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/download/download_manager.py:159: in download
+    downloaded_path_or_paths = map_nested(
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/utils/py_utils.py:522: in map_nested
+    _single_map_nested((function, obj, batched, batch_size, types, None, True, None))
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/utils/py_utils.py:409: in _single_map_nested
+    mapped = [_single_map_nested((function, v, batched, batch_size, types, None, True, None)) for v in pbar]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/utils/py_utils.py:390: in _single_map_nested
+    return [mapped_item for batch in iter_batched(data_struct, batch_size) for mapped_item in function(batch)]
+                                                                                              ^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/download/download_manager.py:220: in _download_batched
+    self._download_single(url_or_filename, download_config=download_config)
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/download/download_manager.py:229: in _download_single
+    out = cached_path(url_or_filename, download_config=download_config)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/datasets/utils/file_utils.py:197: in cached_path
+    ).hf_hub_download(
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/utils/_validators.py:89: in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/hf_api.py:6414: in hf_hub_download
+    return hf_hub_download(
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/utils/_validators.py:89: in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/utils/_http.py:276: in _inner
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/file_download.py:1047: in hf_hub_download
+    return _hf_hub_download_to_cache_dir(
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/file_download.py:1285: in _hf_hub_download_to_cache_dir
+    _download_to_tmp_and_move(
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/file_download.py:2016: in _download_to_tmp_and_move
+    xet_get(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def xet_get(
+        *,
+        incomplete_path: Path,
+        xet_file_data: XetFileData,
+        headers: dict[str, str],
+        expected_size: int | None = None,
+        displayed_filename: str | None = None,
+        tqdm_class: type[base_tqdm] | None = None,
+        _tqdm_bar: base_tqdm | None = None,
+    ) -> None:
+        """
+        Download a file using Xet storage service.
+    
+        Args:
+            incomplete_path (`Path`):
+                The path to the file to download.
+            xet_file_data (`XetFileData`):
+                The file metadata needed to make the request to the xet storage service.
+            headers (`dict[str, str]`):
+                The headers to send to the xet storage service.
+            expected_size (`int`, *optional*):
+                The expected size of the file to download. If set, the download will raise an error if the size of the
+                received content is different from the expected one.
+            displayed_filename (`str`, *optional*):
+                The filename of the file that is being downloaded. Value is used only to display a nice progress bar. If
+                not set, the filename is guessed from the URL or the `Content-Disposition` header.
+    
+        **How it works:**
+            The file download system uses Xet storage, which is a content-addressable storage system that breaks files into chunks
+            for efficient storage and transfer.
+    
+            ``session.new_file_download_group()`` manages downloading files by:
+            - Registering download tasks (each with its unique content hash) and starting download immediately in the background
+            - Connecting to a storage server (CAS server) that knows how files are chunked
+            - Using authentication to ensure secure access
+            - Providing progress updates during download
+    
+            Authentication works transparently: the download group is seeded with a short-lived xet
+            access token (fetched once per repo revision and cached across files) and accepts a
+            ``token_refresh_url`` that is used to refresh it as needed.
+    
+            The download process works like this:
+            1. Download tasks run in parallel:
+                1.1. Prepare to write the file to disk or to a stream (e.g. truncate file, set up cache)
+                1.2. Ask the server "how is this file split into chunks?" using the file's unique hash
+                    The server responds with:
+                    - Which chunks make up the complete file
+                    - Where each chunk can be downloaded from
+                1.3. For each needed chunk:
+                    - Checks if we already have it in our local cache
+                    - If not, download it from cloud storage (S3)
+                    - Save it to cache for future use
+                    - Assemble the chunks in order to recreate the original file
+    
+        """
+        try:
+            from hf_xet import XetFileInfo  # type: ignore[no-redef]
+        except ImportError:
+            raise ValueError(
+                "To use optimized download using Xet storage, you need to install the hf_xet package. "
+                'Try `pip install "huggingface_hub[hf_xet]"` or `pip install hf_xet`.'
+            )
+    
+        if not displayed_filename:
+            displayed_filename = incomplete_path.name
+    
+        # Truncate filename if too long to display
+        if len(displayed_filename) > 40:
+            displayed_filename = f"{displayed_filename[:40]}(…)"
+    
+        from .utils._xet import abort_xet_session, get_xet_session, refresh_xet_connection_info, xet_headers_without_auth
+        from .utils._xet_progress_reporting import XetDownloadProgressReporter
+    
+        xet_headers = xet_headers_without_auth(headers)
+    
+        # Fetched once per repo revision and cached; otherwise each download group would request its own
+        # token, i.e. one Hub API call per file (rate-limited on large snapshot downloads, see #4722).
+        connection_info = refresh_xet_connection_info(file_data=xet_file_data, headers=headers)
+    
+        session = get_xet_session()
+    
+        with XetDownloadProgressReporter(
+            reconstruction_desc=f"{displayed_filename}: reconstructing file",
+            transfer_desc=f"{displayed_filename}: downloading bytes",
+            total=expected_size,
+            log_level=logger.getEffectiveLevel(),
+            name="huggingface_hub.xet_get",
+            tqdm_class=tqdm_class,
+            external_reconstruction_bar=_tqdm_bar,
+        ) as progress:
+            try:
+>               with session.new_file_download_group(
+                    endpoint=connection_info.endpoint,
+                    token=connection_info.access_token,
+                    token_expiry_unix_secs=connection_info.expiration_unix_epoch,
+                    token_refresh_url=xet_file_data.refresh_route,
+                    token_refresh_headers=headers,
+                    custom_headers=xet_headers,
+                    progress_callback=progress.update_progress,
+                ) as group:
+E               RuntimeError: Task error: File reconstruction error: CAS Client Error: Request middleware error: error sending request for url (https://us.aws.cdn.hf.co/xorbs/default/ac43173e181b39de502ed1668eab64fca6b017fc1c953ca1242b4e1e0b8a6507?xip=Uxp29a6cemc&repo_id=621ffdd236468d709f182a80&X-Xet-Session-Id=01a120e8-b905-7d92-9780-76075103471f&user_id=public&Expires=1791557108&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hvcmJzL2RlZmF1bHQvYWM0MzE3M2UxODFiMzlkZTUwMmVkMTY2OGVhYjY0ZmNhNmIwMTdmYzFjOTUzY2ExMjQyYjRlMWUwYjhhNjUwN1xcP3hpcD1VeHAyOWE2Y2VtYyZyZXBvX2lkPTYyMWZmZGQyMzY0NjhkNzA5ZjE4MmE4MCZYLVhldC1TZXNzaW9uLUlkPTAxYTEyMGU4LWI5MDUtN2Q5Mi05NzgwLTc2MDc1MTAzNDcxZiZ1c2VyX2lkPXB1YmxpYyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiRXBvY2hUaW1lIjoxNzkxNTU3MTA4fSwiQnl0ZVJhbmdlIjp7IkV4cGVjdGVkSGVhZGVyIjoiYnl0ZXM9MC02NzA0NDMxNyJ9fX1dfQ__&Signature=MEQCIF9hELSJDxe1gsE0gmP%7EruhNkm3Z7kn7tcqziLnfi6-KAiBpMJQlchKxiptJxx9Bpoj2YzGK5bqjcu4r92kKB-2b%7Ew__&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F&Hash-Algorithm=SHA256)
+
+/root/.cache/uv/archive-v0/ljdcRfC32Uj5rjsFOOGJo/lib/python3.13/site-packages/huggingface_hub/file_download.py:589: RuntimeError
+---------------------------- Captured stdout setup -----------------------------
+Generating test data.
+---------------------------- Captured stderr setup -----------------------------
+'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+Retrying in 1s [Retry 1/5].
+'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+Retrying in 2s [Retry 2/5].
+'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+Retrying in 4s [Retry 3/5].
+'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+Retrying in 8s [Retry 4/5].
+'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+Retrying in 8s [Retry 5/5].
+'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+------------------------------ Captured log setup ------------------------------
+WARNING  huggingface_hub.utils._http:_http.py:551 '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+WARNING  huggingface_hub.utils._http:_http.py:564 Retrying in 1s [Retry 1/5].
+WARNING  huggingface_hub.utils._http:_http.py:551 '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+WARNING  huggingface_hub.utils._http:_http.py:564 Retrying in 2s [Retry 2/5].
+WARNING  huggingface_hub.utils._http:_http.py:551 '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+WARNING  huggingface_hub.utils._http:_http.py:564 Retrying in 4s [Retry 3/5].
+WARNING  huggingface_hub.utils._http:_http.py:551 '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+WARNING  huggingface_hub.utils._http:_http.py:564 Retrying in 8s [Retry 4/5].
+WARNING  huggingface_hub.utils._http:_http.py:551 '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+WARNING  huggingface_hub.utils._http:_http.py:564 Retrying in 8s [Retry 5/5].
+WARNING  huggingface_hub.utils._http:_http.py:551 '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)' thrown while requesting HEAD https://huggingface.co/datasets/allenai/c4/resolve/1588ec454efa1a09f29cd18ddd04fe05fc8653a2/c4.py
+WARNING  huggingface_hub.utils._http:_http.py:1023 Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+=========================== short test summary info ============================
+ERROR ../tests/test_outputs.py::test_compress_decompress_workflow - RuntimeEr...
+========================= 1 error in 170.46s (0:02:50) =========================

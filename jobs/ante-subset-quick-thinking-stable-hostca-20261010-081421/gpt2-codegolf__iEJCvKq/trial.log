@@ -1,0 +1,35 @@
+Running command: mkdir -p /logs/agent/setup
+{
+set -eu
+installer_path="$(mktemp "${TMPDIR:-/tmp}/ante-install.XXXXXX")"
+trap 'rm -f "$installer_path"' EXIT
+curl --fail --silent --show-error --location \
+  --retry 3 --retry-delay 1 --retry-max-time 120 \
+  --connect-timeout 10 --max-time 120 \
+  --max-filesize 1048576 --output "$installer_path" \
+  https://download.ante.run/install.sh
+ANTE_INSTALL_DIR=/usr/local/bin NO_MODIFY_PATH=true bash -- "$installer_path"
+} 2>&1 | tee /logs/agent/setup/stdout.txt
+Command failed
+Classified failed command as NetworkConnectionError (pattern: 'curl: \\(\\d+\\)')
+Trial gpt2-codegolf__iEJCvKq failed: Command failed (exit 60): mkdir -p /logs/agent/setup
+{
+set -eu
+installer_path="$(mktemp "${TMPDIR:-/tmp}/ante-install.XXXXXX")"
+trap 'rm -f "$installer_path"' EXIT
+curl --fail --silent --show-error --location \
+  --retry 3 --retry-delay 1 --retry-max-time 120 \
+  --connect-timeout 10 --max-time 120 \
+  --max-filesize 1048576 --output "$installer_path" \
+  https://download.ante.run/install.sh
+ANTE_INSTALL_DIR=/usr/local/bin NO_MODIFY_PATH=true bash -- "$installer_path"
+} 2>&1 | tee /logs/agent/setup/stdout.txt
+stdout: curl: (60) SSL certificate problem: unable to get local issuer certificate
+More details here: https://curl.se/docs/sslcerts.html
+
+curl failed to verify the legitimacy of the server and therefore could not
+establish a secure connection to it. To learn more about this situation and
+how to fix it, please visit the web page mentioned above.
+
+stderr: None
+Collecting main service artifacts

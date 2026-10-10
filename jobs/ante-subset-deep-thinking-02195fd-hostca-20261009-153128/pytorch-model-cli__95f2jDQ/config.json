@@ -1,0 +1,15 @@
+{
+    "task": {
+        "path": "pytorch-model-cli",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source": "terminal-bench"
+    },
+    "trial_name": "pytorch-model-cli__95f2jDQ",
+    "trials_dir": "jobs/ante-subset-deep-thinking-02195fd-hostca-20261009-153128",
+    "agent": {
+        "name": "ante_agent:AnteAgent",
+        "model_name": "openai/deep-thinking"
+    },
+    "job_id": "e9f46021-79ea-4742-9137-c14e64d97ead"
+}

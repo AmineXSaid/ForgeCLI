@@ -1,0 +1,24 @@
+❖ Ante
+  I'll analyze the filter and experiment with bypass payloads. Let me test how BeautifulSoup normalizes various inputs.
+  
+
+❖ Ante
+  The filter strips `script`, frames, and `on*` attributes — but preserves `javascript:` URLs. Let me check the environment and probe for parser differentials that auto-execute.
+  
+
+❖ Ante
+  The test harness expects `/tests/filter.py` (equivalent to `/app/filter.py`) which isn't present here, but the logic is clear. Let me check if a browser is available to test payload behavior.
+  
+
+❖ Ante
+  Chromium and Selenium are available. Let me build a local test harness that filters candidate payloads with the actual `remove_js` and checks in the real browser for alerts.
+  
+
+Connection interrupted, reconnecting in 1s… (1/4)
+
+Connection interrupted, reconnecting in 2s… (2/4)
+
+Connection interrupted, reconnecting in 4s… (3/4)
+
+Connection interrupted, reconnecting in 8s… (4/4)
+

@@ -1,0 +1,17 @@
+{
+    "job_name": "ante-subset-gpt-02195fd-hostca-20261009-160215",
+    "n_concurrent_trials": 2,
+    "agents": [
+        {
+            "name": "ante_agent:AnteAgent",
+            "model_name": "openai/gpt"
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0",
+            "n_tasks": 10
+        }
+    ]
+}

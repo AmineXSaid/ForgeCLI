@@ -1,0 +1,64 @@
+Connection interrupted, reconnecting in 1s… (1/4)
+
+Connection interrupted, reconnecting in 2s… (2/4)
+
+Connection interrupted, reconnecting in 4s… (3/4)
+
+Connection interrupted, reconnecting in 8s… (4/4)
+
+❖ Ante
+  
+  
+  I'll start by examining the five opponent warriors to understand their weaknesses.
+  
+  
+  
+  
+  
+
+Connection interrupted, reconnecting in 1s… (1/4)
+
+Connection interrupted, reconnecting in 2s… (2/4)
+
+Connection interrupted, reconnecting in 4s… (3/4)
+
+Connection interrupted, reconnecting in 8s… (4/4)
+
+❖ Ante
+  
+  
+  I'll analyze the opponents and study the pMARS source to understand the exact rules. Let me read key files in parallel.
+  
+  
+
+❖ Ante
+  
+  
+  Let me examine the build configuration and how pMARS is set up, since the exact addressing rules matter.
+  
+  
+  
+
+❖ Ante
+  
+  
+  EXT94 is commented out in config.h, but the buildflags patch may define it. Let me check the build flags and empirically test what the binary supports.
+  
+  
+  
+
+❖ Ante
+  
+  
+  The binary is built with `-DEXT94 -DPERMUTATE -DRWLIMIT`, so full ICWS'94 (modifiers, `*`/`{`/`}` indirect, NOP/SEQ/SNE) is available, but the test command doesn't use read/write limits. Let me study the bundled example warriors for proven techniques.
+  
+  
+  
+  
+
+❖ Ante
+  
+  
+  The binary is built with `-DEXT94 -DPERMUTATE -DRWLIMIT`. Now let me disassemble each opponent to see the exact compiled instructions, which is critical for understanding their behavior precisely.
+  
+

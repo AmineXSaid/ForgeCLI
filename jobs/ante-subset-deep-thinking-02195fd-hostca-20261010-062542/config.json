@@ -1,0 +1,17 @@
+{
+    "job_name": "ante-subset-deep-thinking-02195fd-hostca-20261010-062542",
+    "n_concurrent_trials": 1,
+    "agents": [
+        {
+            "name": "ante_agent:AnteAgent",
+            "model_name": "openai/deep-thinking"
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0",
+            "n_tasks": 10
+        }
+    ]
+}

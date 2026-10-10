@@ -1,0 +1,25 @@
+{
+    "job_name": "ante-smoke-quick-thinking-stable-hostca-20261010-081332",
+    "n_concurrent_trials": 2,
+    "agents": [
+        {
+            "name": "ante_agent:AnteAgent",
+            "model_name": "quick-thinking",
+            "kwargs": {
+                "provider": "openai-compatible",
+                "install_args": ""
+            },
+            "env": {
+                "OPENAI_COMPATIBLE_BASE_URL": "https://gpt.technica-engineering.net/api/v1",
+                "OPENAI_COMPATIBLE_API_KEY": "sk-5****58e"
+            }
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0",
+            "n_tasks": 1
+        }
+    ]
+}

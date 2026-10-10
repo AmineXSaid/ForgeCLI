@@ -1,0 +1,32 @@
+❖ Ante
+  
+  
+  I'll inspect the checkpoint and bpe files first to nail down the exact formats, then write the C program.
+  
+  
+
+❖ Ante
+  
+  
+  No python3, but I have gcc. The size 497,759,232 = 497,681,152 (weights) + 78,080 (names) matches a GPT-2 124M TF checkpoint exactly. Let me write a quick dumper to verify the format.
+  
+  
+
+❖ Ante
+  
+  
+  The BPE file is standard (50000 pairs, with `#version: 0.2` header). My dumper crashed, but I probably got the name length field wrong (in the TF1 format it's 4 bytes). Let me fix it.
+  
+
+❖ Ante
+  
+  
+  Segfault with no output — let me look at the raw header bytes.
+  
+
+❖ Ante
+  
+  
+  The file starts directly with raw floats (no metadata) — so this is a simple sequential dump. Byte size = 124,439,808 floats, and this matches exactly the parameters of GPT-2 124M (wte 50257×768 + 12 blocks × 7,087,872 + wpe 1024×768 + ln_f 1536). Let's investigate specific offsets to identify the variable order.
+  
+

@@ -1,0 +1,41 @@
+{
+    "id": "68f64cd0-02c7-4a58-add3-b47305bbb861",
+    "started_at": "2026-10-10T08:14:34.089901",
+    "updated_at": "2026-10-10T07:16:47.709684Z",
+    "finished_at": null,
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 5,
+        "n_errored_trials": 5,
+        "n_running_trials": 1,
+        "n_pending_trials": 4,
+        "n_cancelled_trials": 1,
+        "n_retries": 0,
+        "evals": {
+            "ante__quick-thinking__terminal-bench": {
+                "n_trials": 0,
+                "n_errors": 5,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {},
+                "exception_stats": {
+                    "NetworkConnectionError": [
+                        "gpt2-codegolf__iEJCvKq",
+                        "llm-inference-batching-scheduler__MFoEJZs",
+                        "break-filter-js-from-html__uuNgV9B",
+                        "reshard-c4-data__me7mu6e",
+                        "write-compressor__FgiARSJ"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null
+    }
+}

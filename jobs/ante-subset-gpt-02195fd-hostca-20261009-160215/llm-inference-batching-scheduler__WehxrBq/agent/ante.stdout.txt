@@ -1,0 +1,99 @@
+❖ Ante
+  I'll start by exploring the task files to understand the data and cost model before building the scheduler.
+  
+
+❖ Ante
+  Let me analyze the data and understand the cost model deeply.
+  
+  Key observations from cost_model.py:
+  - `batch_metrics` is computed per-batch: S_max = max aligned prompt in batch, G_max = max gen_len in batch.
+  - Cost = sum of prefill cost per request (using each request's own prompt_len aligned) + decode cost per request (using S_max, G_max) + compile cost (per unique shape, based on seq_align²) + batch overhead (per batch).
+  - Latency per request = prefill latency (own) + decode latency (S_max, G_max) + batch overhead + compile for first batch per shape.
+  
+  Wait, the shape's seq_align passed in plan is NOT actually used in batch_metrics! batch_metrics uses S_max = max aligned prompt_len among requests in the batch. So the shape seq_align must be >= max aligned prompt but the packer just needs consistency. Actually the constraint says seq_align >= ceil(prompt/64)*64, i.e., >= the aligned prompt for each request in the batch. So shape seq_align = max aligned prompt in the batch is fine (and is what groups shapes).
+  
+  Let me note the decode cost: `sum_cost_for_g(G_max)` uses S_max and G_max. It's the same for every request in the batch (cost_decode_per_req same for all). Actually interesting - decode cost per request depends on G_max. So batching requests with similar gen_len helps.
+  
+  Let me analyze the data distributions.
+  
+
+❖ Ante
+  Now I understand the structure. Let me analyze the cost model more carefully to derive the best strategy.
+  
+  **Cost components:**
+  1. **Prefill cost** per request = `Kp_attn*S² + Kp_mlp*S*4096` where S = align(prompt,64). This is per-request, additive, and independent of batching. So total prefill cost is fixed regardless of how we batch! It only depends on each request's own aligned prompt. This is **invariant to packing**.
+  
+  2. **Decode cost** per request = same formula for all requests in batch, using S_max (batch max aligned prompt) and G_max (batch max gen). So decode cost = `n_reqs_in_batch * decode_cost(S_max, G_max)`.
+  
+  3. **Compile cost** per unique shape = `500*seq_align² + 2*seq_align*4096`.
+  
+  4. **Batch overhead** cost = 10M per batch.
+  
+  So the packing decisions that affect TOTAL COST:
+  - Decode cost (driven by S_max, G_max grouping)
+  - Compile cost (driven by # unique shapes and their seq_align)
+  - Batch overhead (driven by # batches)
+  
+  **Latency:**
+  - P95 latency: prefill latency + decode latency (S_max, G_max) + batch overhead + compile (for first batch of each shape).
+  - Sequential timecost: sum over batches of max latency within batch.
+  
+  Note: prefill cost/latency doesn't depend on batching. So my objective is to minimize decode + compile + batch overhead, while also keeping the number of batches small for sequential timecost and p95.
+  
+  Let me think about the thresholds.
+  
+  For bucket 1: target cost 3.0e11, pad 0.055, p95 2.1e6, seq time 2.7e8.
+  For bucket 2: target cost 4.8e10, pad 0.15, p95 2.1e5, seq time 3.2e7.
+  
+  Note seq time threshold for bucket1 is LARGER than p95 (2.7e8 vs 2.1e6). So sequential timecost is not the bottleneck for bucket1 — it's easy. For bucket2, seq time 3.2e7 vs p95 2.1e5.
+  
+  Let me think about decode cost. Decode per request = `Kd_attn*sum_sq + Kd_mlp*4096*sum_lin` where a = S_max, n = G_max.
+  
+  sum_sq = n*a² + a*n(n-1) + n(n-1)(2n-1)/6
+  sum_lin = n*a + n(n-1)/2
+  
+  Decode total for a batch = n_reqs * (Kd_attn*sum_sq + Kd_mlp*4096*sum_lin).
+  
+  This is expensive when S_max and G_max are large. To minimize decode cost, we want batches with small S_max and small G_max. If G_max is large (say a few hundred), decode per request is huge. Multiply by n_reqs.
+  
+  Key insight: **Prefill cost is independent of packing, so optimizing decode + compile + overhead is the whole story.**
+  
+  Let me think about which requests dominate. The requests with large prompt and large gen are the killers in decode. E.g., bucket1 has prompt up to 2038 and gen up to 1021. A batch with S_max=2048 and G_max=1021 would be enormous.
+  
+  Wait — but each request must be in some batch. The batch's S_max is the max aligned prompt in it, and G_max max gen. So if we put a high-prompt request with a low-gen request, the low-gen request gets penalized in decode (G_max high). If we put a high-gen request, it penalizes.
+  
+  Actually the decode cost per request formula: for the batch, all requests share the same cost = cost computed at (S_max, G_max). So each request in a batch pays decode based on batch maxes.
+  
+  Ideal: group requests so that within a batch, S_max and G_max are as small as possible — meaning put similar prompt lenths together and similar gen lengths together. But also large-gen requests are expensive no matter what.
+  
+  Let me look at the magnitude. Let me compute the fixed prefill component to understand.
+  
+  Actually, let me think carefully about whether thresholds are achievable and derive a strategy. Let me compute baseline-like metrics and understand magnitudes with a script.
+  
+  Let me first write an evaluation script and try a strategy. Let me think about the ideal grouping.
+  
+  **Strategy idea:** Since decode cost for a batch = n * cost(S_max, G_max), and S_max and G_max are convex, the best is to sort requests and partition so that within each batch the max prompt and max gen are minimized simultaneously. This is a bi-criteria clustering problem.
+  
+  A clean approach: sort by prompt, then within a group of similar prompts, sort by gen and group by gen so that G_max within each subgroup is small. But there's a trade-off: more batches → more overhead but smaller G_max/S_max.
+  
+  Actually the decode cost for a batch scales roughly with n * S_max² * G_max² (since sum_sq ≈ n³/3 leading term... wait let me reconsider).
+  
+  sum_sq = n*a² + a*n(n-1) + n(n-1)(2n-1)/6. The leading term in n is n³/3 (from the /6 term: n*(2n²)/... = (2n³)/6 = n³/3). So sum_sq ≈ n³/3 for large n. That's dominated by G_max³.
+  
+  So decode cost per batch ≈ n_reqs * [Kd_attn * (G_max³/3 + ...) + ...]. With n_reqs and G_max tied (G_max is max gen in group). If we put G similar-length requests together with G_max ≈ G, decode ≈ G * (G³/3)*Kd_attn = G⁴/3 *... This scales as G_max⁴! 
+  
+  Wait decode per request = Kd_attn*sum_sq ≈ Kd_attn*G³/3. Times n_reqs ≈ G (if all ~G). So ≈ Kd_attn * G⁴/3. That's why max gen matters enormously.
+  
+  So to reduce decode cost, we want to keep G_max small. But requests have gen up to 1021 (bucket1) and 1200 (bucket2). Those lone large-gen requests are inherently expensive.
+  
+  Hmm wait, but n_reqs in a batch — if a high-gen request is alone in a batch (n_reqs=1), decode per request = sum_sq ≈ G_max³/3. If we add many low-gen requests to it, n_reqs goes up (multiply by n) but G_max stays same → cost grows with n_reqs. So it's better to keep high-gen requests in SMALL batches (few requests) to limit n_reqs!
+  
+  Wait let me reconsider: cost per batch = n_reqs * decode_per_req(S_max, G_max). If G_max is huge, decode_per_req huge. Adding more low-gen requests to that batch multiplies the huge per-req cost by more requests but doesn't increase G_max. But those low-gen requests, placed in their own batch with small G_max, would be cheap. So yes — keeping large-G requests in small/dedicated batches minimizes total decode cost, at the cost of more batches (overhead 10M each, plus more compile shapes).
+  
+  But batch count also affects sequential timecost and p95 latency (each batch adds overhead latency and the max latency). Hmm, but p95 is a per-request latency; more batches with small G → lower latency per request. Sequential timecost = sum of batch max latencies. More batches → more terms but each smaller.
+  
+  Let me think about the constraints/tradeoffs numerically. This is getting complex. Let me just build the model and do a greedy/optimized search, evaluating with cost_model.
+  
+  Let me write an exploration script to understand magnitudes.
+  
+
