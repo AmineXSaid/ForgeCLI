@@ -283,7 +283,10 @@ class Trial:
         if self.subtype == "success" or (not self.forge and not self.exception):
             return "false success" if self.forge else "failed"
         if self.exception:
-            return f"crashed: {self.crash_reason}" if self.crash_reason else f"crashed ({self.exception})"
+            if self.crash_reason:
+                return f"crashed: {self.crash_reason}"
+            why = self.exception_message.strip().splitlines()[-1:] or [""]
+            return f"crashed ({self.exception}: {clip(why[0], 120)})" if why[0] else f"crashed ({self.exception})"
         return "failed"
 
     # ---- output
