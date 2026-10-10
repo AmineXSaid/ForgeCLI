@@ -23,9 +23,16 @@ if [ "${1:-}" = "--source-id" ]; then
 fi
 
 id="$(source_id)"
-docker run --rm -v "$repo":/src -w /src -e CARGO_TARGET_DIR=/src/target-static \
-  rust:alpine sh -c "apk add --no-cache build-base >/dev/null && cargo build --release --bin forge"
+# --network host: the container resolves names like this machine does (Docker's own DNS
+# often fails on company networks). The forge-cargo volume keeps downloaded crates between
+# builds. The container runs as root: it writes forge.source itself and gives target-static
+# back to the user who ran this script.
+docker run --rm --network host -v "$repo":/src -w /src -v forge-cargo:/usr/local/cargo/registry \
+  -e CARGO_TARGET_DIR=/src/target-static rust:alpine sh -c "
+    apk add --no-cache build-base >/dev/null &&
+    cargo build --release --bin forge &&
+    echo $id > /src/target-static/release/forge.source &&
+    chown -R $(id -u):$(id -g) /src/target-static"
 bin="$repo/target-static/release/forge"
 file "$bin" | grep -q 'static' || { echo "error: $bin is not statically linked" >&2; exit 1; }
-echo "$id" > "$bin.source"
 "$bin" --version
