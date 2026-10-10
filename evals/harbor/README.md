@@ -51,7 +51,7 @@ evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FORGE_HARBOR_MODEL` | `openai/deep-thinking` | `provider/name`; `forge` gets `--model name` |
+| `FORGE_HARBOR_MODEL` | `deep-thinking` | the model as the endpoint names it (a `provider/` prefix is dropped); the same variable sets it for `run-forgecode.sh` and `run-ante.sh` |
 | `FORGE_HARBOR_DATASET` | `terminal-bench@2.0` | Harbor dataset |
 | `FORGE_HARBOR_JOBS` | `2` | Tasks in parallel |
 | `FORGE_HARBOR_ARGS` | | Extra `forge` flags, e.g. `--max-turns 100` |
@@ -78,7 +78,7 @@ OpenAI-compatible endpoint:
 export FORGE_OPENAI_BASE_URL=http://localhost:8000/v1
 export FORGE_OPENAI_API_KEY=none            # any value, if the server doesn't check
 export FORGE_CONTEXT_WINDOW=131072          # the context the server was started with
-export FORGE_HARBOR_MODEL=openai/<served model name>
+export FORGE_HARBOR_MODEL=<served model name>
 evals/harbor/run.sh subset
 ```
 
@@ -124,9 +124,10 @@ agent:
 - `FORGE_VERIFY=0` against the default.
 
 ```bash
-FORGE_HARBOR_MODEL=openai/deep-thinking evals/harbor/run.sh subset
-FORGE_HARBOR_MODEL=openai/deep-thinking evals/harbor/run-forgecode.sh subset
-ANTE_MODEL=deep-thinking evals/harbor/run-ante.sh subset
+export FORGE_HARBOR_MODEL=deep-thinking
+evals/harbor/run.sh subset
+evals/harbor/run-forgecode.sh subset
+evals/harbor/run-ante.sh subset
 ```
 
 `run-forgecode.sh` downloads Forge Code's static Linux build

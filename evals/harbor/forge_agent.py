@@ -31,7 +31,7 @@ Configuration comes from the environment of the `harbor` process:
   changes the task environment: scores are for local comparisons only.
 
 The model comes from `harbor run -m provider/name`; the provider part is
-dropped, so `-m openai/deep-thinking` runs `forge --model deep-thinking`.
+dropped, so `-m openai/deep-thinking` and `-m deep-thinking` both run `forge --model deep-thinking`.
 
 Run it through `evals/harbor/run.sh`. Written against Harbor 0.24.0.
 """

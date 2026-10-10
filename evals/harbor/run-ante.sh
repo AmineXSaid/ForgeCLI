@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Terminal-Bench on Ante CLI through Harbor (counterpart of run.sh).
-#   ANTE_MODEL=quick-thinking evals/harbor/run-ante.sh smoke|subset|full [harbor args...]
-# Settings: ANTE_MODEL, ANTE_PROVIDER (openai-compatible), ANTE_INSTALL_ARGS (empty = stable),
+#   FORGE_HARBOR_MODEL=deep-thinking evals/harbor/run-ante.sh smoke|subset|full [harbor args...]
+# Settings: FORGE_HARBOR_MODEL (default deep-thinking, as for run.sh; ANTE_MODEL also works),
+#           ANTE_PROVIDER (openai-compatible), ANTE_INSTALL_ARGS (empty = stable),
 #           FORGE_HARBOR_JOBS (tasks in parallel, default 2), FORGE_HARBOR_DATASET,
 #           FORGE_HARBOR_CA_BUNDLE (label only for now)
 set -euo pipefail
@@ -20,11 +21,12 @@ case "$mode" in
   *) echo "usage: $0 smoke|subset|full [harbor run args...]" >&2; exit 2 ;;
 esac
 
-model="${ANTE_MODEL:-quick-thinking}"
+model="${FORGE_HARBOR_MODEL:-${ANTE_MODEL:-deep-thinking}}"
+model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 provider="${ANTE_PROVIDER:-openai-compatible}"
 install="${ANTE_INSTALL_ARGS:-}"
 ca=""; [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
-job="ante-${mode}-${model}-${install:-stable}${ca}-$(date +%Y%m%d-%H%M%S)"
+job="ante-${mode}-${model_tag}-${install:-stable}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
 PYTHONPATH="$HOME/ante-src/ante-harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \

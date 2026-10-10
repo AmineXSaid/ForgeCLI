@@ -7,7 +7,8 @@
 #
 # Settings (environment):
 #   FORGE_OPENAI_BASE_URL, FORGE_OPENAI_API_KEY  the endpoint and key, as for ForgeCLI
-#   FORGE_HARBOR_MODEL    harbor model, provider/name (default openai/deep-thinking)
+#   FORGE_HARBOR_MODEL    the model, as the endpoint names it (default deep-thinking); the same
+#                         variable sets it for run.sh, run-forgecode.sh and run-ante.sh
 #   FORGE_HARBOR_DATASET  default terminal-bench@2.0
 #   FORGE_HARBOR_JOBS     tasks in parallel (default 2)
 #   FORGE_HARBOR_CA_BUNDLE   extra CAs to trust in containers (job name gets -hostca)
@@ -42,7 +43,7 @@ esac
 
 ca=""
 [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
-model="${FORGE_HARBOR_MODEL:-openai/deep-thinking}"
+model="${FORGE_HARBOR_MODEL:-deep-thinking}"
 model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 job="forgecode-${mode}-${model_tag}-${version:-unknown}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"

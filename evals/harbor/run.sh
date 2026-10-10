@@ -5,7 +5,8 @@
 #   evals/harbor/run.sh full     # every task, 5 attempts: the leaderboard setup
 #
 # Settings (environment):
-#   FORGE_HARBOR_MODEL    harbor model, provider/name (default openai/deep-thinking)
+#   FORGE_HARBOR_MODEL    the model, as the endpoint names it (default deep-thinking); the same
+#                         variable sets it for run.sh, run-forgecode.sh and run-ante.sh
 #   FORGE_HARBOR_DATASET  default terminal-bench@2.0
 #   FORGE_HARBOR_JOBS     tasks in parallel (default 2)
 #   FORGE_HARBOR_ARGS     extra forge flags for every task
@@ -54,7 +55,7 @@ git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || dirty="-dirty"
 ca=""
 [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
 case "${FORGE_HARBOR_AUTONOMOUS:-1}" in 0|false|no|off) ca="${ca}-noauto" ;; esac
-model="${FORGE_HARBOR_MODEL:-openai/deep-thinking}"
+model="${FORGE_HARBOR_MODEL:-deep-thinking}"
 model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 job="forgecli-${mode}-${model_tag}-${commit}${dirty}${custom}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
