@@ -115,11 +115,28 @@ they are. A step shows up once the model finishes it.
 To compare harnesses, keep the model and the tasks fixed and change only the
 agent:
 - `-a opencode` or another built-in Harbor agent, against this one;
+- Ante (`run-ante.sh`, `ante_agent.py`) or Forge Code (`run-forgecode.sh`,
+  `forgecode_agent.py`), against the same endpoint and model;
 - two ForgeCLI builds;
 - `FORGE_VERIFY=0` against the default.
 
-Ten tasks are enough to see a large difference. Use the full run before you
-claim a small one.
+```bash
+FORGE_HARBOR_MODEL=openai/deep-thinking evals/harbor/run.sh subset
+FORGE_HARBOR_MODEL=openai/deep-thinking evals/harbor/run-forgecode.sh subset
+ANTE_MODEL=deep-thinking evals/harbor/run-ante.sh subset
+```
+
+`run-forgecode.sh` downloads Forge Code's static Linux build
+(`forge-x86_64-unknown-linux-musl`, latest release) to `~/.forgecode/forge` on
+first use; `FORGECODE_BIN` points it at another binary. It passes the endpoint
+and key as `OPENAI_URL` and `OPENAI_API_KEY`, and none of ForgeCLI's `FORGE_*`
+settings, which Forge Code would read as its own. `run-forgecode.sh smoke` runs
+one task: try it first.
+
+Run the jobs one after another, not at the same time: an endpoint with a limit
+on concurrent requests answers the extra ones with HTTP 429, and the runs that
+get them are not comparable. Ten tasks are enough to see a large difference.
+Use the full run before you claim a small one.
 
 ## Things to check first
 
