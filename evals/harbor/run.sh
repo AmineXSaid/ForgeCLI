@@ -12,6 +12,8 @@
 #   FORGE_HARBOR_AUTONOMOUS  0 runs forge without --autonomous (job name gets -noauto)
 #   FORGE_HARBOR_TIME_LIMIT  seconds for --max-time (default: the task's own limit)
 #   FORGE_HARBOR_CA_BUNDLE   extra CAs to trust in containers (job name gets -hostca)
+#   FORGE_STATIC_BIN      use this binary as is (job name gets -custombin); by default
+#                         target-static/release/forge is rebuilt when the source changed
 #   FORGE_*               endpoint, key and limits, passed into the containers
 # Anything after the mode goes to `harbor run` (e.g. -i 'some-task*').
 set -euo pipefail
@@ -24,10 +26,20 @@ if [ -z "${FORGE_OPENAI_BASE_URL:-}${FORGE_BASE_URL:-}${FORGE_API_KEY:-}${FORGE_
   echo "error: no FORGE_* endpoint or key set; source your env file first" >&2
   exit 1
 fi
-[ -x "${FORGE_STATIC_BIN:-target-static/release/forge}" ] || {
-  echo "error: no static forge binary; run evals/harbor/build-static.sh" >&2
-  exit 1
-}
+# The binary must be built from the source the job is named after: rebuild it when it isn't.
+custom=""
+if [ -n "${FORGE_STATIC_BIN:-}" ]; then
+  [ -x "$FORGE_STATIC_BIN" ] || { echo "error: FORGE_STATIC_BIN: $FORGE_STATIC_BIN not found" >&2; exit 1; }
+  custom="-custombin"  # someone else's build: the job name can't vouch for it
+else
+  bin="target-static/release/forge"
+  want="$(evals/harbor/build-static.sh --source-id)"
+  have="$(cat "$bin.source" 2>/dev/null || echo none)"
+  if [ ! -x "$bin" ] || [ "$have" != "$want" ]; then
+    echo "the static forge binary was built from other source ($have, now $want): rebuilding"
+    evals/harbor/build-static.sh
+  fi
+fi
 
 case "$mode" in
   subset) scope=(-l 10 --n-attempts 1) ;;
@@ -44,7 +56,7 @@ ca=""
 case "${FORGE_HARBOR_AUTONOMOUS:-1}" in 0|false|no|off) ca="${ca}-noauto" ;; esac
 model="${FORGE_HARBOR_MODEL:-openai/deep-thinking}"
 model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
-job="forgecli-${mode}-${model_tag}-${commit}${dirty}${ca}-$(date +%Y%m%d-%H%M%S)"
+job="forgecli-${mode}-${model_tag}-${commit}${dirty}${custom}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
 PYTHONPATH="$repo/evals/harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \

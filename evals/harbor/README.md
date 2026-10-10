@@ -32,7 +32,10 @@ Build the static binary:
 evals/harbor/build-static.sh             # Docker rust:alpine -> target-static/release/forge
 ```
 
-Rebuild it after every code change you want to measure.
+`run.sh` rebuilds it by itself when the code changed since the last build
+(`build-static.sh` records the source it built from in `forge.source`), so a job
+named after a commit always runs that commit's code. `FORGE_STATIC_BIN` runs
+another binary as is; its jobs are named `-custombin`.
 
 ## Running
 
