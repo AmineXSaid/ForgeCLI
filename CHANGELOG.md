@@ -375,6 +375,11 @@
   since it was built, so a job named after a commit runs that commit's code.
   Jobs labelled 02195fd probably ran an older binary. `FORGE_STATIC_BIN`
   jobs are named `-custombin`.
+- `evals/harbor/capture-prompts.sh` saves the system prompt and tool
+  descriptions that ForgeCLI, Forge Code and Ante send, through a fake
+  endpoint on localhost, into `evals/harbor/prompts/`. Captured so far:
+  ForgeCLI (1056 words, 19 tools) and Forge Code 2.13.21 (1660 words, 13
+  tools).
 - `evals/harbor/watch.py` shows a run like a conversation: what the model
   says, one short line per tool call, failed calls with their error, how the
   run ended and why, and each task's reward. `--thinking` adds the reasoning,

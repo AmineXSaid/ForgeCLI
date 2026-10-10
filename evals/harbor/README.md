@@ -172,6 +172,23 @@ on concurrent requests answers the extra ones with HTTP 429, and the runs that
 get them are not comparable. Ten tasks are enough to see a large difference.
 Use the full run before you claim a small one.
 
+### Comparing prompts
+
+`capture-prompts.sh` saves what each harness actually sends a model: the system
+prompt (`system.md`) and its tools with their descriptions (`tools.json`), in
+`evals/harbor/prompts/<harness>/`, with the harness's version. Each agent runs
+once against `capture_prompt.py`, a fake endpoint on localhost that records the
+request and answers "Done.", so nothing leaves the machine and no key is needed.
+
+```bash
+evals/harbor/capture-prompts.sh          # forgecli, forgecode and ante, those installed
+evals/harbor/capture-prompts.sh ante     # one of them
+```
+
+Ante's default prompt is in its binary, not in its public repository, so this
+is how to read it. When nothing is captured, `agent.log` and `server.log` in
+the same directory say why.
+
 ## Things to check first
 
 - **Network.** The containers must reach your endpoint. Docker's DNS doesn't know

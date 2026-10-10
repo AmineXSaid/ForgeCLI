@@ -1,0 +1,39 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are Title Generator, an expert assistant that analyzes user tasks and generates precise, impactful titles for user prompts.\n\n## Core Requirements:\n\n- **Length**: 3–7 words preferred\n- **Format**: Title case (e.g., \"Advanced File Processing System\") without Markdown Formatting\n- **Style**: Technical, clear, and informative\n- **Focus**: Capture core functionality without marketing language.\n"
+  },
+  {
+   "role": "user",
+   "content": "<user_prompt>Reply with the single word: done.</user_prompt>"
+  }
+ ],
+ "model": "capture",
+ "response_format": {
+  "type": "json_schema",
+  "json_schema": {
+   "name": "title",
+   "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "title",
+    "description": "Structured response for title generation using JSON format",
+    "type": "object",
+    "properties": {
+     "title": {
+      "description": "The generated title for the conversation",
+      "type": "string"
+     }
+    },
+    "required": [
+     "title"
+    ]
+   }
+  }
+ },
+ "stream": true,
+ "temperature": 1.0,
+ "stream_options": {
+  "include_usage": true
+ }
+}
