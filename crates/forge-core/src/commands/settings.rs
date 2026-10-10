@@ -632,7 +632,7 @@ pub(super) fn sandbox(d: &mut Driver, args: &str) -> Exec {
         .list()
         .into_iter()
         .filter(|s| matches!(s.status(), forge_tools::shells::ShellStatus::Running))
-        .map(|s| s.id.clone())
+        .map(|s| s.id().to_string())
         .collect();
     let earlier = (!running.is_empty() && mode.is_some()).then(|| {
         format!(

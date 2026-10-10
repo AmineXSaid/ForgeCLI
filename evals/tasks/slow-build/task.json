@@ -1,0 +1,7 @@
+{
+  "instruction": "Run ./build.sh to produce dist/app.txt, then tell me what the file says. Do not edit build.sh.",
+  "check": "git diff --quiet HEAD -- build.sh && [ \"$(cat dist/app.txt)\" = \"built from 3 sources\" ]",
+  "pillar": "long-horizon",
+  "tags": ["shell", "long-command"],
+  "timeout_secs": 600
+}

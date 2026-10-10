@@ -298,6 +298,9 @@ pub(crate) struct Tracker {
     /// The last check's command and whether it failed.
     pub last_check: Option<(String, bool)>,
     pub reminders: u32,
+    /// Checks still running in the background (they outlived their Bash timeout): the shell's ID,
+    /// the command, and the file-history writes when it moved there.
+    pub pending: Vec<(String, String, usize)>,
 }
 
 /// What the model is reminded of.

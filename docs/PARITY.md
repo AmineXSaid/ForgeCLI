@@ -56,8 +56,8 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 
 | Tool | Status | Test | Notes |
 | --- | --- | --- | --- |
-| Bash | done | `builtin::bash_runs_and_keeps_cwd_inside_project`, `bash_timeout_kills_process_group`, `bash_interrupt_returns_interrupted` | persistent cwd, timeout, background |
-| BashOutput / KillShell (background shells) | done | `builtin::background_shell_output_and_kill` |  |
+| Bash | done | `builtin::bash_runs_and_keeps_cwd_inside_project`, `bash_timeout_moves_the_command_to_the_background`, `bash_interrupt_returns_interrupted` | persistent cwd, timeout, background. Differs: a command still running at its `timeout` moves to the background instead of being killed (C22) |
+| BashOutput / KillShell (background shells) | done | `builtin::background_shell_output_and_kill`, `a_moved_command_can_be_stopped_with_its_children` | Differs: the model is told when a background shell exits (C22) |
 | Read | partial | `builtin::read_numbers_lines_and_pages`, `notebook_edit_replace_insert_delete` | Text, images, notebooks done. PDFs are sent whole: `pages` is passed as a hint, not extracted |
 | Write | done | `builtin::write_creates_and_checkpoints` |  |
 | Edit | done | `builtin::edit_requires_read_and_unique_match`, `edit_preserves_crlf_and_multiedit_is_atomic` |  |

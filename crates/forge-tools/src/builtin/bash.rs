@@ -1,10 +1,11 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use forge_permissions::Subject;
 use serde_json::{json, Value};
 
 use super::str_arg;
-use crate::shells::{run_command, ShellChoice, ShellKind, ShellStatus, StartError};
+use crate::shells::{BackgroundShell, ShellChoice, ShellKind, ShellStatus, StartError};
 use crate::{fit_output, truncate_middle, Tool, ToolContext, ToolOutput, INTERRUPTED};
 use forge_platform::shell::Os;
 
@@ -79,10 +80,12 @@ const BASE_DESCRIPTION: &str = "Run a shell command in a persistent working dire
      - The working directory carries over between calls while it stays inside the project's working \
        directories; otherwise it is reset to the project directory.\n\
      - Quote paths that contain spaces. Prefer absolute paths over `cd`.\n\
-     - Default timeout 2 minutes, maximum 10 minutes (`timeout` in milliseconds).\n\
+     - `timeout` is how long the call waits, in milliseconds: default 2 minutes, maximum 10. A command \
+       still running then is not stopped: it goes on in the background, the call returns its ID and \
+       output so far, and you are told when it exits. Don't start it again.\n\
      - Output beyond 30,000 characters is truncated in the middle.\n\
-     - Use `run_in_background` for long-running processes (servers, watchers) and read their output \
-       later with BashOutput.\n\
+     - Use `run_in_background` for processes that keep running (servers, watchers) and read their \
+       output later with BashOutput. You are told when one exits.\n\
      - Prefer the dedicated tools for reading (Read), searching (Grep, Glob) and editing (Edit, Write) \
        files instead of cat, grep, find, sed or echo redirection.\n\
      - Chain dependent commands with `&&`; independent commands can be separate calls.";
@@ -192,7 +195,7 @@ impl Tool for Bash {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The command to execute"},
-                "timeout": {"type": "number", "description": "Optional timeout in milliseconds (max 600000)"},
+                "timeout": {"type": "number", "description": "How long to wait for the command, in milliseconds (max 600000); a command still running then goes on in the background"},
                 "description": {"type": "string", "description": "A short (5-10 word) description of what the command does"},
                 "run_in_background": {"type": "boolean", "description": "Run the command in the background; read output with BashOutput"},
                 "dangerouslyDisableSandbox": {"type": "boolean", "description": "Run outside the sandbox (only when a sandboxed run failed for lack of access); requires the user's approval"}
@@ -237,29 +240,36 @@ impl Tool for Bash {
         if input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false) {
             return match ctx.shells.spawn(&ctx.shell, &command, &cwd, &ctx.env, sandbox.as_ref()) {
                 Ok(sh) => ToolOutput::text(format!(
-                    "Command running in background with ID: {}. Use BashOutput to read its output.",
-                    sh.id
+                    "Command running in background with ID: {}. Use BashOutput to read its output; you will be \
+                     told when it exits.",
+                    sh.id()
                 ))
-                .with_structured(json!({"backgroundTaskId": sh.id, "stdout": "", "stderr": "", "interrupted": false})),
+                .with_structured(
+                    json!({"backgroundTaskId": sh.id(), "stdout": "", "stderr": "", "interrupted": false}),
+                ),
                 Err(e) => start_failed(&e),
             };
         }
 
         let ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS);
-        let res = match run_command(
-            &ctx.shell,
-            &command,
-            &cwd,
-            &ctx.env,
-            Duration::from_millis(ms),
-            &ctx.cancel,
-            sandbox.as_ref(),
-        )
-        .await
-        {
-            Ok(r) => r,
+        let sh = match crate::shells::start(&ctx.shell, &command, &cwd, &ctx.env, sandbox.as_ref(), true) {
+            Ok(sh) => sh,
             Err(e) => return start_failed(&e),
         };
+        let _guard = StopUnlessMoved(sh.clone());
+        tokio::select! {
+            _ = sh.wait() => {}
+            _ = tokio::time::sleep(Duration::from_millis(ms)) => {
+                // Still running: it goes on in the background instead of being killed, so a long
+                // build or install isn't lost and run again.
+                return moved_to_background(&sh, ms, ctx);
+            }
+            _ = ctx.cancel.cancelled() => {
+                sh.kill();
+                let _ = tokio::time::timeout(Duration::from_secs(2), sh.wait()).await;
+            }
+        }
+        let res = sh.result(&ctx.shell);
 
         let mut note = String::new();
         if let Some(dir) = &res.final_cwd {
@@ -282,15 +292,11 @@ impl Tool for Bash {
             text.push_str(&stderr);
         }
         let structured = json!({
-            "stdout": stdout, "stderr": stderr, "interrupted": res.interrupted || res.timed_out,
+            "stdout": stdout, "stderr": stderr, "interrupted": res.interrupted,
             "exitCode": res.code,
         });
         if res.interrupted {
             return ToolOutput::error(format!("{text}\n{INTERRUPTED}").trim_start().to_string())
-                .with_structured(structured);
-        }
-        if res.timed_out {
-            return ToolOutput::error(format!("{text}\nCommand timed out after {}ms", ms).trim_start().to_string())
                 .with_structured(structured);
         }
         text.push_str(&note);
@@ -313,6 +319,123 @@ impl Tool for Bash {
     }
 }
 
+/// Stops a Bash call's command if the call goes away while it runs (the session ends, the turn is
+/// dropped), unless it moved to the background: then it belongs to the session's shells.
+struct StopUnlessMoved(Arc<BackgroundShell>);
+
+impl Drop for StopUnlessMoved {
+    fn drop(&mut self) {
+        if self.0.id().is_empty() {
+            self.0.kill();
+        }
+    }
+}
+
+/// The result of a call that stopped waiting while its command still runs: the command is now a
+/// background shell, and the model gets its ID and the output so far.
+fn moved_to_background(sh: &Arc<BackgroundShell>, waited_ms: u64, ctx: &ToolContext) -> ToolOutput {
+    let id = ctx.shells.adopt(sh);
+    sh.set_awaited();
+    let (out, err) = sh.take_new_output();
+    let max = ctx.max_output_chars;
+    let stdout = fit_output(ctx, out.trim_end(), max, "stdout");
+    let stderr = fit_output(ctx, err.trim_end(), max, "stderr");
+    let mut text = format!(
+        "The command is still running after {}. It was not stopped: it goes on in the background as {id}, and \
+         you will be told when it exits. Meanwhile do other work, read its new output with BashOutput or stop \
+         it with KillShell; don't start it again. If you end your reply while it runs, the turn waits for it.",
+        duration(Duration::from_millis(waited_ms))
+    );
+    let so_far = [stdout.as_str(), stderr.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>();
+    if so_far.is_empty() {
+        text.push_str("\n\nNo output so far.");
+    } else {
+        text.push_str(&format!("\n\nOutput so far:\n{}", so_far.join("\n")));
+    }
+    ToolOutput::text(text).with_structured(json!({
+        "backgroundTaskId": id, "stdout": stdout, "stderr": stderr, "interrupted": false
+    }))
+}
+
+/// `45s`, `4m 12s`, `1h 3m`.
+pub fn duration(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 if s.is_multiple_of(60) => format!("{}m", s / 60),
+        60..=3599 => format!("{}m {}s", s / 60, s % 60),
+        _ => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// A command line for a one-line note: its first line, at most 100 characters.
+fn short_command(command: &str) -> String {
+    let first = command.trim().lines().next().unwrap_or_default();
+    let mut s: String = first.chars().take(100).collect();
+    if s.len() < first.len() || command.trim().lines().count() > 1 {
+        s.push_str(" …");
+    }
+    s
+}
+
+/// The last `lines` lines of a text, at most `max` characters.
+fn last_lines(text: &str, lines: usize, max: usize) -> String {
+    let all: Vec<&str> = text.trim_end().lines().collect();
+    let tail = all[all.len().saturating_sub(lines)..].join("\n");
+    let skip = tail.chars().count().saturating_sub(max);
+    tail.chars().skip(skip).collect()
+}
+
+/// A note for the model on background commands that exited: how they ended and their last
+/// unread output. `None` when there are none.
+pub fn exit_notice(exited: &[Arc<BackgroundShell>]) -> Option<String> {
+    if exited.is_empty() {
+        return None;
+    }
+    let mut parts = vec![];
+    for sh in exited {
+        let how = match sh.status() {
+            ShellStatus::Completed(Some(code)) => format!("exited with code {code}"),
+            _ => "was ended by a signal".to_string(),
+        };
+        let mut part = format!(
+            "Background command {} {how} after {}: `{}`",
+            sh.id(),
+            duration(sh.runtime()),
+            short_command(&sh.command)
+        );
+        let (out, err) = sh.unread_output();
+        let unread = [out.trim_end(), err.trim_end()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>();
+        if !unread.is_empty() {
+            part.push_str(&format!(
+                "\nIts last output (BashOutput {} returns all of it):\n{}",
+                sh.id(),
+                last_lines(&unread.join("\n"), 15, 2000)
+            ));
+        }
+        parts.push(part);
+    }
+    Some(format!("<system-reminder>\n{}\n</system-reminder>", parts.join("\n\n")))
+}
+
+/// A note for the model on commands still running after the turn waited for them.
+pub fn still_running_notice(running: &[Arc<BackgroundShell>], waited: Duration) -> Option<String> {
+    if running.is_empty() {
+        return None;
+    }
+    let list = running
+        .iter()
+        .map(|sh| format!("- {} (running for {}): `{}`", sh.id(), duration(sh.runtime()), short_command(&sh.command)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "<system-reminder>\nThe turn waited {} for these commands, and they are still running:\n{list}\nRead their \
+         output with BashOutput to see whether they progress. End your reply again to wait longer, or stop one \
+         with KillShell if it is stuck. When the run ends, commands still running are stopped.\n</system-reminder>",
+        duration(waited)
+    ))
+}
+
 fn start_failed(e: &StartError) -> ToolOutput {
     if e.is_setup_problem() {
         ToolOutput::error(unavailable(&e.to_string())).with_structured(json!({
@@ -332,8 +455,9 @@ impl Tool for BashOutput {
     }
 
     fn description(&self) -> String {
-        "Read new output from a background shell started with Bash `run_in_background`. Returns only output \
-         produced since the last read, plus the shell's status. `filter` keeps only lines matching a regex."
+        "Read new output from a background shell: one started with Bash `run_in_background`, or a Bash \
+         command that outlived its timeout. Returns only output produced since the last read, plus the shell's \
+         status. `filter` keeps only lines matching a regex."
             .into()
     }
 
@@ -367,6 +491,9 @@ impl Tool for BashOutput {
             err = keep(&err);
         }
         let status = sh.status();
+        if status != ShellStatus::Running {
+            sh.mark_reported();
+        }
         let code = match status {
             ShellStatus::Completed(Some(c)) => format!("\n<exit_code>{c}</exit_code>"),
             _ => String::new(),
@@ -406,6 +533,7 @@ impl Tool for KillShell {
         match ctx.shells.get(id) {
             Some(sh) => {
                 sh.kill();
+                sh.mark_reported();
                 ToolOutput::text(format!("Successfully killed shell: {id} ({})", sh.command))
             }
             None => ToolOutput::error(format!("No shell found with ID: {id}")),

@@ -78,6 +78,11 @@ fn about(left: Duration) -> String {
 /// Unattended runs: how many times one turn is reminded of an announced next step, or of open todos.
 const FINISH_REMINDERS: u32 = 2;
 
+/// The longest a turn waits, before it ends, for commands that outlived their Bash timeout; and
+/// how many times one turn waits.
+const BACKGROUND_WAIT: Duration = Duration::from_secs(600);
+const BACKGROUND_WAITS: u32 = 2;
+
 /// The last line of a reply when it announces a next step instead of ending ("Let me check the
 /// logs."), cut to 160 characters. "Let me know..." is an ending, not a step.
 pub(crate) fn announced_next_step(text: &str) -> Option<String> {
@@ -1417,6 +1422,10 @@ impl Engine {
                 blocks.insert(0, ContentBlock::text(format!("<system-reminder>\n{c}\n</system-reminder>")));
             }
         }
+        // Background commands that exited between turns.
+        if let Some(text) = self.background_exits().await {
+            blocks.insert(0, ContentBlock::text(text));
+        }
         if !self.reminders.is_empty() && !self.cfg.is_subagent {
             let notes = std::mem::take(&mut self.reminders).join("\n\n");
             blocks.insert(0, ContentBlock::text(format!("<system-reminder>\n{notes}\n</system-reminder>")));
@@ -1480,6 +1489,7 @@ impl Engine {
         let mut attempt_reminded = false;
         let mut next_step_reminders = 0u32;
         let mut todo_reminders = 0u32;
+        let mut background_waits = 0u32;
         let mut api_retries = 0u32;
 
         loop {
@@ -1751,6 +1761,10 @@ impl Engine {
                     };
                     self.push_user(Message::user(vec![block]), false, r.output.structured.clone(), true);
                 }
+                // Background commands that exited meanwhile, told with the results.
+                if let Some(text) = self.background_exits().await {
+                    self.push_user(Message::user_text(text), true, None, true);
+                }
                 self.publish_turn(started, &turn);
                 if let (Some(s), false) = (stuck.first(), interrupted) {
                     self.system_event("loop_guard", s.record());
@@ -1789,6 +1803,17 @@ impl Engine {
             }
             if stop_reason == Some(StopReason::PauseTurn) {
                 continue;
+            }
+
+            // Commands that outlived their Bash timeout went on in the background: the turn doesn't
+            // end while they run, so their result isn't lost (unattended, the run's end would stop
+            // them). It waits for them, then goes on with how they ended.
+            if background_waits < BACKGROUND_WAITS && stop_reason != Some(StopReason::Refusal) {
+                if let Some(text) = self.wait_for_background(&cancel).await {
+                    background_waits += 1;
+                    self.push_user(Message::user_text(text), true, None, true);
+                    continue;
+                }
             }
 
             // Unattended runs (GOALS pillar 5): no finishing without an attempt.
@@ -1929,6 +1954,80 @@ impl Engine {
         ))
     }
 
+    /// Background commands that exited since the model last heard of them: a note for it, and
+    /// any check among them recorded for the verification loop.
+    async fn background_exits(&mut self) -> Option<String> {
+        let exited = self.shared.tool_ctx.shells.take_exited();
+        if exited.is_empty() {
+            return None;
+        }
+        let shells: Vec<Value> = exited
+            .iter()
+            .map(|sh| {
+                let code = match sh.status() {
+                    forge_tools::shells::ShellStatus::Completed(code) => code,
+                    _ => None,
+                };
+                json!({"id": sh.id(), "command": sh.command, "exit_code": code, "seconds": sh.runtime().as_secs()})
+            })
+            .collect();
+        self.system_event("background_exit", json!({"shells": shells}));
+        let mut refresh = false;
+        for sh in &exited {
+            if let Some(i) = self.verify.pending.iter().position(|(id, ..)| id == sh.id()) {
+                let (_, command, writes_after) = self.verify.pending.remove(i);
+                let passed = sh.status() == forge_tools::shells::ShellStatus::Completed(Some(0));
+                self.verify.write_mark = writes_after;
+                self.verify.last_check = Some((command, !passed));
+                refresh = true;
+            }
+        }
+        if refresh {
+            self.verify.fingerprint = self.worktree_fingerprint().await;
+        }
+        forge_tools::builtin::exit_notice(&exited)
+    }
+
+    /// Before the turn ends: wait for commands that outlived their Bash timeout and still run,
+    /// up to [`BACKGROUND_WAIT`] (and a minute short of the run's time limit), then say how they
+    /// ended. `None` when nothing runs, no time is left, or the wait was interrupted.
+    async fn wait_for_background(&mut self, cancel: &CancellationToken) -> Option<String> {
+        let shells = self.shared.tool_ctx.shells.clone();
+        let running = shells.awaited_running();
+        if running.is_empty() {
+            return None;
+        }
+        let mut limit = BACKGROUND_WAIT;
+        if let Some(t) = self.cfg.time_limit {
+            limit = limit.min(t.remaining().saturating_sub(Duration::from_secs(60)));
+        }
+        if limit < Duration::from_secs(5) {
+            return None;
+        }
+        let ids: Vec<&str> = running.iter().map(|sh| sh.id()).collect();
+        self.notice(NoticeLevel::Info, format!("Waiting for {} to finish (up to {})", ids.join(", "), about(limit)));
+        self.system_event("background_wait", json!({"shells": ids, "limit_ms": limit.as_millis() as u64}));
+        let started = std::time::Instant::now();
+        let all = async {
+            for sh in &running {
+                sh.wait().await;
+            }
+        };
+        tokio::select! {
+            _ = all => {}
+            _ = tokio::time::sleep(limit) => {}
+            _ = cancel.cancelled() => return None,
+        }
+        let still: Vec<_> =
+            running.iter().filter(|sh| sh.status() == forge_tools::shells::ShellStatus::Running).cloned().collect();
+        let notes: Vec<String> =
+            [self.background_exits().await, forge_tools::builtin::still_running_notice(&still, started.elapsed())]
+                .into_iter()
+                .flatten()
+                .collect();
+        (!notes.is_empty()).then(|| notes.join("\n"))
+    }
+
     fn verifying(&self) -> bool {
         self.cfg.verify.is_some() && !self.cfg.is_subagent
     }
@@ -1951,6 +2050,18 @@ impl Engine {
             }
             let command = input.get("command").and_then(Value::as_str).unwrap_or_default();
             let changed = self.shared.history.writes_since(0);
+            // A command that outlived its timeout runs on in the background: a check counts when
+            // it exits (`background_exits`).
+            if let Some(id) =
+                r.output.structured.as_ref().and_then(|s| s.get("backgroundTaskId")).and_then(Value::as_str)
+            {
+                if crate::verify::is_check(command, &vc.commands, &changed) {
+                    self.verify.pending.push((id.to_string(), command.to_string(), r.writes_after));
+                } else if !self.shared.tools.get("Bash").map(|t| t.is_read_only(input)).unwrap_or(true) {
+                    self.verify.shell_may_have_changed = true;
+                }
+                continue;
+            }
             if crate::verify::is_check(command, &vc.commands, &changed) {
                 self.verify.write_mark = r.writes_after;
                 self.verify.shell_may_have_changed = false;

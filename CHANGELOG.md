@@ -328,6 +328,20 @@
   prompt), can be interrupted, and keeps at most 8 MB of output.
 
 ### Agent harness
+- Long commands are no longer killed at the Bash timeout (C22). A build,
+  install or test run still going after the call's wait (2 minutes by
+  default) moves to the background; the call returns its ID and the output so
+  far, and the model is told when it exits. A turn about to end waits for such
+  commands (up to 10 minutes), so the result isn't lost and the command isn't
+  run twice. Background shells started with `run_in_background` are reported
+  when they exit too. Before, a wrong guess at the timeout killed the
+  command, could leave a half-installed environment, and cost the whole run
+  again.
+- Prompt: what the user specifies (names, paths, formats) is a requirement;
+  no stubs, mock data or hard-coded answers in place of the real thing; fix a
+  failing tool's cause, not its source or installed packages; learn what an
+  existing thing does before reimplementing it; checks are run again only
+  after another change; one-sentence updates between tool calls.
 - Verification loop: changes don't end a turn until checks have run (C12).
 - Recovery:
   - Edit "did you mean" hints;

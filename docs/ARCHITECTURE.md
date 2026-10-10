@@ -93,8 +93,9 @@ both cancel it.
   - each aborted call gets a `tool_result` with `is_error: true` and the text
     "Interrupted by user".
 - **Tools not yet started** get the same result without running.
-- **Background shells** (`run_in_background`) survive an interrupt. Only
-  KillShell or session end stops them.
+- **Background shells** (`run_in_background`, or a Bash command that outlived
+  its timeout, C22) survive an interrupt. Only KillShell, `/tasks stop` or
+  session end stops them.
 - **The transcript** records the partial assistant message, the interrupted
   tool results, and a synthetic user text "[Request interrupted by user]", so a
   resume shows exactly what happened.
@@ -865,10 +866,12 @@ For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
   - plan with TodoWrite and finish every step;
   - check the work before finishing;
   - write large files in parts;
-  - a message without a tool call ends the run: do an announced step at once;
+  - a message without a tool call ends the run (after waiting for commands
+    still running in the background, C22): do an announced step at once;
   - install missing tools (`apt-get`, `pip`) instead of working around them;
-  - give long commands a longer timeout or run them in the background, never
-    piped through `tail`;
+  - a command still running at its Bash timeout goes on in the background:
+    don't start it again or poll it with `sleep`; never pipe long commands
+    through `tail`;
   - if declining for safety or policy reasons, say so briefly.
 - **Attempt reminder:** a turn that would end without a single tool call gets
   one reminder to make a real attempt. A `system` event `attempt_reminder` is
@@ -900,6 +903,49 @@ Tests:
 - `prompts::autonomous_section_is_added_only_when_asked`;
 - `core::unattended_runs_get_a_second_verification_reminder`;
 - `e2e::autonomous_runs_have_no_question_tools_and_attempt_first`.
+
+### C22. Long commands
+
+Builds, installs, test suites and data scripts often outlast a Bash call's
+wait. They are not killed for it.
+- **The wait:** Bash `timeout` (default 2 minutes, maximum 10) is how long the
+  call waits. A command still running then moves to the background as a shell
+  (`bash_N`), as if started with `run_in_background`. The call returns its ID
+  and the output so far (structured: `backgroundTaskId`, `stdout`, `stderr`,
+  `interrupted: false`), not an error. Its working directory is not carried over.
+- **Interrupts** still kill the command's process group (C3), and so does a
+  call that goes away mid-command (the session ends) unless the command moved
+  to the background. `!command`, hooks and other commands Forge runs itself
+  keep their own timeouts, which kill.
+- **Exit notices:** when a background shell exits (either kind), the model is
+  told with the next tool results, or with the next prompt: a system reminder
+  with its exit code, run time and last unread output (`system` event
+  `background_exit`). Not for a shell stopped with KillShell or `/tasks stop`,
+  nor for one whose end BashOutput already showed. Each shell is reported once.
+- **Waiting at the end of a turn:** a turn that would end while commands moved
+  there at their timeout are still running waits for them, up to 10 minutes
+  and a minute short of `--max-time` (notice "Waiting for bash_N…", `system`
+  event `background_wait`), then goes on with how they ended, or with a note
+  that they still run. At most twice a turn; an interrupt ends the wait.
+  Commands started with `run_in_background` (servers, watchers) are not waited
+  for. Unattended, this keeps the run's end from stopping a build the model
+  wanted; at the terminal, the answer comes with the result.
+- **Verification (C12):** a check that moved to the background counts when it
+  exits, passed or failed by its exit code; until then it is not a check.
+- **Output:** each stream keeps its first and last 4 MB, foreground or
+  background, and BashOutput returns only what wasn't read yet.
+
+Tests:
+- `builtin::bash_timeout_moves_the_command_to_the_background`,
+  `builtin::a_moved_command_can_be_stopped_with_its_children`,
+  `builtin::a_dropped_bash_call_stops_its_command`,
+  `builtin::finished_bash_calls_are_not_listed_as_background_shells`,
+  `builtin::reading_a_finished_shell_counts_as_being_told`,
+  `builtin::a_background_shell_that_exits_is_reported`,
+  `shells::captured_output_is_read_in_parts_and_notes_what_was_dropped`;
+- `engine::the_turn_waits_for_commands_that_outlived_their_timeout`,
+  `engine::a_check_that_finishes_in_the_background_counts`;
+- eval task `evals/tasks/slow-build` (a 150 s build).
 
 ## Prompts
 

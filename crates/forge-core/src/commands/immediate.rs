@@ -281,7 +281,7 @@ fn tasks(v: &SessionView, args: &str) -> Exec {
         let _ = writeln!(
             s,
             "  {} [{}, {}] {}",
-            sh.id,
+            sh.id(),
             sh.status().label(),
             duration(sh.started.elapsed()),
             sh.command.chars().take(100).collect::<String>()

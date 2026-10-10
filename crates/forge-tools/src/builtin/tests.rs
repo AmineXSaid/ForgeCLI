@@ -43,13 +43,95 @@ async fn bash_reports_exit_code_and_stderr() {
 }
 
 #[tokio::test]
-async fn bash_timeout_kills_process_group() {
+async fn bash_timeout_moves_the_command_to_the_background() {
     let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
     let start = Instant::now();
-    let out = Bash::default().call(json!({"command": "sleep 30 & sleep 30", "timeout": 300}), &ctx(d.path())).await;
-    assert!(out.is_error);
-    assert!(out.text_content().contains("timed out"));
+    let out = Bash::default().call(json!({"command": "echo first; sleep 1; echo second", "timeout": 300}), &c).await;
+    assert!(start.elapsed() < Duration::from_secs(1), "the call returns at its timeout");
+    let t = out.text_content();
+    assert!(!out.is_error, "{t}");
+    assert!(t.contains("still running") && t.contains("bash_1") && t.contains("first"), "{t}");
+    assert_eq!(out.structured.as_ref().unwrap()["backgroundTaskId"], "bash_1");
+    let sh = c.shells.get("bash_1").unwrap();
+    assert!(sh.is_awaited());
+    assert_eq!(c.shells.awaited_running().len(), 1);
+    // It is not stopped: it finishes, and the model is told once, with the output it hasn't read.
+    tokio::time::timeout(Duration::from_secs(10), sh.wait()).await.unwrap();
+    assert_eq!(sh.status(), crate::shells::ShellStatus::Completed(Some(0)));
+    let exited = c.shells.take_exited();
+    assert_eq!(exited.len(), 1);
+    let note = exit_notice(&exited).unwrap();
+    assert!(note.contains("bash_1 exited with code 0") && note.contains("second"), "{note}");
+    let output = note.split("Its last output").nth(1).unwrap();
+    assert!(!output.contains("first"), "output already returned isn't repeated: {note}");
+    assert!(c.shells.take_exited().is_empty(), "told once");
+    assert!(c.shells.awaited_running().is_empty());
+}
+
+#[tokio::test]
+async fn a_moved_command_can_be_stopped_with_its_children() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let out = Bash::default().call(json!({"command": "sleep 30 & sleep 30", "timeout": 200}), &c).await;
+    assert!(out.text_content().contains("bash_1"), "{}", out.text_content());
+    let start = Instant::now();
+    let k = KillShell.call(json!({"shell_id": "bash_1"}), &c).await;
+    assert!(!k.is_error);
+    let sh = c.shells.get("bash_1").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), sh.wait()).await.expect("the process group is gone");
     assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(c.shells.take_exited().is_empty(), "a stopped command needs no exit notice");
+}
+
+#[tokio::test]
+async fn a_dropped_bash_call_stops_its_command() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let marker = d.path().canonicalize().unwrap().join("still-running");
+    let cmd = format!("sleep 1; touch '{}'", marker.display());
+    // The call is dropped mid-command, as when the session ends.
+    let _ = tokio::time::timeout(Duration::from_millis(300), Bash::default().call(json!({"command": cmd}), &c)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!marker.exists(), "the command was stopped with its call");
+    assert!(c.shells.list().is_empty());
+}
+
+#[tokio::test]
+async fn finished_bash_calls_are_not_listed_as_background_shells() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    let out = Bash::default().call(json!({"command": "echo hi"}), &c).await;
+    assert_eq!(out.text_content(), "hi");
+    assert!(c.shells.list().is_empty());
+    // The next background shell is still bash_1.
+    let out = Bash::default().call(json!({"command": "sleep 5", "run_in_background": true}), &c).await;
+    assert!(out.text_content().contains("bash_1"), "{}", out.text_content());
+    c.shells.kill_all();
+}
+
+#[tokio::test]
+async fn reading_a_finished_shell_counts_as_being_told() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    Bash::default().call(json!({"command": "echo done", "run_in_background": true}), &c).await;
+    let sh = c.shells.get("bash_1").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), sh.wait()).await.unwrap();
+    let o = BashOutput.call(json!({"bash_id": "bash_1"}), &c).await;
+    assert!(o.text_content().contains("<exit_code>0</exit_code>"), "{}", o.text_content());
+    assert!(c.shells.take_exited().is_empty());
+}
+
+#[tokio::test]
+async fn a_background_shell_that_exits_is_reported() {
+    let d = tempfile::tempdir().unwrap();
+    let c = ctx(d.path());
+    Bash::default().call(json!({"command": "echo boom >&2; exit 2", "run_in_background": true}), &c).await;
+    let sh = c.shells.get("bash_1").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), sh.wait()).await.unwrap();
+    let note = exit_notice(&c.shells.take_exited()).unwrap();
+    assert!(note.contains("bash_1 exited with code 2") && note.contains("boom"), "{note}");
+    assert!(!sh.is_awaited(), "started in the background on purpose: the turn doesn't wait for it");
 }
 
 #[tokio::test]

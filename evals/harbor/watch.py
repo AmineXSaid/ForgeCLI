@@ -138,8 +138,11 @@ def render(event: dict) -> list[str]:
         for block in content if isinstance(content, list) else []:
             if block.get("type") == "tool_result":
                 text = tool_text(block)
+                moved = re.search(r"still running after (.+?)\. .*? in the background as (bash_\d+)", text)
                 if block.get("is_error"):
                     out.append(f"  {RED}✗ {error_line(text)}{RESET}")
+                elif moved:
+                    out.append(f"  {DIM}↷ still running after {moved.group(1)}: moved to the background as {moved.group(2)}{RESET}")
                 elif FULL:
                     out.append(f"  {DIM}← {short(text, 300)}{RESET}")
             elif block.get("type") == "text" and event.get("isSynthetic"):
@@ -151,6 +154,15 @@ def render(event: dict) -> list[str]:
         wait = (event.get("retry_delay_ms") or 0) / 1000
         why = short(event.get("error", ""), 140)
         out.append(f"  {RED}↻ model call failed, retry {event.get('attempt')} in {wait:.0f}s · {why}{RESET}")
+    elif kind == "system" and event.get("subtype") == "background_wait":
+        limit = (event.get("limit_ms") or 0) / 1000
+        out.append(f"  {DIM}⏳ waiting for {', '.join(event.get('shells') or [])} (up to {limit / 60:.0f} min){RESET}")
+    elif kind == "system" and event.get("subtype") == "background_exit":
+        for sh in event.get("shells") or []:
+            code = sh.get("exit_code")
+            how = f"exit {code}" if code is not None else "ended by a signal"
+            color = DIM if code == 0 else RED
+            out.append(f"  {color}· {sh.get('id')} finished, {how} after {sh.get('seconds')}s: {short(sh.get('command', ''), 100)}{RESET}")
     elif kind == "system" and event.get("subtype") not in QUIET_SYSTEM:
         if FULL or not str(event.get("subtype", "")).endswith("_reminder"):
             out.append(f"  {DIM}· {event.get('subtype')}{RESET}")

@@ -33,13 +33,14 @@ capture() {  # name, binary, then the command to run with its environment
     sleep 0.2
   done
   (cd "$(mktemp -d)" && timeout 60 env "$@" > "$repo/$out/$name/agent.log" 2>&1)
+  local status=$?
   kill "$server" 2>/dev/null
   wait "$server" 2>/dev/null
   "$bin" --version > "$out/$name/version.txt" 2>&1
   if [ -f "$out/$name/system.md" ]; then
     echo "   $out/$name/system.md: $(wc -w < "$out/$name/system.md") words; tools.json: $(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$out/$name/tools.json") tools"
   else
-    echo "   no request with tools captured; see $out/$name/agent.log and server.log"
+    echo "   no request with tools captured (agent exit status $status); see $out/$name/agent.log and server.log"
   fi
 }
 

@@ -1239,3 +1239,61 @@ async fn c8_headless_questions_and_plans_are_answered_by_contract() {
     e.submit(prompt("go")).await;
     assert!(!tool_results(&e)[0].2);
 }
+
+#[tokio::test]
+async fn the_turn_waits_for_commands_that_outlived_their_timeout() {
+    let h = Harness::new(vec![]);
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "echo compiling; sleep 1; echo built", "timeout": 100})));
+    h.provider.push(MockTurn::text("The build is still running."));
+    h.provider.push(MockTurn::text("Built."));
+    let mut e = h.engine();
+    let r = e.submit(prompt("build it")).await;
+    assert_eq!((r.num_turns, r.result.as_deref()), (3, Some("Built.")));
+    let moved = result_text(
+        &h.provider.requests()[1],
+        &h.provider.requests()[1]
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(moved.contains("still running") && moved.contains("bash_1") && moved.contains("compiling"), "{moved}");
+    // The model ended its reply while bash_1 ran: the turn waited, then told it how it ended.
+    let told = last_user_text(&h.provider.requests()[2]);
+    assert!(told.contains("bash_1 exited with code 0") && told.contains("built"), "{told}");
+    let t = h.transcript_text();
+    assert!(t.contains(r#""subtype":"background_wait""#) && t.contains(r#""subtype":"background_exit""#));
+}
+
+#[tokio::test]
+async fn a_check_that_finishes_in_the_background_counts() {
+    let h = Harness::new(vec![]);
+    let f = h.cwd().join("a.txt");
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "x"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "sleep 1; true", "timeout": 100})));
+    h.provider.push(MockTurn::text("Waiting for the tests."));
+    h.provider.push(MockTurn::text("Tests pass."));
+    let mut e = verifying_engine(&h, &["true", "false"]);
+    let r = e.submit(prompt("write a")).await;
+    // No verification reminder: the check ran after the change and passed.
+    assert_eq!((r.num_turns, r.result.as_deref()), (4, Some("Tests pass.")));
+    assert!(!h.transcript_text().contains(r#""subtype":"verification""#));
+
+    // One that fails counts as failed, not as passed when it moved to the background.
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "y"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "sleep 1; false", "timeout": 100})));
+    h.provider.push(MockTurn::text("Waiting for the tests."));
+    h.provider.push(MockTurn::text("Done."));
+    h.provider.push(MockTurn::text("Not verified: the check fails."));
+    let r = e.submit(prompt("write a again")).await;
+    assert_eq!((r.num_turns, r.result.as_deref()), (5, Some("Not verified: the check fails.")));
+    let reminder = last_user_text(h.provider.requests().last().unwrap());
+    assert!(reminder.contains("`sleep 1; false`"), "{reminder}");
+}
