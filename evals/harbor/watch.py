@@ -57,7 +57,10 @@ def tool_line(name: str, args: dict) -> str:
         return f"{name} (input cut off)"
     path = args.get("file_path") or args.get("notebook_path") or args.get("path") or ""
     if name == "Bash":
-        return f"$ {first_line(args.get('command', ''), 140)}"
+        command, why = str(args.get("command", "")), args.get("description")
+        if "\n" in command.strip() and why:
+            return f"$ {first_line(command, 60)} · {short(why, 80)}"
+        return f"$ {first_line(command, 140)}"
     if name == "Write":
         n = len(str(args.get("content", "")).splitlines())
         return f"Write {path} ({n} lines)"
@@ -192,6 +195,7 @@ def main() -> None:
     colors: dict[str, str] = {}
     pending: dict[Path, str] = {}
     rewarded: set[Path] = set()
+    first_scan = True
 
     def show(task: str, text: str) -> None:
         color = colors.setdefault(task, COLORS[len(colors) % len(COLORS)])
@@ -203,7 +207,8 @@ def main() -> None:
         logs = sorted(found, key=lambda p: (p.parent.parent.name, p.name.endswith(".stderr.txt"), p.name))
         for log in logs:
             if log not in offsets:
-                offsets[log] = 0 if from_start else log.stat().st_size
+                # Logs there at start are followed from their end; a task that starts later, from its beginning.
+                offsets[log] = 0 if from_start or not first_scan else log.stat().st_size
             size = log.stat().st_size
             if size <= offsets[log]:
                 continue
@@ -221,6 +226,7 @@ def main() -> None:
             for line in lines:
                 for text in handle(line, is_err):
                     show(task, text)
+        first_scan = False
         for reward in sorted(job.glob("*/verifier/reward.txt")):
             if reward not in rewarded and (text := reward_line(reward)):
                 rewarded.add(reward)

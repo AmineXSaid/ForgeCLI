@@ -357,6 +357,10 @@
   says, one short line per tool call, failed calls with their error, how the
   run ended and why, and each task's reward. `--thinking` adds the reasoning,
   `--full` the tool input and output. Other agents' logs are followed too.
+  A multi-line command shows the model's description of it, and a task that
+  starts after `watch.py` is shown from its first step.
+- `evals/harbor/ante_agent.py` and `run-ante.sh` run Ante on the same tasks,
+  for side-by-side comparisons.
 - The Harbor agent rewrites a `localhost` endpoint to this machine's address
   (`FORGE_HARBOR_HOST_IP` to set it), so self-hosted models can be used. A
   login in the URL is kept, and when the address can't be found the error
