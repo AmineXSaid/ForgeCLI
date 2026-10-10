@@ -1,0 +1,373 @@
+[
+ {
+  "name": "Agent",
+  "description": "Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it.\n\nAvailable agent types and the tools they have access to are listed in <system-reminder> messages in the conversation.\n\nWhen using the Agent tool, you must specify a subagent_type parameter to select which agent type to use.\n\n## When to use\n\nDelegate when a substantial independent task can run alongside useful work, or when isolating extensive exploration will materially reduce context load. Keep the conclusion, not the file dumps. Keep immediate dependencies local when delegation would only add a round trip. Do not delegate solely because a search takes several queries or because an agent's description matches. Honor user requests for delegation; choose an appropriate available agent type.\n\nUse direct file and search tools instead for small investigations, single-fact lookups, known paths, known symbols, or known strings.\n\nOnce you delegate a search or investigation to an agent, do not duplicate the same search yourself. Wait for the result, then summarize or verify as needed.\n\n## Usage notes\n\n- Always include a short description (3-5 words) summarizing what the agent will do.\n- Optionally set `model` to a model ID advertised by the session's provider. It overrides the agent definition's model. If omitted, the definition's model is used, then the session model. An unresolved choice falls back to the session model before the agent starts.\n- The agent starts with its own context. Make the prompt self-contained.\n- Clearly tell the agent whether you expect research only, code changes, review, testing, or another specific outcome.\n- The agent's final message is returned to you as the tool result. It is not shown to the user, so relay what matters.\n- Trust but verify: an agent's summary describes what it intended to do, not necessarily what it changed. If the agent edits code, inspect the actual changes before reporting completion.\n- Each Agent call starts a fresh agent with no memory of prior agent runs.\n- If the user asks to run agents in parallel, send multiple Agent tool calls in the same assistant message.\n\n## Prompt guidance\n\nWrite the agent prompt as a complete task brief:\n\n- State the objective.\n- Include relevant context from the current conversation, including discoveries and rejected approaches that affect the assignment.\n- Specify files, directories, commands, constraints, or acceptance criteria when known.\n- Say what output format you want.\n- Tell the agent what not to do if there are important boundaries.\n\nDo not delegate understanding. If you already know the answer or the exact file to inspect, use direct tools instead.\n\n## Example usage\n\n<example>\nuser: Find where billing retries are handled and summarize the flow.\nassistant: [Launches Agent with subagent_type=explore and a self-contained prompt covering retry scheduling, failed-invoice handling, webhook retry paths, and tests; asks for the key files/functions, the flow, and any risks. Then relays the agent's summary to the user.]\n</example>\n\n<example>\nuser: In parallel, trace how API timeouts and retries are configured.\nassistant: [Sends one message with two subagent_type=explore Agent calls — one tracing timeout defaults/overrides/tests, the other tracing retry conditions, backoff, and max attempts.]\n</example>\n\n<example>\nuser: What does src/auth/retry.rs do?\nassistant: [Reads the known file directly — no Agent call for a single named file.]\n</example>\n",
+  "parameters": {
+   "properties": {
+    "description": {
+     "description": "A short (3-5 word) description of the task",
+     "type": "string"
+    },
+    "model": {
+     "description": "Optional model ID from the session's provider. Overrides the agent definition's\nmodel; if omitted, uses the definition's model or the session model. An\nunresolved choice falls back to the session model.",
+     "nullable": true,
+     "type": "string"
+    },
+    "prompt": {
+     "description": "The task for the agent to perform",
+     "type": "string"
+    },
+    "subagent_type": {
+     "description": "The type of specialized agent to use for this task",
+     "type": "string"
+    }
+   },
+   "required": [
+    "description",
+    "prompt",
+    "subagent_type"
+   ],
+   "title": "AgentArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "AskUser",
+  "description": "Use this tool when you are blocked on a decision that is genuinely the user's to make: one you cannot resolve from the request, the codebase, or sensible defaults.\n\nUsage notes:\n- Offer 2-4 meaningful options. If there is only one meaningful option, ask in plain text instead of using this tool; do not invent alternatives to fill the list.\n- Put your recommended option first and add \" (Recommended)\" to its label. It is a label for the user, not a default: nothing is chosen on their behalf.\n- Users can always select \"Other\" to type their own answer, skip the questions, or ask to chat about them instead; never add an \"Other\", \"Skip\", or \"Let me explain\" option yourself.\n- Use multiSelect: true to allow selecting several options for one question.\n- An option may include a `preview` (a code snippet, mockup, or config excerpt) when users need to compare concrete artifacts visually; do not use previews for simple preference questions.\n- Ask everything in one call: the tool accepts up to 4 questions, and a second call while one is pending fails.\n- The reply comes back as this call's result and the turn continues. Read it as the user's words: free text may ask for changes or for you not to proceed. If the result says nobody answered (the user skipped, or the session is unattended), proceed using your best judgment and do not ask again. If it says the user wants to discuss, ask them in plain text what they would like to clarify and do not proceed with the task yet.\n\nReserve this for decisions where the user's answer changes what you do next — not for choices with a conventional default or facts you can verify yourself. In those cases pick the obvious option, mention it in your response, and proceed. Explore the codebase before asking.\n",
+  "parameters": {
+   "properties": {
+    "questions": {
+     "description": "Questions to ask the user (1-4 questions).",
+     "items": {
+      "properties": {
+       "header": {
+        "description": "Very short label displayed as a chip/tab (max 12 chars),\ne.g. \"Auth method\", \"Library\", \"Approach\".",
+        "maxLength": 12,
+        "minLength": 1,
+        "type": "string"
+       },
+       "multiSelect": {
+        "default": false,
+        "description": "Set to true to allow selecting multiple options instead of just one.",
+        "type": "boolean"
+       },
+       "options": {
+        "description": "Offer 2-4 meaningful choices. If there is only one meaningful option,\nask in plain text instead of using this tool.\nPut your recommended option first and add \" (Recommended)\" to its\nlabel. Do not add an \"Other\" option; the client provides one automatically.",
+        "items": {
+         "properties": {
+          "description": {
+           "description": "What this option means or what will happen if chosen.",
+           "type": "string"
+          },
+          "label": {
+           "description": "Concise display text for this choice (1-5 words).",
+           "type": "string"
+          },
+          "preview": {
+           "description": "Optional preview rendered alongside the option — a code snippet,\nmockup, or config excerpt — for choices best compared visually.",
+           "nullable": true,
+           "type": "string"
+          }
+         },
+         "required": [
+          "label",
+          "description"
+         ],
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "question": {
+        "description": "The complete question to ask. Should be clear, specific, and end with\na question mark, e.g. \"Which library should we use for date formatting?\"",
+        "type": "string"
+       }
+      },
+      "required": [
+       "question",
+       "header",
+       "options"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "questions"
+   ],
+   "title": "AskUserArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "Bash",
+  "description": "Executes a bash command. A command that finishes within the wait window returns stdout, stderr, and exit code inline. A command still running when the window closes returns a background handle: its pid, the output captured so far, and status/stdout/stderr file paths that keep growing while it runs.\n\nEach call runs in a fresh non-interactive bash process from the session working directory. Shell state does not persist across calls: `cd`, exported variables, aliases, and shell functions from one command are not available to later commands.\n\n## Prefer Dedicated Tools\n\n- File search: use Glob instead of `find` or `ls`.\n- Content search: use Grep instead of `grep` or `rg`.\n- File reading: use Read instead of `cat`, `head`, or `tail`.\n- File editing: use Edit instead of `sed` or `awk`.\n- File writing: use Write instead of `echo > file` or heredocs.\n- Communication: respond directly instead of using `echo` or `printf`.\n\nUse Bash for shell-only work such as running tests, builds, package managers, git commands, servers, scripts, and other command-line programs. A targeted `ls` is acceptable when verifying the parent directory before creating files or directories.\n\n## Command Rules\n\n- Always quote file paths that contain spaces, for example `cd \"/Users/name/My Documents\"`.\n- Prefer absolute paths and avoid `cd` unless it makes a single command clearer or the user explicitly requests it.\n- Use `&&` for dependent commands that must stop on failure.\n- Use `;` only when later commands should run even if earlier commands fail.\n- Do not use newlines to separate commands, except inside quoted strings or heredocs.\n- The optional `max_wait_ms` bounds only how long the call blocks, never how long the command runs; its default and limits are on the parameter.\n- Inline stdout/stderr larger than 20000 bytes preserve the beginning and end, omitting the middle.\n- Include a concise `description` that summarizes the observable action in active voice.\n\n## Long-Running Commands\n\n- Any command may outlive its wait window; that is normal for builds, test suites, servers, and watchers. The handle returned holds `pid`, `partial_stdout`/`partial_stderr` (output so far), and `status_path`/`stdout_path`/`stderr_path`.\n- You are notified when a backgrounded command exits: a `<notification from=\"job\">` message with its exit code, duration, the tail of each output stream, and the file paths arrives with your next tool results, or at the start of your next turn if this one ends first. Do other work meanwhile or end the turn; never poll the status file or sleep-wait for a backgrounded command. Choose `max_wait_ms` by how long you are willing to block, not by how long the command takes; if you need the result to finish your current task, block for it.\n- For servers, watchers, and other commands you only need started, pass `max_wait_ms: 250`. Do not append `&`; the command already runs detached.\n- The handle files keep growing while the command runs. Use Read or Grep on the stdout/stderr paths to inspect output beyond what a notification carries.\n- The status file contains `state`, `pid`, `started_at_ms`, and `exit_code`. The `state` is `running` or `exited`; it flips to `exited` when the command exits, and background processes the command left running may append to the output files after that. `exit_code` is null until the process exits, uses the shell-compatible `128 + signal` convention for signal termination, and remains null only if the wait outcome is unavailable.\n- A backgrounded command is never killed automatically. To stop one, run `kill -- -<pid>` (or `kill -9 -- -<pid>` if it ignores SIGTERM) using the pid from the handle or the status file. The pid leads its own process group and the negative form stops the whole group; a bare `kill <pid>` would leave the command's children running. A killed job still reports its exit.\n- Handle files live outside the project and ante cleans them up on its own; never delete them, and use the exact paths from the handle rather than constructing them.\n- For long-running Python scripts, use unbuffered mode such as `python3 -u script.py` so output appears in the files promptly.\n\n## Avoid Unnecessary Sleep\n\n- Do not sleep between commands that can run immediately.\n- Do not retry failing commands in a sleep loop; diagnose the root cause.\n- Do not wait for a backgrounded command with sleep or a poll loop; its exit is delivered to you.\n\n## Git Safety\n\n- Use non-interactive git commands. Commands that open an editor, such as interactive rebase or commit without `-m`, will fail.\n- Never skip hooks (`--no-verify`) or signing (`--no-gpg-sign`, `-c commit.gpgsign=false`) unless the user explicitly asks.\n- Do not run destructive git commands such as `git reset --hard`, `git checkout --`, `git restore .`, `git clean -f`, or force push unless the user explicitly asks.\n- Do not update git config unless the user explicitly asks.\n- Do not push unless the user explicitly asks.\n\n## Shell Environment\n\n- `ANTE_SESSION` contains the ID of the session running the command.\n- Do not rely on user aliases or shell functions. If shell configuration changes command behavior, inspect it and inline the real command explicitly.\n- Commands that require interactive input should be avoided; they hang behind their handle and never complete. Determine the correct non-interactive invocation instead.\n",
+  "parameters": {
+   "properties": {
+    "command": {
+     "description": "The command to execute",
+     "type": "string"
+    },
+    "description": {
+     "description": "Clear, concise active-voice summary of the command's observable action. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
+     "nullable": true,
+     "type": "string"
+    },
+    "max_wait_ms": {
+     "description": "How long to block waiting for the command, in milliseconds. Default\n10000; values outside 250–600000 are clamped. When the window closes\non a still-running command the call returns its background handle;\nthe command is never killed.",
+     "format": "uint64",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "command"
+   ],
+   "title": "BashArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "Edit",
+  "description": "Performs exact string replacements in files. \n\nUsage:\n- You must use your `Read` tool at least once in the conversation before editing, so your edit matches the file's current contents.\n- `Read` prefixes each line with LINE_NUMBER→. That prefix is not part of the file: match only what comes after the →, with its exact indentation.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.\n- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`. \n- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.\n- **CRITICAL: Line ending handling**: Pay careful attention to `\\n` (newline) characters when editing files, especially when resolving git merge conflicts. When resolving conflicts, you MUST include the entire conflict section including any trailing `\\n` characters in your `old_string`. For example, if you see `>>>>>>> xxxxxxx\\n`, set your `old_string` to `>>>>>>> xxxxxxx\\n` (including the `\\n` at the end) and your `new_string` to an empty string `` (do not include `\\n` in new_string). **MANDATORY**: Never leave conflict markers or their newlines in the file. Always verify that conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) are completely removed along with their associated newlines. Failure to properly handle line endings can cause formatting issues and incomplete conflict resolution.",
+  "parameters": {
+   "properties": {
+    "file_path": {
+     "description": "The absolute path to the file to modify",
+     "type": "string"
+    },
+    "new_string": {
+     "description": "The text to replace it with (must be different from old_string)",
+     "type": "string"
+    },
+    "old_string": {
+     "description": "The text to replace",
+     "type": "string"
+    },
+    "replace_all": {
+     "default": false,
+     "description": "Replace all occurences of old_string (default false)",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "file_path",
+    "old_string",
+    "new_string"
+   ],
+   "title": "EditArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "Glob",
+  "description": "- Fast file pattern matching tool that works with any codebase size\n- Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\"\n- Returns matching file paths in path order, one page at a time. A page ends at `head_limit` files (default 100) or when the output budget fills, whichever comes first; to continue, pass the footer's `next_offset` as `offset`\n- Use this tool when you need to find files by name patterns\n- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead\n- You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.",
+  "parameters": {
+   "properties": {
+    "head_limit": {
+     "description": "Maximum files per page. Defaults to 100; 0 lifts the limit, though a page still ends when the output budget fills — continue from `next_offset`.",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "offset": {
+     "description": "Skip the first N files, for paging with head_limit. Defaults to 0.",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "path": {
+     "description": "The directory to search in. If not specified, the current working directory will be used.\nIMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior.\nMust be a valid directory path if provided.",
+     "nullable": true,
+     "type": "string"
+    },
+    "pattern": {
+     "description": "The glob pattern to match files against",
+     "type": "string"
+    }
+   },
+   "required": [
+    "pattern"
+   ],
+   "title": "GlobArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "Grep",
+  "description": "A powerful search tool built on ripgrep\nUsage:\n- ALWAYS use Grep for search tasks. NEVER invoke `grep` or `rg` as a Bash command. The Grep tool has been optimized for correct permissions and access.\n- Supports full regex syntax (e.g., \"log.*Error\", \"function\\s+\\w+\")\n- Filter files with glob parameter (e.g., \"*.js\", \"**/*.tsx\") or type parameter (e.g., \"js\", \"py\", \"rust\")\n- Output modes: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts\n- Pagination: results come in path order, one page at a time. A page ends at `head_limit` entries (files, counts, or content lines; default 250) or when the output budget fills, whichever comes first; to continue, pass the footer's `next_offset` as `offset`\n- Use Agent tool for open-ended searches requiring multiple rounds\n- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use `interface\\{\\}` to find `interface{}` in Go code)\n- Multiline matching: By default patterns match within single lines only. For cross-line patterns like `struct \\{[\\s\\S]*?field`, use `multiline: true`",
+  "parameters": {
+   "properties": {
+    "-A": {
+     "description": "Lines to show after each match (content mode only)",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "-B": {
+     "description": "Lines to show before each match (content mode only)",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "-C": {
+     "description": "Alias for context",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "-i": {
+     "description": "Case insensitive search",
+     "nullable": true,
+     "type": "boolean"
+    },
+    "-n": {
+     "description": "Show line numbers (content mode only, default true)",
+     "nullable": true,
+     "type": "boolean"
+    },
+    "context": {
+     "description": "Lines to show before and after each match (content mode only)",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "glob": {
+     "description": "Glob pattern to filter files, e.g. \"*.js\" or \"*.{ts,tsx}\"",
+     "nullable": true,
+     "type": "string"
+    },
+    "head_limit": {
+     "description": "Maximum entries (files, counts, or content lines) per page. Defaults to 250; 0 lifts the limit, though a page still ends when the output budget fills — continue from `next_offset`.",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "multiline": {
+     "description": "Multiline mode: patterns can span lines and . matches newlines. Default false.",
+     "nullable": true,
+     "type": "boolean"
+    },
+    "offset": {
+     "description": "Skip the first N lines/entries, for paging with head_limit. Defaults to 0.",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "output_mode": {
+     "default": "files_with_matches",
+     "description": "\"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts",
+     "enum": [
+      "files_with_matches",
+      "content",
+      "count"
+     ],
+     "type": "string"
+    },
+    "path": {
+     "description": "File or directory to search. Defaults to the current working directory.",
+     "nullable": true,
+     "type": "string"
+    },
+    "pattern": {
+     "description": "Regex pattern to search for in file contents (ripgrep syntax)",
+     "type": "string"
+    },
+    "type": {
+     "description": "File type to search, e.g. js, py, rust, go. More efficient than glob for standard types.",
+     "nullable": true,
+     "type": "string"
+    }
+   },
+   "required": [
+    "pattern"
+   ],
+   "title": "GrepArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "Read",
+  "description": "\nReads a file from the local filesystem. You can access any file directly by using this tool.\nAssume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- The file_path parameter must be an absolute path, not a relative path\n- By default, it reads up to 2000 lines starting from the beginning of the file\n- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters\n- Results are returned using cat -n format, with line numbers starting at 1\n- Reads image files (PNG, JPG, etc.) visually; large images may be resized or converted. Visual analysis can be imprecise — when exact pixel values or dimensions matter, cross-verify with programmatic tools.\n- This tool can read PDF files (.pdf) page by page: pages are rendered as images for visual analysis, or extracted as embedded text when the model has no vision support. Use the pages parameter (e.g. \"1-5,8\") to select pages; PDFs with more than 10 pages require it, and at most 20 pages are returned per call. Reading rendered pages can be imprecise for exact strings — when verbatim quotes or exact numbers matter, cross-verify with programmatic tools (e.g. pdftotext or Python) via the Bash tool.\n- This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.\n- You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.\n- You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n",
+  "parameters": {
+   "properties": {
+    "file_path": {
+     "description": "The absolute path to the file to read",
+     "type": "string"
+    },
+    "limit": {
+     "description": "The number of lines to read. Only provide if the file is too large to read at once.",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "offset": {
+     "description": "The line number to start reading from. Only provide if the file is too large to read at once",
+     "format": "uint",
+     "minimum": 0,
+     "nullable": true,
+     "type": "integer"
+    },
+    "pages": {
+     "description": "PDFs only: which pages to read, e.g. \"1-5,8\" (1-based). Required for\nPDFs with more than 10 pages; at most 20 pages per call.",
+     "nullable": true,
+     "type": "string"
+    }
+   },
+   "required": [
+    "file_path"
+   ],
+   "title": "ReadFileArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "WebFetch",
+  "description": "\n- Fetches content from a specified URL\n- Fetches the URL content, converts HTML to markdown\n- Returns the content for you to analyze; oversized content is saved to a local file and you get a preview plus recovery instructions\n- Use this tool when you need to retrieve and analyze web content\n\nUsage notes:\n  - IMPORTANT: If an MCP-provided web fetch tool is available, prefer using that tool instead of this one, as it may have fewer restrictions.\n  - Prefer URLs supplied by the user, found in search results, or linked from retrieved pages. Avoid repeatedly guessing URL paths; use search or a known site entry page to locate the resource.\n  - HTTP URLs are upgraded to HTTPS, and scheme-less URLs (e.g. example.com/page) are treated as HTTPS\n  - This tool does not modify project files; oversized responses are saved temporarily to Ante's cache directory\n  - When content is truncated, follow the footer's guidance to access the saved full content instead of re-fetching\n  - When a URL redirects to a different host, the tool will inform you and provide the redirect URL in a special format. You should then make a new WebFetch request with the redirect URL to fetch the content.\n\n",
+  "parameters": {
+   "properties": {
+    "url": {
+     "description": "The URL to fetch content from",
+     "type": "string"
+    }
+   },
+   "required": [
+    "url"
+   ],
+   "title": "WebFetchArgs",
+   "type": "object"
+  }
+ },
+ {
+  "name": "Write",
+  "description": "Writes a file to the local filesystem.\n\nUsage:\n- This tool will overwrite the existing file if there is one at the provided path.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.\n- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.\n- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.",
+  "parameters": {
+   "properties": {
+    "content": {
+     "description": "The content to write to the file",
+     "type": "string"
+    },
+    "file_path": {
+     "description": "The absolute path to the file to write (must be absolute, not relative)",
+     "type": "string"
+    }
+   },
+   "required": [
+    "file_path",
+    "content"
+   ],
+   "title": "WriteArgs",
+   "type": "object"
+  }
+ }
+]
