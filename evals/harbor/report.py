@@ -123,6 +123,17 @@ def error_kind(text: str) -> str:
     return first[:80]
 
 
+def short_exception(message: str) -> str:
+    """Harbor's exception message in one line: what failed, and its stderr when there is one."""
+    lines = [ln.strip() for ln in message.strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    m = re.match(r"Command failed \(exit \d+\)", lines[0])
+    head = m.group(0) if m else lines[0]
+    err = next((ln[7:].strip() for ln in lines if ln.startswith("stderr:") and ln[7:].strip() not in ("", "None")), "")
+    return clip(head + (f": {err}" if err else ""), 140)
+
+
 def tool_text(block: dict) -> str:
     body = block.get("content")
     if isinstance(body, list):
@@ -285,8 +296,8 @@ class Trial:
         if self.exception:
             if self.crash_reason:
                 return f"crashed: {self.crash_reason}"
-            why = self.exception_message.strip().splitlines()[-1:] or [""]
-            return f"crashed ({self.exception}: {clip(why[0], 120)})" if why[0] else f"crashed ({self.exception})"
+            why = short_exception(self.exception_message)
+            return f"crashed ({self.exception}: {why})" if why else f"crashed ({self.exception})"
         return "failed"
 
     # ---- output
