@@ -71,7 +71,7 @@ pub struct Opts {
     /// Never ask for input: permission prompts are denied and interactive mode refuses to start
     #[arg(long = "no-input", env = "FORGE_NO_INPUT", value_parser = clap::builder::BoolishValueParser::new(), num_args = 0..=1, default_missing_value = "true", default_value = "false")]
     pub no_input: bool,
-    /// Unattended run: no question or plan-approval tools, a prompt to finish without asking, and a reminder to attempt before giving up (also the `autonomous` setting)
+    /// Unattended run: no question or plan-approval tools, a prompt to finish without asking, a reminder to attempt before giving up, and retries of failed model calls (also the `autonomous` setting)
     #[arg(long = "autonomous", env = "FORGE_AUTONOMOUS", action = clap::ArgAction::SetTrue, value_parser = clap::builder::BoolishValueParser::new())]
     pub autonomous: bool,
     /// Interactive mode: use the line-based prompt instead of the terminal UI (also FORGE_TUI=0)

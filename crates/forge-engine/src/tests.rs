@@ -981,6 +981,78 @@ async fn the_model_is_told_the_time_limit_and_warned_near_the_end() {
     assert!(last_user_text(&reqs[1]).contains("less than a minute of the run's time left (--max-time)"));
 }
 
+fn retrying(time_limit: Option<TimeLimit>) -> EngineConfig {
+    EngineConfig { autonomous: true, api_retry_wait: Duration::from_millis(1), time_limit, ..Default::default() }
+}
+
+#[tokio::test]
+async fn unattended_runs_retry_failed_model_calls() {
+    // Rate limit, server error and a stream that broke mid-reply: each is tried again.
+    let broken = MockTurn::StreamError { kind: "api_error".into(), message: "connection reset".into() };
+    let h = Harness::new(vec![
+        MockTurn::http_error(429, "rate_limit_error"),
+        MockTurn::http_error(503, "api_error"),
+        broken,
+        MockTurn::tool("Bash", json!({"command": "echo ok"})),
+        MockTurn::text("done"),
+    ]);
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("task")).await;
+    assert_eq!(r.result.as_deref(), Some("done"));
+    assert_eq!(r.subtype, ResultSubtype::Success);
+    assert_eq!(h.provider.requests().len(), 5);
+    let retries: Vec<Value> = h
+        .sink
+        .take()
+        .into_iter()
+        .filter_map(|ev| match ev {
+            EngineEvent::System { subtype, data } if subtype == "api_retry" => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(retries.len(), 3);
+    assert_eq!(retries[2]["attempt"], 3);
+    assert!(retries[0]["error"].as_str().unwrap().contains("429"), "{}", retries[0]);
+}
+
+#[tokio::test]
+async fn api_retries_stop_at_their_limits() {
+    // Without --max-time: a fixed number of tries, then the run ends with the error.
+    let h = Harness::new((0..12).map(|_| MockTurn::http_error(529, "overloaded_error")).collect());
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("task")).await;
+    assert_eq!(r.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(r.stop_reason.as_deref(), Some("api_error"));
+    assert_eq!(h.provider.requests().len(), 11, "1 call and 10 retries");
+
+    // The count starts again after a call that worked.
+    let mut turns: Vec<MockTurn> = (0..10).map(|_| MockTurn::http_error(503, "api_error")).collect();
+    turns.push(MockTurn::tool("Bash", json!({"command": "echo ok"})));
+    turns.extend((0..10).map(|_| MockTurn::http_error(503, "api_error")));
+    turns.push(MockTurn::text("done"));
+    let h = Harness::new(turns);
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.result.as_deref(), Some("done"));
+
+    // With --max-time: no retry once the wait would eat the last minute.
+    let limit = TimeLimit { started: Instant::now() - Duration::from_secs(100), total: Duration::from_secs(150) };
+    let h = Harness::new(vec![MockTurn::http_error(429, "rate_limit_error"), MockTurn::text("late")]);
+    let mut e =
+        h.engine_with(retrying(Some(limit)), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(h.provider.requests().len(), 1);
+
+    // Errors a retry can't fix, and runs with a person at the prompt, end at once.
+    let h = Harness::new(vec![MockTurn::http_error(401, "authentication_error"), MockTurn::text("no")]);
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(h.provider.requests().len(), 1);
+    let h = Harness::new(vec![MockTurn::http_error(429, "rate_limit_error"), MockTurn::text("no")]);
+    let mut e = h.engine();
+    assert_eq!(e.submit(prompt("task")).await.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(h.provider.requests().len(), 1);
+}
+
 #[tokio::test]
 async fn unattended_runs_attempt_before_giving_up() {
     // Ending without any tool call: one reminder, then the model may still stop.

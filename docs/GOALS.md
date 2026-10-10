@@ -112,6 +112,10 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
   - unattended runs (`--autonomous`, contract C21): no question tools, and a
     reminder to attempt before giving up. In the first Terminal-Bench subset,
     3 of 4 failures ended after 3 turns or fewer, without a real attempt;
+  - unattended API retries (C21): a failed model call waits and tries again
+    while the run has time. In the deep-thinking run of 2026-10-09, 7 of 10
+    trials ended after 0 turns on HTTP 429, and 6 runs across the jobs ended on
+    a connection lost mid-reply;
   - time awareness (`--max-time`): the limit is stated up front and one
     reminder comes when a fifth of the time is left. Benchmark tasks have
     hard time limits; a run cut off mid-change scores nothing;

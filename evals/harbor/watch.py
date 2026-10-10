@@ -147,6 +147,10 @@ def render(event: dict) -> list[str]:
                 out.append(f"  {DIM}· {short(text, 300 if FULL else 140)}{RESET}")
     elif kind == "result":
         out.append(finish_line(event))
+    elif kind == "system" and event.get("subtype") == "api_retry":
+        wait = (event.get("retry_delay_ms") or 0) / 1000
+        why = short(event.get("error", ""), 140)
+        out.append(f"  {RED}↻ model call failed, retry {event.get('attempt')} in {wait:.0f}s · {why}{RESET}")
     elif kind == "system" and event.get("subtype") not in QUIET_SYSTEM:
         if FULL or not str(event.get("subtype", "")).endswith("_reminder"):
             out.append(f"  {DIM}· {event.get('subtype')}{RESET}")

@@ -75,6 +75,16 @@ fn about(left: Duration) -> String {
     }
 }
 
+/// Unattended runs (GOALS pillar 2): the first wait before a failed model call is tried again.
+const API_RETRY_FIRST_WAIT: Duration = Duration::from_secs(5);
+/// The longest wait between two tries.
+const API_RETRY_MAX_WAIT: Duration = Duration::from_secs(60);
+/// Without `--max-time`, how many times a failed call is tried again.
+const API_RETRY_ATTEMPTS: u32 = 10;
+/// With `--max-time`, the most tries, and the time kept after a wait for the model to wrap up.
+const API_RETRY_MAX_ATTEMPTS: u32 = 30;
+const API_RETRY_RESERVE: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub model: String,
@@ -89,8 +99,11 @@ pub struct EngineConfig {
     /// `--max-time`: the model is told the limit and warned near the end; the host enforces it.
     pub time_limit: Option<TimeLimit>,
     /// `--autonomous`: nobody answers; a turn that ends without any tool call gets one
-    /// reminder to make a real attempt first.
+    /// reminder to make a real attempt first, and a model call that fails for a reason that
+    /// passes (rate limit, overload, server error, lost connection) is tried again.
     pub autonomous: bool,
+    /// The first wait before such a retry; each next one doubles, up to a minute.
+    pub api_retry_wait: Duration,
     /// `--json-schema`: structured output for the final answer.
     pub json_schema: Option<Value>,
     pub pricing: HashMap<String, Pricing>,
@@ -132,6 +145,7 @@ impl Default for EngineConfig {
             max_budget_usd: None,
             time_limit: None,
             autonomous: false,
+            api_retry_wait: API_RETRY_FIRST_WAIT,
             json_schema: None,
             pricing: HashMap::new(),
             initial_context: None,
@@ -674,6 +688,30 @@ impl Engine {
     /// Tell the host about something (`system/<subtype>`) without recording it.
     pub fn announce(&self, subtype: &str, data: Value) {
         self.emit(EngineEvent::System { subtype: subtype.into(), data });
+    }
+
+    /// How long to wait before trying a failed model call again, or `None` to give up. Only
+    /// unattended runs retry: a person at the prompt decides for themselves. A stream that
+    /// broke before its first event counts as a lost connection.
+    fn api_retry_wait(&self, e: &ApiError, retries: u32) -> Option<Duration> {
+        let passes = e.is_retryable() || matches!(e, ApiError::Parse(m) if m.starts_with("stream ended"));
+        if !self.cfg.autonomous || !passes {
+            return None;
+        }
+        let backoff = self.cfg.api_retry_wait.saturating_mul(1 << retries.min(6));
+        let retry_after = match e {
+            ApiError::Http { retry_after: Some(d), .. } => *d,
+            _ => Duration::ZERO,
+        };
+        // Spread the retries of runs that failed together (they share the endpoint's limits).
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+        let jitter = backoff.mul_f64(f64::from(nanos % 1000) / 4000.0);
+        let wait = (backoff + jitter).max(retry_after).min(API_RETRY_MAX_WAIT);
+        match &self.cfg.time_limit {
+            Some(t) => (retries < API_RETRY_MAX_ATTEMPTS && t.remaining() > wait + API_RETRY_RESERVE).then_some(wait),
+            None => (retries < API_RETRY_ATTEMPTS).then_some(wait),
+        }
     }
 
     fn system_event(&self, subtype: &str, data: Value) {
@@ -1383,6 +1421,7 @@ impl Engine {
         let mut continuing = false;
         let mut budget_warned = false;
         let mut attempt_reminded = false;
+        let mut api_retries = 0u32;
 
         loop {
             if cancel.is_cancelled() {
@@ -1504,6 +1543,25 @@ impl Engine {
                             continue;
                         }
                     }
+                    if let Some(wait) = self.api_retry_wait(&e, api_retries) {
+                        api_retries += 1;
+                        self.notice(
+                            NoticeLevel::Warning,
+                            format!(
+                                "API Error: {e}. Retrying in {}s (attempt {api_retries}).",
+                                wait.as_secs_f64().ceil() as u64
+                            ),
+                        );
+                        self.system_event(
+                            "api_retry",
+                            json!({"attempt": api_retries, "retry_delay_ms": wait.as_millis() as u64, "error": e.to_string()}),
+                        );
+                        tokio::select! {
+                            _ = cancel.cancelled() => {}
+                            _ = tokio::time::sleep(wait) => {}
+                        }
+                        continue;
+                    }
                     let text = format!("API Error: {}", e.describe());
                     self.notice(NoticeLevel::Error, text.clone());
                     turn.errors.push(text.clone());
@@ -1522,6 +1580,8 @@ impl Engine {
                 }
             };
             turn.api_calls += 1;
+            // Each run of failures gets the full retry budget.
+            api_retries = 0;
             self.record_usage(&model, &msg.usage.clone(), &mut turn);
             let text = msg.to_message().text();
             if continuing {

@@ -163,8 +163,10 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
     is unknown;
   - `--autonomous` (or `FORGE_AUTONOMOUS=1`) is for runs nobody watches. It
     removes the question and plan-approval tools, tells the model to finish
-    without asking, and reminds it once to make a real attempt if it tries to
-    end a turn without using any tool (contract C21);
+    without asking, reminds it once to make a real attempt if it tries to
+    end a turn without using any tool, and retries model calls that fail for a
+    reason that passes (rate limit, overload, server error, lost connection)
+    instead of ending the run (contract C21);
   - `--max-time T` (`900`, `15m`, `1h`) tells the model its time limit up
     front and warns it when a fifth of the time (at least a minute) is left.
     It doesn't stop the run: the host that set the limit does (Forge

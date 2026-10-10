@@ -52,6 +52,11 @@
   and retries; the limit grows back after a run of successes.
 - The OpenAI-compatible provider honours `Retry-After` and
   `FORGE_MAX_RETRIES`, and stops waiting when interrupted.
+- Unattended runs (`--autonomous`) retry a model call that failed for a
+  reason that passes (429, 5xx, overloaded, a lost connection, a stream that
+  broke mid-reply) instead of ending the run: waits from 5 s, doubling, capped
+  at a minute, up to 10 in a row, or with `--max-time` while a minute is left.
+  Each retry is a warning and a `system/api_retry` event.
 - `maxParallelAgents` (default 4) caps Task sub-agents running at once.
 - A failed sub-agent's result starts with `FAILED:` and tells the model its
   task is not done, so it can't be reported as finished.

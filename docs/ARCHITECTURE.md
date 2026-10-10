@@ -872,9 +872,18 @@ For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
   twice in one turn, and the model may still answer without tools.
 - **Verification:** `verification.maxReminders` defaults to 2 instead of 1. A
   setting still wins.
+- **API retries:** a model call that fails for a reason a retry can fix (HTTP
+  408, 409, 429, 5xx, overloaded, a lost connection, a stream that broke
+  mid-reply) is sent again instead of ending the run, after the provider's own
+  quick retries. Waits start at 5 s, double, and are capped at a minute; a
+  `retry-after` header is honoured. Up to 10 retries in a row, or with `--max-time` up to
+  30 while a minute is left after the wait. Each retry writes a warning and a
+  `system` event `api_retry` (`attempt`, `retry_delay_ms`, `error`). Errors a
+  retry can't fix (401-404, billing) still end the run at once.
 
 Tests:
 - `engine::unattended_runs_attempt_before_giving_up`;
+- `engine::unattended_runs_retry_failed_model_calls`, `engine::api_retries_stop_at_their_limits`;
 - `prompts::autonomous_section_is_added_only_when_asked`;
 - `core::unattended_runs_get_a_second_verification_reminder`;
 - `e2e::autonomous_runs_have_no_question_tools_and_attempt_first`.
