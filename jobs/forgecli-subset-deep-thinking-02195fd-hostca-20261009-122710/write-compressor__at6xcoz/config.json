@@ -1,0 +1,15 @@
+{
+    "task": {
+        "path": "write-compressor",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source": "terminal-bench"
+    },
+    "trial_name": "write-compressor__at6xcoz",
+    "trials_dir": "jobs/forgecli-subset-deep-thinking-02195fd-hostca-20261009-122710",
+    "agent": {
+        "name": "forge_agent:ForgeCLI",
+        "model_name": "openai/deep-thinking"
+    },
+    "job_id": "9a264cb4-736c-4dcc-b9ad-0b78138c6714"
+}

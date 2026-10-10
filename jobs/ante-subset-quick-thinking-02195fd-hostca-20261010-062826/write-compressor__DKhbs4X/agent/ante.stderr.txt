@@ -1,0 +1,4 @@
+✗ Failed: transport error
+  error sending request for url (https://gpt.technica-engineering.net/api/v1/chat/completions)
+
+Task failed: transport error

@@ -1,0 +1,38 @@
+{
+    "id": "b3ee7452-cce4-420e-8476-021ad356b778",
+    "started_at": "2026-10-08T14:13:46.473548",
+    "updated_at": "2026-10-08T13:14:58.286006Z",
+    "finished_at": null,
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 2,
+        "n_errored_trials": 2,
+        "n_running_trials": 0,
+        "n_pending_trials": 8,
+        "n_cancelled_trials": 2,
+        "n_retries": 0,
+        "evals": {
+            "forgecli__deep-thinking__terminal-bench": {
+                "n_trials": 0,
+                "n_errors": 2,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {},
+                "exception_stats": {
+                    "CancelledError": [
+                        "llm-inference-batching-scheduler__U4RcTtu",
+                        "gpt2-codegolf__6ehmuM6"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null
+    }
+}

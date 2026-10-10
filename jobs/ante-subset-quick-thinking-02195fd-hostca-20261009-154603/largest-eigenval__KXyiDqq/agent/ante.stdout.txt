@@ -1,0 +1,36 @@
+❖ Ante
+  
+  
+  I'll start by checking the environment and getting baseline timings from the reference.
+  
+
+❖ Ante
+  
+  
+  gcc is available, scipy/numba absent. Now the baseline timing:
+  
+
+❖ Ante
+  
+  
+  Baseline is about 16–36µs, and the current implementation is just barely keeping up (it's the same as the reference implementation). The real winning approach is the following: run a single LAPACK `dgees` (complex Schur decomposition, no eigenvalue computation) + one matrix-vector product, then perform the power method on the tiny deflated block in C, and extract each eigenvalue from a 2×2 block (for real matrices, eigenvalues come in conjugate pairs). First, verify whether LAPACK is accessible and fast:
+  
+
+❖ Ante
+  
+  
+  `np.linalg.schur` doesn't exist in numpy. Let me time what's available and check LAPACK directly.
+  
+
+❖ Ante
+  
+  
+  No `schur` in numpy — reference is raw `np.linalg.eig` (14–33µs core). Let me measure `dgees` (Schur only, no eigenvector back-substitution) via ctypes to gauge the headroom of my plan:
+  
+
+❖ Ante
+  
+  
+  OpenBLAS is bundled with numpy. Let me measure the raw LAPACK routines (`dgees` = Schur only, vs `dgeev` = full eig what numpy uses) to gauge the headroom.
+  
+

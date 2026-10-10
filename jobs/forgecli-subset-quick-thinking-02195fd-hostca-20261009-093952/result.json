@@ -1,0 +1,56 @@
+{
+    "id": "50c18839-bad8-40ad-a362-f6fd9aa735d2",
+    "started_at": "2026-10-09T09:39:54.176967",
+    "updated_at": "2026-10-09T11:24:21.329046",
+    "finished_at": "2026-10-09T11:24:21.329046",
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 10,
+        "n_errored_trials": 3,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "forgecli__quick-thinking__terminal-bench": {
+                "n_trials": 10,
+                "n_errors": 3,
+                "metrics": [
+                    {
+                        "mean": 0.4
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__atE7eW9",
+                            "break-filter-js-from-html__MJ7pvnG",
+                            "reshard-c4-data__6hRyjHq",
+                            "write-compressor__EsfbjZc",
+                            "pytorch-model-cli__jbcSev2",
+                            "largest-eigenval__LLu3EiQ"
+                        ],
+                        "1.0": [
+                            "llm-inference-batching-scheduler__wvne9xj",
+                            "merge-diff-arc-agi-task__ZSFquCh",
+                            "winning-avg-corewars__GUbM6VF",
+                            "log-summary-date-ranges__F43oMSN"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "break-filter-js-from-html__MJ7pvnG",
+                        "write-compressor__EsfbjZc",
+                        "largest-eigenval__LLu3EiQ"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 5509288,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 755067,
+        "cost_usd": 0.0
+    }
+}

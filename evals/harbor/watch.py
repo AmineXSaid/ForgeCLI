@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""Follow a Harbor job's ForgeCLI conversations live, as readable text.
+"""Follow a Harbor job's agent conversations live, as readable text.
 
     python3 evals/harbor/watch.py                 # the newest job under jobs/
     python3 evals/harbor/watch.py jobs/<job-name> # a given job
     python3 evals/harbor/watch.py --from-start    # replay what's there, then follow
 
-Each task's agent writes one stream-json line per complete message, so a step
-appears when the model finishes it (a reasoning model can be quiet for minutes).
+Works for any agent: ForgeCLI's stream-json (forge.jsonl) is rendered as a
+conversation; any other *.jsonl / *.stdout.txt / *.stderr.txt in a task's
+agent/ folder (Ante, Forge Code, ...) is shown line by line as plain text.
 Ctrl-C stops watching; the run itself isn't affected.
 """
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
 
 WIDTH = 400  # characters kept from thinking, tool input and tool output
 COLORS = ["\033[36m", "\033[35m", "\033[33m", "\033[32m", "\033[34m", "\033[31m"]
-DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
+DIM, BOLD, RED, RESET = "\033[2m", "\033[1m", "\033[91m", "\033[0m"
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+PATTERNS = ["*.jsonl", "*.stdout.txt", "*.stderr.txt"]
+KNOWN = {"assistant", "user", "result", "system"}
 
 
 def short(text: str, width: int = WIDTH) -> str:
@@ -58,6 +63,22 @@ def render(event: dict) -> list[str]:
     return out
 
 
+def handle(line: str, is_err: bool) -> list[str]:
+    """One log line -> display lines: stream-json events are rendered, anything else shown as text."""
+    line = ANSI.sub("", line).strip()
+    if not line:
+        return []
+    try:
+        event = json.loads(line)
+    except ValueError:
+        event = None
+    if isinstance(event, dict) and event.get("type") in KNOWN:
+        return render(event)
+    if is_err:
+        return [f"{RED}err: {short(line)}{RESET}"]
+    return [short(line)]
+
+
 def newest_job() -> Path:
     jobs = [p for p in Path("jobs").glob("*") if p.is_dir()]
     if not jobs:
@@ -74,7 +95,8 @@ def main() -> None:
     colors: dict[str, str] = {}
     pending: dict[Path, str] = {}
     while True:
-        for log in sorted(job.glob("*/agent/forge.jsonl")):
+        logs = sorted({p for pat in PATTERNS for p in job.glob(f"*/agent/{pat}")})
+        for log in logs:
             if log not in offsets:
                 offsets[log] = 0 if from_start else log.stat().st_size
             size = log.stat().st_size
@@ -85,16 +107,15 @@ def main() -> None:
                 chunk = pending.pop(log, "") + f.read()
                 offsets[log] = f.tell()
             lines = chunk.split("\n")
-            if lines[-1]:
-                pending[log] = lines[-1]  # partial line: finish it on the next read
+            if log.suffix == ".jsonl":
+                if lines[-1]:
+                    pending[log] = lines[-1]  # partial JSON line: finish it on the next read
+                lines = lines[:-1]
             task = log.parent.parent.name.split("__")[0]
             color = colors.setdefault(task, COLORS[len(colors) % len(COLORS)])
-            for line in lines[:-1]:
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                for text in render(event):
+            is_err = log.name.endswith(".stderr.txt")
+            for line in lines:
+                for text in handle(line, is_err):
                     print(f"{color}[{task}]{RESET} {text}", flush=True)
         time.sleep(1)
 

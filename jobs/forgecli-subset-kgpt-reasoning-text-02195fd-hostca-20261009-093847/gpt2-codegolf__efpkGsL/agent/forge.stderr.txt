@@ -1,0 +1,1 @@
+API Error: HTTP 400 (error) from https://gpt.technica-engineering.net/api/v1/chat/completions: {"detail":"Model not found"}

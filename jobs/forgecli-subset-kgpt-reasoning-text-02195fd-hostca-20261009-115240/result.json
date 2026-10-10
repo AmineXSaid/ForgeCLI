@@ -1,0 +1,50 @@
+{
+    "id": "bde496cd-a886-4258-bf42-7a99678ecd66",
+    "started_at": "2026-10-09T11:52:44.123885",
+    "updated_at": "2026-10-09T12:15:41.161896",
+    "finished_at": "2026-10-09T12:15:41.161896",
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 10,
+        "n_errored_trials": 0,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "forgecli__kgpt-reasoning-text__terminal-bench": {
+                "n_trials": 10,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 0.1
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__7fv6MpK",
+                            "llm-inference-batching-scheduler__2qDHU8u",
+                            "break-filter-js-from-html__ZmAC79f",
+                            "reshard-c4-data__dX8FErp",
+                            "write-compressor__qqBGP4u",
+                            "merge-diff-arc-agi-task__wqjwBGd",
+                            "log-summary-date-ranges__LieB9Tw",
+                            "pytorch-model-cli__fCS6SMT",
+                            "largest-eigenval__zrtitj6"
+                        ],
+                        "1.0": [
+                            "winning-avg-corewars__zfdnTmA"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        },
+        "n_input_tokens": 5137640,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 179550,
+        "cost_usd": 0.0
+    }
+}

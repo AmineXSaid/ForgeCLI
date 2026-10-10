@@ -1,0 +1,12 @@
+Connection interrupted, reconnecting in 1s… (1/4)
+
+❖ Ante
+  
+  
+  I'll first inspect a log file's format, then write a script to count severities per date range.
+  
+
+Connection interrupted, reconnecting in 1s… (1/4)
+
+Connection interrupted, reconnecting in 2s… (2/4)
+

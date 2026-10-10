@@ -1,0 +1,60 @@
+{
+    "id": "f462b3ab-854e-429b-b4c2-2266d61a9229",
+    "started_at": "2026-10-09T16:14:40.688786",
+    "updated_at": "2026-10-10T06:16:04.448659",
+    "finished_at": "2026-10-10T06:16:04.448659",
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 10,
+        "n_errored_trials": 5,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "ante__deep-thinking__terminal-bench": {
+                "n_trials": 10,
+                "n_errors": 5,
+                "metrics": [
+                    {
+                        "mean": 0.4
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__gZtEMXk",
+                            "reshard-c4-data__CAmSA3F",
+                            "write-compressor__BUeTbhF",
+                            "winning-avg-corewars__N2iAVsr",
+                            "pytorch-model-cli__HUCUPt5",
+                            "largest-eigenval__mcaEFMe"
+                        ],
+                        "1.0": [
+                            "llm-inference-batching-scheduler__WUg2c2L",
+                            "break-filter-js-from-html__turswKn",
+                            "merge-diff-arc-agi-task__omSL6eP",
+                            "log-summary-date-ranges__SAAf8oi"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "gpt2-codegolf__gZtEMXk",
+                        "write-compressor__BUeTbhF"
+                    ],
+                    "NonZeroAgentExitCodeError": [
+                        "winning-avg-corewars__N2iAVsr",
+                        "pytorch-model-cli__HUCUPt5",
+                        "largest-eigenval__mcaEFMe"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null
+    }
+}

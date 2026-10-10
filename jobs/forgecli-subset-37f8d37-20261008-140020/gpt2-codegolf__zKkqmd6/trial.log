@@ -1,0 +1,3 @@
+Skipping image OS validation for alexgshaw/gpt2-codegolf:20251031: docker inspect returned 1
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured

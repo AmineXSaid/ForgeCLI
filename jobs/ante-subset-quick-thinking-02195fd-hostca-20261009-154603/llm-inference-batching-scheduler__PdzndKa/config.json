@@ -1,0 +1,15 @@
+{
+    "task": {
+        "path": "llm-inference-batching-scheduler",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source": "terminal-bench"
+    },
+    "trial_name": "llm-inference-batching-scheduler__PdzndKa",
+    "trials_dir": "jobs/ante-subset-quick-thinking-02195fd-hostca-20261009-154603",
+    "agent": {
+        "name": "ante_agent:AnteAgent",
+        "model_name": "openai/quick-thinking"
+    },
+    "job_id": "d0aa0744-847e-4ae3-9470-dfe3327854c0"
+}

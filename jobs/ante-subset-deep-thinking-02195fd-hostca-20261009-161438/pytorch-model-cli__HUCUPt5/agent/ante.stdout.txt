@@ -1,0 +1,24 @@
+❖ Ante
+  I'll start by exploring the files in /app to understand the setup.
+  
+
+❖ Ante
+  Let me inspect the environment and the model/image files.
+  
+
+❖ Ante
+  PNG is a 28x28 grayscale image — ideal. model.pth is a TorchScript zip archive. Let me inspect its contents.
+  
+
+❖ Ante
+  data/0=50176=(64×784) weight, data/1=64 bias (hidden=64), data/2=64×64 hidden weight, data/3=64 bias, data/4=64×10 output weight, data/5=10 bias. So input 784, hidden 64, output 10. Let me inspect the tensor storage format and the pickle.
+  
+
+❖ Ante
+  Tensor data is float32 little-endian. Let me decode the pickle structure to map each weight tensor to its layer and shape.
+  
+
+❖ Ante
+  I now understand the model fully. Let me decode and view the image to determine the ground-truth digit, which will let me choose the correct preprocessing.
+  
+

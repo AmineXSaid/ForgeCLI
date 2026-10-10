@@ -1,0 +1,30 @@
+❖ Ante
+  This is a custom adaptive binary range coder with LZ77-style matching. Let me first examine the decompressor logic carefully, then build an encoder.
+  
+  Let me check the full data.txt content and the binary.
+  
+
+❖ Ante
+  This is a custom adaptive range coder + LZ77 decompressor. I need to build a matching encoder. Let me analyze the byte content first, then write an encoder.
+  
+
+❖ Ante
+  This is an adaptive binary range coder with LZ77. Let me build an encoder that mirrors the decoder exactly. First let me write a literal-only encoder and verify correctness against `decomp` before optimizing for size.
+  
+
+❖ Ante
+  Literal-only gives 4576 bytes, but the real compression comes from LZ77 matches (match bytes are free in this scheme). Let me implement an encoder with LZ matching.
+  
+
+❖ Ante
+  The LZ version is smaller but diverges. Let me debug with a small test case to find the bug.
+  
+
+❖ Ante
+  The literal path works but LZ diverges. Let me instrument to compare encoder vs. decoder contexts.
+  
+
+❖ Ante
+  Found the bugs in `enc_int` — off-by-one in the exponent `B`, wrong `R` value, and wrong bit range. Let me fix.
+  
+

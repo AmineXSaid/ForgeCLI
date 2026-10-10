@@ -1,0 +1,74 @@
+❖ Ante
+  I'll examine the opponent warriors and understand the simulator setup, then write and test my warrior.
+  
+
+❖ Ante
+  Let me inspect pmars's own sample warriors and the Redcode reference for good patterns.
+  
+
+❖ Ante
+  This is a CoreWars (pmars) programming task. Let me first establish baselines by testing pmars's built-in sample warriors against the opponents to gauge difficulty.
+  
+
+❖ Ante
+  The output format differs. Let me check what pmars actually prints.
+  
+
+❖ Ante
+  The `Results: A B C` line is what matters. Let me gather baselines for all sample warriors.
+  
+
+❖ Ante
+  Let me establish the scoring format and analyze the matchups. My target is ≥75% on stone/vampire/paper and ≥33% on snake/g2-clear. Rave already passes 4/5 thresholds (paper 92, vamp 94, snake 40, g2 73) but scores only 59 on stone. Let me experiment with scanner variants to fix the stone matchup.
+  
+  Let me read Rave fully and set up an experiment harness.
+  
+
+❖ Ante
+  Let me check score-line format and consistency. Rave is my best all-rounder but fails stone. Let me confirm the `Results: A B C` format (A=warrior1 wins, B=opponent wins, C=ties) and check variance by rerunning.
+  
+
+❖ Ante
+  The format is `Results: warrior1_wins opp_wins ties`. Rave passes 4/5 (fails only stone at 59). Let me empirically search for a warrior passing all thresholds. Let me test a few candidate strategies first.
+  
+
+❖ Ante
+  Imp spiral losing 100/100 is odd (likely core-clobber). Rave is my best candidate (94/92/40/73, only stone fails at 59). Let me test more robust strategies to beat stone while keeping the others.
+  
+
+❖ Ante
+  My hand-built warriors are poorly structured. Rave is proven and only fails stone. Let me focus on tuning Rave to beat stone while keeping its other matchups. First, let me get Rave's full source into my workspace and understand the stone fight.
+  
+
+❖ Ante
+  Rave is my best all-rounder, failing only stone (59 vs needed 75). Let me run a parameter sweep on Rave's scan parameters to improve the stone matchup while keeping others. Let me set up a generator.
+  
+
+❖ Ante
+  Let me establish the Results format clearly and then do a parameter sweep on Rave to improve its stone matchup.
+  
+
+❖ Ante
+  Output goes to stdout. Let me redo the sweep.
+  
+
+❖ Ante
+  The sweep is running. While it works, let me think about a stronger approach. Rave's weakness vs stone (a classic quick bomber) is that it scans at a fixed interval. Let me wait for the results.
+  
+
+❖ Ante
+  I started a new sleep process. Let me wait for the actual sweep job to complete.
+  
+
+❖ Ante
+  I'll stop issuing sleeps and wait for the sweep job's exit notification.
+  
+
+❖ Ante
+  The sweep found multiple STONE PASS configs. Let me wait for completion and test the promising candidates against all opponents. CDIST=24 seems key.
+  
+
+❖ Ante
+  The sweep is still running but I have several promising configs. Let me kill the sweep and test the best stone-passing candidates against all five opponents.
+  
+

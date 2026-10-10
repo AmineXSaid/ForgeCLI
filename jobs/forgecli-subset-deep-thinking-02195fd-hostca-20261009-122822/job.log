@@ -1,0 +1,280 @@
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 870 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 1770 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command failed
+Command failed
+Collecting main service artifacts
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 1170 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 3570 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command failed
+Collecting main service artifacts
+Command failed
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 870 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 870 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command failed
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 3570 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command failed
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 870 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command failed
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 870 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Command failed
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Agent 'forgecli' does not declare an options_model; leftover kwargs are ignored
+Running command: chmod 755 /usr/local/bin/forge && /usr/local/bin/forge --version
+Command outputs captured
+Running command: printf '%s\n' '10.21.3.57 gpt.technica-engineering.net' >> /etc/hosts
+Command outputs captured
+Running command: 
+src=/tmp/forge-extra-ca.pem
+mkdir -p /usr/local/share/ca-certificates
+if command -v awk >/dev/null 2>&1; then
+  awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%03d.crt", n)} n>0{print > f}' "$src"
+else
+  cp "$src" /usr/local/share/ca-certificates/forge-extra.crt
+fi
+if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null 2>&1 || true; fi
+if [ -d /etc/pki/ca-trust/source/anchors ]; then
+  cp "$src" /etc/pki/ca-trust/source/anchors/forge-extra.pem
+  command -v update-ca-trust >/dev/null 2>&1 && update-ca-trust >/dev/null 2>&1 || true
+fi
+for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  if [ -f "$b" ]; then cat "$src" >> "$b"; fi
+done
+mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
+
+Command outputs captured
+Running command: mkdir -p /logs/agent; /usr/local/bin/forge -p "$FORGE_TASK" --dangerously-skip-permissions --output-format stream-json --verbose --autonomous --model deep-thinking --max-time 870 > /logs/agent/forge.jsonl 2> /logs/agent/forge.stderr.txt
+Collecting main service artifacts
+Command failed
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Exception AgentTimeoutError is in exclude_exceptions, not retrying
+Not retrying trial because the exception is not in include_exceptions or the maximum number of retries has been reached

@@ -1,0 +1,4 @@
+The conversation no longer fits the context window; compacting.
+API Error: HTTP 400 (error) from https://llm-proxy.kpit.com/v1/chat/completions: litellm.BadRequestError: Hosted_vllmException - {"error":{"message":"Input length (74796) exceeds model's maximum context length (65536).","type":"BadRequestError","param":null,"code":400}}. Received Model Group=kgpt-reasoning-text
+Available Model Group Fallbacks=None (compaction failed: HTTP 400 (error) from https://llm-proxy.kpit.com/v1/chat/completions: litellm.BadRequestError: Hosted_vllmException - {"error":{"message":"Input length (75099) exceeds model's maximum context length (65536).","type":"BadRequestError","param":null,"code":400}}. Received Model Group=kgpt-reasoning-text
+Available Model Group Fallbacks=None)

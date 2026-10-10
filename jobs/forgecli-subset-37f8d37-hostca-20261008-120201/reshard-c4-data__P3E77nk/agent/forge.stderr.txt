@@ -1,0 +1,2 @@
+The endpoint is limiting requests (HTTP 429). Forge now sends at most 1 at a time and retries in 2s.
+API Error: network error: error decoding response body. Check the endpoint URL, your network connection and proxy settings.

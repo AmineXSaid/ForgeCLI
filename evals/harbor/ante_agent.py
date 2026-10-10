@@ -1,0 +1,69 @@
+"""Ante as a Harbor installed agent (Harbor 0.24), modelled on forge_agent.py."""
+
+import os
+import shlex
+import socket
+from pathlib import Path
+from urllib.parse import urlparse
+
+from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
+from harbor.environments.base import BaseEnvironment
+from harbor.models.agent.context import AgentContext
+
+from forge_agent import REMOTE_CA, TRUST_CA, container_url
+
+ANTE_BIN = Path(os.environ.get("ANTE_BIN", str(Path.home() / ".ante/bin/ante")))
+REMOTE_BIN = "/usr/local/bin/ante"
+LOG_DIR = "/logs/agent"
+FALLBACK_HOSTS = {"gpt.technica-engineering.net": "10.21.3.57"}
+
+
+class AnteAgent(BaseInstalledAgent):
+    @staticmethod
+    def name() -> str:
+        return "ante"
+
+    def get_version_command(self) -> str | None:
+        return f"{REMOTE_BIN} --version"
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        if not ANTE_BIN.is_file():
+            raise RuntimeError(f"{ANTE_BIN} not found")
+        await environment.upload_file(ANTE_BIN, REMOTE_BIN)
+        await self.exec_as_root(environment, command=f"chmod 755 {REMOTE_BIN}")
+        host = urlparse(os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "")).hostname
+        if host:
+            try:
+                ip = socket.gethostbyname(host)
+            except OSError:
+                ip = FALLBACK_HOSTS.get(host)
+            if ip:
+                await self.exec_as_root(
+                    environment, command=f"printf '%s\\n' {shlex.quote(f'{ip} {host}')} >> /etc/hosts"
+                )
+        ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
+        if ca:
+            if not Path(ca).is_file():
+                raise RuntimeError(f"FORGE_HARBOR_CA_BUNDLE: {ca} not found")
+            await environment.upload_file(Path(ca), REMOTE_CA)
+            await self.exec_as_root(environment, command=TRUST_CA)
+
+    @with_prompt_template
+    async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
+        model = (self.model_name or "").split("/", 1)[-1] or "quick-thinking"
+        env = {
+            "OPENAI_COMPATIBLE_BASE_URL": container_url(os.environ["OPENAI_COMPATIBLE_BASE_URL"]),
+            "OPENAI_COMPATIBLE_API_KEY": os.environ["OPENAI_COMPATIBLE_API_KEY"],
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+            "ANTE_TASK": instruction,
+        }
+        extra = os.environ.get("ANTE_HARBOR_ARGS", "")
+        command = (
+            f"mkdir -p {LOG_DIR}; "
+            f'{REMOTE_BIN} --provider openai-compatible --model {shlex.quote(model)} {extra} -p "$ANTE_TASK" '
+            f"> {LOG_DIR}/ante.stdout.txt 2> {LOG_DIR}/ante.stderr.txt"
+        )
+        await self.exec_as_agent(environment, command=command, env=env)
+
+    def populate_context_post_run(self, context: AgentContext) -> None:
+        pass

@@ -1,0 +1,17 @@
+{
+    "job_name": "forgecli-subset-quick-thinking-4213b82-hostca-20261008-172420",
+    "n_concurrent_trials": 2,
+    "agents": [
+        {
+            "name": "forge_agent:ForgeCLI",
+            "model_name": "quick-thinking"
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0",
+            "n_tasks": 10
+        }
+    ]
+}

@@ -1,0 +1,6 @@
+✗ Failed: rate limited
+  HTTP 429 Too Many Requests
+  Concurrent request limit reached. Running: 2, limit: 2
+  Wait a moment and retry.
+
+Task failed: rate limited

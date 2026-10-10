@@ -1,0 +1,1 @@
+API Error: network error: could not connect to https://gpt.technica-engineering.net/api/v1/chat/completions: failed to lookup address information: Try again. Check FORGE_OPENAI_BASE_URL, your network connection and proxy settings.

@@ -1,0 +1,83 @@
+❖ Ante
+  
+  
+  I'll start by inspecting the sample data and environment (sizes, tooling), then design the resharding format, write the two scripts plus `pyproject.toml`, and test a full compress → decompress round-trip.
+  
+  
+  
+
+❖ Ante
+  
+  
+  The data is 800MB across 9,898 small JSONL files (~70–100KB each). I have a clear design: merge files into a bounded-size part stream, organize parts in a fan-out-30 directory tree, store a self-describing manifest, and reconstruct in-place. Let me write the shared module and both scripts.
+  
+
+❖ Ante
+  
+  
+  Now the compress script:
+  
+
+❖ Ante
+  
+  
+  Now the decompress script with atomic in-place reconstruction:
+  
+
+❖ Ante
+  
+  
+  Venv and sync work. Now a quick smoke test with edge cases (nested dirs, a 40MB file to force part splits, empty dirs, unicode names):
+  
+
+❖ Ante
+  
+  
+  Compression works. Now verifying output constraints, then decompressing and diffing against the original:
+  
+
+❖ Ante
+  
+  
+  Constraints hold. Now decompress in place and compare byte-for-byte:
+  
+
+❖ Ante
+  
+  
+  Round-trip is byte-identical, including empty dirs, unicode names, and the 40MB file split across parts. Quick error-handling checks, then the real c4_sample run:
+  
+
+❖ Ante
+  
+  
+  Error paths are clean. Now the full 800MB c4_sample round-trip:
+  
+
+❖ Ante
+  
+  
+  55 parts, all checksums verified, ~15s. Checking output constraints, then decompressing and comparing against the original:
+  
+
+❖ Ante
+  
+  
+  Limits met (one directory sits exactly at 30). Now decompress and byte-compare all 9,898 files:
+  
+
+❖ Ante
+  
+  
+  Full c4 round-trip is byte-identical (9,898 files, 817 MB). Two final checks: the "decompress over an already-restored tree" merge path, and confirming `uv sync` is a clean no-op:
+  
+
+❖ Ante
+  
+  
+  Done. All tests pass and the original `c4_sample/` is untouched.
+  
+  ## What was built (all in `/app`)
+  
+  - **`compress.py`** — `python /app/compress.py <input_dir> <output_dir>` (creates the output dir if missing). Reads every file in deterministic sorted order, merges them into one byte stream, and writes it as ≤15MB part files in a fanout-30 tree, plus a self-describing manifest (path, offset, length, SHA-256 per file; all original directories). It then re-reads everything it wrote and re-verify
+

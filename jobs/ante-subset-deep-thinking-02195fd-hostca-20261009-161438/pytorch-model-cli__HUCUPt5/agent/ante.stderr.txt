@@ -1,0 +1,4 @@
+✗ Failed: stream ended unexpectedly
+  SSE reqwest error: error decoding response body; source: request or response body error <- error reading a body from connection <- Connection reset by peer (os error 104)
+
+Task failed: stream ended unexpectedly

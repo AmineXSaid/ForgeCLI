@@ -1,0 +1,43 @@
+{
+    "id": "7a397cd9-f4ef-4220-a2ca-2c2859800bc5",
+    "started_at": "2026-10-09T15:26:56.911003",
+    "updated_at": "2026-10-09T14:31:08.690326Z",
+    "finished_at": null,
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 1,
+        "n_errored_trials": 1,
+        "n_running_trials": 2,
+        "n_pending_trials": 7,
+        "n_cancelled_trials": 2,
+        "n_retries": 0,
+        "evals": {
+            "ante__deep-thinking__terminal-bench": {
+                "n_trials": 1,
+                "n_errors": 1,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__NR4h7Eh"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "NonZeroAgentExitCodeError": [
+                        "gpt2-codegolf__NR4h7Eh"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null
+    }
+}

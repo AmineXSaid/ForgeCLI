@@ -1,0 +1,15 @@
+{
+    "task": {
+        "path": "pytorch-model-cli",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source": "terminal-bench"
+    },
+    "trial_name": "pytorch-model-cli__UwzY9e9",
+    "trials_dir": "jobs/forgecli-subset-quick-thinking-4213b82-hostca-20261008-172420",
+    "agent": {
+        "name": "forge_agent:ForgeCLI",
+        "model_name": "quick-thinking"
+    },
+    "job_id": "9d95cea9-6115-4037-a40d-855fe1fd93b5"
+}

@@ -1,0 +1,125 @@
+{
+    "id": "32d611dd-1c0d-458f-9ba8-c0ce5d770e47",
+    "task_name": "winning-avg-corewars",
+    "trial_name": "winning-avg-corewars__u9sMgvy",
+    "trial_uri": "file:///home/kryptonite/ForgeCLI/jobs/forgecli-subset-kgpt-reasoning-text-353b6f1-hostca-20261008-164438/winning-avg-corewars__u9sMgvy",
+    "task_id": {
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "winning-avg-corewars"
+    },
+    "source": "terminal-bench",
+    "task_checksum": "e3b1e42f8d35814495fe70cee719a6e904a4c8da24f9c9d6fbca5dc2f1a0e18a",
+    "config": {
+        "task": {
+            "path": "winning-avg-corewars",
+            "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+            "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench"
+        },
+        "trial_name": "winning-avg-corewars__u9sMgvy",
+        "trials_dir": "jobs/forgecli-subset-kgpt-reasoning-text-353b6f1-hostca-20261008-164438",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "forge_agent:ForgeCLI",
+            "import_path": null,
+            "model_name": "openai/kgpt-reasoning-text",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {},
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "stream": false,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "241aaa72-5545-4c30-bd7c-cccdfddcd941",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "forgecli",
+        "version": "forge 0.1.0 (ForgeCLI)",
+        "model_info": {
+            "name": "kgpt-reasoning-text",
+            "provider": "openai"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 1136232,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 35430,
+        "cost_usd": 0.0,
+        "model_usage": null,
+        "rollout_details": null,
+        "metadata": {
+            "num_turns": 75,
+            "subtype": "success",
+            "stop_reason": "end_turn"
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-10-08T15:49:06.262711Z",
+    "finished_at": "2026-10-08T15:55:16.618623Z",
+    "environment_setup": {
+        "started_at": "2026-10-08T15:49:06.264111Z",
+        "finished_at": "2026-10-08T15:49:13.438824Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-10-08T15:49:13.438855Z",
+        "finished_at": "2026-10-08T15:49:22.402635Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-10-08T15:49:22.402765Z",
+        "finished_at": "2026-10-08T15:54:50.209669Z"
+    },
+    "verifier": {
+        "started_at": "2026-10-08T15:54:53.645731Z",
+        "finished_at": "2026-10-08T15:55:01.644274Z"
+    },
+    "step_results": null
+}

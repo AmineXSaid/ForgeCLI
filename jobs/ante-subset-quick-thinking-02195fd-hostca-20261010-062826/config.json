@@ -1,0 +1,17 @@
+{
+    "job_name": "ante-subset-quick-thinking-02195fd-hostca-20261010-062826",
+    "n_concurrent_trials": 2,
+    "agents": [
+        {
+            "name": "ante_agent:AnteAgent",
+            "model_name": "quick-thinking"
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0",
+            "n_tasks": 10
+        }
+    ]
+}

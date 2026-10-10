@@ -1,0 +1,80 @@
+❖ Ante
+  I'll start by examining the filter and test scripts to understand what's being removed and how verification works.
+  
+
+❖ Ante
+  The filter removes `<script>`, frames, and any attribute starting with `on`. That suggests several bypass angles. Let me first check how BeautifulSoup's html.parser normalizes attribute casing, since the filter's `startswith("on")` check is case-sensitive.
+  
+
+❖ Ante
+  The filter lowercases attribute names, so mixed-case is dead. Let me examine `/tests/filter.py` (used by the test) and probe parser edge cases.
+  
+
+❖ Ante
+  The test runs a different filter at `/tests/filter.py`. Let me check whether it's identical to `/app/filter.py`.
+  
+
+❖ Ante
+  The test uses `/tests/filter.py` which doesn't exist here (it'll be provided by the grader), but it's almost certainly identical to `/app/filter.py`. Let me verify tooling availability and probe which payloads survive BeautifulSoup's re-serialization.
+  
+
+❖ Ante
+  Chromium, chromedriver, and selenium are all available, so I can empirically test candidate payloads. The only auto-exec vectors are `<script>` and `on*` attributes (both stripped), so I need a two-parse mXSS: something that survives BeautifulSoup's re-serialization but becomes executable when the browser re-parses. Let me build a scan harness to test candidates directly in headless Chromium.
+  
+
+❖ Ante
+  The scan is running in headless Chromium. Let me wait for results.
+  
+
+❖ Ante
+  The scan is still running (driver startup per candidate is slow). Let me wait for it to finish.
+  
+
+❖ Ante
+  The first scan job is still initializing browsers. Let me check the original job's output again.
+  
+
+❖ Ante
+  The scan is still initializing per-candidate browser sessions, which is slow. Let me wait for it to complete.
+  
+
+❖ Ante
+  The scan is producing no output — likely a hung Chromium driver. Let me check job status and clean up stray processes.
+  
+
+❖ Ante
+  The scan is churning through candidate browsers. Let me wait for it to complete.
+  
+
+❖ Ante
+  The per-candidate scan is slow (new browser per payload) and its output is buffered. Let me kill it and run a faster single-session scan with unbuffered output.
+  
+
+❖ Ante
+  The per-payload scan was too slow. Let me write a faster single-session scan using CDP dialog events with unbuffered output, batching a larger set of well-known mXSS payloads.
+  
+
+❖ Ante
+  A hit! The `svg_cdata` payload triggered an alert: `<svg><desc><![CDATA[</desc><script>alert(1)</script>]]></desc></svg>`. BeautifulSoup's html.parser treats the internals as CDATA and doesn't remove the nested `<script>`, but the browser re-parses it as live JS. Let me write `out.html` and validate with a replica of the test harness.
+  
+
+❖ Ante
+  Payload written. Now let me verify the full flow exactly as the test does: copy to temp, apply filter in-place, then load in headless Chromium and check for the alert.
+  
+
+❖ Ante
+  The attack works. Let me clean up the temp scan scripts and confirm the final out.html content.
+  
+
+❖ Ante
+  Done. `/app/out.html` now triggers `alert()` automatically even after being processed by the filter.
+  
+  **The payload:**
+  ```html
+  <svg><desc><![CDATA[</desc><script>alert(1)</script>]]></desc></svg>
+  ```
+  
+  **Why it works (mXSS):** BeautifulSoup's `html.parser` is lenient — inside `<svg>`, it treats `<![CDATA[ ... ]]` as raw CDATA content, so it never even sees the nested `<script>alert(1)</script>` as a tag and leaves it untouched. But your browser re-parses the file with an HTML parser that doesn't support CDATA in that context, so the `<script>` becomes live JavaScript and fires an alert on load.
+  
+  I verified with the exact `test_outputs.py` flow: copied `out.html` to a temp file, ran the filter (which left the payload unchanged), loaded it in headless Chromium, and confirmed the alert fired (`'1'`).
+

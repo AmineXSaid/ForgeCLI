@@ -1,0 +1,121 @@
+{
+    "id": "4df9f117-cb4e-4d37-8bb4-a39152667bb8",
+    "task_name": "gpt2-codegolf",
+    "trial_name": "gpt2-codegolf__5Zjn4vi",
+    "trial_uri": "file:///home/kryptonite/ForgeCLI/jobs/ante-subset-quick-thinking-02195fd-hostca-20261010-062826/gpt2-codegolf__5Zjn4vi",
+    "task_id": {
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "path": "gpt2-codegolf"
+    },
+    "source": "terminal-bench",
+    "task_checksum": "725702648b9c1f779daa011361aef03adfd4977bf379880471a4787f02aed4ed",
+    "config": {
+        "task": {
+            "path": "gpt2-codegolf",
+            "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+            "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench"
+        },
+        "trial_name": "gpt2-codegolf__5Zjn4vi",
+        "trials_dir": "jobs/ante-subset-quick-thinking-02195fd-hostca-20261010-062826",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "ante_agent:AnteAgent",
+            "import_path": null,
+            "model_name": "quick-thinking",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {},
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "stream": false,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "3720e5ee-42ff-4534-aae9-89e53a5c8dd5",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "ante",
+        "version": "ante 0.2.9",
+        "model_info": {
+            "name": "quick-thinking",
+            "provider": null
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null,
+        "model_usage": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-10-10T05:28:30.614139Z",
+    "finished_at": "2026-10-10T05:36:20.064391Z",
+    "environment_setup": {
+        "started_at": "2026-10-10T05:28:30.715474Z",
+        "finished_at": "2026-10-10T05:28:37.929939Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-10-10T05:28:37.930014Z",
+        "finished_at": "2026-10-10T05:28:50.978330Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-10-10T05:28:50.978529Z",
+        "finished_at": "2026-10-10T05:35:21.595640Z"
+    },
+    "verifier": {
+        "started_at": "2026-10-10T05:35:27.768541Z",
+        "finished_at": "2026-10-10T05:36:02.134877Z"
+    },
+    "step_results": null
+}

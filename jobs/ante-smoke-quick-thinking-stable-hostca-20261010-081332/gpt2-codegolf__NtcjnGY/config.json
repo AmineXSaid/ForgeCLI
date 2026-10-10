@@ -1,0 +1,23 @@
+{
+    "task": {
+        "path": "gpt2-codegolf",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source": "terminal-bench"
+    },
+    "trial_name": "gpt2-codegolf__NtcjnGY",
+    "trials_dir": "jobs/ante-smoke-quick-thinking-stable-hostca-20261010-081332",
+    "agent": {
+        "name": "ante_agent:AnteAgent",
+        "model_name": "quick-thinking",
+        "kwargs": {
+            "provider": "openai-compatible",
+            "install_args": ""
+        },
+        "env": {
+            "OPENAI_COMPATIBLE_BASE_URL": "https://gpt.technica-engineering.net/api/v1",
+            "OPENAI_COMPATIBLE_API_KEY": "sk-5****58e"
+        }
+    },
+    "job_id": "02f81ab5-d3f2-4d66-8364-0f2e75748a1b"
+}

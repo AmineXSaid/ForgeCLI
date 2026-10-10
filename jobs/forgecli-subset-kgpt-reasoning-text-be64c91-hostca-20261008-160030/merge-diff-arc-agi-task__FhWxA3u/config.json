@@ -1,0 +1,15 @@
+{
+    "task": {
+        "path": "merge-diff-arc-agi-task",
+        "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+        "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        "source": "terminal-bench"
+    },
+    "trial_name": "merge-diff-arc-agi-task__FhWxA3u",
+    "trials_dir": "jobs/forgecli-subset-kgpt-reasoning-text-be64c91-hostca-20261008-160030",
+    "agent": {
+        "name": "forge_agent:ForgeCLI",
+        "model_name": "openai/kgpt-reasoning-text"
+    },
+    "job_id": "2df29b58-ef04-499a-afe5-0f1760768c49"
+}

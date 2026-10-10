@@ -1,0 +1,20 @@
+❖ Ante
+  Let me explore the problem empirically before designing the solution.
+  
+
+❖ Ante
+  The reference uses full eigendecomposition. Let me probe whether a targeted (dominant-only) iterative method can be both fast and reliably accurate.
+  
+
+❖ Ante
+  Power iteration is unusable here — random Gaussian matrices have near-degenerate dominant magnitude gaps and complex pairs, so convergence explodes. Let me measure concrete candidate approaches rather than guess.
+  
+
+Connection interrupted, reconnecting in 1s… (1/4)
+
+Connection interrupted, reconnecting in 2s… (2/4)
+
+Connection interrupted, reconnecting in 4s… (3/4)
+
+Connection interrupted, reconnecting in 8s… (4/4)
+

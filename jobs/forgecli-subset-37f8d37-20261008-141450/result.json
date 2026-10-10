@@ -1,0 +1,53 @@
+{
+    "id": "8d9d276d-e903-47a8-a3bb-0fe0f77ca157",
+    "started_at": "2026-10-08T14:14:53.119729",
+    "updated_at": "2026-10-08T13:26:02.906404Z",
+    "finished_at": null,
+    "n_total_trials": 10,
+    "stats": {
+        "n_completed_trials": 6,
+        "n_errored_trials": 6,
+        "n_running_trials": 2,
+        "n_pending_trials": 2,
+        "n_cancelled_trials": 2,
+        "n_retries": 0,
+        "evals": {
+            "forgecli__deep-thinking__terminal-bench": {
+                "n_trials": 6,
+                "n_errors": 6,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "gpt2-codegolf__L8YFwit",
+                            "llm-inference-batching-scheduler__xbtraBL",
+                            "break-filter-js-from-html__Cr2QDzr",
+                            "reshard-c4-data__5B5pSxJ",
+                            "write-compressor__TwyQEnD",
+                            "merge-diff-arc-agi-task__iXCxNqZ"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "NonZeroAgentExitCodeError": [
+                        "gpt2-codegolf__L8YFwit",
+                        "llm-inference-batching-scheduler__xbtraBL",
+                        "break-filter-js-from-html__Cr2QDzr",
+                        "reshard-c4-data__5B5pSxJ",
+                        "write-compressor__TwyQEnD",
+                        "merge-diff-arc-agi-task__iXCxNqZ"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 0,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 0,
+        "cost_usd": 0.0
+    }
+}

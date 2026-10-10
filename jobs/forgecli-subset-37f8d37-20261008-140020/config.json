@@ -1,0 +1,17 @@
+{
+    "job_name": "forgecli-subset-37f8d37-20261008-140020",
+    "n_concurrent_trials": 2,
+    "agents": [
+        {
+            "name": "forge_agent:ForgeCLI",
+            "model_name": "openai/deep-thinking"
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0",
+            "n_tasks": 10
+        }
+    ]
+}

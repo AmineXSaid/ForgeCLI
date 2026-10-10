@@ -1,0 +1,27 @@
+❖ Ante
+  
+  
+  I'll start by reading the decompressor source to understand its compression format.
+  
+  
+
+❖ Ante
+  
+  
+  I'll analyze the decompressor, then write a matching compressor. Let me look more closely at the data first.
+  
+
+❖ Ante
+  
+  
+  The decompressor is an adaptive arithmetic coder with byte I/O (radix 255) feeding an LZ-style decoder (copies + literals). Let me examine the data and prototype the matching approach.
+  
+
+Connection interrupted, reconnecting in 1s… (1/4)
+
+Connection interrupted, reconnecting in 2s… (2/4)
+
+Connection interrupted, reconnecting in 4s… (3/4)
+
+Connection interrupted, reconnecting in 8s… (4/4)
+
