@@ -44,23 +44,36 @@ benchmark tasks:
 - carry the work through and don't end by offering to do what was asked;
 - write down what matters from tool results, since old results may be cleared.
 
-## Changes for ForgeCLI, most promising first
+## Changes for ForgeCLI, judged by what they do in real use
 
-1. **Long commands are not killed.** In unattended runs, a Bash call that
-   outlives its timeout goes to the background instead of being killed, and
-   returns its id and the output so far; its exit is reported with the next
-   tool result. Today a 2-minute default kills installs and builds (the
-   pytorch-model-cli `pip install`). `crates/forge-tools/src/builtin/bash.rs:11`,
-   the kill at `crates/forge-tools/src/shells.rs:173`.
-2. **The task rules above**, in our own words, in `05-autonomous.md`; ForgeCLI
-   has the verify and don't-give-up parts already.
-3. **A listing of the working directory** in the first message, and the shell
-   in `<env>`, so the first turn doesn't go to `ls`.
-4. **A smaller tool set when unattended**: no CronCreate, CronList, CronDelete,
-   ScheduleWakeup or NotebookEdit, which can't help a one-shot run (about 400
-   words of descriptions).
-5. **Short replies between tool calls** (Ante: ≤25 words), to save output
-   tokens and time.
+1. **Long commands are not killed** (yes). A Bash call that outlives its
+   timeout goes to the background instead of being killed, returns its id
+   and the output so far, and its exit is reported with the next tool
+   result. In real use builds, installs, test suites and data scripts often
+   pass 2 minutes; today the model has to guess the timeout, and a wrong
+   guess kills the command, can leave a half-installed environment, and
+   costs the whole run again. Both at the terminal and in scripts; a hung
+   command stays visible in `/tasks` and can be stopped. Default timeout at
+   `crates/forge-tools/src/builtin/bash.rs:11`, the kill at
+   `crates/forge-tools/src/shells.rs:173`.
+2. **Some of Ante's rules** (yes, trimmed), for every mode, not only
+   unattended: the paths and names the user gives are requirements; don't
+   invent substitutes or mock data; when a tool fails, fix the environment
+   rather than patch the tool or its installed packages; before
+   reimplementing something, find out its real interface from its source and
+   tests. These prevent failures users meet (a stub that looks like a fix, a
+   file written under another name, an edited `site-packages`). Left out:
+   "write the artifact early" and "stop at the threshold", which serve time
+   limits more than users.
+3. **Short updates between tool calls** (yes, small): a number, as Ante has
+   (≤25 words), rather than "concise". Users read every line in the
+   terminal; less to scroll, fewer output tokens.
+4. **A listing of the working directory** in the first message (no). It saves
+   one `ls` but stays in the context for the whole session, and in a large
+   repository or a home directory it is noise.
+5. **No Cron or wakeup tools when unattended** (no). `-p` keeps running until
+   scheduled prompts are done (docs/CLI.md, "Scheduled prompts"), so a script
+   such as "check CI every 10 minutes until it is green" uses them.
 
 Measurement owed: each change against the reports of the 2026-10-09 subset
 jobs, on the same model and tasks. Ante runs without a todo tool; whether

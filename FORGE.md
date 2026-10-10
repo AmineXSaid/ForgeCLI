@@ -8,14 +8,18 @@ reference CLI is the baseline, not the goal.
 
 For each feature or harness change:
 
-1. **Name the pillar** it serves (context management, failure recovery,
+1. **Say what it changes in real use**, before proposing it: for someone
+   running ForgeCLI on their own project, at the terminal or in a script, not
+   only on a benchmark. A change whose only effect is a benchmark score is not
+   proposed.
+2. **Name the pillar** it serves (context management, failure recovery,
    verification, tool design, long-horizon execution, or compatibility) and the
    metric it should move.
-2. **Add or update an eval task** in `evals/tasks/` that exercises it.
-3. **Measure it.** Run `forge-eval` before and after (`forge-eval run`, then
+3. **Add or update an eval task** in `evals/tasks/` that exercises it.
+4. **Measure it.** Run `forge-eval` before and after (`forge-eval run`, then
    `forge-eval compare`), or, where no API key is available, state that the
    comparison is still owed.
-4. **Write the pillar in the commit message:** `Goals: <pillar> / <metric>`.
+5. **Write the pillar in the commit message:** `Goals: <pillar> / <metric>`.
 
 Compatibility work also cites its `docs/PARITY.md` row and test.
 
