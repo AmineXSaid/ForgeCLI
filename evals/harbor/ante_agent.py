@@ -15,6 +15,7 @@ from forge_agent import REMOTE_CA, TRUST_CA, container_url, record_run, settings
 ANTE_BIN = Path(os.environ.get("ANTE_BIN", str(Path.home() / ".ante/bin/ante")))
 REMOTE_BIN = "/usr/local/bin/ante"
 LOG_DIR = "/logs/agent"
+DEFAULT_ANTE_ARGS = "--yolo --no-session-save --no-skills"
 FALLBACK_HOSTS = {"gpt.technica-engineering.net": "10.21.3.57"}
 
 
@@ -57,7 +58,8 @@ class AnteAgent(BaseInstalledAgent):
             "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
             "ANTE_TASK": instruction,
         }
-        extra = os.environ.get("ANTE_HARBOR_ARGS", "")
+        # Ante's own Harbor agent runs with these (plus JSON output, left out to keep logs readable).
+        extra = os.environ.get("ANTE_HARBOR_ARGS", DEFAULT_ANTE_ARGS)
         flags = ["--provider", "openai-compatible", "--model", model, *shlex.split(extra), "-p"]
         meta = {"harness": "ante", "model": model, "flags": flags, "time_limit_s": task_time_limit(), "settings": settings(env)}
         command = (

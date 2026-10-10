@@ -3,6 +3,8 @@
 #   FORGE_HARBOR_MODEL=deep-thinking evals/harbor/run-ante.sh smoke|subset|full [harbor args...]
 # Settings: FORGE_HARBOR_MODEL (default deep-thinking, as for run.sh; ANTE_MODEL also works),
 #           ANTE_PROVIDER (openai-compatible), ANTE_INSTALL_ARGS (empty = stable),
+#           ANTE_HARBOR_ARGS (default "--yolo --no-session-save --no-skills", as Ante's own
+#           Harbor agent runs it, minus JSON output),
 #           FORGE_HARBOR_JOBS (tasks in parallel, default 2), FORGE_HARBOR_DATASET,
 #           FORGE_HARBOR_CA_BUNDLE (label only for now)
 set -euo pipefail

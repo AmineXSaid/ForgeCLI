@@ -384,6 +384,8 @@
 - `evals/harbor/ante_agent.py` and `run-ante.sh` run Ante on the same tasks,
   for side-by-side comparisons; `forgecode_agent.py` and `run-forgecode.sh` do
   the same for Forge Code (forgecode.dev), downloading its static Linux build.
+  Ante runs with `--yolo --no-session-save --no-skills`, as Ante's own Harbor
+  agent does (`ANTE_HARBOR_ARGS` overrides).
   `FORGE_HARBOR_MODEL` sets the model for all three run scripts (default
   `deep-thinking`; a `provider/` prefix is optional).
 - The Harbor agent rewrites a `localhost` endpoint to this machine's address
