@@ -52,6 +52,13 @@
   and retries; the limit grows back after a run of successes.
 - The OpenAI-compatible provider honours `Retry-After` and
   `FORGE_MAX_RETRIES`, and stops waiting when interrupted.
+- Unattended runs (`--autonomous`) don't end on an announced step: a reply
+  without a tool call whose last line says what comes next ("Let me check the
+  logs.") is sent back to do it, and a run that would end with TodoWrite items
+  open is shown the list. Each at most twice a turn. The unattended prompt also
+  says to install missing tools, to give long commands a longer timeout or the
+  background (not `| tail`), and the tools prompt to fix a failed call's cause
+  before retrying.
 - Unattended runs (`--autonomous`) retry a model call that failed for a
   reason that passes (429, 5xx, overloaded, a lost connection, a stream that
   broke mid-reply) instead of ending the run: waits from 5 s, doubling, capped

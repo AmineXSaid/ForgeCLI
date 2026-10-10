@@ -865,11 +865,23 @@ For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
   - plan with TodoWrite and finish every step;
   - check the work before finishing;
   - write large files in parts;
+  - a message without a tool call ends the run: do an announced step at once;
+  - install missing tools (`apt-get`, `pip`) instead of working around them;
+  - give long commands a longer timeout or run them in the background, never
+    piped through `tail`;
   - if declining for safety or policy reasons, say so briefly.
 - **Attempt reminder:** a turn that would end without a single tool call gets
   one reminder to make a real attempt. A `system` event `attempt_reminder` is
   emitted for it. It isn't sent for a refusal stop reason, for sub-agents, or
   twice in one turn, and the model may still answer without tools.
+- **Next-step reminder:** a reply without a tool call whose last line announces
+  a step ("Let me check the logs.", "I'll write the encoder:") is sent back
+  with a reminder to do it now (`system` event `next_step_reminder`).
+  "Let me know..." is an ending, not a step.
+- **Todo reminder:** a turn that would end while TodoWrite items are not
+  completed gets a reminder listing them (`todo_reminder`).
+- Each of the two fires at most twice a turn, not for sub-agents or a refusal
+  stop reason; the model may still end afterwards.
 - **Verification:** `verification.maxReminders` defaults to 2 instead of 1. A
   setting still wins.
 - **API retries:** a model call that fails for a reason a retry can fix (HTTP
@@ -884,6 +896,7 @@ For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
 Tests:
 - `engine::unattended_runs_attempt_before_giving_up`;
 - `engine::unattended_runs_retry_failed_model_calls`, `engine::api_retries_stop_at_their_limits`;
+- `engine::unattended_runs_finish_announced_steps_and_open_todos`, `engine::announced_next_steps_are_recognised`;
 - `prompts::autonomous_section_is_added_only_when_asked`;
 - `core::unattended_runs_get_a_second_verification_reminder`;
 - `e2e::autonomous_runs_have_no_question_tools_and_attempt_first`.

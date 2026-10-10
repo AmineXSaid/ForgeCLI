@@ -112,6 +112,10 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
   - unattended runs (`--autonomous`, contract C21): no question tools, and a
     reminder to attempt before giving up. In the first Terminal-Bench subset,
     3 of 4 failures ended after 3 turns or fewer, without a real attempt;
+  - unattended finish checks (C21): a reply that announces a next step without
+    a tool call, or ends with open todos, is sent back once or twice. In the
+    quick-thinking run of 2026-10-09, gpt2-codegolf ended "success" on "Let me
+    examine the context around those markers." with no file written;
   - unattended API retries (C21): a failed model call waits and tries again
     while the run has time. In the deep-thinking run of 2026-10-09, 7 of 10
     trials ended after 0 turns on HTTP 429, and 6 runs across the jobs ended on

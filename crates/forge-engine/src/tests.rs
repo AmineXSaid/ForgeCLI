@@ -1053,6 +1053,89 @@ async fn api_retries_stop_at_their_limits() {
     assert_eq!(h.provider.requests().len(), 1);
 }
 
+#[test]
+fn announced_next_steps_are_recognised() {
+    use crate::engine::announced_next_step;
+    for step in [
+        "Let me examine the context around those `wte` markers.",
+        "Now I\u{2019}ll write the encoder:",
+        "**I'll** run it.",
+        "Here is the fix:",
+    ] {
+        assert!(announced_next_step(step).is_some(), "{step}");
+    }
+    for end in ["Done. Let me know if you need more.", "All 3 tests pass.", "", "I'll\n\nDone: verified with pytest."] {
+        assert!(announced_next_step(end).is_none(), "{end}");
+    }
+}
+
+fn todo(content: &str, status: &str) -> Value {
+    json!({"content": content, "status": status, "activeForm": content})
+}
+
+#[tokio::test]
+async fn unattended_runs_finish_announced_steps_and_open_todos() {
+    let unattended = || EngineConfig { autonomous: true, ..Default::default() };
+    // A reply that announces its next step without a tool call is sent back to do it.
+    let h = Harness::new(vec![
+        MockTurn::tool("Bash", json!({"command": "ls"})),
+        MockTurn::text("Let me examine the context around those markers."),
+        MockTurn::tool("Bash", json!({"command": "echo ok"})),
+        MockTurn::text("Done: checked with echo."),
+    ]);
+    let mut e = h.engine_with(unattended(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.result.as_deref(), Some("Done: checked with echo."));
+    let reqs = h.provider.requests();
+    assert_eq!(reqs.len(), 4);
+    assert!(last_user_text(&reqs[2]).contains("announcing a next step"), "{}", last_user_text(&reqs[2]));
+    assert!(h
+        .sink
+        .take()
+        .iter()
+        .any(|ev| matches!(ev, EngineEvent::System { subtype, .. } if subtype == "next_step_reminder")));
+
+    // At most two reminders in a turn; "Let me know" is an ending.
+    let h = Harness::new(vec![
+        MockTurn::tool("Bash", json!({"command": "ls"})),
+        MockTurn::text("Let me look at a."),
+        MockTurn::text("Let me look at b."),
+        MockTurn::text("Let me look at c."),
+    ]);
+    let mut e = h.engine_with(unattended(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.result.as_deref(), Some("Let me look at c."));
+    assert_eq!(h.provider.requests().len(), 4);
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "ls"})), MockTurn::text("Done. Let me know.")]);
+    let mut e = h.engine_with(unattended(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("task")).await;
+    assert_eq!(h.provider.requests().len(), 2);
+
+    // Open todos are listed before the run may end.
+    let h = Harness::new(vec![
+        MockTurn::tool(
+            "TodoWrite",
+            json!({"todos": [todo("write gpt2.c", "pending"), todo("read the files", "completed")]}),
+        ),
+        MockTurn::text("Done."),
+        MockTurn::tool(
+            "TodoWrite",
+            json!({"todos": [todo("write gpt2.c", "completed"), todo("read the files", "completed")]}),
+        ),
+        MockTurn::text("Done: gpt2.c written."),
+    ]);
+    let mut e = h.engine_with(unattended(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.result.as_deref(), Some("Done: gpt2.c written."));
+    let reqs = h.provider.requests();
+    assert_eq!(reqs.len(), 4);
+    let reminder = last_user_text(&reqs[2]);
+    assert!(reminder.contains("[pending] write gpt2.c") && !reminder.contains("read the files"), "{reminder}");
+
+    // With a person at the prompt, the reply ends the turn as before.
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "ls"})), MockTurn::text("Let me check more.")]);
+    let mut e = h.engine();
+    e.submit(prompt("task")).await;
+    assert_eq!(h.provider.requests().len(), 2);
+}
+
 #[tokio::test]
 async fn unattended_runs_attempt_before_giving_up() {
     // Ending without any tool call: one reminder, then the model may still stop.

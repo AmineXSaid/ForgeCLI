@@ -75,6 +75,47 @@ fn about(left: Duration) -> String {
     }
 }
 
+/// Unattended runs: how many times one turn is reminded of an announced next step, or of open todos.
+const FINISH_REMINDERS: u32 = 2;
+
+/// The last line of a reply when it announces a next step instead of ending ("Let me check the
+/// logs."), cut to 160 characters. "Let me know..." is an ending, not a step.
+pub(crate) fn announced_next_step(text: &str) -> Option<String> {
+    let last = text.trim().lines().rev().find(|l| !l.trim().is_empty())?.trim();
+    let lower = last.to_lowercase().replace('\u{2019}', "'").replace(['*', '_', '`'], "");
+    let lower = lower.trim_start_matches(|c: char| !c.is_alphanumeric());
+    const STEPS: [&str; 10] = [
+        "let me ",
+        "let's ",
+        "i'll ",
+        "i will ",
+        "i'm going to ",
+        "i am going to ",
+        "now i'll ",
+        "now let me ",
+        "next, i",
+        "next i'll ",
+    ];
+    let step = STEPS.iter().any(|s| lower.starts_with(s)) && !lower.starts_with("let me know");
+    (step || lower.ends_with(':')).then(|| last.chars().take(160).collect())
+}
+
+fn next_step_reminder(line: &str) -> String {
+    format!(
+        "<system-reminder>\nYour last message ends by announcing a next step (\"{line}\") but makes no tool call, so \
+         the run would end here with that step undone. Do it now with a tool call. If the task is in fact complete, say \
+         so and state what you verified.\n</system-reminder>"
+    )
+}
+
+fn todo_reminder(open: &[String]) -> String {
+    format!(
+        "<system-reminder>\nThe run is about to end with todo items not completed:\n{}\nFinish them now. If one no \
+         longer applies, update the list with TodoWrite and say why.\n</system-reminder>",
+        open.iter().map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n")
+    )
+}
+
 /// Unattended runs (GOALS pillar 2): the first wait before a failed model call is tried again.
 const API_RETRY_FIRST_WAIT: Duration = Duration::from_secs(5);
 /// The longest wait between two tries.
@@ -688,6 +729,22 @@ impl Engine {
     /// Tell the host about something (`system/<subtype>`) without recording it.
     pub fn announce(&self, subtype: &str, data: Value) {
         self.emit(EngineEvent::System { subtype: subtype.into(), data });
+    }
+
+    /// TodoWrite items not marked completed, as "[status] content".
+    fn unfinished_todos(&self) -> Vec<String> {
+        self.shared
+            .tool_ctx
+            .todos
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|t| {
+                let status = t.get("status").and_then(Value::as_str).unwrap_or("pending");
+                let content = t.get("content").and_then(Value::as_str).unwrap_or("");
+                (status != "completed" && !content.is_empty()).then(|| format!("[{status}] {content}"))
+            })
+            .collect()
     }
 
     /// How long to wait before trying a failed model call again, or `None` to give up. Only
@@ -1421,6 +1478,8 @@ impl Engine {
         let mut continuing = false;
         let mut budget_warned = false;
         let mut attempt_reminded = false;
+        let mut next_step_reminders = 0u32;
+        let mut todo_reminders = 0u32;
         let mut api_retries = 0u32;
 
         loop {
@@ -1584,6 +1643,7 @@ impl Engine {
             api_retries = 0;
             self.record_usage(&model, &msg.usage.clone(), &mut turn);
             let text = msg.to_message().text();
+            let next_step = announced_next_step(&text);
             if continuing {
                 // A reply continued after `max_tokens` is one answer.
                 last_text = Some(format!("{}{text}", last_text.take().unwrap_or_default()));
@@ -1742,6 +1802,24 @@ impl Engine {
                 self.system_event("attempt_reminder", json!({}));
                 self.push_user(Message::user_text(ATTEMPT_REMINDER), true, None, true);
                 continue;
+            }
+
+            // Unattended runs: a reply that announces its next step ("Let me check...") and makes
+            // no tool call would end the run with that step undone.
+            if self.cfg.autonomous && !self.cfg.is_subagent && stop_reason != Some(StopReason::Refusal) {
+                if let (Some(line), true) = (next_step.as_deref(), next_step_reminders < FINISH_REMINDERS) {
+                    next_step_reminders += 1;
+                    self.system_event("next_step_reminder", json!({"line": line}));
+                    self.push_user(Message::user_text(next_step_reminder(line)), true, None, true);
+                    continue;
+                }
+                let open = self.unfinished_todos();
+                if !open.is_empty() && todo_reminders < FINISH_REMINDERS {
+                    todo_reminders += 1;
+                    self.system_event("todo_reminder", json!({"open": open}));
+                    self.push_user(Message::user_text(todo_reminder(&open)), true, None, true);
+                    continue;
+                }
             }
 
             // Verification loop (GOALS pillar 3): no finishing on unchecked changes.
