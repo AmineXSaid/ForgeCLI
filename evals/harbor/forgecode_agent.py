@@ -31,7 +31,7 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from forge_agent import REMOTE_CA, TRUST_CA, container_url, pinned_hosts
+from forge_agent import REMOTE_CA, TRUST_CA, container_url, pinned_hosts, record_run, settings, task_time_limit
 
 DEFAULT_BIN = Path.home() / ".forgecode" / "forge"
 REMOTE_BIN = "/usr/local/bin/forgecode"
@@ -83,9 +83,17 @@ class ForgeCode(BaseInstalledAgent):
         if os.environ.get("FORGE_HARBOR_CA_BUNDLE"):
             env["FORGE_HTTP__ROOT_CERT_PATHS"] = REMOTE_CA
         extra = os.environ.get("FORGECODE_HARBOR_ARGS", "")
+        meta = {
+            "harness": "forgecode",
+            "model": model,
+            "flags": ["-p", *shlex.split(extra)],
+            "time_limit_s": task_time_limit(),
+            "settings": settings(env),
+        }
         command = (
             f"mkdir -p {LOG_DIR} {CONFIG_DIR}; "
-            f'{REMOTE_BIN} -p "$FORGECODE_TASK" {extra} '
+            + record_run("FORGECODE_TASK", meta)
+            + f'{REMOTE_BIN} -p "$FORGECODE_TASK" {extra} '
             f"> {LOG_DIR}/forgecode.stdout.txt 2> {LOG_DIR}/forgecode.stderr.txt"
         )
         await self.exec_as_agent(environment, command=command, env=env)

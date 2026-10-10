@@ -142,6 +142,22 @@ def container_url(url: str) -> str:
     return parts._replace(netloc=netloc).geturl()
 
 
+SECRET = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def record_run(task_var: str, meta: dict) -> str:
+    """Shell that saves the task and how the agent was started next to its logs, for report.py."""
+    return (
+        f'printf "%s" "${task_var}" > {LOG_DIR}/instruction.txt; '
+        f"printf '%s\\n' {shlex.quote(json.dumps(meta))} > {LOG_DIR}/run.json; "
+    )
+
+
+def settings(env: dict) -> dict:
+    """The settings passed to the agent, with the values of keys and tokens left out."""
+    return {k: ("<set>" if any(s in k.upper() for s in SECRET) else v) for k, v in sorted(env.items()) if not k.endswith("_TASK")}
+
+
 def task_time_limit() -> float | None:
     """The agent time limit of the trial running this agent, in seconds.
 
@@ -207,9 +223,11 @@ class ForgeCLI(BaseInstalledAgent):
         if limit and "--max-time" not in extra:
             flags += ["--max-time", str(max(60, int(limit) - TIME_MARGIN))]
         flags += extra
+        meta = {"harness": "forgecli", "model": model, "flags": flags, "time_limit_s": limit, "settings": settings(env)}
         command = (
             f"mkdir -p {LOG_DIR}; "
-            f'{REMOTE_BIN} -p "$FORGE_TASK" {shlex.join(flags)} '
+            + record_run("FORGE_TASK", meta)
+            + f'{REMOTE_BIN} -p "$FORGE_TASK" {shlex.join(flags)} '
             f"> {LOG_DIR}/{STREAM_LOG} 2> {LOG_DIR}/{STDERR_LOG}"
         )
         await self.exec_as_agent(environment, command=command, env=env)

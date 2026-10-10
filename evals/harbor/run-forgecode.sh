@@ -48,10 +48,14 @@ model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 job="forgecode-${mode}-${model_tag}-${version:-unknown}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
+# The report is written even when harbor fails part way.
+status=0
 PYTHONPATH="$repo/evals/harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   -d "${FORGE_HARBOR_DATASET:-terminal-bench@2.0}" \
   -m "$model" \
   --agent forgecode_agent:ForgeCode \
   --n-concurrent "${FORGE_HARBOR_JOBS:-2}" \
   --job-name "$job" \
-  "${scope[@]}" "$@"
+  "${scope[@]}" "$@" || status=$?
+python3 "$repo/evals/harbor/report.py" "jobs/$job" || true
+exit "$status"

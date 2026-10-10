@@ -12,7 +12,6 @@ mode="${1:-subset}"; shift || true
 
 : "${FORGE_OPENAI_BASE_URL:?source ~/.forge-env-kpit first}"
 : "${FORGE_OPENAI_API_KEY:?source ~/.forge-env-kpit first}"
-[ -d "$HOME/ante-src/ante-harbor" ] || { echo "error: ~/ante-src/ante-harbor missing" >&2; exit 1; }
 
 case "$mode" in
   smoke)  scope=(-l 1 --n-attempts 1) ;;
@@ -29,7 +28,10 @@ ca=""; [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
 job="ante-${mode}-${model_tag}-${install:-stable}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
-PYTHONPATH="$HOME/ante-src/ante-harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
+# The report is written even when harbor fails part way.
+status=0
+# The agent is evals/harbor/ante_agent.py; ~/ante-src/ante-harbor, if there, comes after it.
+PYTHONPATH="$repo/evals/harbor:$HOME/ante-src/ante-harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   -d "${FORGE_HARBOR_DATASET:-terminal-bench@2.0}" \
   -m "$model" \
   --agent ante_agent:AnteAgent \
@@ -38,4 +40,6 @@ PYTHONPATH="$HOME/ante-src/ante-harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   --ae "OPENAI_COMPATIBLE_API_KEY=$FORGE_OPENAI_API_KEY" \
   --n-concurrent "${FORGE_HARBOR_JOBS:-2}" \
   --job-name "$job" \
-  "${scope[@]}" "$@"
+  "${scope[@]}" "$@" || status=$?
+python3 "$repo/evals/harbor/report.py" "jobs/$job" || true
+exit "$status"

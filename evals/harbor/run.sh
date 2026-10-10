@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run Terminal-Bench on ForgeCLI through Harbor.
 #
+#   evals/harbor/run.sh smoke    # 1 task: does it start and reach the endpoint?
 #   evals/harbor/run.sh subset   # the first 10 tasks, 1 attempt: does it work?
 #   evals/harbor/run.sh full     # every task, 5 attempts: the leaderboard setup
 #
@@ -43,9 +44,10 @@ else
 fi
 
 case "$mode" in
+  smoke) scope=(-l 1 --n-attempts 1) ;;
   subset) scope=(-l 10 --n-attempts 1) ;;
   full) scope=(--n-attempts 5) ;;
-  *) echo "usage: $0 subset|full [harbor run args...]" >&2; exit 2 ;;
+  *) echo "usage: $0 smoke|subset|full [harbor run args...]" >&2; exit 2 ;;
 esac
 
 commit="$(git rev-parse --short HEAD)"
@@ -60,10 +62,14 @@ model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 job="forgecli-${mode}-${model_tag}-${commit}${dirty}${custom}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
+# The report is written even when harbor fails part way.
+status=0
 PYTHONPATH="$repo/evals/harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   -d "${FORGE_HARBOR_DATASET:-terminal-bench@2.0}" \
   -m "$model" \
   --agent forge_agent:ForgeCLI \
   --n-concurrent "${FORGE_HARBOR_JOBS:-2}" \
   --job-name "$job" \
-  "${scope[@]}" "$@"
+  "${scope[@]}" "$@" || status=$?
+python3 "$repo/evals/harbor/report.py" "jobs/$job" || true
+exit "$status"

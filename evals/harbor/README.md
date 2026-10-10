@@ -113,6 +113,36 @@ reminders, how the run ended (with the error when it failed) and the task's
 reward once the verifier writes it. Other agents' logs (Ante, ...) are shown as
 they are. A step shows up once the model finishes it.
 
+## The report of a run
+
+When a job ends, `run.sh`, `run-forgecode.sh` and `run-ante.sh` write
+`jobs/<job>/report.md`: one file with everything needed to judge the run.
+
+- **Setup:** harness, version, model, tasks in parallel, start and end, agent
+  flags and settings (keys left out).
+- **Score:** passed, valid trials (those that reached the model without an API
+  failure), and one verdict per task: passed, failed, false success (said done,
+  checker failed), gave up, refused, api error (before any work or later),
+  timeout, crashed.
+- **Trials table:** reward, verdict, turns, agent time against the limit,
+  tokens, tool calls and errors, API retries, how the run ended.
+- **Signals:** HTTP 429s and retries, run-ending errors, tool errors by kind and
+  by tool, unknown tool names, ForgeCLI's reminders and other events.
+- **Per task:** the instruction, the agent's last words, the verifier's failing
+  tests and output, tool use, and the whole conversation (reasoning, messages,
+  tool calls and results, shortened where long); other agents' logs as text.
+- **Data:** the same numbers as JSON, for scripts.
+
+```bash
+python3 evals/harbor/report.py                         # the newest job
+python3 evals/harbor/report.py jobs/A jobs/B jobs/C    # each report, plus jobs/comparison-<time>.md
+python3 evals/harbor/report.py jobs/*/ --export reports/   # copies to commit or send
+```
+
+The agents save the task's instruction (`agent/instruction.txt`) and how they
+were started (`agent/run.json`) for it. API keys are removed from everything
+the report writes.
+
 ## Comparing harnesses
 
 To compare harnesses, keep the model and the tasks fixed and change only the

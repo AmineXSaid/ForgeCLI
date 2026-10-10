@@ -10,7 +10,7 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from forge_agent import REMOTE_CA, TRUST_CA, container_url
+from forge_agent import REMOTE_CA, TRUST_CA, container_url, record_run, settings, task_time_limit
 
 ANTE_BIN = Path(os.environ.get("ANTE_BIN", str(Path.home() / ".ante/bin/ante")))
 REMOTE_BIN = "/usr/local/bin/ante"
@@ -58,9 +58,12 @@ class AnteAgent(BaseInstalledAgent):
             "ANTE_TASK": instruction,
         }
         extra = os.environ.get("ANTE_HARBOR_ARGS", "")
+        flags = ["--provider", "openai-compatible", "--model", model, *shlex.split(extra), "-p"]
+        meta = {"harness": "ante", "model": model, "flags": flags, "time_limit_s": task_time_limit(), "settings": settings(env)}
         command = (
             f"mkdir -p {LOG_DIR}; "
-            f'{REMOTE_BIN} --provider openai-compatible --model {shlex.quote(model)} {extra} -p "$ANTE_TASK" '
+            + record_run("ANTE_TASK", meta)
+            + f'{REMOTE_BIN} --provider openai-compatible --model {shlex.quote(model)} {extra} -p "$ANTE_TASK" '
             f"> {LOG_DIR}/ante.stdout.txt 2> {LOG_DIR}/ante.stderr.txt"
         )
         await self.exec_as_agent(environment, command=command, env=env)

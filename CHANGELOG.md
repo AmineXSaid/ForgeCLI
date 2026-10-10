@@ -358,6 +358,12 @@
 - The Harbor agent can trust extra certificate authorities in task containers
   (`FORGE_HARBOR_CA_BUNDLE`), for networks that inspect TLS; such jobs are
   named `-hostca` and are for local comparisons only.
+- `evals/harbor/report.py` writes `jobs/<job>/report.md` when a job ends:
+  setup, score, a verdict per task (passed, false success, gave up, refused,
+  API error, timeout, ...), signals (429s, retries, tool errors by kind,
+  reminders), and per task the instruction, verifier failures and the whole
+  conversation. Several jobs also give a side-by-side comparison. The agents
+  save the instruction and their settings for it; keys are removed.
 - `evals/harbor/run.sh` rebuilds the static binary when the code changed
   since it was built, so a job named after a commit runs that commit's code.
   Jobs labelled 02195fd probably ran an older binary. `FORGE_STATIC_BIN`
