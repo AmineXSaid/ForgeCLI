@@ -353,6 +353,10 @@
 - The Harbor agent can trust extra certificate authorities in task containers
   (`FORGE_HARBOR_CA_BUNDLE`), for networks that inspect TLS; such jobs are
   named `-hostca` and are for local comparisons only.
+- `evals/harbor/watch.py` shows a run like a conversation: what the model
+  says, one short line per tool call, failed calls with their error, how the
+  run ended and why, and each task's reward. `--thinking` adds the reasoning,
+  `--full` the tool input and output. Other agents' logs are followed too.
 - The Harbor agent rewrites a `localhost` endpoint to this machine's address
   (`FORGE_HARBOR_HOST_IP` to set it), so self-hosted models can be used. A
   login in the URL is kept, and when the address can't be found the error

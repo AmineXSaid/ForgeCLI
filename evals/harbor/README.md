@@ -100,11 +100,15 @@ evals/harbor/run.sh subset
 
 ```bash
 python3 evals/harbor/watch.py              # newest job; --from-start replays it first
+python3 evals/harbor/watch.py --thinking   # also the model's reasoning
+python3 evals/harbor/watch.py --full       # also tool input and output
 ```
 
-It follows every task's `forge.jsonl` and prints the model's thinking, its tool
-calls and their results, and ForgeCLI's own reminders, one colour per task. A
-step shows up once the model finishes it.
+One colour per task. For ForgeCLI it shows what the model says, one short line
+per tool call (`$ ls -la /app`, `Read /app/x.py`), failed tool calls, ForgeCLI's
+reminders, how the run ended (with the error when it failed) and the task's
+reward once the verifier writes it. Other agents' logs (Ante, ...) are shown as
+they are. A step shows up once the model finishes it.
 
 ## Comparing harnesses
 
