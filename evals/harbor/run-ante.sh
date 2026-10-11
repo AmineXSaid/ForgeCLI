@@ -30,6 +30,9 @@ ca=""; [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
 job="ante-${mode}-${model_tag}-${install:-stable}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
+# ante_agent.py reads these on this machine too (endpoint host, container URL), not only in the container.
+export OPENAI_COMPATIBLE_BASE_URL="$FORGE_OPENAI_BASE_URL" OPENAI_COMPATIBLE_API_KEY="$FORGE_OPENAI_API_KEY"
+
 # The report is written even when harbor fails part way.
 status=0
 # The agent is evals/harbor/ante_agent.py; ~/ante-src/ante-harbor, if there, comes after it.
