@@ -182,6 +182,23 @@ fn write_result(ctx: &ToolContext, path: &std::path::Path, old: &str, new: &str)
     Ok(patch_hunks(old, new))
 }
 
+/// The file as text for an edit. A missing file is empty (Edit can create it);
+/// a file that can't be read, or isn't UTF-8, is an error: editing a lossy
+/// copy would corrupt it, and treating it as empty would replace it.
+fn read_for_edit(path: &std::path::Path) -> Result<String, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
+            format!(
+                "{} is not UTF-8 text, so Edit can't change it without corrupting it. Use Bash with a tool \
+                 that keeps its encoding (for example iconv or sed), or Write to replace the whole file.",
+                path.display()
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("Could not read {}: {e}", path.display())),
+    }
+}
+
 pub struct Edit;
 
 #[async_trait::async_trait]
@@ -231,7 +248,10 @@ impl Tool for Edit {
         let path = expand_path(str_arg(&input, "file_path"), &ctx.project_dir);
         let (old_s, new_s) = (str_arg(&input, "old_string"), str_arg(&input, "new_string"));
         let all = input.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let content = match read_for_edit(&path) {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::error(e),
+        };
         // Files may use CRLF; match against normalised text and keep the style.
         let crlf = content.contains("\r\n");
         let norm = if crlf { content.replace("\r\n", "\n") } else { content.clone() };
@@ -305,7 +325,10 @@ impl Tool for MultiEdit {
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> ToolOutput {
         let path = expand_path(str_arg(&input, "file_path"), &ctx.project_dir);
-        let original = std::fs::read_to_string(&path).unwrap_or_default();
+        let original = match read_for_edit(&path) {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::error(e),
+        };
         let mut content = original.clone();
         let edits = input.get("edits").and_then(Value::as_array).cloned().unwrap_or_default();
         if edits.is_empty() {

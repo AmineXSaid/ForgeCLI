@@ -1432,7 +1432,8 @@ impl App {
         starts
     }
 
-    /// Files matching the `@word` before the cursor: name matches first, then shorter paths.
+    /// Files matching the `@word` before the cursor: a file typed in full first,
+    /// then name matches, then shorter paths.
     pub fn file_menu(&self) -> Vec<&str> {
         if self.menu_dismissed || self.dialog.is_some() || self.search.is_some() {
             return vec![];
@@ -1440,18 +1441,19 @@ impl App {
         let (_, word) = self.editor.word_before_cursor();
         let Some(q) = word.strip_prefix('@') else { return vec![] };
         let q = q.to_lowercase();
-        let mut hits: Vec<(bool, usize, &str)> = self
+        let mut hits: Vec<(bool, bool, usize, &str)> = self
             .files
             .iter()
-            // What is typed already (a completed directory) isn't offered again.
-            .filter(|f| f.to_lowercase().contains(&q) && f.to_lowercase() != q)
+            // What is typed already (a completed directory) isn't offered again. A file
+            // typed in full stays, first, so Enter keeps it instead of a longer match.
+            .filter(|f| f.to_lowercase().contains(&q) && !(f.ends_with('/') && f.to_lowercase() == q))
             .map(|f| {
                 let name = f.trim_end_matches('/').rsplit('/').next().unwrap_or(f).to_lowercase();
-                (!name.starts_with(&q), f.len(), f.as_str())
+                (f.to_lowercase() != q, !name.starts_with(&q), f.len(), f.as_str())
             })
             .collect();
         hits.sort();
-        hits.into_iter().take(FILE_MATCHES).map(|(_, _, f)| f).collect()
+        hits.into_iter().take(FILE_MATCHES).map(|(_, _, _, f)| f).collect()
     }
 
     fn complete_file(&mut self, path: &str) {
@@ -2380,6 +2382,18 @@ mod tests {
         typed(&mut a, "@my");
         a.on_key(key(KeyCode::Tab));
         assert_eq!(a.editor.text(), "@\"my notes.txt\" ", "spaces are quoted");
+    }
+
+    #[test]
+    fn a_file_typed_in_full_is_not_swapped_for_a_longer_match() {
+        let mut a = app();
+        a.on_event(UiEvent::Files(vec!["calc.py".into(), "test_calc.py".into(), "src/".into()]));
+        typed(&mut a, "explain @calc.py");
+        assert_eq!(a.file_menu(), ["calc.py", "test_calc.py"]);
+        assert!(a.on_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(a.editor.text(), "explain @calc.py ", "Enter keeps the file that was typed");
+        typed(&mut a, "@src/");
+        assert!(a.file_menu().is_empty(), "a completed directory still isn't offered again");
     }
 
     #[test]

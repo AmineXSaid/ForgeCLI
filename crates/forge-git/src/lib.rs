@@ -119,7 +119,22 @@ pub fn worktree_fingerprint(dir: &Path) -> Option<u64> {
 
 /// Add `pattern` to the repository's `.git/info/exclude` (untracked, local ignore) if missing.
 pub fn exclude(repo_root: &Path, pattern: &str) -> std::io::Result<()> {
-    let git_dir = repo_root.join(".git");
+    // In a worktree or submodule `.git` is a file; the exclude file lives in the common git dir.
+    let git_dir = if repo_root.join(".git").is_dir() {
+        repo_root.join(".git")
+    } else {
+        match git(repo_root, &["rev-parse", "--git-common-dir"]) {
+            Some(d) => {
+                let d = PathBuf::from(d.trim());
+                if d.is_absolute() {
+                    d
+                } else {
+                    repo_root.join(d)
+                }
+            }
+            None => return Ok(()),
+        }
+    };
     if !git_dir.is_dir() {
         return Ok(());
     }

@@ -83,8 +83,17 @@ pub(crate) fn sends_fast(rt: &Runtime, model: &str, provider_name: &str) -> bool
 /// side question reuses the cached prefix.
 pub(crate) fn assemble(model: &str, rt: &Runtime, p: RequestParts<'_>) -> MessagesRequest {
     let info = forge_api::models::model_info_or_default(model);
+    // A small window can't hold a 32k reply on top of the conversation.
+    let (cap, _) = forge_compact::fit_to_window(info.context_window, p.max_output_tokens);
     let (thinking, mut output_config, max_tokens) =
-        thinking_params(&info, rt.max_thinking_tokens, rt.effort.as_deref(), p.max_output_tokens);
+        thinking_params(&info, rt.max_thinking_tokens, rt.effort.as_deref(), cap);
+    // OpenAI-compatible endpoints: `--effort` becomes `reasoning_effort` (the model table
+    // knows no effort levels for their models). Nothing is sent when no effort is set.
+    if p.provider_name == "openai" && output_config.is_none() {
+        if let Some(e) = rt.effort.as_deref().filter(|e| matches!(*e, "minimal" | "low" | "medium" | "high")) {
+            output_config = Some(json!({"effort": e}));
+        }
+    }
     if let Some(schema) = p.json_schema {
         let oc = output_config.get_or_insert_with(|| json!({}));
         oc["format"] = json!({"type": "json_schema", "schema": schema});

@@ -9,7 +9,7 @@ use forge_permissions::{PermissionMode, RuleSet, Subject};
 use forge_session::{FileHistory, SessionStore, Transcript};
 use forge_tools::{Tool, ToolContext, ToolOutput, ToolRegistry};
 use forge_types::sdk::ResultSubtype;
-use forge_types::{ContentBlock, MessageContent};
+use forge_types::{ContentBlock, MessageContent, StopReason};
 use serde_json::{json, Value};
 
 use super::*;
@@ -1013,6 +1013,68 @@ async fn unattended_runs_retry_failed_model_calls() {
     assert_eq!(retries.len(), 3);
     assert_eq!(retries[2]["attempt"], 3);
     assert!(retries[0]["error"].as_str().unwrap().contains("429"), "{}", retries[0]);
+}
+
+#[tokio::test]
+async fn a_reply_cut_off_mid_stream_is_not_a_success() {
+    // Interactive and print runs: the cut reply is an error, never a "success" with half an answer.
+    let h = Harness::new(vec![MockTurn::ends_early("I will now fix the bug by changing the")]);
+    let mut e =
+        h.engine_with(EngineConfig::default(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("fix it")).await;
+    assert!(r.is_error, "{r:?}");
+    assert_eq!(r.subtype, ResultSubtype::ErrorDuringExecution);
+
+    // Unattended runs try again, including after a tool call cut off before its input closed.
+    let h = Harness::new(vec![
+        MockTurn::ends_early("half an ans"),
+        MockTurn::tool_ends_early("Bash", json!({"command": "touch cut-call-ran"})),
+        MockTurn::tool("Bash", json!({"command": "echo ok"})),
+        MockTurn::text("done"),
+    ]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("task")).await;
+    assert_eq!(r.result.as_deref(), Some("done"));
+    assert_eq!(h.provider.requests().len(), 4, "two retries, then the real call and the answer");
+    assert!(!h.cwd().join("cut-call-ran").exists(), "the cut tool call never ran");
+}
+
+#[tokio::test]
+async fn a_cut_off_with_only_reasoning_asks_for_the_next_step() {
+    let thinking_only = MockTurn::blocks(
+        vec![ContentBlock::Thinking { thinking: "long analysis".into(), signature: "s".into() }],
+        StopReason::MaxTokens,
+    );
+    let text_cut = MockTurn::blocks(vec![ContentBlock::text("The plan is to")], StopReason::MaxTokens);
+    let h = Harness::new(vec![thinking_only, MockTurn::text("ok"), text_cut, MockTurn::text(" go on")]);
+    let mut e =
+        h.engine_with(EngineConfig::default(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("a")).await;
+    e.submit(prompt("b")).await;
+    let reqs = h.provider.requests();
+    assert!(
+        last_user_text(&reqs[1]).contains("ran out of output tokens while thinking"),
+        "{}",
+        last_user_text(&reqs[1])
+    );
+    assert!(last_user_text(&reqs[3]).contains("Continue exactly where it stopped"), "{}", last_user_text(&reqs[3]));
+}
+
+#[tokio::test]
+async fn sub_agent_style_retries_and_quota_errors() {
+    // api_retries alone (a sub-agent of an unattended run): failed calls are tried again.
+    let h = Harness::new(vec![MockTurn::http_error(503, "api_error"), MockTurn::text("done")]);
+    let cfg = EngineConfig { api_retries: true, api_retry_wait: Duration::from_millis(1), ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.result.as_deref(), Some("done"));
+    assert_eq!(h.provider.requests().len(), 2);
+    // An exhausted quota is not retried, even unattended.
+    let h = Harness::new(vec![MockTurn::http_error(429, "insufficient_quota"), MockTurn::text("never")]);
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("task")).await;
+    assert!(r.is_error);
+    assert_eq!(h.provider.requests().len(), 1, "no retry on insufficient_quota");
 }
 
 #[tokio::test]

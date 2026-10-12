@@ -9,7 +9,21 @@ pub fn is_secret_key(key: &str) -> bool {
         .iter()
         .any(|w| k.contains(w))
         && !k.ends_with("helper")
+        && !NOT_SECRET.contains(&k.as_str())
 }
+
+/// Keys that match a secret word but never hold one: token counts, output caps, authors.
+/// Kept short and explicit, so nothing that could be a secret is let through.
+const NOT_SECRET: &[&str] = &[
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "max_tokens",
+    "maxoutputtokens",
+    "max_output_tokens",
+    "author",
+];
 
 /// A copy of `v` with secret-looking values replaced by `"<redacted>"`.
 pub fn redact(v: &Value) -> Value {
@@ -104,6 +118,19 @@ mod tests {
         let d = redact_deep(&v);
         assert_eq!(d["message"]["content"][0]["text"], "my token=<redacted>");
         assert_eq!(d["apiKey"], "<redacted>");
+    }
+
+    #[test]
+    fn counts_and_caps_are_not_secrets() {
+        let v = json!({"usage": {"input_tokens": 120, "output_tokens": 7}, "modelLimits": {"m": {"maxOutputTokens": 64000}},
+                       "author": "me", "api_key": "abc", "token": "t0k", "auth_token": "x"});
+        let r = redact(&v);
+        assert_eq!(r["usage"]["input_tokens"], 120);
+        assert_eq!(r["modelLimits"]["m"]["maxOutputTokens"], 64000);
+        assert_eq!(r["author"], "me");
+        assert_eq!(r["api_key"], "<redacted>");
+        assert_eq!(r["token"], "<redacted>");
+        assert_eq!(r["auth_token"], "<redacted>");
     }
 
     #[test]

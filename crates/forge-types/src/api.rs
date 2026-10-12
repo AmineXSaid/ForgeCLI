@@ -126,6 +126,10 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: Value,
     },
+    /// A block type this version doesn't know (the API adds new ones). It is kept out of
+    /// requests and display instead of failing the whole reply.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ContentBlock {
@@ -457,6 +461,18 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(stop, StreamEvent::MessageDelta { .. }));
+    }
+
+    #[test]
+    fn unknown_block_types_parse() {
+        let m: ApiMessage = serde_json::from_value(json!({
+            "id": "m", "type": "message", "role": "assistant", "model": "x",
+            "content": [{"type": "brand_new_block", "data": 1}, {"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}
+        }))
+        .unwrap();
+        assert_eq!(m.content.len(), 2);
+        assert!(matches!(m.content[0], ContentBlock::Unknown));
     }
 
     #[test]

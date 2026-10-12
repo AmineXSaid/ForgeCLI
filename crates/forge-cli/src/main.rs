@@ -44,6 +44,18 @@ fn read_file(p: &PathBuf, what: &str) -> Result<String, Fail> {
 }
 
 /// Validate flags and turn them into launch options (no I/O beyond reading named files).
+/// The shape every tool rule has: `Name`, `Name(specifier)` or `mcp__...`.
+fn looks_like_rule(piece: &str) -> bool {
+    if piece.starts_with("mcp__") {
+        return true;
+    }
+    let name = piece.split('(').next().unwrap_or("");
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && (!piece.contains('(') || piece.ends_with(')'))
+}
+
 fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
     let cwd = std::env::current_dir().map_err(|e| Fail::config(format!("cannot read the current directory: {e}")))?;
     let system_prompt = match (&o.system_prompt, &o.system_prompt_file) {
@@ -104,6 +116,20 @@ fn launch_options(o: &Opts) -> Result<LaunchOptions, Fail> {
     for d in &o.add_dir {
         if !d.is_dir() {
             return Err(Fail::usage(format!("--add-dir {}: not a directory", d.display())));
+        }
+    }
+    for (flag, values) in [("--allowedTools", &o.allowed_tools), ("--disallowedTools", &o.disallowed_tools)] {
+        for v in values {
+            let odd: Vec<String> =
+                forge_permissions::split_rule_list(v).into_iter().filter(|p| !looks_like_rule(p)).collect();
+            match odd.len() {
+                0 => {}
+                1 => eprintln!("forge: warning: {flag} {:?} doesn't look like a tool name (tools are named like Bash, Read or mcp__server)", odd[0]),
+                _ => {
+                    return Err(Fail::usage(format!("{flag} {v:?} looks like a prompt, not tool rules"))
+                        .with_hint(format!("Put the prompt before {flag}, or end the list with --: forge -p {flag} Edit -- \"<prompt>\"")))
+                }
+            }
         }
     }
     Ok(LaunchOptions {

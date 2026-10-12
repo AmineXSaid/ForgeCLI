@@ -219,6 +219,31 @@ async fn edit_requires_read_and_unique_match() {
         .contains("modified since read"));
 }
 
+#[tokio::test]
+async fn edits_never_touch_a_file_that_is_not_utf8() {
+    let d = tempfile::tempdir().unwrap();
+    let f = p(d.path(), "conf.txt");
+    let latin1: &[u8] = b"name = \"caf\xe9\"\nversion = 1\n";
+    std::fs::write(&f, latin1).unwrap();
+    let c = ctx(d.path());
+    Read.call(json!({"file_path": f}), &c).await;
+    // An empty old_string used to replace the whole file.
+    let out = Edit.call(json!({"file_path": f, "old_string": "", "new_string": "# header\n"}), &c).await;
+    assert!(out.is_error && out.text_content().contains("not UTF-8"), "{out:?}");
+    let out = Edit.call(json!({"file_path": f, "old_string": "version = 1", "new_string": "version = 2"}), &c).await;
+    assert!(out.is_error && out.text_content().contains("not UTF-8"), "{out:?}");
+    let out = MultiEdit
+        .call(json!({"file_path": f, "edits": [{"old_string": "version = 1", "new_string": "version = 2"}]}), &c)
+        .await;
+    assert!(out.is_error && out.text_content().contains("not UTF-8"), "{out:?}");
+    assert_eq!(std::fs::read(&f).unwrap(), latin1, "the file is byte-for-byte unchanged");
+    // A new file can still be created with an empty old_string.
+    let g = p(d.path(), "new.txt");
+    let out = Edit.call(json!({"file_path": g, "old_string": "", "new_string": "hello\n"}), &c).await;
+    assert!(!out.is_error, "{out:?}");
+    assert_eq!(std::fs::read_to_string(&g).unwrap(), "hello\n");
+}
+
 /// Make sure the mtime differs even on coarse-grained filesystems.
 fn filetime_bump(f: &str) {
     let later = std::time::SystemTime::now() + Duration::from_secs(5);

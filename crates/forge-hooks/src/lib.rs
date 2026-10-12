@@ -151,11 +151,14 @@ impl HooksConfig {
                             return None;
                         }
                         let command = h.get("command").and_then(Value::as_str)?.to_string();
-                        let timeout = h
-                            .get("timeout")
-                            .and_then(Value::as_f64)
-                            .map(Duration::from_secs_f64)
-                            .unwrap_or(DEFAULT_TIMEOUT);
+                        let timeout = match h.get("timeout").and_then(Value::as_f64) {
+                            Some(t) if t.is_finite() && t >= 0.0 => Duration::from_secs_f64(t),
+                            Some(t) => {
+                                errors.push(format!("{name}: hook timeout {t} is not a number of seconds; using 60"));
+                                DEFAULT_TIMEOUT
+                            }
+                            None => DEFAULT_TIMEOUT,
+                        };
                         Some(HookCommand { command, timeout })
                     })
                     .collect();
@@ -163,6 +166,14 @@ impl HooksConfig {
                     continue;
                 }
                 let pattern = m.get("matcher").and_then(Value::as_str).map(str::to_string);
+                if let Some(p) = pattern.as_deref().filter(|p| !p.is_empty() && *p != "*") {
+                    if let Err(e) = regex::Regex::new(&format!("^(?:{p})$")) {
+                        // Said out loud: a guard hook with a typo would otherwise never run.
+                        errors.push(format!(
+                            "{name}: matcher {p:?} is not a valid pattern, so it matches only the exact text: {e}"
+                        ));
+                    }
+                }
                 cfg.events.entry(event).or_default().push(Matcher { pattern, hooks });
             }
         }

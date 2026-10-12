@@ -23,9 +23,23 @@ pub const MICRO_KEEP_TURNS: usize = 3;
 /// Reserved for the summary itself and the next reply.
 pub const AUTOCOMPACT_BUFFER: u64 = 13_000;
 
+/// The output cap and the reserve for `window`. Where the usual numbers leave at
+/// least a quarter of the window for the conversation they are kept exactly; smaller
+/// windows (local models with 32k-48k) get a cap of a quarter of the window (at least
+/// 4096) and a reserve of 15 %, instead of a threshold that collapses to 0.
+pub fn fit_to_window(window: u64, max_output: u32) -> (u32, u64) {
+    let usual = u64::from(max_output.min(32_000));
+    if window == 0 || window.saturating_sub(usual).saturating_sub(AUTOCOMPACT_BUFFER) >= window / 4 {
+        return (max_output, AUTOCOMPACT_BUFFER);
+    }
+    let cap = usual.min((window / 4).max(4096));
+    (cap as u32, AUTOCOMPACT_BUFFER.min(window * 15 / 100))
+}
+
 /// Context tokens at which auto-compaction runs.
 pub fn autocompact_threshold(window: u64, max_output: u32) -> u64 {
-    window.saturating_sub(u64::from(max_output.min(32_000))).saturating_sub(AUTOCOMPACT_BUFFER)
+    let (cap, reserve) = fit_to_window(window, max_output);
+    window.saturating_sub(u64::from(cap.min(32_000))).saturating_sub(reserve)
 }
 
 /// Context tokens above which micro-compaction runs (half the auto threshold).
@@ -189,7 +203,21 @@ mod tests {
         assert_eq!(autocompact_threshold(200_000, 32_000), 155_000);
         assert_eq!(autocompact_threshold(1_000_000, 64_000), 955_000);
         assert_eq!(micro_threshold(200_000, 32_000), 77_500);
-        assert_eq!(autocompact_threshold(10_000, 32_000), 0);
+        assert_eq!(autocompact_threshold(10_000, 32_000), 4_404, "was 0: a summary before every call");
+        assert_eq!(autocompact_threshold(32_768, 32_000), 19_661);
+        assert_eq!(autocompact_threshold(48_000, 32_000), 28_800);
+        assert_eq!(autocompact_threshold(65_536, 32_000), 20_536, "unchanged from 60k up");
+        assert_eq!(fit_to_window(32_768, 32_000), (8_192, 4_915));
+        // Unchanged wherever the usual numbers already leave half the window.
+        for window in (60_000u64..=2_000_000).step_by(1_000) {
+            for max_output in [4_096u32, 8_192, 16_000, 32_000, 64_000] {
+                let old = window.saturating_sub(u64::from(max_output.min(32_000))).saturating_sub(AUTOCOMPACT_BUFFER);
+                if old >= window / 4 {
+                    assert_eq!(autocompact_threshold(window, max_output), old, "{window} {max_output}");
+                    assert_eq!(fit_to_window(window, max_output).0, max_output);
+                }
+            }
+        }
     }
 
     #[test]

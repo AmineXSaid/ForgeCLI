@@ -188,7 +188,8 @@ impl Provider for LimitedProvider {
                     self.limiter.succeeded();
                     return Ok(Box::pin(Held { inner: s, _slot: slot }));
                 }
-                Err(e @ ApiError::Http { status: 429, .. }) if attempt < RATE_LIMIT_RETRIES => {
+                // A 429 that says the quota is used up is not a rate limit: waiting won't help.
+                Err(e @ ApiError::Http { status: 429, .. }) if attempt < RATE_LIMIT_RETRIES && e.is_retryable() => {
                     let retry_after = match &e {
                         ApiError::Http { retry_after, .. } => *retry_after,
                         _ => None,
@@ -258,6 +259,18 @@ mod tests {
         drop(a);
         assert!(waiter.await.unwrap(), "and gets the freed slot");
         assert_eq!(l.waiting(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_exhausted_quota_is_not_retried() {
+        let inner =
+            Arc::new(MockProvider::new(vec![MockTurn::http_error(429, "insufficient_quota"), MockTurn::text("never")]));
+        let p = LimitedProvider::new(inner.clone(), Limiter::new(4), None);
+        let req: MessagesRequest =
+            serde_json::from_value(serde_json::json!({"model": "m", "max_tokens": 10, "messages": []})).unwrap();
+        let r = crate::complete(&p, req, &CancellationToken::new()).await;
+        assert!(r.is_err(), "the error is returned, not waited out");
+        assert_eq!(inner.requests().len(), 1);
     }
 
     #[test]

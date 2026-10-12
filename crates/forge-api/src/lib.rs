@@ -93,7 +93,12 @@ impl ApiError {
     /// Whether retrying the same request may succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            ApiError::Http { status, .. } => matches!(status, 408 | 409 | 429 | 500..=599),
+            // An exhausted quota is a 429 too, but waiting won't fix it.
+            ApiError::Http { status, kind, message, .. } => {
+                matches!(status, 408 | 409 | 429 | 500..=599)
+                    && kind != "insufficient_quota"
+                    && !message.contains("insufficient_quota")
+            }
             ApiError::Network { .. } => true,
             ApiError::Stream { kind, .. } => kind == "overloaded_error" || kind == "api_error",
             _ => false,
@@ -204,16 +209,23 @@ pub async fn complete(
     use futures::StreamExt;
     let mut stream = provider.stream(request, cancel.clone()).await?;
     let mut acc = MessageAccumulator::new();
+    let mut complete = false;
     loop {
         let next = tokio::select! {
             n = stream.next() => n,
             _ = cancel.cancelled() => return Err(ApiError::Cancelled),
         };
         match next {
-            Some(Ok(ev)) => acc.push(&ev)?,
+            Some(Ok(ev)) => {
+                complete |= matches!(ev, StreamEvent::MessageStop);
+                acc.push(&ev)?
+            }
             Some(Err(e)) => return Err(e),
             None => break,
         }
+    }
+    if !complete {
+        return Err(ApiError::network("the stream ended before the reply was complete"));
     }
     acc.finish()
 }

@@ -79,7 +79,24 @@ pub fn detect_checks(dir: &Path) -> Vec<String> {
     if has("pytest.ini") || has("conftest.py") || pyproject.contains("[tool.pytest") || has("tox.ini") {
         push("python3 -m pytest");
     } else if has_python_tests(&dir.join("tests")) || has_python_tests(dir) {
-        push("python3 -m unittest");
+        // `unittest` only finds TestCase classes: for plain test functions it runs 0 tests and
+        // passes, so offer it only where the tests use it.
+        let files: Vec<PathBuf> =
+            [dir.join("tests"), dir.to_path_buf()].iter().flat_map(|d| python_test_files(d)).collect();
+        let text = |f: &PathBuf| std::fs::read_to_string(f).unwrap_or_default();
+        // Only the clear case changes: script-style tests (no unittest, a `__main__` block)
+        // are run directly. Anything else keeps `unittest`, as before (no runner is assumed
+        // that may not be installed).
+        let scripts: Vec<&PathBuf> = files.iter().filter(|f| text(f).contains("__main__")).collect();
+        let uses_unittest = files.iter().any(|f| text(f).contains("unittest"));
+        if !uses_unittest && !scripts.is_empty() && scripts.len() <= 3 {
+            for f in scripts {
+                let rel = f.strip_prefix(dir).unwrap_or(f);
+                push(&format!("python3 {}", rel.display()));
+            }
+        } else {
+            push("python3 -m unittest");
+        }
     }
     if let Ok(make) = std::fs::read_to_string(dir.join("Makefile")) {
         for target in ["check", "test"] {
@@ -112,6 +129,22 @@ pub fn detect_checks(dir: &Path) -> Vec<String> {
         push("swift test");
     }
     out
+}
+
+fn python_test_files(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    (n.starts_with("test_") || n.ends_with("_test.py")) && n.ends_with(".py")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
 }
 
 fn has_python_tests(dir: &Path) -> bool {
@@ -254,35 +287,61 @@ fn is_check_script(word: &str) -> bool {
 /// Does this Bash command run a check? `changed` are the files written this
 /// turn, relative or absolute; running one of them counts as a check.
 pub fn is_check(command: &str, configured: &[String], changed: &[PathBuf]) -> bool {
-    forge_permissions::split_compound(command).iter().any(|part| {
-        let all = words(part);
-        let w = skip_wrappers(&all);
-        let Some(first) = w.first() else { return false };
-        if configured.iter().map(String::as_str).chain(CHECK_PREFIXES.iter().copied()).any(|c| starts_with_words(w, c))
-        {
-            return true;
-        }
-        if is_check_script(first) {
-            return true;
-        }
-        let interp = INTERPRETERS.contains(&first.rsplit('/').next().unwrap_or(first));
-        let args: Vec<&String> =
-            if interp { w.iter().skip(1).filter(|a| !a.starts_with('-')).collect() } else { vec![] };
-        if args.first().map(|a| is_check_script(a) || a.contains("test")).unwrap_or(false) {
-            return true;
-        }
-        // Running a changed file: `python3 convert.py x.csv`, `./tool.sh`.
-        let target = if interp { args.first().map(|a| a.as_str()) } else { Some(first.as_str()) };
-        target
-            .map(|t| {
-                let t = t.trim_start_matches("./");
-                !t.is_empty()
-                    && changed.iter().any(|c| {
-                        let c = c.to_string_lossy();
-                        c == t || c.ends_with(&format!("/{t}"))
-                    })
+    inline_code_uses_changed(command, changed)
+        || forge_permissions::split_compound(command).iter().any(|part| {
+            let all = words(part);
+            let w = skip_wrappers(&all);
+            let Some(first) = w.first() else { return false };
+            if configured
+                .iter()
+                .map(String::as_str)
+                .chain(CHECK_PREFIXES.iter().copied())
+                .any(|c| starts_with_words(w, c))
+            {
+                return true;
+            }
+            if is_check_script(first) {
+                return true;
+            }
+            let interp = INTERPRETERS.contains(&first.rsplit('/').next().unwrap_or(first));
+            let args: Vec<&String> =
+                if interp { w.iter().skip(1).filter(|a| !a.starts_with('-')).collect() } else { vec![] };
+            if args.first().map(|a| is_check_script(a) || a.contains("test")).unwrap_or(false) {
+                return true;
+            }
+            // Running a changed file: `python3 convert.py x.csv`, `./tool.sh`.
+            let target = if interp { args.first().map(|a| a.as_str()) } else { Some(first.as_str()) };
+            target
+                .map(|t| {
+                    let t = t.trim_start_matches("./");
+                    !t.is_empty()
+                        && changed.iter().any(|c| {
+                            let c = c.to_string_lossy();
+                            c == t || c.ends_with(&format!("/{t}"))
+                        })
+                })
+                .unwrap_or(false)
+        })
+}
+
+/// Inline interpreter code (`python3 - <<EOF`, `python3 -c`, `node -e`) that imports or
+/// names a changed file's module exercises the change: it counts as a check.
+fn inline_code_uses_changed(command: &str, changed: &[PathBuf]) -> bool {
+    let inline = command.split_whitespace().collect::<Vec<_>>().windows(2).any(|w| {
+        INTERPRETERS.contains(&w[0].rsplit('/').next().unwrap_or(w[0]))
+            && (matches!(w[1], "-" | "-c" | "-e") || w[1].starts_with("<<") || w[1].starts_with("-<<"))
+    });
+    if !inline {
+        return false;
+    }
+    changed.iter().filter_map(|c| c.file_stem().map(|s| s.to_string_lossy().to_string())).any(|stem| {
+        stem.len() >= 2
+            && command.match_indices(&stem).any(|(i, _)| {
+                let before = command[..i].chars().next_back();
+                let after = command[i + stem.len()..].chars().next();
+                let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                !word(before) && !word(after)
             })
-            .unwrap_or(false)
     })
 }
 
@@ -367,6 +426,24 @@ fn list(files: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_checks_and_python_test_runners() {
+        let changed = vec![PathBuf::from("/p/stats.py")];
+        assert!(is_check("python3 - <<'EOF'\nfrom stats import median\nprint(median([1,2,3]))\nEOF", &[], &changed));
+        assert!(is_check("python3 -c 'import stats; print(stats.median([1]))'", &[], &changed));
+        assert!(!is_check("python3 -c 'print(1)'", &[], &changed), "inline code that doesn't touch the change");
+        assert!(!is_check("echo statsd", &[], &changed));
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("test_calc.py"),
+            "from calc import add\nif __name__ == '__main__':\n    print('ok')\n",
+        )
+        .unwrap();
+        assert_eq!(detect_checks(d.path()), ["python3 test_calc.py"], "script-style tests run directly");
+        std::fs::write(d.path().join("test_more.py"), "import unittest\nclass T(unittest.TestCase): pass\n").unwrap();
+        assert_eq!(detect_checks(d.path()), ["python3 -m unittest"], "unittest where the tests use it");
+    }
 
     #[test]
     fn detects_checks_from_manifests() {

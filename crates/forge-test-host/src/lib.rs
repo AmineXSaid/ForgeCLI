@@ -91,6 +91,40 @@ impl MockApi {
                             }
                             return;
                         }
+                        MockTurn::EndsEarly { message, cut_tool } => {
+                            // The reply's events without message_delta/message_stop; then the connection closes.
+                            let _ = sock
+                                .write_all(
+                                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                                )
+                                .await;
+                            let mut evs = forge_api::mock::events_for(&message);
+                            evs.retain(|e| {
+                                !matches!(
+                                    e,
+                                    forge_types::StreamEvent::MessageDelta { .. }
+                                        | forge_types::StreamEvent::MessageStop
+                                )
+                            });
+                            if cut_tool {
+                                if let Some(i) = evs
+                                    .iter()
+                                    .rposition(|e| matches!(e, forge_types::StreamEvent::ContentBlockStop { .. }))
+                                {
+                                    evs.remove(i);
+                                }
+                            }
+                            for ev in evs {
+                                let data = serde_json::to_string(&ev).unwrap();
+                                let kind =
+                                    serde_json::to_value(&ev).unwrap()["type"].as_str().unwrap_or("").to_string();
+                                if sock.write_all(format!("event: {kind}\ndata: {data}\n\n").as_bytes()).await.is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            return;
+                        }
                         MockTurn::HttpError { status, kind, message } => {
                             let body =
                                 serde_json::json!({"type": "error", "error": {"type": kind, "message": message}})

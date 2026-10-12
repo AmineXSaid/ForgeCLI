@@ -170,12 +170,17 @@ pub(super) async fn model(d: &mut Driver, args: &str) -> Exec {
     ok(join(&[format!("Set model to {id}."), notes.join(" "), saved]))
 }
 
+/// What `/effort` offers on an OpenAI-compatible endpoint for a model the table
+/// doesn't know; sent as `reasoning_effort` (dropped if the endpoint rejects it).
+const OPENAI_EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high"];
+
 pub(super) fn effort(d: &mut Driver, args: &str) -> Exec {
     let h = d.engine.handle();
     let rt = h.runtime();
     let info = model_info_or_default(&rt.model);
-    let levels = info.effort_levels;
-    let default = info.default_effort.unwrap_or("none");
+    let openai = info.effort_levels.is_empty() && d.engine.provider_name() == "openai";
+    let levels = if openai { OPENAI_EFFORT_LEVELS } else { info.effort_levels };
+    let default = info.default_effort.unwrap_or(if openai { "the endpoint's own" } else { "none" });
     match args {
         "" | "status" => {
             if levels.is_empty() {

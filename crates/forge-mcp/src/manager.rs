@@ -187,14 +187,25 @@ async fn start(s: &NamedServer, opts: &ConnectOptions) -> Result<(McpClient, Vec
     let env = |k: &str| std::env::var(k).ok();
     let config = s.config.expanded(&env)?;
     let c = McpClient::connect(&s.name, &config, opts).await.map_err(|e| e.to_string())?;
-    match c.list_tools().await {
-        Ok(tools) => {
-            let prompts = c.list_prompts().await.unwrap_or_default();
+    // Listing is part of starting: it gets the connect timeout (MCP_TIMEOUT), not the
+    // 10-minute tool-call timeout, so one stalled server can't hold up every start.
+    let listed = tokio::time::timeout(opts.timeout, c.list_tools()).await;
+    match listed {
+        Ok(Ok(tools)) => {
+            let prompts = tokio::time::timeout(opts.timeout, c.list_prompts())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
             Ok((c, tools, prompts))
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             c.close().await;
             Err(format!("tools/list: {e}"))
+        }
+        Err(_) => {
+            c.close().await;
+            Err(format!("tools/list: no answer within {}s (MCP_TIMEOUT)", opts.timeout.as_secs()))
         }
     }
 }

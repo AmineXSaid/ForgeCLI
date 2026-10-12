@@ -86,6 +86,18 @@ fn is_reminder(text: &str) -> bool {
     text.trim_start().starts_with("<system-reminder>")
 }
 
+/// A user block as the conversation shows it: a leading reminder is dropped, and
+/// what follows it (a summary from `/rewind … summarize`) is kept.
+fn visible(text: &str) -> &str {
+    if !is_reminder(text) {
+        return text;
+    }
+    match text.find("</system-reminder>") {
+        Some(end) => text[end + "</system-reminder>".len()..].trim(),
+        None => "",
+    }
+}
+
 /// One line per tool call: `Name(first argument)`.
 fn tool_call_line(name: &str, input: &Value) -> String {
     let arg = input
@@ -109,8 +121,8 @@ pub fn render_conversation(messages: &[Message]) -> String {
     for m in messages {
         for b in &m.content {
             match (m.role, b) {
-                (Role::User, ContentBlock::Text { text, .. }) if !is_reminder(text) => {
-                    let mut lines = text.trim().lines();
+                (Role::User, ContentBlock::Text { text, .. }) if !visible(text).is_empty() => {
+                    let mut lines = visible(text).trim().lines();
                     let _ = writeln!(out, "> {}", lines.next().unwrap_or_default());
                     for l in lines {
                         let _ = writeln!(out, "  {l}");
@@ -672,4 +684,25 @@ pub(super) fn plan(d: &mut Driver, args: &str) -> Exec {
         return ok("Plan mode on: Forge will look around and propose a plan before changing anything. Approving the plan ends plan mode.");
     }
     Exec::Submit(MessageContent::Text(args.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_keeps_a_summary_but_not_bare_reminders() {
+        let msgs = vec![
+            Message::user_text(
+                "<system-reminder>\nThe conversation before this point was summarized at the user's request.\n</system-reminder>\n\nSUMMARY-TEXT"
+                    .to_string(),
+            ),
+            Message::user_text("<system-reminder>\nfile contents\n</system-reminder>".to_string()),
+            Message::user_text("second question".to_string()),
+        ];
+        let out = render_conversation(&msgs);
+        assert!(out.starts_with("> SUMMARY-TEXT"), "{out}");
+        assert!(!out.contains("file contents") && !out.contains("summarized at the user's request"), "{out}");
+        assert!(out.contains("> second question"), "{out}");
+    }
 }

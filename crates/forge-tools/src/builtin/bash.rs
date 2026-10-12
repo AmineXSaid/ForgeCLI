@@ -259,6 +259,13 @@ impl Tool for Bash {
         let _guard = StopUnlessMoved(sh.clone());
         tokio::select! {
             _ = sh.wait() => {}
+            _ = crate::shells::stopped_on_terminal(sh.group()) => {
+                sh.kill();
+                let _ = tokio::time::timeout(Duration::from_secs(2), sh.wait()).await;
+                let res = sh.result(&ctx.shell);
+                let out = format!("{}\n{}", res.stdout.trim_end(), crate::shells::STOPPED_ON_TERMINAL);
+                return ToolOutput::error(out.trim_start().to_string());
+            }
             _ = tokio::time::sleep(Duration::from_millis(ms)) => {
                 // Still running: it goes on in the background instead of being killed, so a long
                 // build or install isn't lost and run again.

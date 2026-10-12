@@ -196,6 +196,54 @@ async fn read_capped<R: AsyncRead + Unpin>(r: &mut R, keep: usize) -> String {
     captured.whole()
 }
 
+/// Some process of the command's group is stopped by job control (state `T`): it tried
+/// to read or set up the terminal (SIGTTIN/SIGTTOU), so it would wait forever. Linux reads
+/// `/proc`; elsewhere this never reports a stop.
+pub fn group_stopped_on_terminal(pgid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(dir) = std::fs::read_dir("/proc") else { return false };
+        for e in dir.flatten() {
+            let name = e.file_name();
+            if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) else { continue };
+            // pid (comm) state ppid pgrp ...; comm may contain spaces, so split after the last ')'.
+            let Some(rest) = stat.rfind(')').map(|i| &stat[i + 1..]) else { continue };
+            let mut f = rest.split_whitespace();
+            let state = f.next().unwrap_or("");
+            let pgrp = f.nth(1).and_then(|x| x.parse::<u32>().ok());
+            if state == "T" && pgrp == Some(pgid) {
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pgid;
+        false
+    }
+}
+
+/// Resolves once the command's group is stopped on the terminal (checked twice a second).
+pub async fn stopped_on_terminal(pgid: Option<u32>) {
+    let Some(pgid) = pgid else { return std::future::pending().await };
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if group_stopped_on_terminal(pgid) {
+            return;
+        }
+    }
+}
+
+/// What the model is told when a command stopped to read the terminal.
+pub const STOPPED_ON_TERMINAL: &str = "The command stopped because it tried to read from the terminal \
+(a password or confirmation prompt), and nobody can answer it here, so it was stopped. Run it \
+non-interactively instead: for example `-y` / `--yes`, `GIT_TERMINAL_PROMPT=0`, `sudo -n`, \
+`ssh -o BatchMode=yes`, or pass the input on stdin.";
+
 /// Run a command to completion, honouring timeout and cancellation.
 pub async fn run_command(
     shell: &ShellChoice,
@@ -217,10 +265,13 @@ pub async fn run_command(
     let out = tokio::spawn(read_all(child.stdout.take().expect("piped")));
     let err = tokio::spawn(read_all(child.stderr.take().expect("piped")));
     let mut result = CommandResult::default();
+    let pgid = tree.as_ref().map(ProcessTree::pid);
+    let mut stopped = false;
     tokio::select! {
         status = child.wait() => { result.code = status.ok().and_then(|s| s.code()); }
         _ = tokio::time::sleep(timeout) => { result.timed_out = true; kill(); let _ = child.wait().await; }
         _ = cancel.cancelled() => { result.interrupted = true; kill(); let _ = child.wait().await; }
+        _ = stopped_on_terminal(pgid) => { stopped = true; kill(); let _ = child.wait().await; }
     }
     // Background children of the command may keep the pipes open; do not wait forever.
     let grace = Duration::from_millis(if result.timed_out || result.interrupted { 200 } else { 2000 });
@@ -232,6 +283,13 @@ pub async fn run_command(
     if cfg!(windows) {
         result.stdout = result.stdout.replace("\r\n", "\n");
         result.stderr = result.stderr.replace("\r\n", "\n");
+    }
+    if stopped {
+        if !result.stderr.is_empty() && !result.stderr.ends_with('\n') {
+            result.stderr.push('\n');
+        }
+        result.stderr.push_str(STOPPED_ON_TERMINAL);
+        result.code = Some(1);
     }
     drop(prepared);
     let _ = std::fs::remove_file(&cwd_file);
@@ -277,6 +335,11 @@ pub struct BackgroundShell {
 }
 
 impl BackgroundShell {
+    /// The command's process group (Unix), for the terminal-stop check.
+    pub fn group(&self) -> Option<u32> {
+        self.tree.as_ref().map(ProcessTree::pid)
+    }
+
     /// Its ID in the session (`bash_3`); empty while it runs as a Bash call.
     pub fn id(&self) -> &str {
         self.id.get().map(String::as_str).unwrap_or_default()

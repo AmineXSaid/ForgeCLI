@@ -259,9 +259,11 @@ pub fn parse_event(data: &str) -> Result<Option<StreamEvent>, ApiError> {
 }
 
 /// Pump an SSE byte stream into a channel of [`StreamEvent`]s.
+/// `parse` gets each event, then `None` once when the body ends cleanly, so the
+/// provider can complete the reply or report that it ended early.
 pub(crate) fn spawn_sse_pump<F>(resp: reqwest::Response, cancel: CancellationToken, mut parse: F) -> EventStream
 where
-    F: FnMut(&crate::sse::SseEvent) -> Vec<Result<StreamEvent, ApiError>> + Send + 'static,
+    F: FnMut(Option<&crate::sse::SseEvent>) -> Vec<Result<StreamEvent, ApiError>> + Send + 'static,
 {
     let (tx, rx) = mpsc::channel::<Result<StreamEvent, ApiError>>(64);
     tokio::spawn(async move {
@@ -284,13 +286,18 @@ where
                 None => (decoder.finish().into_iter().collect(), true),
             };
             for ev in &events {
-                for item in parse(ev) {
+                for item in parse(Some(ev)) {
                     if tx.send(item).await.is_err() {
                         return;
                     }
                 }
             }
             if finished {
+                for item in parse(None) {
+                    if tx.send(item).await.is_err() {
+                        return;
+                    }
+                }
                 return;
             }
         }
@@ -365,10 +372,18 @@ impl Provider for MessagesProvider {
                 Err(e) => return Err(e.with_origin(origin)),
             }
         };
-        Ok(spawn_sse_pump(resp, cancel, |ev| match parse_event(&ev.data) {
-            Ok(Some(e)) => vec![Ok(e)],
-            Ok(None) => vec![],
-            Err(e) => vec![Err(e)],
+        let mut stopped = false;
+        Ok(spawn_sse_pump(resp, cancel, move |ev| match ev {
+            Some(ev) => match parse_event(&ev.data) {
+                Ok(Some(e)) => {
+                    stopped |= matches!(e, StreamEvent::MessageStop);
+                    vec![Ok(e)]
+                }
+                Ok(None) => vec![],
+                Err(e) => vec![Err(e)],
+            },
+            None if stopped => vec![],
+            None => vec![Err(ApiError::network("the stream ended before the reply was complete"))],
         }))
     }
 

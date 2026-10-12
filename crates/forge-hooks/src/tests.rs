@@ -107,3 +107,16 @@ fn matchers() {
     let (_, errs) = HooksConfig::from_settings(Some(&json!({"Bogus": []})));
     assert_eq!(errs.len(), 1);
 }
+
+#[test]
+fn bad_timeouts_and_matchers_are_reported_not_fatal() {
+    let hooks = json!({"PreToolUse": [
+        {"matcher": "Bash(", "hooks": [{"type": "command", "command": "exit 2"}]},
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "true", "timeout": -1}]}
+    ]});
+    let (cfg, errs) = HooksConfig::from_settings(Some(&hooks));
+    assert!(errs.iter().any(|e| e.contains("\"Bash(\"") && e.contains("not a valid pattern")), "{errs:?}");
+    assert!(errs.iter().any(|e| e.contains("timeout -1")), "{errs:?}");
+    let m = &cfg.events[&HookEvent::PreToolUse];
+    assert_eq!(m[1].hooks[0].timeout, DEFAULT_TIMEOUT, "a negative timeout falls back to the default");
+}

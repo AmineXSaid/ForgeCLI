@@ -105,7 +105,18 @@ pub fn to_chat_request(req: &MessagesRequest) -> Value {
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
+    // `--effort` / `/effort`, only when set: endpoints that don't know the field never see it.
+    if let Some(e) = req.output_config.as_ref().and_then(|o| o.get("effort")).and_then(Value::as_str) {
+        body["reasoning_effort"] = json!(e);
+    }
     body
+}
+
+/// Opt-in (`FORGE_OPENAI_SEND_REASONING=1`): send the model's own reasoning back with its
+/// earlier replies (`reasoning_content`), so a cut-off or a long tool chain doesn't start
+/// its thinking from scratch. Off by default: some endpoints reject or bill the field.
+fn sends_reasoning() -> bool {
+    std::env::var("FORGE_OPENAI_SEND_REASONING").is_ok_and(|v| v == "1")
 }
 
 fn push_message(out: &mut Vec<Value>, m: &Message) {
@@ -122,6 +133,20 @@ fn push_message(out: &mut Vec<Value>, m: &Message) {
                 json!({"role": "assistant", "content": if text.is_empty() { Value::Null } else { json!(text) }});
             if !calls.is_empty() {
                 msg["tool_calls"] = Value::Array(calls);
+            }
+            if sends_reasoning() {
+                let thinking: String = m
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !thinking.is_empty() {
+                    msg["reasoning_content"] = json!(thinking);
+                }
             }
             out.push(msg);
         }
@@ -293,6 +318,20 @@ impl ChunkTranslator {
         Ok(out)
     }
 
+    /// The body ended. Complete when `[DONE]` or a `finish_reason` arrived (some
+    /// servers omit `[DONE]`); with neither, the reply is incomplete.
+    pub fn end(&mut self) -> Vec<Result<StreamEvent, ApiError>> {
+        if self.finished {
+            return vec![];
+        }
+        if self.stop.is_some() {
+            let mut out = Vec::new();
+            self.finish_into(&mut out);
+            return out.into_iter().map(Ok).collect();
+        }
+        vec![Err(ApiError::network("the stream ended before the reply was complete"))]
+    }
+
     /// Close everything; idempotent.
     pub fn finish_into(&mut self, out: &mut Vec<StreamEvent>) {
         if self.finished {
@@ -310,6 +349,24 @@ impl ChunkTranslator {
         });
         out.push(StreamEvent::MessageStop);
     }
+}
+
+/// Remove an optional field the endpoint's 400 names (`reasoning_effort`, or
+/// `reasoning_content` on earlier messages); returns its name when something was removed.
+fn dropped_optional_field(body: &mut Value, message: &str) -> Option<&'static str> {
+    if message.contains("reasoning_effort") && body.as_object_mut()?.remove("reasoning_effort").is_some() {
+        return Some("reasoning_effort");
+    }
+    if message.contains("reasoning_content") {
+        let mut removed = false;
+        for m in body.get_mut("messages")?.as_array_mut()? {
+            removed |= m.as_object_mut().and_then(|o| o.remove("reasoning_content")).is_some();
+        }
+        if removed {
+            return Some("reasoning_content");
+        }
+    }
+    None
 }
 
 /// Model ids from an OpenAI-style `GET /models` answer (`{"data": [{"id": ...}]}`), sorted.
@@ -394,7 +451,7 @@ impl Provider for OpenAiProvider {
     }
 
     async fn stream(&self, request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {
-        let body = to_chat_request(&request);
+        let mut body = to_chat_request(&request);
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
         let mut attempt = 0;
         let resp = loop {
@@ -414,6 +471,13 @@ impl Provider for OpenAiProvider {
                 Ok(r) => Err(http_error(r).await),
                 Err(e) => Err(e),
             };
+            // An endpoint that rejects an optional field we added: drop it and send again.
+            if let Err(ApiError::Http { status: 400, message, .. }) = &res {
+                if let Some(field) = dropped_optional_field(&mut body, message) {
+                    tracing::warn!(field, "endpoint rejected an optional field; sending without it");
+                    continue;
+                }
+            }
             match res {
                 Ok(r) => break r,
                 Err(e) if e.is_retryable() && attempt < self.config.max_retries => {
@@ -432,9 +496,12 @@ impl Provider for OpenAiProvider {
             }
         };
         let mut tr = ChunkTranslator::new(&request.model);
-        Ok(spawn_sse_pump(resp, cancel, move |ev| match tr.push(&ev.data) {
-            Ok(events) => events.into_iter().map(Ok).collect(),
-            Err(e) => vec![Err(e)],
+        Ok(spawn_sse_pump(resp, cancel, move |ev| match ev {
+            Some(ev) => match tr.push(&ev.data) {
+                Ok(events) => events.into_iter().map(Ok).collect(),
+                Err(e) => vec![Err(e)],
+            },
+            None => tr.end(),
         }))
     }
 }
@@ -443,6 +510,55 @@ impl Provider for OpenAiProvider {
 mod tests {
     use super::*;
     use crate::MessageAccumulator;
+
+    #[test]
+    fn effort_is_sent_only_when_set_and_dropped_when_rejected() {
+        let mut req = MessagesRequest {
+            model: "m".into(),
+            max_tokens: 100,
+            messages: vec![],
+            system: vec![],
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            temperature: None,
+            metadata: None,
+            output_config: None,
+            speed: None,
+            stream: true,
+            betas: vec![],
+        };
+        assert!(to_chat_request(&req).get("reasoning_effort").is_none(), "nothing sent by default");
+        req.output_config = Some(json!({"effort": "medium"}));
+        let mut body = to_chat_request(&req);
+        assert_eq!(body["reasoning_effort"], "medium");
+        assert_eq!(
+            dropped_optional_field(&mut body, "Unrecognized request argument supplied: reasoning_effort"),
+            Some("reasoning_effort")
+        );
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(dropped_optional_field(&mut body, "some other 400"), None, "other errors are not retried here");
+    }
+
+    #[test]
+    fn a_stream_without_finish_reason_or_done_is_incomplete() {
+        let mut tr = ChunkTranslator::new("m");
+        tr.push(r#"{"id":"c1","choices":[{"delta":{"content":"half an ans"}}]}"#).unwrap();
+        let end = tr.end();
+        assert!(matches!(end.as_slice(), [Err(ApiError::Network { .. })]), "{end:?}");
+    }
+
+    #[test]
+    fn a_finish_reason_without_done_still_completes() {
+        let mut tr = ChunkTranslator::new("m");
+        tr.push(r#"{"id":"c1","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#).unwrap();
+        let end: Vec<_> = tr.end().into_iter().map(Result::unwrap).collect();
+        assert!(matches!(end.last(), Some(StreamEvent::MessageStop)), "{end:?}");
+        let mut tr = ChunkTranslator::new("m");
+        tr.push(r#"{"id":"c1","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#).unwrap();
+        tr.push("[DONE]").unwrap();
+        assert!(tr.end().is_empty(), "[DONE] already completed it");
+    }
 
     #[test]
     fn reads_context_windows_from_a_models_listing() {

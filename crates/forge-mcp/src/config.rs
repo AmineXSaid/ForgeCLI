@@ -401,6 +401,10 @@ pub fn write_server(path: &Path, name: &str, config: Option<&ServerConfig>) -> s
     }
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(&root)? + "\n")?;
+    // Keep the file's mode: settings.json may hold keys and be private.
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
     std::fs::rename(&tmp, path)?;
     Ok(existed)
 }

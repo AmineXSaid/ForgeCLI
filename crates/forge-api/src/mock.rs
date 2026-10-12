@@ -25,6 +25,9 @@ pub enum MockTurn {
     HttpError { status: u16, kind: String, message: String },
     /// Stream a `message_start` and then an `error` event.
     StreamError { kind: String, message: String },
+    /// The reply's events up to (not including) `message_delta`/`message_stop`, then the
+    /// body ends: a connection cut short. `cut_tool` also drops the last block's stop.
+    EndsEarly { message: ApiMessage, cut_tool: bool },
 }
 
 impl MockTurn {
@@ -244,6 +247,16 @@ impl Provider for MockProvider {
                 message.model = request.model.clone();
                 (message, delay)
             }
+            MockTurn::EndsEarly { message, cut_tool } => {
+                let mut items = events_for(&message);
+                items.retain(|e| !matches!(e, StreamEvent::MessageDelta { .. } | StreamEvent::MessageStop));
+                if cut_tool {
+                    if let Some(i) = items.iter().rposition(|e| matches!(e, StreamEvent::ContentBlockStop { .. })) {
+                        items.remove(i);
+                    }
+                }
+                return Ok(Box::pin(futures::stream::iter(items.into_iter().map(Ok))));
+            }
         };
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
@@ -271,6 +284,22 @@ impl Provider for MockProvider {
 }
 
 impl MockTurn {
+    /// A text reply cut off mid-stream.
+    pub fn ends_early(text: &str) -> Self {
+        match Self::text(text) {
+            MockTurn::Message { message, .. } => MockTurn::EndsEarly { message, cut_tool: false },
+            _ => unreachable!(),
+        }
+    }
+
+    /// A tool call cut off mid-stream (its block never closes).
+    pub fn tool_ends_early(name: &str, input: Value) -> Self {
+        match Self::tool(name, input) {
+            MockTurn::Message { message, .. } => MockTurn::EndsEarly { message, cut_tool: true },
+            _ => unreachable!(),
+        }
+    }
+
     fn into_message(self) -> (ApiMessage, Duration) {
         match self {
             MockTurn::Message { message, delay } => (message, delay),

@@ -179,7 +179,63 @@ fn session_settings(opts: &LaunchOptions, cwd: &Path) -> LoadedSettings {
         sopts.sources = s.clone();
     }
     sopts.flag = opts.settings.clone();
-    load_settings(&sopts)
+    enforce_project_trust(load_settings(&sopts), cwd)
+}
+
+/// Keys of a repository's own settings that run code or loosen limits.
+const UNTRUSTED_KEYS: &[&str] = &[
+    "hooks",
+    "env",
+    "mcpServers",
+    "enableAllProjectMcpServers",
+    "enabledMcpjsonServers",
+    "modelPricing",
+    "apiKeyHelper",
+    "statusLine",
+];
+
+/// Wave 2, release B (prototype, off unless `FORGE_ENFORCE_TRUST=1`): in a directory that
+/// isn't trusted (`FORGE_TRUST_PROJECT=1`), the repository's own settings (the project file,
+/// and a local file git tracks) lose the keys that run code or loosen limits, and their
+/// `permissions.allow` rules. Everything else in them still applies.
+pub fn enforce_project_trust(mut s: LoadedSettings, cwd: &Path) -> LoadedSettings {
+    let on = |k: &str| std::env::var(k).is_ok_and(|v| v == "1");
+    if !on("FORGE_ENFORCE_TRUST") || on("FORGE_TRUST_PROJECT") {
+        return s;
+    }
+    let tracked = |p: &Path| {
+        std::process::Command::new("git")
+            .args(["ls-files", "--error-unmatch"])
+            .arg(p)
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|st| st.success())
+    };
+    let mut changed = false;
+    for l in &mut s.layers {
+        let from_repo = match l.source {
+            SettingSource::Project => true,
+            SettingSource::Local => l.path.as_deref().is_some_and(tracked),
+            _ => false,
+        };
+        let Some(o) = l.value.as_object_mut().filter(|_| from_repo) else { continue };
+        for k in UNTRUSTED_KEYS {
+            changed |= o.remove(*k).is_some();
+        }
+        if let Some(p) = o.get_mut("permissions").and_then(Value::as_object_mut) {
+            changed |= p.remove("allow").is_some();
+        }
+    }
+    if changed {
+        let mut merged = Value::Object(serde_json::Map::new());
+        for l in &s.layers {
+            forge_config::deep_merge(&mut merged, &l.value);
+        }
+        s.merged = merged;
+    }
+    s
 }
 
 /// Which MCP servers this session would start (contract C16). `--bare` keeps only `--mcp-config`.
@@ -510,6 +566,9 @@ pub fn build_session(
     // Settings.
     let settings = session_settings(&opts, &cwd);
     warnings.extend(settings.errors.iter().map(|e| format!("settings: {e}")));
+    if let Some(w) = project_trust_notice(&settings, &cwd) {
+        warnings.push(w);
+    }
 
     // The shell every command runs in (Bash, `!`, hooks, apiKeyHelper, status line).
     let shell = session_shell(&settings);
@@ -884,6 +943,8 @@ pub fn build_session(
             pricing: pricing.clone(),
             autocompact_window,
             auto_compact: settings.bool("/autoCompactEnabled").unwrap_or(true),
+            // Sub-agents of an unattended run retry failed model calls too.
+            api_retries: autonomous,
             ..Default::default()
         },
         memory_context: memory.clone(),
@@ -909,6 +970,7 @@ pub fn build_session(
         max_budget_usd: opts.max_budget_usd,
         time_limit: opts.max_time.map(forge_engine::TimeLimit::starting_now),
         autonomous,
+        api_retries: false,
         api_retry_wait: EngineConfig::default().api_retry_wait,
         json_schema: opts.json_schema.clone(),
         pricing,
@@ -1020,6 +1082,81 @@ pub fn parse_autocompact(v: &str) -> Result<Option<u64>, CoreError> {
         Some(n) if (100_000..=1_000_000).contains(&n) => Ok(Some(n)),
         _ => Err(CoreError::Config(format!("--autocompact must be auto or 100k-1M tokens, got {v:?}"))),
     }
+}
+
+/// What this project's own settings files would run or change, as one warning, once per
+/// directory and content (wave 2, release A: say it, change nothing). `FORGE_TRUST_PROJECT=1`
+/// silences it. A local settings file that git tracks came with the repository, so it counts.
+pub fn project_trust_notice(settings: &LoadedSettings, cwd: &Path) -> Option<String> {
+    if std::env::var("FORGE_TRUST_PROJECT").is_ok_and(|v| v == "1") {
+        return None;
+    }
+    let tracked = |p: &Path| {
+        std::process::Command::new("git")
+            .args(["ls-files", "--error-unmatch"])
+            .arg(p)
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let mut items: Vec<String> = vec![];
+    let mut seen = String::new();
+    for l in &settings.layers {
+        let from_repo = match l.source {
+            SettingSource::Project => true,
+            SettingSource::Local => l.path.as_deref().is_some_and(tracked),
+            _ => false,
+        };
+        if !from_repo {
+            continue;
+        }
+        let v = &l.value;
+        if let Some(h) = v.get("hooks").and_then(Value::as_object).filter(|h| !h.is_empty()) {
+            items.push(format!("hooks ({})", h.keys().cloned().collect::<Vec<_>>().join(", ")));
+        }
+        if let Some(e) = v.get("env").and_then(Value::as_object).filter(|e| !e.is_empty()) {
+            items.push(format!("env ({})", e.keys().cloned().collect::<Vec<_>>().join(", ")));
+        }
+        if let Some(a) = v.pointer("/permissions/allow").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            items.push(format!("{} permission allow rule(s)", a.len()));
+        }
+        if let Some(m) = v.get("mcpServers").and_then(Value::as_object).filter(|m| !m.is_empty()) {
+            items.push(format!("MCP servers ({})", m.keys().cloned().collect::<Vec<_>>().join(", ")));
+        }
+        if v.get("enableAllProjectMcpServers") == Some(&Value::Bool(true)) {
+            items.push("approval of every .mcp.json server".into());
+        }
+        if v.get("modelPricing").is_some() {
+            items.push("model prices (they drive --max-budget-usd)".into());
+        }
+        for k in ["apiKeyHelper", "statusLine"] {
+            if v.get(k).is_some() {
+                items.push(k.to_string());
+            }
+        }
+        seen.push_str(&v.to_string());
+    }
+    if items.is_empty() {
+        return None;
+    }
+    // Once per directory and content: a change to these settings warns again.
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (cwd, &seen).hash(&mut h);
+    let mark = forge_config::state_dir().join("project-notices").join(format!("{:016x}", h.finish()));
+    if mark.exists() {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(mark.parent().unwrap_or(cwd));
+    let _ = std::fs::write(&mark, cwd.display().to_string());
+    items.dedup();
+    Some(format!(
+        "this project's own settings apply: {}. They came with the repository; if you don't trust it, \
+         check .forge/ before going on. (FORGE_TRUST_PROJECT=1 hides this note.)",
+        items.join("; ")
+    ))
 }
 
 /// Keep the per-person `.forge/settings.local.json` out of git (as worktrees are),

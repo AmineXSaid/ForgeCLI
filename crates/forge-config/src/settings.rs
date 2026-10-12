@@ -308,6 +308,10 @@ fn write_whole(path: &Path, root: &Value) -> std::io::Result<()> {
     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = target.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, serde_json::to_string_pretty(root)? + "\n")?;
+    // Keep the file's mode: a settings.json holding a key (in `env`) may be private.
+    if let Ok(meta) = std::fs::metadata(&target) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
     std::fs::rename(&tmp, &target).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })

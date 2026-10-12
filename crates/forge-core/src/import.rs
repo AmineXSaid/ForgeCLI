@@ -139,7 +139,20 @@ pub fn plan(sources: &[Source], at: &Places) -> Plan {
                 if let Some(text) = read(&f) {
                     match parse_toml(&text) {
                         Ok(v) => {
-                            let servers = v.get("mcp_servers").cloned().unwrap_or(Value::Null);
+                            let mut servers = v.get("mcp_servers").cloned().unwrap_or(Value::Null);
+                            // Servers turned off in Codex stay off: leave them out.
+                            if let Some(m) = servers.as_object_mut() {
+                                let off: Vec<String> = m
+                                    .iter()
+                                    .filter(|(_, e)| e.get("enabled") == Some(&Value::Bool(false)))
+                                    .map(|(k, _)| k.clone())
+                                    .collect();
+                                for name in off {
+                                    m.remove(&name);
+                                    p.skipped
+                                        .push(format!("MCP server {name} (Codex): turned off there (enabled = false)"));
+                                }
+                            }
                             let (ok, errs) = forge_mcp::config::parse_servers(&servers);
                             p.skipped.extend(errs.into_iter().map(|e| format!("{e} ({})", f.display())));
                             add(&mut p, source, &f, at.user_settings, ok);
@@ -572,6 +585,23 @@ enabled = true
         for bad in ["a = ", "a = \"open", "[t\nb = 1", "a = 1 b", "a = 1\na = 2", "a = [1 2]"] {
             assert!(parse_toml(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn codex_servers_turned_off_stay_off() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, project, config) = (d.path().join("home"), d.path().join("proj"), d.path().join("cfg"));
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[mcp_servers.old-db]\ncommand = \"db-mcp\"\nenabled = false\n[mcp_servers.docs]\ncommand = \"npx\"\n",
+        )
+        .unwrap();
+        let user = config.join("settings.json");
+        let p = plan(&[Source::Codex], &places(&home, &project, &user, &config));
+        let names: Vec<&str> = p.servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["docs"]);
+        assert!(p.skipped.iter().any(|s| s.contains("old-db") && s.contains("turned off")), "{:?}", p.skipped);
     }
 
     fn places<'a>(home: &'a Path, project: &'a Path, user: &'a Path, config: &'a Path) -> Places<'a> {

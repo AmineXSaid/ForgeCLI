@@ -22,6 +22,8 @@ pub fn normalize(messages: &[Message], cleared: &HashSet<String>) -> Vec<Message
             .content
             .iter()
             .filter(|b| !matches!(b, ContentBlock::Text { text, .. } if text.trim().is_empty()))
+            // Block types this version doesn't know are never sent back.
+            .filter(|b| !matches!(b, ContentBlock::Unknown))
             .map(|b| match b {
                 ContentBlock::ToolResult { tool_use_id, is_error, .. } if cleared.contains(tool_use_id) => {
                     ContentBlock::ToolResult {

@@ -228,6 +228,8 @@ async fn get(cwd: &std::path::Path, opts: &Opts, name: &str) -> Result<i32, Fail
 
 fn approve(cwd: &std::path::Path, name: Option<String>, all: bool) -> Result<i32, Fail> {
     let local = cwd.join(".forge/settings.local.json");
+    // The approval is the user's own: keep the file out of git, as other local settings are.
+    forge_core::ignore_local_settings(cwd);
     let write =
         |ptr: &[&str], v: Value| forge_config::write_setting(&local, ptr, v).map_err(|e| Fail::config(e.to_string()));
     if all {

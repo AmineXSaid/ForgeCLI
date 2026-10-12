@@ -148,6 +148,9 @@ pub struct EngineConfig {
     /// reminder to make a real attempt first, and a model call that fails for a reason that
     /// passes (rate limit, overload, server error, lost connection) is tried again.
     pub autonomous: bool,
+    /// Retry failed model calls as an unattended run does, without its other reminders:
+    /// sub-agents of an unattended run.
+    pub api_retries: bool,
     /// The first wait before such a retry; each next one doubles, up to a minute.
     pub api_retry_wait: Duration,
     /// `--json-schema`: structured output for the final answer.
@@ -179,6 +182,12 @@ const CONTINUE_PROMPT: &str = "<system-reminder>\nYour reply was cut off by the 
                                exactly where it stopped: no apology, no recap, and do not repeat what you already \
                                wrote.\n</system-reminder>";
 
+/// After a cut-off that was only reasoning: that reasoning is gone (it isn't sent back), so
+/// "continue where it stopped" can't work; ask for the next concrete step instead.
+const REASONING_CUT_PROMPT: &str = "<system-reminder>\nYour last reply ran out of output tokens while \
+                                    thinking, before any answer or tool call. Don't restart the analysis: take \
+                                    the next concrete step now, as a tool call or a short answer.\n</system-reminder>";
+
 impl Default for EngineConfig {
     fn default() -> Self {
         EngineConfig {
@@ -191,6 +200,7 @@ impl Default for EngineConfig {
             max_budget_usd: None,
             time_limit: None,
             autonomous: false,
+            api_retries: false,
             api_retry_wait: API_RETRY_FIRST_WAIT,
             json_schema: None,
             pricing: HashMap::new(),
@@ -757,7 +767,7 @@ impl Engine {
     /// broke before its first event counts as a lost connection.
     fn api_retry_wait(&self, e: &ApiError, retries: u32) -> Option<Duration> {
         let passes = e.is_retryable() || matches!(e, ApiError::Parse(m) if m.starts_with("stream ended"));
-        if !self.cfg.autonomous || !passes {
+        if !(self.cfg.autonomous || self.cfg.api_retries) || !passes {
             return None;
         }
         let backoff = self.cfg.api_retry_wait.saturating_mul(1 << retries.min(6));
@@ -854,6 +864,8 @@ impl Engine {
         };
         let mut acc = MessageAccumulator::new();
         let mut stopped: HashSet<usize> = HashSet::new();
+        // A reply is complete only with its message_stop: a stream that just ends was cut off.
+        let mut complete = false;
         loop {
             let next = tokio::select! {
                 n = stream.next() => n,
@@ -864,6 +876,7 @@ impl Engine {
                     if let StreamEvent::ContentBlockStop { index } = &ev {
                         stopped.insert(*index);
                     }
+                    complete |= matches!(ev, StreamEvent::MessageStop);
                     if let Err(e) = acc.push(&ev) {
                         return StreamOutcome::Failed(e);
                     }
@@ -895,6 +908,9 @@ impl Engine {
                 Some(Err(e)) => return StreamOutcome::Failed(e),
                 None => break,
             }
+        }
+        if !complete {
+            return StreamOutcome::Failed(ApiError::network("the stream ended before the reply was complete"));
         }
         match acc.finish() {
             Ok(m) => StreamOutcome::Done(m),
@@ -1661,6 +1677,9 @@ impl Engine {
                 last_text = Some(text);
             }
             let stop_reason = msg.stop_reason;
+            // A cut-off with nothing visible was all hidden reasoning, which isn't sent back.
+            let shows_text =
+                msg.content.iter().any(|b| matches!(b, ContentBlock::Text { text, .. } if !text.trim().is_empty()));
             self.settle_invalid_tool_inputs(&mut msg.content, stop_reason);
             let tool_uses: Vec<(String, String, Value)> =
                 msg.to_message().tool_uses().map(|(a, b, c)| (a.to_string(), b.to_string(), c.clone())).collect();
@@ -1713,7 +1732,8 @@ impl Engine {
                 if tool_uses.is_empty() && continuations < MAX_CONTINUATIONS {
                     continuations += 1;
                     continuing = true;
-                    self.push_user(Message::user_text(CONTINUE_PROMPT), true, None, true);
+                    let reply = if shows_text { CONTINUE_PROMPT } else { REASONING_CUT_PROMPT };
+                    self.push_user(Message::user_text(reply), true, None, true);
                     continue;
                 }
             }
