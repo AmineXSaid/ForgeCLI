@@ -17,9 +17,11 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 dirs = "6"
+flate2 = "1"
 futures = "0.3"
 globset = "0.4"
 ignore = "0.4"
+lopdf = { version = "0.45", default-features = false }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

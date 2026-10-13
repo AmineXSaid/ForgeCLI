@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use forge_types::{
     ApiMessage, ContentBlock, Delta, MediaSource, Message, MessageDeltaBody, MessagesRequest, Role, StopReason,
-    StreamEvent, Usage,
+    StreamEvent, ToolResultContent, Usage,
 };
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -127,29 +127,96 @@ fn push_message(out: &mut Vec<Value>, m: &Message) {
         }
         Role::User => {
             let mut parts = Vec::new();
+            // A tool message carries text only: pictures a tool returned
+            // (Read on a screenshot) follow in the user message after it.
+            let mut tool_images = Vec::new();
             for b in &m.content {
                 match b {
                     ContentBlock::ToolResult { tool_use_id, content, is_error, .. } => {
-                        let mut text = content.to_text();
+                        let mut text = tool_result_text(content, &mut tool_images);
                         if is_error == &Some(true) {
                             text = format!("Error: {text}");
                         }
                         out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": text}));
                     }
                     ContentBlock::Text { text, .. } => parts.push(json!({"type": "text", "text": text})),
-                    ContentBlock::Image { source: MediaSource::Base64 { media_type, data }, .. } => parts.push(
-                        json!({"type": "image_url", "image_url": {"url": format!("data:{media_type};base64,{data}")}}),
-                    ),
-                    ContentBlock::Image { source: MediaSource::Url { url }, .. } => {
-                        parts.push(json!({"type": "image_url", "image_url": {"url": url}}))
+                    ContentBlock::Image { source, .. } => parts.extend(image_part(source)),
+                    // No document block on this wire: the document's text instead.
+                    ContentBlock::Document { source, title, .. } => {
+                        parts.push(json!({"type": "text", "text": document_text(source, title.as_deref())}))
                     }
                     _ => {}
                 }
+            }
+            if !tool_images.is_empty() {
+                parts.push(json!({"type": "text", "text": "The tool results above returned these images:"}));
+                parts.extend(tool_images);
             }
             if !parts.is_empty() {
                 out.push(json!({"role": "user", "content": parts}));
             }
         }
+    }
+}
+
+fn image_part(source: &MediaSource) -> Option<Value> {
+    match source {
+        MediaSource::Base64 { media_type, data } => {
+            Some(json!({"type": "image_url", "image_url": {"url": format!("data:{media_type};base64,{data}")}}))
+        }
+        MediaSource::Url { url } => Some(json!({"type": "image_url", "image_url": {"url": url}})),
+        MediaSource::Text { .. } => None,
+    }
+}
+
+/// A tool result as the text a `tool` message carries: documents become
+/// their text; images are set aside for the user message that follows.
+fn tool_result_text(content: &ToolResultContent, images: &mut Vec<Value>) -> String {
+    match content {
+        ToolResultContent::Text(s) => s.clone(),
+        ToolResultContent::Blocks(blocks) => blocks
+            .iter()
+            .map(|b| match b {
+                ContentBlock::Text { text, .. } => text.clone(),
+                ContentBlock::Image { source, .. } => match image_part(source) {
+                    Some(part) => {
+                        images.push(part);
+                        format!("[image {}: shown in the next message]", images.len())
+                    }
+                    None => "[image]".to_string(),
+                },
+                ContentBlock::Document { source, title, .. } => document_text(source, title.as_deref()),
+                other => serde_json::to_string(other).unwrap_or_default(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// A document block as text: a PDF's extracted text, a text document as
+/// it is. Never its base64.
+pub(crate) fn document_text(source: &MediaSource, title: Option<&str>) -> String {
+    use base64::Engine as _;
+    let name = title.unwrap_or("document").replace('"', "'");
+    let body = match source {
+        MediaSource::Text { data, .. } => Some(data.clone()),
+        MediaSource::Base64 { media_type, data } => {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).unwrap_or_default();
+            if media_type == "application/pdf" {
+                crate::pdf_text::extract(&bytes)
+            } else if media_type.starts_with("text/") {
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            } else {
+                None
+            }
+        }
+        MediaSource::Url { url } => return format!("[Document \"{name}\" at {url}: this endpoint can't fetch it.]"),
+    };
+    match body {
+        Some(text) => format!("<document title=\"{name}\">\n{text}\n</document>"),
+        None => format!(
+            "[Document \"{name}\": its text couldn't be read here (it may be scanned, or its fonts encoded). This endpoint can't take the file itself; try another tool, e.g. `pdftotext` or Python, on the file.]"
+        ),
     }
 }
 
@@ -443,6 +510,74 @@ impl Provider for OpenAiProvider {
 mod tests {
     use super::*;
     use crate::MessageAccumulator;
+
+    fn b64(b: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(b)
+    }
+
+    const PDF: &[u8] = b"%PDF-1.4\n4 0 obj << /Length 44 >>\nstream\nBT 72 720 Td (Total due: 1,234.50 EUR) Tj ET\nendstream\nendobj\n%%EOF";
+
+    fn pdf_block() -> ContentBlock {
+        ContentBlock::Document {
+            source: MediaSource::Base64 { media_type: "application/pdf".into(), data: b64(PDF) },
+            title: Some("invoice.pdf".into()),
+            cache_control: None,
+        }
+    }
+
+    #[test]
+    fn a_pdf_reaches_an_openai_endpoint_as_its_text() {
+        let mut out = vec![];
+        push_message(&mut out, &Message::user(vec![ContentBlock::text("What is the total?"), pdf_block()]));
+        let parts = out[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2, "the document is not dropped");
+        assert_eq!(parts[1]["text"], "<document title=\"invoice.pdf\">\nTotal due: 1,234.50 EUR\n</document>");
+    }
+
+    #[test]
+    fn a_tool_result_never_carries_base64_and_its_images_follow() {
+        let png = ContentBlock::Image {
+            source: MediaSource::Base64 { media_type: "image/png".into(), data: "iVBORw0KGgo=".into() },
+            cache_control: None,
+        };
+        let m = Message::user(vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: ToolResultContent::Blocks(vec![pdf_block()]),
+                is_error: None,
+                cache_control: None,
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "t2".into(),
+                content: ToolResultContent::Blocks(vec![png]),
+                is_error: None,
+                cache_control: None,
+            },
+        ]);
+        let mut out = vec![];
+        push_message(&mut out, &m);
+        assert_eq!(out[0]["role"], "tool");
+        let t1 = out[0]["content"].as_str().unwrap();
+        assert!(t1.contains("Total due: 1,234.50 EUR") && !t1.contains(&b64(PDF)), "{t1}");
+        assert_eq!(out[1]["content"], "[image 1: shown in the next message]");
+        // Tool messages first, then one user message with the picture.
+        assert_eq!(out[2]["role"], "user");
+        assert_eq!(out[2]["content"][1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn an_unreadable_pdf_is_named_not_dropped() {
+        let doc = ContentBlock::Document {
+            source: MediaSource::Base64 { media_type: "application/pdf".into(), data: b64(b"%PDF-1.4 no text") },
+            title: Some("scan.pdf".into()),
+            cache_control: None,
+        };
+        let mut out = vec![];
+        push_message(&mut out, &Message::user(vec![doc]));
+        let t = out[0]["content"][0]["text"].as_str().unwrap();
+        assert!(t.starts_with("[Document \"scan.pdf\": its text couldn't be read here"), "{t}");
+    }
 
     #[test]
     fn reads_context_windows_from_a_models_listing() {

@@ -12,6 +12,7 @@ pub mod messages;
 pub mod mock;
 pub mod models;
 pub mod openai;
+pub mod pdf_text;
 pub mod repair;
 pub mod sse;
 

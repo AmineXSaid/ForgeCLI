@@ -1,0 +1,7 @@
+{
+  "instruction": "budget.pdf is this quarter's budget memo. Write the Q3 forecast total, in EUR, as a plain number with no separators or currency, to answer.txt.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "tool-design",
+  "tags": ["pdf", "documents", "openai-compatible"],
+  "timeout_secs": 300
+}
