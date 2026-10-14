@@ -128,6 +128,10 @@ fn modes() {
     assert_eq!(accept.decide(&edit("/tmp/a")).behavior(), Behavior::Ask);
     assert_eq!(accept.decide(&bash("mkdir -p out && touch out/a")).behavior(), Behavior::Allow);
     assert_eq!(accept.decide(&bash("cargo test")).behavior(), Behavior::Ask);
+    // Edits, not deletions: removing files still asks in Edit automatically.
+    assert_eq!(accept.decide(&bash("rm notes.txt")).behavior(), Behavior::Ask);
+    assert_eq!(accept.decide(&bash("mkdir out && rmdir out")).behavior(), Behavior::Ask);
+    assert_eq!(accept.decide(&bash("mv a.txt b.txt")).behavior(), Behavior::Allow);
 
     let dont = engine(PermissionMode::DontAsk, &[], &[], &[]);
     assert_eq!(dont.decide(&bash("cargo test")).behavior(), Behavior::Deny);

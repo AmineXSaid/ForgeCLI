@@ -39,6 +39,10 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 unicode-width = "0.2"
 
+[build-dependencies]
+# The Windows .exe icon (build.rs).
+embed-resource = "=3.0.12"
+
 [dev-dependencies]
 tempfile.workspace = true
 shlex.workspace = true
