@@ -21,6 +21,12 @@ use crate::request::{apply_cache_breakpoints, normalize};
 use crate::snapshot::{EngineSnapshot, RequestParts, TurnProgress};
 use crate::{INTERRUPT_MARKER, INTERRUPT_MARKER_TOOLS};
 
+/// Sent with every prompt while plan mode is on.
+const PLAN_MODE_REMINDER: &str = "Plan mode is active. The user wants a plan before any change: explore with \
+read-only tools only (no edits, no writes, no commands that change anything), design the approach, and then \
+present it with the ExitPlanMode tool (the steps, the files to change, and how you will verify the result). \
+Do not change anything until the user approves the plan. If you need a choice from the user first, ask it.";
+
 /// USD per million tokens (settings `modelPricing` override).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pricing {
@@ -407,6 +413,9 @@ pub struct Engine {
     reminders: Vec<String>,
     /// SessionStart's `source`: startup, resume or clear.
     start_source: String,
+    /// The last prompt went out in plan mode: when the mode changes, the
+    /// model is told plan mode is over.
+    planning: bool,
 }
 
 /// A person's prompt in the conversation: a point `/rewind` can go back to.
@@ -499,6 +508,7 @@ impl Engine {
             reattach_context: false,
             reminders: vec![],
             start_source: "startup".into(),
+            planning: false,
         })
     }
 
@@ -1425,6 +1435,21 @@ impl Engine {
         // Background commands that exited between turns.
         if let Some(text) = self.background_exits().await {
             blocks.insert(0, ContentBlock::text(text));
+        }
+        // The permission mode can change between prompts (a host's
+        // `set_permission_mode`, shift+tab): tell the model while it plans,
+        // and once when planning ends, as Claude Code does.
+        if !self.cfg.is_subagent {
+            let planning = self.mode_str() == "plan";
+            if planning {
+                self.reminders.push(PLAN_MODE_REMINDER.to_string());
+            } else if self.planning {
+                self.reminders.push(format!(
+                    "Plan mode is off (the permission mode is now {}). You may change files and run commands again.",
+                    self.mode_str()
+                ));
+            }
+            self.planning = planning;
         }
         if !self.reminders.is_empty() && !self.cfg.is_subagent {
             let notes = std::mem::take(&mut self.reminders).join("\n\n");

@@ -1310,3 +1310,19 @@ async fn a_check_that_finishes_in_the_background_counts() {
     let reminder = last_user_text(h.provider.requests().last().unwrap());
     assert!(reminder.contains("`sleep 1; false`"), "{reminder}");
 }
+
+#[tokio::test]
+async fn plan_mode_is_told_to_the_model_and_its_end_too() {
+    let h = Harness::new(vec![MockTurn::text("a plan"), MockTurn::text("ok"), MockTurn::text("ok")]);
+    let mut e = h.engine_with(EngineConfig::default(), PermissionMode::Plan, Arc::new(Answering), json!({}));
+    let last = |i: usize| format!("{:?}", h.provider.requests()[i].messages.last().unwrap());
+    e.submit(prompt("add a cache")).await;
+    assert!(last(0).contains("Plan mode is active"), "a session started in plan mode says so");
+    // A host switches the mode between prompts (`set_permission_mode`).
+    e.handle().set_permission_mode(PermissionMode::AcceptEdits);
+    e.submit(prompt("go ahead")).await;
+    assert!(!last(1).contains("Plan mode is active"));
+    assert!(last(1).contains("Plan mode is off (the permission mode is now acceptEdits)"));
+    e.submit(prompt("thanks")).await;
+    assert!(!last(2).contains("Plan mode"), "told once");
+}
