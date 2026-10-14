@@ -219,7 +219,11 @@ pub const EDIT_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 pub const READ_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead"];
 
 /// Commands `acceptEdits` mode allows inside the working directories.
-const ACCEPT_EDITS_COMMANDS: &[&str] = &["mkdir", "touch", "mv", "cp", "rm", "rmdir", "sed"];
+/// The shell commands Edit automatically runs unasked inside the working
+/// directories: they make, copy, move and edit files. Deleting is not editing,
+/// so `rm` and `rmdir` still ask, as in Forge for VS Code ("a green pass to
+/// edit files, not to delete them").
+const ACCEPT_EDITS_COMMANDS: &[&str] = &["mkdir", "touch", "mv", "cp", "sed"];
 
 #[derive(Debug, Clone)]
 pub struct Engine {

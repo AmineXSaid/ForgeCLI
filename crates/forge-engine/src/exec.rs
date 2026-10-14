@@ -297,6 +297,8 @@ async fn run_one(
         if let Some(m) = next.filter(|m| *m != perm.mode) {
             perm.mode = m;
             shared.transcript.append_system("permission_mode", json!({"mode": m.as_str()}));
+            drop(perm);
+            announce_mode(shared, m);
         }
     }
 
@@ -374,6 +376,16 @@ fn append_text(mut out: ToolOutput, text: &str) -> ToolOutput {
 }
 
 /// Apply an accepted `PermissionUpdate` to the session and hand it to the persister.
+/// Tell the host the mode changed on the engine's side (a plan approved,
+/// plan mode entered, an answer that set a mode), as Claude Code does:
+/// `system/status` with `permissionMode`, so its mode picker follows.
+fn announce_mode(shared: &Shared, mode: PermissionMode) {
+    shared.sink.emit(EngineEvent::System {
+        subtype: "status".into(),
+        data: json!({ "status": null, "permissionMode": mode.as_str() }),
+    });
+}
+
 pub(crate) fn apply_permission_update(shared: &Shared, upd: &Value) {
     let Ok(s) = serde_json::from_value::<Suggestion>(upd.clone()) else {
         tracing::warn!(update = %upd, "ignoring unknown permission update");
@@ -393,6 +405,7 @@ pub(crate) fn apply_permission_update(shared: &Shared, upd: &Value) {
             if let Some(m) = PermissionMode::parse(mode) {
                 shared.permissions.write().unwrap().mode = m;
                 shared.transcript.append_system("permission_mode", json!({"mode": m.as_str()}));
+                announce_mode(shared, m);
             }
             destination.clone()
         }

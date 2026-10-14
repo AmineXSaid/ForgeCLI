@@ -946,6 +946,19 @@ async fn c8_questions_and_plan_approval_with_a_person() {
     assert!(!std::path::Path::new("/tmp/forge-should-not-exist.txt").exists());
     assert!(r[3].1.contains("approved the plan"));
     assert_eq!(e.handle().permissions.read().unwrap().mode, PermissionMode::Default, "plan mode ends on approval");
+    // The host hears each change the engine makes, as Claude Code's status messages.
+    let modes: Vec<String> = h
+        .sink
+        .take()
+        .iter()
+        .filter_map(|ev| match ev {
+            EngineEvent::System { subtype, data } if subtype == "status" => {
+                data["permissionMode"].as_str().map(str::to_string)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(modes, ["plan", "default"], "status messages follow the mode");
 }
 
 #[tokio::test]
