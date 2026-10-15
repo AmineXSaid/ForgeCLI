@@ -268,6 +268,79 @@ async fn host_controls_mode_model_and_interrupt() {
 }
 
 #[tokio::test]
+async fn host_stops_one_agent_and_the_turn_goes_on() {
+    let e = env();
+    // The parent starts an agent; the agent says something and lists files, then its next answer
+    // streams slowly; the parent then answers.
+    let api = MockApi::start(vec![
+        MockTurn::tool("Task", json!({"description": "look around", "prompt": "Survey the project."})),
+        MockTurn::blocks(
+            vec![
+                forge_types::ContentBlock::text("Listing the files first."),
+                forge_types::ContentBlock::ToolUse {
+                    id: "toolu_ls".into(),
+                    name: "LS".into(),
+                    input: json!({"path": "."}),
+                    cache_control: None,
+                },
+            ],
+            forge_types::StopReason::ToolUse,
+        ),
+        MockTurn::text("a long survey streaming in pieces").with_delay(Duration::from_millis(300)),
+        MockTurn::text("Carrying on without the survey."),
+    ])
+    .await;
+    let mut h =
+        Host::spawn(command(&forge_bin(), &e.cwd, &e.home, &api.url, &stream_args(&["--include-partial-messages"])));
+    // Nothing runs yet: an unknown id is refused, and `all` stops none.
+    h.send(json!({"type": "control_request", "request_id": "s1", "request": {"subtype": "stop_task", "task_id": "toolu_nope"}})).await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "s1").await;
+    assert_eq!(r["response"]["subtype"], "error");
+    assert_eq!(r["response"]["error"], "No running agent toolu_nope");
+    h.send(json!({"type": "control_request", "request_id": "s2", "request": {"subtype": "stop_task", "all": true}}))
+        .await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "s2").await;
+    assert_eq!(r["response"]["subtype"], "success");
+    assert_eq!(r["response"]["response"]["stopped"], 0);
+    h.send(json!({"type": "control_request", "request_id": "s3", "request": {"subtype": "stop_task"}})).await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "s3").await;
+    assert_eq!(r["response"]["subtype"], "error");
+
+    h.send_user("survey it").await;
+    // The agent is at work: stop it by its Task call's id.
+    h.until(|v| v["type"] == "user" && v["parent_tool_use_id"] == "toolu_00_task").await;
+    // Its slow answer has been asked for (the third request): the stop lands mid-answer.
+    while api.requests().len() < 3 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    h.send(json!({"type": "control_request", "request_id": "s4", "request": {"subtype": "stop_task", "task_id": "toolu_00_task"}})).await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "s4").await;
+    assert_eq!(r["response"]["subtype"], "success", "{r}");
+    assert_eq!(r["response"]["response"]["stopped"], 1);
+    // The parent sees the stopped result and its turn continues to a normal end.
+    let tr = h
+        .until(|v| {
+            v["type"] == "user"
+                && v["parent_tool_use_id"].is_null()
+                && v["message"]["content"][0]["tool_use_id"] == "toolu_00_task"
+        })
+        .await;
+    let block = &tr["message"]["content"][0];
+    assert_eq!(block["is_error"], true, "{tr}");
+    let text = block["content"].to_string();
+    assert!(text.contains(forge_tools::AGENT_STOPPED), "{tr}");
+    // Its last words before the stop come along; the slow answer never finished.
+    assert!(text.contains("Listing the files first.") && !text.contains("a long survey"), "{tr}");
+    assert_eq!(tr["tool_use_result"]["status"], "stopped", "{tr}");
+    let r = h.until_type("result").await;
+    assert_eq!(r["result"], "Carrying on without the survey.", "{r}");
+    assert_eq!(r["subtype"], "success");
+    assert_ne!(r["stop_reason"], "interrupted");
+    let (code, _) = h.wait().await;
+    assert_eq!(code, 0);
+}
+
+#[tokio::test]
 async fn stream_json_answers_immediate_commands_mid_turn() {
     let e = env();
     let api = MockApi::start(vec![MockTurn::text("A slow answer.").with_delay(Duration::from_millis(100))]).await;

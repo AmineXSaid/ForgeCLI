@@ -193,7 +193,12 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
   - `control_request` messages: `initialize`, `interrupt`,
     `set_permission_mode`, `set_model`, `set_max_thinking_tokens`,
     `mcp_status`, `mcp_reconnect` (`serverName`), `mcp_toggle`
-    (`serverName`, `enabled`), `rewind_files`. `set_permission_mode` to
+    (`serverName`, `enabled`), `rewind_files`, `stop_task`.
+    `stop_task` stops one Task agent (`task_id`: its Task call's
+    `tool_use_id`) or all of them (`all: true`) and answers
+    `{"stopped": n}`; the turn goes on, and the model gets each agent's
+    result beginning `Stopped by user`. An unknown id is answered with the
+    error `No running agent <id>`. `set_permission_mode` to
     `bypassPermissions` needs `--allow-dangerously-skip-permissions` (or a
     launch in that mode) and is refused when managed settings disable it;
   - `control_response` answers to Forge's `can_use_tool` requests.

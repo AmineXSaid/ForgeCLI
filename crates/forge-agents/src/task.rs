@@ -156,6 +156,44 @@ impl AgentRuntime {
     }
 }
 
+/// Run the child's turn. When the user stops it, interrupt it and let the turn wind down, so
+/// its transcript and spend stay whole (dropping the turn would lose the spend).
+async fn run_until_stopped(
+    child: &mut Engine,
+    prompt: String,
+    stop: &tokio_util::sync::CancellationToken,
+) -> TurnResult {
+    let handle = child.handle();
+    let turn = child.submit(MessageContent::Text(prompt));
+    tokio::pin!(turn);
+    tokio::select! {
+        r = &mut turn => r,
+        _ = stop.cancelled() => loop {
+            // `submit` makes a fresh cancel token when it starts: an interrupt before that is
+            // lost, so repeat it until the turn ends.
+            handle.interrupt();
+            tokio::select! {
+                r = &mut turn => break r,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
+        },
+    }
+}
+
+/// What the parent model sees for an agent the user stopped: an error (its task is not done)
+/// that begins with [`forge_tools::AGENT_STOPPED`], with the agent's last text when it had any.
+fn stopped_output(agent: &str, partial: &str, structured: Value) -> ToolOutput {
+    let mut text = format!(
+        "{}: the user stopped the {agent} agent before it finished. Its task is not done; don't start it \
+         again unless the user asks. Carry on with the rest of the request without it.",
+        forge_tools::AGENT_STOPPED
+    );
+    if !partial.trim().is_empty() {
+        text.push_str(&format!("\n\nThe agent's last message before the stop:\n{partial}"));
+    }
+    ToolOutput::error(text).with_structured(structured)
+}
+
 /// How a child's turn ended: `completed`, `interrupted` or `error`.
 pub fn status_of(r: &TurnResult) -> &'static str {
     if r.is_error {
@@ -335,9 +373,18 @@ impl Tool for TaskTool {
         let agent = self.agent(input.get("subagent_type").and_then(Value::as_str).unwrap_or("")).cloned().unwrap();
         let prompt = input.get("prompt").and_then(Value::as_str).unwrap_or("").to_string();
         let started = Instant::now();
+        // The user can stop this agent alone (a host's `stop_task`); the parent's turn goes on.
+        let registration = parent.handle.register_agent(&ctx.tool_use_id);
+        let stop = registration.token();
         // At most `maxParallelAgents` run at once; the others wait here, without spending anything.
         let _slot = tokio::select! {
             _ = ctx.cancel.cancelled() => return ToolOutput::error(forge_tools::INTERRUPTED),
+            _ = stop.cancelled() => return stopped_output(&agent.name, "", json!({
+                "agentType": agent.name,
+                "status": "stopped",
+                "totalToolUseCount": 0,
+                "totalDurationMs": started.elapsed().as_millis() as u64,
+            })),
             p = self.rt.agent_slots.clone().acquire_owned() => match p {
                 Ok(p) => p,
                 Err(_) => return ToolOutput::error("Sub-agents are not available in this session."),
@@ -377,8 +424,12 @@ impl Tool for TaskTool {
             cancel.cancelled().await;
             handle.interrupt();
         });
-        let result = child.submit(MessageContent::Text(prompt)).await;
+        let result = run_until_stopped(&mut child, prompt, &stop).await;
         watcher.abort();
+        drop(registration);
+        // Stopped by the user alone, not by an interrupt of the whole turn.
+        let stopped =
+            stop.is_cancelled() && !ctx.cancel.is_cancelled() && result.stop_reason.as_deref() == Some("interrupted");
 
         let tool_uses = child
             .state
@@ -390,12 +441,15 @@ impl Tool for TaskTool {
         let structured = json!({
             "agentType": agent.name,
             "agentId": child_id,
-            "status": status_of(&result),
+            "status": if stopped { "stopped" } else { status_of(&result) },
             "totalToolUseCount": tool_uses,
             "totalDurationMs": started.elapsed().as_millis() as u64,
             "subagentUsage": usage_of(&result),
         });
         let text = result.result.clone().unwrap_or_default();
+        if stopped {
+            return stopped_output(&agent.name, &text, structured);
+        }
         if result.is_error {
             let detail = if text.is_empty() { result.errors.join("; ") } else { text };
             return ToolOutput::error(format!(

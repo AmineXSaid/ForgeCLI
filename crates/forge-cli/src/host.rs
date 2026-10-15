@@ -181,6 +181,19 @@ impl ControlContext {
                 self.live.handle().interrupt();
                 self.answer(id, Ok(None));
             }
+            // Stop one Task agent (`task_id`: its Task call's tool_use_id) or all of them
+            // (`all: true`). The turn goes on; the parent model gets each agent's stopped result.
+            "stop_task" => {
+                let handle = self.live.handle();
+                if b.data.get("all").and_then(Value::as_bool) == Some(true) {
+                    return self.answer(id, Ok(Some(json!({"stopped": handle.stop_agents()}))));
+                }
+                match b.get_str("task_id") {
+                    Some(task) if handle.stop_agent(task) => self.answer(id, Ok(Some(json!({"stopped": 1})))),
+                    Some(task) => self.answer(id, Err(format!("No running agent {task}"))),
+                    None => self.answer(id, Err("task_id or all: true is required".into())),
+                }
+            }
             "set_permission_mode" => match b.get_str("mode").and_then(PermissionMode::parse) {
                 Some(PermissionMode::BypassPermissions) if !self.bypass_allowed => self.answer(
                     id,

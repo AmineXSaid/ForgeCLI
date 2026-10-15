@@ -59,6 +59,10 @@ impl ToolOutput {
 /// Text shown to the model when a call is aborted by an interrupt (contract C3).
 pub const INTERRUPTED: &str = "Interrupted by user";
 
+/// How a Task agent's result begins when the user stopped that agent alone (a host's
+/// `stop_task`) and the turn went on. Hosts match this prefix to show the call as stopped.
+pub const AGENT_STOPPED: &str = "Stopped by user";
+
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;

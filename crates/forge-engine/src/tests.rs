@@ -1326,3 +1326,32 @@ async fn plan_mode_is_told_to_the_model_and_its_end_too() {
     e.submit(prompt("thanks")).await;
     assert!(!last(2).contains("Plan mode"), "told once");
 }
+
+#[tokio::test]
+async fn agent_registry_stops_one_or_all() {
+    let h = Harness::new(vec![]);
+    let handle = h.engine().handle();
+    assert!(!handle.stop_agent("toolu_a"));
+    assert_eq!(handle.stop_agents(), 0);
+
+    let a = handle.register_agent("toolu_a");
+    let b = handle.register_agent("toolu_b");
+    assert_eq!(handle.running_agents(), vec!["toolu_a".to_string(), "toolu_b".to_string()]);
+    // One stops; the other runs on.
+    assert!(handle.stop_agent("toolu_a"));
+    assert!(a.token().is_cancelled() && !b.token().is_cancelled());
+    // An ended agent leaves the registry.
+    drop(a);
+    assert!(!handle.stop_agent("toolu_a"));
+    assert_eq!(handle.stop_agents(), 1);
+    assert!(b.token().is_cancelled());
+
+    // A stale registration under a reused id does not remove the newer one.
+    let old = handle.register_agent("toolu_c");
+    let new = handle.register_agent("toolu_c");
+    drop(old);
+    assert!(handle.stop_agent("toolu_c"));
+    assert!(new.token().is_cancelled());
+    drop((b, new));
+    assert!(handle.running_agents().is_empty());
+}

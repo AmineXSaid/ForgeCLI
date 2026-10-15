@@ -251,9 +251,72 @@ pub struct EngineHandle {
     transcript: Arc<Transcript>,
     /// The engine's state as last published, replaced whole (C17, immediate commands).
     snapshot: Arc<RwLock<Arc<EngineSnapshot>>>,
+    /// Task agents running in this engine's turn, by their Task call's `tool_use_id`:
+    /// a host stops one, or all, without ending the turn (`stop_task`).
+    agents: Arc<Mutex<HashMap<String, (u64, CancellationToken)>>>,
+}
+
+/// A running Task agent's place in [`EngineHandle`]'s registry; dropping it removes the entry.
+pub struct AgentRegistration {
+    agents: Arc<Mutex<HashMap<String, (u64, CancellationToken)>>>,
+    id: String,
+    serial: u64,
+    token: CancellationToken,
+}
+
+impl AgentRegistration {
+    /// Cancelled when the user stops this agent ([`EngineHandle::stop_agent`] or `stop_agents`).
+    pub fn token(&self) -> CancellationToken {
+        self.token.clone()
+    }
+}
+
+impl Drop for AgentRegistration {
+    fn drop(&mut self) {
+        let mut agents = self.agents.lock().unwrap_or_else(|e| e.into_inner());
+        // A later registration under the same id is not this one's to remove.
+        if agents.get(&self.id).is_some_and(|(serial, _)| *serial == self.serial) {
+            agents.remove(&self.id);
+        }
+    }
 }
 
 impl EngineHandle {
+    /// Register a running Task agent under its Task call's `tool_use_id`. The returned
+    /// token fires when the user stops it; the entry goes when the registration drops.
+    pub fn register_agent(&self, id: &str) -> AgentRegistration {
+        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let token = CancellationToken::new();
+        self.agents.lock().unwrap().insert(id.to_string(), (serial, token.clone()));
+        AgentRegistration { agents: self.agents.clone(), id: id.to_string(), serial, token }
+    }
+
+    /// Stop one running Task agent; the turn goes on. False when no agent runs under `id`.
+    pub fn stop_agent(&self, id: &str) -> bool {
+        match self.agents.lock().unwrap().get(id) {
+            Some((_, t)) => {
+                t.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Stop every running Task agent; the turn goes on. Returns how many were running.
+    pub fn stop_agents(&self) -> usize {
+        let agents = self.agents.lock().unwrap();
+        agents.values().for_each(|(_, t)| t.cancel());
+        agents.len()
+    }
+
+    /// The `tool_use_id`s of the Task agents running now.
+    pub fn running_agents(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.agents.lock().unwrap().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     /// Interrupt the running turn (contract C3).
     pub fn interrupt(&self) {
         self.cancel.lock().unwrap().cancel();
@@ -478,6 +541,7 @@ impl Engine {
             runtime: Arc::new(RwLock::new(runtime)),
             transcript: parts.transcript.clone(),
             snapshot: Default::default(),
+            agents: Default::default(),
         };
         let shared = Arc::new(Shared {
             provider: parts.provider,
