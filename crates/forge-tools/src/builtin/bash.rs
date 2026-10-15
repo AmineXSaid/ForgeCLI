@@ -11,6 +11,10 @@ use forge_platform::shell::Os;
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
+/// Before a time-limited run's end, the time a Bash call leaves the model ([`ToolContext::deadline`]).
+const DEADLINE_RESERVE: Duration = Duration::from_secs(60);
+/// The shortest wait a Bash call gets near the end of a time-limited run.
+const MIN_DEADLINE_WAIT: Duration = Duration::from_secs(5);
 
 /// First words of commands that only read.
 const READ_ONLY_COMMANDS: &[&str] = &[
@@ -251,7 +255,17 @@ impl Tool for Bash {
             };
         }
 
-        let ms = input.get("timeout").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS);
+        let mut ms =
+            input.get("timeout").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS);
+        // A time-limited run keeps its last minute for the model to report: the call stops waiting
+        // then, and the command goes on in the background like any other that outlives its wait.
+        if let Some(deadline) = ctx.deadline {
+            let left = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .saturating_sub(DEADLINE_RESERVE)
+                .max(MIN_DEADLINE_WAIT);
+            ms = ms.min(left.as_millis() as u64);
+        }
         let sh = match crate::shells::start(&ctx.shell, &command, &cwd, &ctx.env, sandbox.as_ref(), true) {
             Ok(sh) => sh,
             Err(e) => return start_failed(&e),

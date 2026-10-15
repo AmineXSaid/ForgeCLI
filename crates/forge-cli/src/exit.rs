@@ -89,6 +89,10 @@ pub fn for_result(r: &forge_engine::TurnResult) -> i32 {
     if r.auth_failed {
         return CONFIG;
     }
+    // `--max-time` ran out: a limit, like `--max-turns`.
+    if r.time_limited {
+        return LIMIT;
+    }
     match r.subtype {
         Success => OK,
         ErrorMaxTurns | ErrorMaxBudgetUsd => LIMIT,

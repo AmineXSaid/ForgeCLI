@@ -46,6 +46,8 @@ pub struct ToolContext {
     pub transcript_path: Option<PathBuf>,
     /// The shell commands run in (Bash, `!` commands); `Err` when none was found.
     pub shell: crate::shells::ShellChoice,
+    /// When a time-limited run (`--max-time`) ends: a Bash call stops waiting a minute before.
+    pub deadline: Option<std::time::Instant>,
 }
 
 impl ToolContext {
@@ -67,6 +69,7 @@ impl ToolContext {
             spill_dir: None,
             transcript_path: None,
             shell: forge_platform::shell::detect().clone(),
+            deadline: None,
         }
     }
 

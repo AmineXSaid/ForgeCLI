@@ -791,6 +791,7 @@ pub fn build_session(
     }
     tool_ctx.session_id = session_id.clone();
     tool_ctx.spill_dir = Some(spill_dir);
+    tool_ctx.deadline = opts.max_time.map(|d| std::time::Instant::now() + d);
     tool_ctx.transcript_path = transcript.path().map(Path::to_path_buf);
     {
         let mut wd = tool_ctx.working_dirs.write().unwrap();
@@ -948,6 +949,7 @@ pub fn build_session(
             ..Default::default()
         },
         memory_context: memory.clone(),
+        deadline: tool_ctx.deadline,
         parent: std::sync::OnceLock::new(),
     });
     if tools.get("Task").is_none()
@@ -982,6 +984,7 @@ pub fn build_session(
         verify,
         escalate_output: env_nonempty("FORGE_MAX_OUTPUT_TOKENS").is_none(),
         fast: settings.bool("/fastMode").unwrap_or(false),
+        midpoint_reminder: env_nonempty("FORGE_MIDPOINT_REMINDER").is_some_and(|v| v == "1"),
     };
     let parts = EngineParts {
         provider: provider.clone(),

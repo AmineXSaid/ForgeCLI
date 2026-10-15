@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -72,6 +73,19 @@ fn about(left: Duration) -> String {
         s if s < 60 => "less than a minute".into(),
         s if s < 90 => "about a minute".into(),
         s => format!("about {} minutes", (s + 30) / 60),
+    }
+}
+
+/// Ends a turn that `--max-time` stopped (an error, and the note in the conversation).
+const TIME_LIMIT_REACHED: &str = "Stopped: the run's time limit (--max-time) was reached.";
+const TIME_LIMIT_MARKER: &str = "[Stopped: the run's time limit (--max-time) was reached]";
+
+/// Aborts a spawned task when dropped (the time-limit timer of a turn that ended first).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -196,6 +210,9 @@ pub struct EngineConfig {
     pub escalate_output: bool,
     /// Start in fast mode (`fastMode` setting).
     pub fast: bool,
+    /// Opt-in (`FORGE_MIDPOINT_REMINDER=1`): halfway through a time-limited run, a nudge to have
+    /// a first complete result early.
+    pub midpoint_reminder: bool,
 }
 
 /// The output cap after a `max_tokens` stop (capped by the model).
@@ -236,6 +253,7 @@ impl Default for EngineConfig {
             verify: None,
             escalate_output: true,
             fast: false,
+            midpoint_reminder: false,
         }
     }
 }
@@ -418,6 +436,8 @@ pub struct TurnResult {
     /// The endpoint refused the credentials (401/403) or none were set: print
     /// mode exits with the configuration status.
     pub auth_failed: bool,
+    /// The run's time limit (`--max-time`) ended the turn: print mode exits with the limit status.
+    pub time_limited: bool,
     /// Tool calls the model made in this turn.
     pub tool_calls: u32,
 }
@@ -441,6 +461,8 @@ pub struct Engine {
     reminders: Vec<String>,
     /// SessionStart's `source`: startup, resume or clear.
     start_source: String,
+    /// Set when `--max-time` ran out during the turn (its cancellation is not an interrupt).
+    deadline_hit: Arc<AtomicBool>,
 }
 
 /// A person's prompt in the conversation: a point `/rewind` can go back to.
@@ -533,6 +555,7 @@ impl Engine {
             reattach_context: false,
             reminders: vec![],
             start_source: "startup".into(),
+            deadline_hit: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1322,6 +1345,7 @@ impl Engine {
             prompt_blocked: None,
             fatal: false,
             auth_failed: false,
+            time_limited: false,
             tool_calls: 0,
         }
     }
@@ -1401,6 +1425,17 @@ impl Engine {
     pub async fn submit(&mut self, prompt: MessageContent) -> TurnResult {
         let started = Instant::now();
         let cancel = self.new_turn_token();
+        // A time-limited run stops itself at the limit: what runs then (a model call, a tool, a
+        // wait) is cancelled as by an interrupt, and the turn ends reporting the limit.
+        self.deadline_hit.store(false, Ordering::SeqCst);
+        let _deadline = self.cfg.time_limit.filter(|_| !self.cfg.is_subagent).map(|t| {
+            let (token, hit, left) = (cancel.clone(), self.deadline_hit.clone(), t.remaining());
+            AbortOnDrop(tokio::spawn(async move {
+                tokio::time::sleep(left).await;
+                hit.store(true, Ordering::SeqCst);
+                token.cancel();
+            }))
+        });
         let mut turn = TurnAcc::default();
         let mut blocks = prompt.into_blocks();
         // Hooks see the prompt as typed: reminders that ride along with it (`@path` attachments)
@@ -1532,11 +1567,12 @@ impl Engine {
         let mut background_waits = 0u32;
         let mut empty_reply_reminders = 0u32;
         let mut background_reminded = false;
+        let mut midpoint_warned = false;
         let mut api_retries = 0u32;
 
         loop {
             if cancel.is_cancelled() {
-                self.push_user(Message::user_text(INTERRUPT_MARKER), true, None, true);
+                self.push_user(Message::user_text(self.stop_marker(false)), true, None, true);
                 return self.finish(started, turn, ResultSubtype::Success, last_text, Some("interrupted".into()), None);
             }
             if let Some(max) = self.cfg.max_turns {
@@ -1589,7 +1625,7 @@ impl Engine {
             let mut msg = match outcome {
                 StreamOutcome::Done(m) => m,
                 StreamOutcome::Interrupted(partial) => {
-                    let mut marker = INTERRUPT_MARKER;
+                    let mut marker = self.stop_marker(false);
                     if let Some(p) = partial {
                         let ids: Vec<String> = p.to_message().tool_uses().map(|(id, _, _)| id.to_string()).collect();
                         self.push_assistant(p);
@@ -1600,7 +1636,7 @@ impl Engine {
                                 None,
                                 true,
                             );
-                            marker = INTERRUPT_MARKER_TOOLS;
+                            marker = self.stop_marker(true);
                         }
                     }
                     self.push_user(Message::user_text(marker), true, None, true);
@@ -1822,9 +1858,16 @@ impl Engine {
                         self.push_user(Message::user_text(text), true, None, true);
                     }
                 }
+                if !midpoint_warned && !interrupted {
+                    if let Some(text) = self.midpoint_reminder() {
+                        midpoint_warned = true;
+                        self.system_event("midpoint_reminder", json!({}));
+                        self.push_user(Message::user_text(text), true, None, true);
+                    }
+                }
                 if interrupted {
                     cancel.cancel();
-                    self.push_user(Message::user_text(INTERRUPT_MARKER_TOOLS), true, None, true);
+                    self.push_user(Message::user_text(self.stop_marker(true)), true, None, true);
                     return self.finish(
                         started,
                         turn,
@@ -2160,6 +2203,11 @@ impl Engine {
     /// The reminder to send before the turn may end, if one is due.
     async fn verification_reminder(&mut self) -> Option<String> {
         let vc = self.cfg.verify.clone()?;
+        // In a time-limited run's last minute a check and a fix don't fit; the wrap-up warning
+        // has asked for the check already.
+        if self.cfg.time_limit.is_some_and(|t| t.remaining() < Duration::from_secs(60)) {
+            return None;
+        }
         if self.cfg.is_subagent || self.verify.reminders >= vc.max_reminders {
             return None;
         }
@@ -2205,12 +2253,21 @@ impl Engine {
     fn finish(
         &mut self,
         started: Instant,
-        turn: TurnAcc,
+        mut turn: TurnAcc,
         subtype: ResultSubtype,
         result: Option<String>,
         stop_reason: Option<String>,
         prompt_blocked: Option<String>,
     ) -> TurnResult {
+        // Cancelled by the run's time limit, not by the user.
+        let time_limited = stop_reason.as_deref() == Some("interrupted") && self.deadline_hit.load(Ordering::SeqCst);
+        let (subtype, stop_reason) = if time_limited {
+            self.notice(NoticeLevel::Error, TIME_LIMIT_REACHED.to_string());
+            turn.errors.push(TIME_LIMIT_REACHED.to_string());
+            (ResultSubtype::ErrorDuringExecution, Some("max_time".to_string()))
+        } else {
+            (subtype, stop_reason)
+        };
         let structured_output = if self.cfg.json_schema.is_some() && subtype == ResultSubtype::Success {
             result.as_deref().and_then(|r| serde_json::from_str::<Value>(r.trim()).ok())
         } else {
@@ -2235,8 +2292,37 @@ impl Engine {
             prompt_blocked,
             fatal: false,
             auth_failed: false,
+            time_limited,
             tool_calls: turn.tool_calls,
         }
+    }
+
+    /// The note left in the conversation when a turn is cut short: an interrupt, or the time limit.
+    fn stop_marker(&self, tools: bool) -> &'static str {
+        match (self.deadline_hit.load(Ordering::SeqCst), tools) {
+            (true, _) => TIME_LIMIT_MARKER,
+            (false, false) => INTERRUPT_MARKER,
+            (false, true) => INTERRUPT_MARKER_TOOLS,
+        }
+    }
+
+    /// Opt-in (`FORGE_MIDPOINT_REMINDER=1`): halfway through a time-limited run, before the wrap-up
+    /// warning, a nudge to have a first complete result early instead of in the last minutes.
+    fn midpoint_reminder(&self) -> Option<String> {
+        if !self.cfg.midpoint_reminder || self.cfg.is_subagent {
+            return None;
+        }
+        let t = self.cfg.time_limit?;
+        let left = t.remaining();
+        let wrap_up = (t.total / 5).max(Duration::from_secs(60));
+        (t.started.elapsed() >= t.total / 2 && left > wrap_up).then(|| {
+            format!(
+                "<system-reminder>\nHalf of the run's time is used: {} left (--max-time). If the requested result \
+                 doesn't exist yet, produce a first complete version now and check it, then improve it in the time \
+                 that remains.\n</system-reminder>",
+                about(left)
+            )
+        })
     }
 
     /// End the session: SessionEnd hooks, background shells.

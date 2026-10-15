@@ -157,6 +157,7 @@ impl SessionView {
             prompt_blocked: None,
             fatal: false,
             auth_failed: false,
+            time_limited: false,
             tool_calls: 0,
         }
     }

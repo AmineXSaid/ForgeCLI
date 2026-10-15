@@ -70,6 +70,22 @@ async fn bash_timeout_moves_the_command_to_the_background() {
 }
 
 #[tokio::test]
+async fn a_time_limited_run_keeps_its_last_minute() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = ctx(d.path());
+    // 62 s to the deadline: a minute stays for the model, so the call waits 5 s at most.
+    c.deadline = Some(Instant::now() + Duration::from_secs(62));
+    let start = Instant::now();
+    let out = Bash::default().call(json!({"command": "sleep 30", "timeout": 600000}), &c).await;
+    assert!(start.elapsed() < Duration::from_secs(10), "waited {:?}", start.elapsed());
+    assert!(out.text_content().contains("still running"), "{}", out.text_content());
+    c.shells.kill_all();
+    // Far from the deadline, a command that ends is unaffected.
+    c.deadline = Some(Instant::now() + Duration::from_secs(3600));
+    assert_eq!(Bash::default().call(json!({"command": "echo ok"}), &c).await.text_content().trim(), "ok");
+}
+
+#[tokio::test]
 async fn a_moved_command_can_be_stopped_with_its_children() {
     let d = tempfile::tempdir().unwrap();
     let c = ctx(d.path());

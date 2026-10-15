@@ -58,6 +58,7 @@ fn setup(responder: impl Fn(&MessagesRequest) -> MockTurn + Send + Sync + 'stati
         sink: sink.clone(),
         base: EngineConfig::default(),
         memory_context: None,
+        deadline: None,
         parent: OnceLock::new(),
     });
     let mut tools = ToolRegistry::new();

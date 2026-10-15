@@ -1199,6 +1199,74 @@ async fn unattended_runs_finish_announced_steps_and_open_todos() {
 }
 
 #[tokio::test]
+async fn max_time_stops_the_run_itself() {
+    let limited = |ms| EngineConfig {
+        time_limit: Some(crate::TimeLimit::starting_now(Duration::from_millis(ms))),
+        ..Default::default()
+    };
+    // A model call still streaming at the limit is cancelled, and the turn reports the limit.
+    let h = Harness::new(vec![MockTurn::text("too late").with_delay(Duration::from_secs(10))]);
+    let mut e = h.engine_with(limited(300), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let t = Instant::now();
+    let r = e.submit(prompt("task")).await;
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    assert!(r.time_limited && r.is_error, "{r:?}");
+    assert_eq!(r.stop_reason.as_deref(), Some("max_time"));
+    assert!(r.errors.iter().any(|e| e.contains("--max-time")), "{:?}", r.errors);
+    // So is a command still running at the limit.
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "sleep 20"})), MockTurn::text("never")]);
+    let mut e = h.engine_with(limited(500), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let t = Instant::now();
+    let r = e.submit(prompt("task")).await;
+    assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    assert_eq!(r.stop_reason.as_deref(), Some("max_time"));
+    assert_eq!(h.provider.requests().len(), 1);
+    // A turn that ends in time is unchanged.
+    let h = Harness::new(vec![MockTurn::text("done")]);
+    let mut e = h.engine_with(limited(600_000), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("task")).await;
+    assert!(!r.time_limited && !r.is_error);
+    assert_eq!(r.result.as_deref(), Some("done"));
+}
+
+#[tokio::test]
+async fn no_verification_reminder_in_the_last_minute() {
+    let h = Harness::new(vec![]);
+    let f = h.cwd().join("a.txt");
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "x"})));
+    h.provider.push(MockTurn::text("done"));
+    let mut cfg = verifying(&["true"]);
+    cfg.time_limit = Some(crate::TimeLimit::starting_now(Duration::from_secs(30)));
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("change it")).await.result.as_deref(), Some("done"));
+    assert_eq!(h.provider.requests().len(), 2, "no reminder in the run's last minute");
+}
+
+#[tokio::test]
+async fn the_midpoint_reminder_is_opt_in() {
+    // 600 s of a 1000 s limit gone: past half, and not yet in the wrap-up window.
+    let half_gone = |on: bool| {
+        Instant::now().checked_sub(Duration::from_secs(600)).map(|started| EngineConfig {
+            midpoint_reminder: on,
+            time_limit: Some(crate::TimeLimit { started, total: Duration::from_secs(1000) }),
+            ..Default::default()
+        })
+    };
+    let Some(cfg) = half_gone(true) else { return };
+    let turns = || vec![MockTurn::tool("Bash", json!({"command": "ls"})), MockTurn::text("done")];
+    let h = Harness::new(turns());
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("task")).await;
+    let told = last_user_text(&h.provider.requests()[1]);
+    assert!(told.contains("Half of the run's time is used"), "{told}");
+    let h = Harness::new(turns());
+    let mut e =
+        h.engine_with(half_gone(false).unwrap(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("task")).await;
+    assert!(!last_user_text(&h.provider.requests()[1]).contains("Half of the run's time"));
+}
+
+#[tokio::test]
 async fn unattended_empty_replies_are_nudged() {
     let empty = || {
         MockTurn::blocks(

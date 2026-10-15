@@ -49,6 +49,8 @@ pub struct AgentRuntime {
     pub base: EngineConfig,
     /// Memory files, given to sub-agents as context.
     pub memory_context: Option<String>,
+    /// The run's end under `--max-time`, for sub-agents' Bash calls too.
+    pub deadline: Option<std::time::Instant>,
     pub parent: OnceLock<ParentLink>,
 }
 
@@ -130,6 +132,7 @@ impl AgentRuntime {
         tool_ctx.sandbox = self.sandbox.clone();
         tool_ctx.shell = self.shell.clone();
         tool_ctx.session_id = self.session_id.clone();
+        tool_ctx.deadline = self.deadline;
         if let Some(turn) = spec.checkpoint_turn {
             tool_ctx.checkpointer = Some(Arc::new(TurnCheckpointer { history: parent.history.clone(), turn }));
         }
