@@ -427,6 +427,10 @@ pub struct TurnState {
     pub counted: usize,
     /// Models used without a known price (their cost counts as 0).
     pub unpriced: std::collections::BTreeSet<String>,
+    /// The model the conversation's thinking blocks came from. Another
+    /// model (or another provider) can't verify their signatures, so they
+    /// are dropped when the model changes; the words and tool calls stay.
+    pub thinking_model: Option<String>,
 }
 
 /// Outcome of one [`Engine::submit`].
@@ -707,6 +711,7 @@ impl Engine {
         self.state.uuids = loaded.messages.iter().map(|e| e.uuid.clone()).collect();
         self.state.meta = loaded.messages.iter().filter(|e| e.is_meta).map(|e| e.uuid.clone()).collect();
         self.state.microcompacted = loaded.microcompacted.clone();
+        self.state.thinking_model = loaded.model.clone();
         // A resumed session still gets SessionStart (source "resume") with its next
         // prompt; a sub-agent's context is already in its messages.
         if self.cfg.is_subagent {
@@ -803,6 +808,23 @@ impl Engine {
         self.state.messages.push(msg.to_message());
         self.state.uuids.push(uuid.clone());
         uuid
+    }
+
+    /// The conversation goes on with the current model: when it is another
+    /// one than the model that wrote the thinking blocks so far, those blocks
+    /// are dropped (another model or provider rejects their signatures),
+    /// and everything else is kept, so the new model sees the whole chat.
+    pub fn adopt_model(&mut self) {
+        let model = self.handle.model();
+        if self.state.thinking_model.as_deref().is_some_and(|m| !same_model(m, &model)) {
+            for m in &mut self.state.messages {
+                m.content
+                    .retain(|b| !matches!(b, ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }));
+            }
+            // A message left empty stays in place (its uuid lines up with
+            // it); requests skip empty messages.
+        }
+        self.state.thinking_model = Some(model);
     }
 
     /// Tell the host about something (`system/<subtype>`) without recording it.
@@ -1054,6 +1076,7 @@ impl Engine {
 
     /// Summarize the conversation now (`/compact [instructions]`).
     pub async fn compact(&mut self, instructions: Option<&str>) -> Result<CompactInfo, String> {
+        self.adopt_model();
         let cancel = self.new_turn_token();
         let model = self.handle.model();
         let mut turn = TurnAcc::default();
@@ -1433,6 +1456,7 @@ impl Engine {
 
     /// Run one user turn to completion.
     pub async fn submit(&mut self, prompt: MessageContent) -> TurnResult {
+        self.adopt_model();
         let started = Instant::now();
         let cancel = self.new_turn_token();
         let mut turn = TurnAcc::default();
@@ -2257,4 +2281,11 @@ impl Engine {
         .await;
         self.shared.tool_ctx.shells.kill_all();
     }
+}
+
+/// Two names for one model: equal, or the same once aliases resolve, or one
+/// a dated id of the other ("claude-x" and "claude-x-20250101").
+fn same_model(a: &str, b: &str) -> bool {
+    let (a, b) = (forge_api::resolve_model(a), forge_api::resolve_model(b));
+    a == b || a.starts_with(&b) || b.starts_with(&a)
 }

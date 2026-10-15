@@ -1355,3 +1355,33 @@ async fn agent_registry_stops_one_or_all() {
     drop((b, new));
     assert!(handle.running_agents().is_empty());
 }
+
+#[tokio::test]
+async fn a_new_model_gets_the_whole_conversation_without_foreign_thinking() {
+    let thought = |text: &str| {
+        MockTurn::blocks(
+            vec![
+                ContentBlock::Thinking { thinking: "pondering".into(), signature: "sig-from-a".into() },
+                ContentBlock::text(text),
+            ],
+            forge_types::StopReason::EndTurn,
+        )
+    };
+    let h = Harness::new(vec![thought("first answer"), thought("second answer"), MockTurn::text("third answer")]);
+    let mut e = h.engine();
+    e.submit(prompt("one")).await;
+    e.submit(prompt("two")).await;
+    // The same model keeps its thinking: the signatures are its own.
+    let same = &h.provider.requests()[1];
+    assert!(same.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, ContentBlock::Thinking { .. })));
+    // Another model (on any endpoint) gets every message, minus the thinking.
+    e.handle().set_model("claude-sonnet-5-5");
+    e.submit(prompt("three")).await;
+    let other = &h.provider.requests()[2];
+    assert_eq!(other.model, "claude-sonnet-5-5");
+    let words: Vec<String> = other.messages.iter().map(|m| m.text()).collect();
+    for said in ["one", "first answer", "two", "second answer", "three"] {
+        assert!(words.iter().any(|w| w.contains(said)), "{said} is missing: {words:?}");
+    }
+    assert!(!other.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, ContentBlock::Thinking { .. })));
+}
