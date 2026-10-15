@@ -83,8 +83,9 @@ impl ApiError {
     pub fn is_auth_failure(&self) -> bool {
         match self {
             ApiError::MissingCredentials => true,
-            ApiError::Http { status, kind, .. } => {
-                matches!(status, 401 | 403) || matches!(kind.as_str(), "authentication_error" | "permission_error")
+            ApiError::Http { status, kind, message, .. } => {
+                (*status == 401 || (*status == 403 && !says_unavailable(message)))
+                    || matches!(kind.as_str(), "authentication_error" | "permission_error")
             }
             _ => false,
         }
@@ -134,6 +135,11 @@ impl ApiError {
             _ => None,
         };
         Some(match self {
+            ApiError::Http { status: 403, message, .. } if says_unavailable(message) => {
+                "The endpoint says it is unavailable (maintenance or an outage), not that the key is wrong: try again \
+                 later."
+                    .into()
+            }
             ApiError::Http { status: 401 | 403, .. } => match origin {
                 Some(o) => o.auth_hint(),
                 None => "Check the endpoint's key; `forge doctor` shows what is configured.".into(),
@@ -275,4 +281,38 @@ pub fn backoff_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
     }
     let base = 500u64.saturating_mul(1u64 << attempt.min(6));
     Duration::from_millis(base.min(32_000))
+}
+
+/// A 403 whose message says the service is down (gateways answer maintenance with 403): not a key problem.
+fn says_unavailable(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    ["maintenance", "temporarily unavailable", "service unavailable", "outage"].iter().any(|w| m.contains(w))
+}
+
+#[cfg(test)]
+mod unavailable_tests {
+    use super::*;
+
+    fn http(status: u16, message: &str) -> ApiError {
+        ApiError::Http {
+            status,
+            kind: "error".into(),
+            message: message.into(),
+            retry_after: None,
+            url: String::new(),
+            origin: None,
+        }
+    }
+
+    #[test]
+    fn a_403_for_maintenance_is_not_a_key_problem() {
+        let down = http(403, "This service is temporarily unavailable while we perform scheduled maintenance");
+        assert!(!down.is_auth_failure());
+        let hint = down.hint().unwrap_or_default();
+        assert!(hint.contains("unavailable") && !hint.contains("Check the endpoint's key"), "{hint}");
+        // Every other 403, and every 401, is still about the key.
+        assert!(http(403, "Invalid API key").is_auth_failure());
+        assert!(http(403, "Forbidden").hint().unwrap_or_default().contains("key"));
+        assert!(http(401, "maintenance").is_auth_failure());
+    }
 }

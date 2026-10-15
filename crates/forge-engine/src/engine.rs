@@ -113,6 +113,30 @@ fn next_step_reminder(line: &str) -> String {
     )
 }
 
+/// Unattended runs: a reply with no visible answer and no tool call (all hidden reasoning) would
+/// end the run with nothing done and an earlier message as its result.
+const EMPTY_REPLY_REMINDER: &str =
+    "<system-reminder>\nYour last reply had no visible answer and no tool call, so the run \
+     would end here with nothing reported. This run is unattended: take the next step now with a tool call, or, if the \
+     task is complete, give your final answer and state what you verified.\n</system-reminder>";
+
+/// Unattended runs: commands the model put in the background are stopped when the run ends.
+fn background_reminder(running: &[(String, String, Duration)]) -> String {
+    let lines: Vec<String> = running
+        .iter()
+        .map(|(id, command, ran)| {
+            let first: String = command.lines().next().unwrap_or_default().chars().take(100).collect();
+            format!("- {id} (running for {}): {first}", about(*ran))
+        })
+        .collect();
+    format!(
+        "<system-reminder>\nCommands you started in the background are still running:\n{}\nThis run is unattended: when \
+         it ends they are stopped and their output is lost. If you need their result, wait for it now (BashOutput shows \
+         new output) and act on it; if not, stop them with KillShell, then finish.\n</system-reminder>",
+        lines.join("\n")
+    )
+}
+
 fn todo_reminder(open: &[String]) -> String {
     format!(
         "<system-reminder>\nThe run is about to end with todo items not completed:\n{}\nFinish them now. If one no \
@@ -1506,6 +1530,8 @@ impl Engine {
         let mut next_step_reminders = 0u32;
         let mut todo_reminders = 0u32;
         let mut background_waits = 0u32;
+        let mut empty_reply_reminders = 0u32;
+        let mut background_reminded = false;
         let mut api_retries = 0u32;
 
         loop {
@@ -1852,6 +1878,16 @@ impl Engine {
             // Unattended runs: a reply that announces its next step ("Let me check...") and makes
             // no tool call would end the run with that step undone.
             if self.cfg.autonomous && !self.cfg.is_subagent && stop_reason != Some(StopReason::Refusal) {
+                // A reply that is all hidden reasoning ends the run with nothing said or done.
+                if !shows_text
+                    && matches!(stop_reason, Some(StopReason::EndTurn) | None)
+                    && empty_reply_reminders < FINISH_REMINDERS
+                {
+                    empty_reply_reminders += 1;
+                    self.system_event("empty_reply_reminder", json!({}));
+                    self.push_user(Message::user_text(EMPTY_REPLY_REMINDER), true, None, true);
+                    continue;
+                }
                 if let (Some(line), true) = (next_step.as_deref(), next_step_reminders < FINISH_REMINDERS) {
                     next_step_reminders += 1;
                     self.system_event("next_step_reminder", json!({"line": line}));
@@ -1864,6 +1900,18 @@ impl Engine {
                     self.system_event("todo_reminder", json!({"open": open}));
                     self.push_user(Message::user_text(todo_reminder(&open)), true, None, true);
                     continue;
+                }
+                // Commands the model put in the background itself aren't waited for: told once, it can
+                // wait for the ones it needs and stop the others.
+                if !background_reminded {
+                    let running = self.own_background_running();
+                    if !running.is_empty() {
+                        background_reminded = true;
+                        let ids: Vec<&str> = running.iter().map(|(id, ..)| id.as_str()).collect();
+                        self.system_event("background_reminder", json!({"shells": ids}));
+                        self.push_user(Message::user_text(background_reminder(&running)), true, None, true);
+                        continue;
+                    }
                 }
             }
 
@@ -2046,6 +2094,19 @@ impl Engine {
                 .flatten()
                 .collect();
         (!notes.is_empty()).then(|| notes.join("\n"))
+    }
+
+    /// Commands the model started in the background that still run: ID, command and how long they ran.
+    /// Those a Bash call stopped waiting for are left to [`Engine::wait_for_background`].
+    fn own_background_running(&self) -> Vec<(String, String, Duration)> {
+        self.shared
+            .tool_ctx
+            .shells
+            .list()
+            .into_iter()
+            .filter(|sh| !sh.is_awaited() && sh.status() == forge_tools::shells::ShellStatus::Running)
+            .map(|sh| (sh.id().to_string(), sh.command.clone(), sh.runtime()))
+            .collect()
     }
 
     fn verifying(&self) -> bool {

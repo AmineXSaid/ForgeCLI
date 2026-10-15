@@ -1199,6 +1199,69 @@ async fn unattended_runs_finish_announced_steps_and_open_todos() {
 }
 
 #[tokio::test]
+async fn unattended_empty_replies_are_nudged() {
+    let empty = || {
+        MockTurn::blocks(
+            vec![ContentBlock::Thinking { thinking: "thinking only".into(), signature: "s".into() }],
+            StopReason::EndTurn,
+        )
+    };
+    // After real work, a reply that is only hidden reasoning gets one nudge, and the run goes on.
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "ls"})), empty(), MockTurn::text("done")]);
+    let cfg = EngineConfig { autonomous: true, ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.result.as_deref(), Some("done"));
+    let reqs = h.provider.requests();
+    assert_eq!(reqs.len(), 3);
+    assert!(last_user_text(&reqs[2]).contains("no visible answer and no tool call"), "{}", last_user_text(&reqs[2]));
+    assert!(h
+        .sink
+        .take()
+        .iter()
+        .any(|ev| matches!(ev, EngineEvent::System { subtype, .. } if subtype == "empty_reply_reminder")));
+
+    // At most two nudges per turn.
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "ls"})), empty(), empty(), empty(), empty()]);
+    let cfg = EngineConfig { autonomous: true, ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("task")).await;
+    assert_eq!(h.provider.requests().len(), 4);
+
+    // Attended runs end as they always did.
+    let h = Harness::new(vec![MockTurn::tool("Bash", json!({"command": "ls"})), empty(), MockTurn::text("never")]);
+    let mut e =
+        h.engine_with(EngineConfig::default(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("task")).await;
+    assert_eq!(h.provider.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn unattended_runs_hear_once_about_their_own_background_commands() {
+    let background = || MockTurn::tool("Bash", json!({"command": "sleep 5", "run_in_background": true}));
+    let h = Harness::new(vec![background(), MockTurn::text("finished"), MockTurn::text("checked, finished")]);
+    let cfg = EngineConfig { autonomous: true, ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.result.as_deref(), Some("checked, finished"));
+    let reqs = h.provider.requests();
+    // Told once (the command still runs when the model ends again), then the run ends.
+    assert_eq!(reqs.len(), 3);
+    let told = last_user_text(&reqs[2]);
+    assert!(told.contains("still running") && told.contains("sleep 5"), "{told}");
+    assert!(h
+        .sink
+        .take()
+        .iter()
+        .any(|ev| matches!(ev, EngineEvent::System { subtype, .. } if subtype == "background_reminder")));
+
+    // Attended runs keep their background commands between turns: nothing to say.
+    let h = Harness::new(vec![background(), MockTurn::text("finished"), MockTurn::text("never")]);
+    let mut e =
+        h.engine_with(EngineConfig::default(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("task")).await;
+    assert_eq!(h.provider.requests().len(), 2);
+}
+
+#[tokio::test]
 async fn unattended_runs_attempt_before_giving_up() {
     // Ending without any tool call: one reminder, then the model may still stop.
     let h = Harness::new(vec![
