@@ -17,6 +17,7 @@ mod exit;
 mod host;
 mod mcp_cmd;
 mod output;
+mod relay;
 mod repl;
 mod term;
 mod tui;
@@ -665,6 +666,7 @@ fn main() {
                 Ok(exit::OK)
             }
             Some(Command::Mcp { action }) => mcp_cmd::run(action, &cli.opts).await,
+            Some(Command::Relay { port }) => relay::run(port).await,
             None if cli.opts.print => run_print(cli.prompt, cli.opts).await,
             None => {
                 let t = term::get();

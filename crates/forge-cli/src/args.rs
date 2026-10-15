@@ -231,6 +231,14 @@ pub enum Command {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Carry connections to a localhost port over stdin/stdout (for a host
+    /// app that reaches this machine only through a process channel)
+    #[command(hide = true)]
+    Relay {
+        /// The port to listen on, on 127.0.0.1
+        #[arg(long)]
+        port: u16,
+    },
 }
 
 #[derive(Debug, Subcommand)]
