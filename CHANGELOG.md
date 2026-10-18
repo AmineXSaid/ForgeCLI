@@ -16,6 +16,17 @@
   permission rules accept Git Bash paths and compare paths without regard to
   case, as the filesystem does. `forge doctor` finds `git.exe`.
 
+### OpenAI-compatible endpoints
+- OpenAI's reasoning models (the o-series, GPT-5 and Codex) are sent
+  `max_completion_tokens` and no `temperature`, also behind a gateway's
+  provider prefix (`cx/gpt-5-codex`, `openai/o3` through OmniRoute,
+  OpenRouter or LiteLLM). They refused `max_tokens` with a 400.
+- A 400 that refuses a parameter Forge sets (`max_tokens` for
+  `max_completion_tokens` or back, `temperature`, `stream_options`) is
+  answered by sending the request once more as asked, and remembered for
+  that model's later turns. A value refused ("max_tokens is too large") is
+  left alone.
+
 ### Auth
 - Each endpoint gets only its own key: `FORGE_API_KEY` and `FORGE_AUTH_TOKEN`
   never reach an OpenAI-compatible endpoint, and `FORGE_OPENAI_API_KEY` never
