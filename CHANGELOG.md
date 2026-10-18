@@ -26,6 +26,14 @@
   answered by sending the request once more as asked, and remembered for
   that model's later turns. A value refused ("max_tokens is too large") is
   left alone.
+- When both length names are refused (a gateway that turns
+  `max_completion_tokens` back into `max_tokens`, as OmniRoute does for some
+  providers), the request goes without a length limit.
+- Endpoints that stray from OpenAI's stream are read anyway: a turn with tool
+  calls ends in tool use even when the stream says `stop` or nothing; a call
+  without an id gets its own; arguments sent as a JSON object are kept (they
+  were read as empty); and a whole JSON completion in answer to a streaming
+  request reads as the stream would have ("stream ended without a message").
 
 ### Auth
 - Each endpoint gets only its own key: `FORGE_API_KEY` and `FORGE_AUTH_TOKEN`

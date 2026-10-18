@@ -67,6 +67,14 @@ pub struct OpenAiProvider {
 /// Apply what an endpoint refused before to a fresh body.
 fn apply_refused(body: &mut Value, refused: &[String]) {
     let Some(o) = body.as_object_mut() else { return };
+    // Both length names refused (a gateway that turns one into the other):
+    // send no length limit at all.
+    if LENGTH_KEYS.iter().all(|k| refused.iter().any(|r| r == k)) {
+        for k in LENGTH_KEYS {
+            o.remove(k);
+        }
+        return;
+    }
     for key in refused {
         match key.as_str() {
             "max_tokens" | "max_completion_tokens" => {
@@ -81,6 +89,8 @@ fn apply_refused(body: &mut Value, refused: &[String]) {
         }
     }
 }
+
+const LENGTH_KEYS: [&str; 2] = ["max_tokens", "max_completion_tokens"];
 
 /// The keys `before` had that `after` lacks: what a refusal took out.
 fn dropped_keys(before: &Value, after: &Value) -> Vec<String> {
@@ -150,6 +160,25 @@ pub fn is_reasoning_model(model: &str) -> bool {
         || ["o1", "o3", "o4"].iter().any(|p| id == *p || id.starts_with(&format!("{p}-")))
 }
 
+/// The length parameter a (lowercased) refusal names: the one it names first,
+/// as in "'max_tokens' is not supported ... use 'max_completion_tokens'" or
+/// "Unrecognized request argument: max_completion_tokens". Named alone, a
+/// parameter counts as refused only in so many words: "max_tokens is too
+/// large" is about its value, not its name.
+fn refused_length_key(m: &str) -> Option<&'static str> {
+    let refusal =
+        ["unsupported", "not supported", "unrecognized", "unknown", "not permitted", "extra inputs", "not allowed"]
+            .iter()
+            .any(|w| m.contains(w));
+    let (old, new) = (m.find("max_tokens"), m.find("max_completion_tokens"));
+    match (old, new) {
+        (Some(a), Some(b)) if a < b => Some("max_tokens"),
+        (Some(_), None) if refusal => Some("max_tokens"),
+        (_, Some(_)) if refusal || old.is_some() => Some("max_completion_tokens"),
+        _ => None,
+    }
+}
+
 /// Change the body as a refusal asks, when it names a parameter this client
 /// sets: `max_tokens` for `max_completion_tokens` (OpenAI's reasoning models,
 /// under any name a gateway gives them), no `temperature`, no
@@ -160,23 +189,8 @@ pub fn adapt_to_refusal(body: &mut Value, err: &ApiError) -> bool {
     let m = message.to_ascii_lowercase();
     let Some(o) = body.as_object_mut() else { return false };
     let mut changed = false;
-    // The parameter refused is the one the message names first: "'max_tokens'
-    // is not supported ... use 'max_completion_tokens'", or "Unrecognized
-    // request argument: max_completion_tokens". Send the other name instead.
-    // Named alone, a parameter counts as refused only in so many words:
-    // "max_tokens is too large" is about its value, not its name.
-    let refusal =
-        ["unsupported", "not supported", "unrecognized", "unknown", "not permitted", "extra inputs", "not allowed"]
-            .iter()
-            .any(|w| m.contains(w));
-    let (old, new) = (m.find("max_tokens"), m.find("max_completion_tokens"));
-    let refused = match (old, new) {
-        (Some(a), Some(b)) if a < b => Some(("max_tokens", "max_completion_tokens")),
-        (Some(_), None) if refusal => Some(("max_tokens", "max_completion_tokens")),
-        (_, Some(_)) if refusal || old.is_some() => Some(("max_completion_tokens", "max_tokens")),
-        _ => None,
-    };
-    if let Some((from, to)) = refused {
+    if let Some(from) = refused_length_key(&m) {
+        let to = if from == "max_tokens" { "max_completion_tokens" } else { "max_tokens" };
         if let Some(v) = o.remove(from) {
             o.insert(to.into(), v);
             changed = true;
@@ -247,7 +261,13 @@ pub struct ChunkTranslator {
     stop: Option<StopReason>,
     usage: Usage,
     model: String,
+    /// A tool call was streamed: the turn ends in tool use whatever
+    /// `finish_reason` says (some providers send "stop" with tool calls).
+    saw_tool: bool,
 }
+
+/// Tool-call ids for providers that send none, unique in this process.
+static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenKind {
@@ -345,8 +365,17 @@ impl ChunkTranslator {
                 let index = match self.open {
                     Some((OpenKind::Tool, i, Some(t))) if t == tidx => i,
                     _ => {
-                        let id = call.get("id").and_then(Value::as_str).unwrap_or("call").to_string();
+                        // Without an id, results couldn't be matched to calls: give one.
+                        let id = call
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|i| !i.is_empty())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| {
+                                format!("call_forge_{}", NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                            });
                         let name = call.pointer("/function/name").and_then(Value::as_str).unwrap_or("").to_string();
+                        self.saw_tool = true;
                         self.open(
                             &mut out,
                             OpenKind::Tool,
@@ -355,12 +384,17 @@ impl ChunkTranslator {
                         )
                     }
                 };
-                if let Some(args) =
-                    call.pointer("/function/arguments").and_then(Value::as_str).filter(|a| !a.is_empty())
-                {
+                // Arguments come as JSON text, in pieces; some providers send
+                // the object itself, whole.
+                let args = match call.pointer("/function/arguments") {
+                    Some(Value::String(a)) => a.clone(),
+                    Some(o @ Value::Object(_)) => o.to_string(),
+                    _ => String::new(),
+                };
+                if !args.is_empty() {
                     out.push(StreamEvent::ContentBlockDelta {
                         index,
-                        delta: Delta::InputJsonDelta { partial_json: args.into() },
+                        delta: Delta::InputJsonDelta { partial_json: args },
                     });
                 }
             }
@@ -376,6 +410,31 @@ impl ChunkTranslator {
         Ok(out)
     }
 
+    /// A whole completion (`"object": "chat.completion"`), from a server that
+    /// answered a streaming request without streaming: its message as one
+    /// chunk, then the end.
+    pub fn push_completion(&mut self, body: &Value) -> Result<Vec<StreamEvent>, ApiError> {
+        let mut message = body.pointer("/choices/0/message").cloned().unwrap_or(Value::Null);
+        if let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) {
+            for (i, c) in calls.iter_mut().enumerate() {
+                if c.get("index").is_none() {
+                    c["index"] = json!(i);
+                }
+            }
+        }
+        let mut chunk = json!({
+            "id": body.get("id"),
+            "usage": body.get("usage"),
+            "choices": [{"delta": message, "finish_reason": body.pointer("/choices/0/finish_reason")}],
+        });
+        if let Some(e) = body.get("error") {
+            chunk["error"] = e.clone();
+        }
+        let mut out = self.push(&chunk.to_string())?;
+        self.finish_into(&mut out);
+        Ok(out)
+    }
+
     /// Close everything; idempotent.
     pub fn finish_into(&mut self, out: &mut Vec<StreamEvent>) {
         if self.finished {
@@ -384,11 +443,12 @@ impl ChunkTranslator {
         self.finished = true;
         self.ensure_started(out, None);
         self.close(out);
+        let stop = match self.stop {
+            None | Some(StopReason::EndTurn) if self.saw_tool => StopReason::ToolUse,
+            s => s.unwrap_or(StopReason::EndTurn),
+        };
         out.push(StreamEvent::MessageDelta {
-            delta: MessageDeltaBody {
-                stop_reason: Some(self.stop.unwrap_or(StopReason::EndTurn)),
-                stop_sequence: None,
-            },
+            delta: MessageDeltaBody { stop_reason: Some(stop), stop_sequence: None },
             usage: self.usage.clone(),
         });
         out.push(StreamEvent::MessageStop);
@@ -483,8 +543,10 @@ impl Provider for OpenAiProvider {
         }
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
         let mut attempt = 0;
-        // One more try with the body a refusal asks for (see `adapt_to_refusal`).
-        let mut adapted = false;
+        // Another try with the body each refusal asks for (see `adapt_to_refusal`),
+        // a few times at most: each one takes a key out or swaps a length name.
+        let mut adaptations = 0;
+        let mut refused_now: Vec<String> = Vec::new();
         let resp = loop {
             let mut rb = self.http.post(&url).json(&body);
             if let Some(k) = &self.config.api_key {
@@ -505,15 +567,37 @@ impl Provider for OpenAiProvider {
             match res {
                 Ok(r) => break r,
                 Err(e)
-                    if !adapted && {
+                    if adaptations < 3 && {
                         let before = body.clone();
-                        adapt_to_refusal(&mut body, &e) && {
+                        // A length name refused again after it was swapped away: a
+                        // gateway turns one name into the other, so refuse both.
+                        let again = match &e {
+                            ApiError::Http { status: 400 | 422, message, .. } => {
+                                refused_length_key(&message.to_ascii_lowercase())
+                                    .filter(|k| refused_now.iter().any(|r| r == k) && body.get(k).is_none())
+                            }
+                            _ => None,
+                        };
+                        if again.is_some() {
+                            for k in LENGTH_KEYS {
+                                if !refused_now.iter().any(|r| r == k) {
+                                    refused_now.push(k.to_string());
+                                }
+                            }
+                        }
+                        (adapt_to_refusal(&mut body, &e) || again.is_some()) && {
+                            for k in dropped_keys(&before, &body) {
+                                if !refused_now.contains(&k) {
+                                    refused_now.push(k);
+                                }
+                            }
+                            apply_refused(&mut body, &refused_now);
                             // Remembered for this model's later turns.
                             if let Ok(mut m) = self.refused.lock() {
                                 let keys = m.entry(request.model.clone()).or_default();
-                                for k in dropped_keys(&before, &body) {
-                                    if !keys.contains(&k) {
-                                        keys.push(k);
+                                for k in &refused_now {
+                                    if !keys.contains(k) {
+                                        keys.push(k.clone());
                                     }
                                 }
                             }
@@ -522,7 +606,7 @@ impl Provider for OpenAiProvider {
                     } =>
                 {
                     tracing::warn!(error = %e, "the endpoint refused a parameter; sending again without it");
-                    adapted = true;
+                    adaptations += 1;
                 }
                 Err(e) if e.is_retryable() && attempt < self.config.max_retries => {
                     let retry_after = match &e {
@@ -540,6 +624,17 @@ impl Provider for OpenAiProvider {
             }
         };
         let mut tr = ChunkTranslator::new(&request.model);
+        // Asked to stream, some servers answer with the whole completion.
+        let whole = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.contains("application/json"));
+        if whole {
+            let body: Value = resp.json().await.map_err(|e| ApiError::Parse(format!("a whole completion: {e}")))?;
+            let events = tr.push_completion(&body)?;
+            return Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))));
+        }
         Ok(spawn_sse_pump(resp, cancel, move |ev| match tr.push(&ev.data) {
             Ok(events) => events.into_iter().map(Ok).collect(),
             Err(e) => vec![Err(e)],
@@ -698,6 +793,97 @@ mod tests {
         assert_eq!(next, json!({"max_tokens": 128}));
     }
 
+    /// Feed chunks, return the message they make.
+    fn assemble(chunks: &[&str]) -> forge_types::ApiMessage {
+        let mut tr = ChunkTranslator::new("m");
+        let mut acc = MessageAccumulator::default();
+        for c in chunks {
+            for ev in tr.push(c).unwrap() {
+                acc.push(&ev).unwrap();
+            }
+        }
+        let mut tail = vec![];
+        tr.finish_into(&mut tail);
+        for ev in tail {
+            acc.push(&ev).unwrap();
+        }
+        acc.finish().unwrap()
+    }
+
+    #[test]
+    fn tool_calls_end_in_tool_use_even_when_the_provider_says_stop() {
+        let m = assemble(&[
+            r#"{"id":"c","choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"Read","arguments":"{\"file_path\":\"x\"}"}}]}}]}"#,
+            r#"{"id":"c","choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+        ]);
+        assert_eq!(m.stop_reason, Some(StopReason::ToolUse));
+        // No finish_reason at all, as some streams end: still tool use.
+        let m = assemble(&[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"LS","arguments":"{}"}}]}}]}"#,
+        ]);
+        assert_eq!(m.stop_reason, Some(StopReason::ToolUse));
+        // A cut-off turn stays cut off.
+        let m = assemble(&[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"LS","arguments":"{}"}}]}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+        ]);
+        assert_eq!(m.stop_reason, Some(StopReason::MaxTokens));
+        // Text alone ends the turn.
+        let m = assemble(&[r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}"#]);
+        assert_eq!(m.stop_reason, Some(StopReason::EndTurn));
+    }
+
+    #[test]
+    fn tool_calls_without_ids_get_distinct_ones_and_object_arguments_are_read() {
+        let m = assemble(&[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"Read","arguments":{"file_path":"a"}}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"","function":{"name":"Read","arguments":{"file_path":"b"}}}]}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+        ]);
+        let calls: Vec<(String, Value)> = m
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, input, .. } => Some((id.clone(), input.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 2);
+        assert_ne!(calls[0].0, calls[1].0, "{calls:?}");
+        assert!(calls.iter().all(|(id, _)| !id.is_empty()));
+        assert_eq!(calls[0].1, json!({"file_path": "a"}));
+        assert_eq!(calls[1].1, json!({"file_path": "b"}));
+    }
+
+    #[test]
+    fn a_whole_completion_reads_as_a_stream_would() {
+        let body = json!({
+            "id": "cmpl", "object": "chat.completion",
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": "Let me look.", "reasoning_content": "Check the file.",
+                "tool_calls": [
+                    {"id": "t1", "type": "function", "function": {"name": "Read", "arguments": "{\"file_path\":\"a\"}"}},
+                    {"id": "t2", "type": "function", "function": {"name": "Read", "arguments": "{\"file_path\":\"b\"}"}}
+                ]}}],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 5}
+        });
+        let mut tr = ChunkTranslator::new("m");
+        let mut acc = MessageAccumulator::default();
+        for ev in tr.push_completion(&body).unwrap() {
+            acc.push(&ev).unwrap();
+        }
+        let m = acc.finish().unwrap();
+        assert_eq!(m.stop_reason, Some(StopReason::ToolUse));
+        assert_eq!(m.usage.input_tokens, 9);
+        let tools = m.content.iter().filter(|b| matches!(b, ContentBlock::ToolUse { .. })).count();
+        assert_eq!(tools, 2, "{:?}", m.content);
+        assert!(m.content.iter().any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "Let me look.")));
+        assert!(m.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. })));
+        // An error answered whole is an error.
+        let mut tr = ChunkTranslator::new("m");
+        assert!(tr.push_completion(&json!({"error": {"message": "rate limited"}})).is_err());
+    }
+
     #[test]
     fn translates_tool_call_chunks() {
         let mut tr = ChunkTranslator::new("local");
@@ -765,5 +951,117 @@ mod tests {
         assert_eq!(msgs[2]["tool_calls"][0]["function"]["name"], "Bash");
         assert_eq!(msgs[3]["role"], "tool");
         assert_eq!(body["tools"][0]["function"]["name"], "Bash");
+    }
+
+    /// A gateway in front of a reasoning model: it turns `max_completion_tokens`
+    /// into `max_tokens`, which the model refuses. Answers with a whole JSON
+    /// completion. Returns its address and the bodies it was sent.
+    async fn rewriting_gateway() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let body = loop {
+                    let mut chunk = [0u8; 4096];
+                    let n = sock.read(&mut chunk).await.unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len: usize = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= end + 4 + len {
+                            break serde_json::from_slice::<Value>(&buf[end + 4..end + 4 + len]).unwrap();
+                        }
+                    }
+                };
+                log.lock().unwrap().push(body.clone());
+                let mut up = body;
+                if let Some(v) = up.as_object_mut().unwrap().remove("max_completion_tokens") {
+                    up["max_tokens"] = v;
+                }
+                let (status, reply) = if up.get("max_tokens").is_some() {
+                    (
+                        "400 Bad Request",
+                        json!({"error": {"message": "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.", "type": "invalid_request_error"}}),
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        json!({"id": "x", "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}),
+                    )
+                };
+                let out = reply.to_string();
+                let head = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", out.len());
+                sock.write_all(head.as_bytes()).await.unwrap();
+                sock.write_all(out.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{addr}/v1"), seen)
+    }
+
+    #[tokio::test]
+    async fn a_gateway_that_refuses_both_length_names_gets_neither() {
+        use futures::StreamExt;
+        let (base_url, seen) = rewriting_gateway().await;
+        let provider = OpenAiProvider::new(OpenAiConfig {
+            base_url,
+            api_key: None,
+            extra_headers: vec![],
+            max_retries: 0,
+            timeout: Duration::from_secs(10),
+            url_from: None,
+            key_helper: None,
+        })
+        .unwrap();
+        let req = || MessagesRequest {
+            model: "vllm/house-reasoner".into(),
+            max_tokens: 1000,
+            messages: vec![Message::user_text("hi")],
+            system: vec![],
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            temperature: None,
+            metadata: None,
+            output_config: None,
+            speed: None,
+            stream: true,
+            betas: vec![],
+        };
+        for _ in 0..2 {
+            let mut events = provider.stream(req(), CancellationToken::new()).await.unwrap();
+            let mut acc = MessageAccumulator::default();
+            while let Some(ev) = events.next().await {
+                acc.push(&ev.unwrap()).unwrap();
+            }
+            assert_eq!(acc.finish().unwrap().content.iter().filter_map(|b| b.as_text()).collect::<String>(), "ok");
+        }
+        let lengths: Vec<_> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| LENGTH_KEYS.iter().filter(|k| b.get(**k).is_some()).copied().collect::<Vec<_>>())
+            .collect();
+        // Turn one: max_tokens refused, the swap refused too, then no limit.
+        // Turn two goes straight to no limit.
+        assert_eq!(lengths, vec![vec!["max_tokens"], vec!["max_completion_tokens"], vec![], vec![]]);
+    }
+
+    #[test]
+    fn both_length_names_refused_means_no_limit_is_sent() {
+        let mut b = json!({"max_tokens": 64, "stream": true});
+        apply_refused(&mut b, &["max_tokens".into(), "max_completion_tokens".into()]);
+        assert_eq!(b, json!({"stream": true}));
     }
 }
