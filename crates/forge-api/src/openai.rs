@@ -59,6 +59,35 @@ impl Default for OpenAiConfig {
 pub struct OpenAiProvider {
     config: OpenAiConfig,
     http: reqwest::Client,
+    /// What this endpoint refused, per model, so later turns send what it
+    /// takes first time: the keys it refused (`adapt_to_refusal`).
+    refused: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+}
+
+/// Apply what an endpoint refused before to a fresh body.
+fn apply_refused(body: &mut Value, refused: &[String]) {
+    let Some(o) = body.as_object_mut() else { return };
+    for key in refused {
+        match key.as_str() {
+            "max_tokens" | "max_completion_tokens" => {
+                let other = if key == "max_tokens" { "max_completion_tokens" } else { "max_tokens" };
+                if let Some(v) = o.remove(key.as_str()) {
+                    o.insert(other.into(), v);
+                }
+            }
+            k => {
+                o.remove(k);
+            }
+        }
+    }
+}
+
+/// The keys `before` had that `after` lacks: what a refusal took out.
+fn dropped_keys(before: &Value, after: &Value) -> Vec<String> {
+    before
+        .as_object()
+        .map(|o| o.keys().filter(|k| after.get(k.as_str()).is_none()).cloned().collect())
+        .unwrap_or_default()
 }
 
 impl OpenAiProvider {
@@ -68,7 +97,7 @@ impl OpenAiProvider {
             .read_timeout(config.timeout)
             .build()
             .map_err(|e| ApiError::network(e.to_string()))?;
-        Ok(OpenAiProvider { config, http })
+        Ok(OpenAiProvider { config, http, refused: Default::default() })
     }
 }
 
@@ -92,20 +121,74 @@ pub fn to_chat_request(req: &MessagesRequest) -> Value {
             }})
         })
         .collect();
+    let reasoning = is_reasoning_model(&req.model);
     let mut body = json!({
         "model": req.model,
         "messages": messages,
-        "max_tokens": req.max_tokens,
         "stream": true,
         "stream_options": {"include_usage": true},
     });
+    // OpenAI's reasoning models take `max_completion_tokens` and only their
+    // default temperature; everything else takes `max_tokens`.
+    body[if reasoning { "max_completion_tokens" } else { "max_tokens" }] = json!(req.max_tokens);
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    if let Some(t) = req.temperature {
+    if let Some(t) = req.temperature.filter(|_| !reasoning) {
         body["temperature"] = json!(t);
     }
     body
+}
+
+/// OpenAI's reasoning models: the o-series, GPT-5 and Codex. A gateway
+/// (OmniRoute, OpenRouter, LiteLLM) puts a provider before the id
+/// (`cx/gpt-5-codex`, `openai/o3`), so only the last segment is read.
+pub fn is_reasoning_model(model: &str) -> bool {
+    let id = model.rsplit('/').next().unwrap_or(model).to_ascii_lowercase();
+    id.contains("codex")
+        || id.starts_with("gpt-5")
+        || ["o1", "o3", "o4"].iter().any(|p| id == *p || id.starts_with(&format!("{p}-")))
+}
+
+/// Change the body as a refusal asks, when it names a parameter this client
+/// sets: `max_tokens` for `max_completion_tokens` (OpenAI's reasoning models,
+/// under any name a gateway gives them), no `temperature`, no
+/// `stream_options`. True when something changed, so the request is worth
+/// sending again.
+pub fn adapt_to_refusal(body: &mut Value, err: &ApiError) -> bool {
+    let ApiError::Http { status: 400 | 422, message, .. } = err else { return false };
+    let m = message.to_ascii_lowercase();
+    let Some(o) = body.as_object_mut() else { return false };
+    let mut changed = false;
+    // The parameter refused is the one the message names first: "'max_tokens'
+    // is not supported ... use 'max_completion_tokens'", or "Unrecognized
+    // request argument: max_completion_tokens". Send the other name instead.
+    // Named alone, a parameter counts as refused only in so many words:
+    // "max_tokens is too large" is about its value, not its name.
+    let refusal =
+        ["unsupported", "not supported", "unrecognized", "unknown", "not permitted", "extra inputs", "not allowed"]
+            .iter()
+            .any(|w| m.contains(w));
+    let (old, new) = (m.find("max_tokens"), m.find("max_completion_tokens"));
+    let refused = match (old, new) {
+        (Some(a), Some(b)) if a < b => Some(("max_tokens", "max_completion_tokens")),
+        (Some(_), None) if refusal => Some(("max_tokens", "max_completion_tokens")),
+        (_, Some(_)) if refusal || old.is_some() => Some(("max_completion_tokens", "max_tokens")),
+        _ => None,
+    };
+    if let Some((from, to)) = refused {
+        if let Some(v) = o.remove(from) {
+            o.insert(to.into(), v);
+            changed = true;
+        }
+    }
+    if m.contains("temperature") && o.remove("temperature").is_some() {
+        changed = true;
+    }
+    if m.contains("stream_options") && o.remove("stream_options").is_some() {
+        changed = true;
+    }
+    changed
 }
 
 fn push_message(out: &mut Vec<Value>, m: &Message) {
@@ -461,9 +544,14 @@ impl Provider for OpenAiProvider {
     }
 
     async fn stream(&self, request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {
-        let body = to_chat_request(&request);
+        let mut body = to_chat_request(&request);
+        if let Some(r) = self.refused.lock().ok().and_then(|m| m.get(&request.model).cloned()) {
+            apply_refused(&mut body, &r);
+        }
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
         let mut attempt = 0;
+        // One more try with the body a refusal asks for (see `adapt_to_refusal`).
+        let mut adapted = false;
         let resp = loop {
             let mut rb = self.http.post(&url).json(&body);
             if let Some(k) = &self.config.api_key {
@@ -483,6 +571,26 @@ impl Provider for OpenAiProvider {
             };
             match res {
                 Ok(r) => break r,
+                Err(e)
+                    if !adapted && {
+                        let before = body.clone();
+                        adapt_to_refusal(&mut body, &e) && {
+                            // Remembered for this model's later turns.
+                            if let Ok(mut m) = self.refused.lock() {
+                                let keys = m.entry(request.model.clone()).or_default();
+                                for k in dropped_keys(&before, &body) {
+                                    if !keys.contains(&k) {
+                                        keys.push(k);
+                                    }
+                                }
+                            }
+                            true
+                        }
+                    } =>
+                {
+                    tracing::warn!(error = %e, "the endpoint refused a parameter; sending again without it");
+                    adapted = true;
+                }
                 Err(e) if e.is_retryable() && attempt < self.config.max_retries => {
                     let retry_after = match &e {
                         ApiError::Http { retry_after, .. } => *retry_after,
@@ -602,6 +710,128 @@ mod tests {
         assert!(model_ids(&json!({})).is_empty());
     }
     use forge_types::{SystemBlock, ToolSpec};
+
+    fn http_400(message: &str) -> ApiError {
+        ApiError::Http {
+            status: 400,
+            kind: "invalid_request_error".into(),
+            message: message.into(),
+            retry_after: None,
+            url: String::new(),
+            origin: None,
+        }
+    }
+
+    #[test]
+    fn knows_openai_reasoning_models_behind_any_gateway() {
+        for id in [
+            "gpt-5",
+            "gpt-5-codex",
+            "gpt-5.1-codex-mini",
+            "o3",
+            "o4-mini",
+            "o1",
+            "cx/gpt-5-codex",
+            "openai/o3-pro",
+            "codex-mini-latest",
+            "GPT-5",
+        ] {
+            assert!(is_reasoning_model(id), "{id}");
+        }
+        for id in [
+            "gpt-4o",
+            "gpt-4.1",
+            "qwen3-coder:30b",
+            "auto/best-coding",
+            "oc/big-pickle",
+            "o",
+            "omni-moderation",
+            "llama-3.3-70b",
+        ] {
+            assert!(!is_reasoning_model(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn reasoning_models_get_max_completion_tokens_and_no_temperature() {
+        let req = |model: &str| MessagesRequest {
+            model: model.into(),
+            max_tokens: 1000,
+            messages: vec![Message::user_text("hi")],
+            system: vec![],
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            temperature: Some(0.2),
+            metadata: None,
+            output_config: None,
+            speed: None,
+            stream: true,
+            betas: vec![],
+        };
+        let b = to_chat_request(&req("cx/gpt-5-codex"));
+        assert_eq!(b["max_completion_tokens"], 1000);
+        assert!(b.get("max_tokens").is_none() && b.get("temperature").is_none(), "{b}");
+        let b = to_chat_request(&req("gpt-4o"));
+        assert_eq!(b["max_tokens"], 1000);
+        assert!((b["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6, "{b}");
+        assert!(b.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn a_refused_parameter_is_changed_once_as_asked() {
+        // OpenAI's words, for a reasoning model under a name nobody recognises.
+        let mut b = json!({"model": "dva/anything", "max_tokens": 64, "temperature": 0.5, "stream_options": {"include_usage": true}});
+        let e = http_400("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.");
+        assert!(adapt_to_refusal(&mut b, &e));
+        assert_eq!(b["max_completion_tokens"], 64);
+        assert!(b.get("max_tokens").is_none());
+        // Already as asked: nothing more to change, so no endless retrying.
+        assert!(!adapt_to_refusal(&mut b, &e));
+        let e = http_400("Unsupported value: 'temperature' does not support 0.5 with this model. Only the default (1) value is supported.");
+        assert!(adapt_to_refusal(&mut b, &e) && b.get("temperature").is_none());
+        // A server that only knows max_tokens, refusing the newer name.
+        let mut b = json!({"max_completion_tokens": 64});
+        assert!(adapt_to_refusal(&mut b, &http_400("Unrecognized request argument: max_completion_tokens")));
+        assert_eq!(b["max_tokens"], 64);
+        let mut b = json!({"max_tokens": 64, "stream_options": {}});
+        assert!(adapt_to_refusal(&mut b, &http_400("stream_options: Extra inputs are not permitted")));
+        assert!(b.get("stream_options").is_none() && b["max_tokens"] == 64);
+        // A value refused, not the name: the request is left as it is.
+        let mut b = json!({"max_tokens": 64000});
+        assert!(!adapt_to_refusal(
+            &mut b,
+            &http_400("max_tokens is too large: 64000. This model supports at most 16384 completion tokens.")
+        ));
+        assert_eq!(b["max_tokens"], 64000);
+        // Anything else is not a parameter problem.
+        let mut b = json!({"max_tokens": 64});
+        assert!(!adapt_to_refusal(&mut b, &http_400("The model `x` does not exist")));
+        let server_error = ApiError::Http {
+            status: 500,
+            kind: "server_error".into(),
+            message: "max_completion_tokens".into(),
+            retry_after: None,
+            url: String::new(),
+            origin: None,
+        };
+        assert!(!adapt_to_refusal(&mut b, &server_error));
+    }
+
+    #[test]
+    fn what_was_refused_is_applied_to_the_next_turn() {
+        let before = json!({"max_tokens": 64, "temperature": 0.5, "stream": true});
+        let mut after = before.clone();
+        assert!(adapt_to_refusal(&mut after, &http_400("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.")));
+        let refused = dropped_keys(&before, &after);
+        assert_eq!(refused, vec!["max_tokens".to_string()]);
+        let mut next = json!({"max_tokens": 128, "temperature": 0.5, "stream": true});
+        apply_refused(&mut next, &refused);
+        assert_eq!(next, json!({"max_completion_tokens": 128, "temperature": 0.5, "stream": true}));
+        let mut next = json!({"max_tokens": 128, "temperature": 0.5});
+        apply_refused(&mut next, &["temperature".to_string()]);
+        assert_eq!(next, json!({"max_tokens": 128}));
+    }
 
     #[test]
     fn translates_tool_call_chunks() {
