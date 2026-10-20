@@ -1385,3 +1385,65 @@ async fn a_new_model_gets_the_whole_conversation_without_foreign_thinking() {
     }
     assert!(!other.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, ContentBlock::Thinking { .. })));
 }
+
+fn steer(uuid: &str, text: &str) -> Steer {
+    Steer { uuid: uuid.into(), content: MessageContent::Text(text.into()) }
+}
+
+#[tokio::test]
+async fn a_message_sent_mid_turn_reaches_the_next_step() {
+    let h = Harness::new(vec![MockTurn::tool("SafeA", json!({"ms": 300, "tag": "slow"})), MockTurn::text("done")]);
+    let mut e = h.engine();
+    let handle = e.handle();
+    // No turn runs yet: the host sends it as a turn of its own instead.
+    assert!(!handle.steer(steer("early", "too soon")));
+    let sender = handle.clone();
+    let sent = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(sender.steer(steer("s1", "Keep it short.")));
+        assert!(sender.steer(steer("s2", "Never mind, take it back.")));
+        assert!(sender.cancel_steer("s2"));
+    });
+    let r = e.submit(prompt("work")).await;
+    sent.await.unwrap();
+    assert_eq!(r.result.as_deref(), Some("done"));
+    // The second request carries it, after the tool's result.
+    let second = &h.provider.requests()[1];
+    let texts: String = second.messages.iter().flat_map(|m| m.content.iter()).filter_map(|b| b.as_text()).collect();
+    assert!(texts.contains("Keep it short."), "{texts}");
+    assert!(!texts.contains("take it back"));
+    // The host hears it landed, under its own id and words.
+    assert!(h.sink.take().iter().any(|ev| matches!(ev, EngineEvent::PromptAccepted { uuid, message }
+        if uuid == "s1" && message.content.iter().any(|b| b.as_text() == Some("Keep it short.")))));
+    // Delivered, so nothing is left; and the turn is over.
+    assert!(handle.take_steers().is_empty());
+    assert!(!handle.turn_running());
+    assert!(!handle.cancel_steer("s1"));
+}
+
+#[tokio::test]
+async fn a_message_the_turn_ended_before_reaching_is_left_for_the_next() {
+    let h = Harness::new(vec![MockTurn::text("quick answer")]);
+    let mut e = h.engine();
+    let handle = e.handle();
+    // Queued while the turn runs (as a host would, from another task), never delivered:
+    // the model answered without another step.
+    let sender = handle.clone();
+    let probe = tokio::spawn(async move {
+        for _ in 0..200 {
+            if sender.turn_running() {
+                return sender.steer(steer("late", "One more thing."));
+            }
+            tokio::task::yield_now().await;
+        }
+        false
+    });
+    let r = e.submit(prompt("hi")).await;
+    let queued = probe.await.unwrap();
+    assert_eq!(r.result.as_deref(), Some("quick answer"));
+    let left = handle.take_steers();
+    // Either it made it in while the turn ran (and waits for the next), or the turn was
+    // already over and the host would have sent it as a turn of its own.
+    assert_eq!(left.len(), usize::from(queued));
+    assert!(!handle.turn_running());
+}

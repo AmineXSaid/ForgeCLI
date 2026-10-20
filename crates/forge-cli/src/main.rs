@@ -446,7 +446,25 @@ async fn run_print(cli_prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             };
             match input {
                 Some(Input::User(content)) => {
-                    let flow = driver.input(content, &mut |r| rep.report(r)).await;
+                    let mut flow = driver.input(content, &mut |r| rep.report(r)).await;
+                    // Messages sent for the turn's next step that it ended before reaching: they
+                    // run now, as one turn, in the order sent (the turn refuses new ones once over).
+                    loop {
+                        let left = driver.handle().take_steers();
+                        if left.is_empty() || flow == forge_core::Flow::Exit {
+                            break;
+                        }
+                        rep.flush();
+                        let mut blocks = Vec::new();
+                        for (i, steer) in left.into_iter().enumerate() {
+                            if i > 0 {
+                                blocks.push(forge_types::ContentBlock::text("\n\n"));
+                            }
+                            blocks.extend(steer.content.into_blocks());
+                        }
+                        let joined = forge_types::MessageContent::Blocks(blocks);
+                        flow = driver.input(joined, &mut |r| rep.report(r)).await;
+                    }
                     // A single prompt that set a goal fails when the goal ends unmet.
                     if !stream_in && rep.code == exit::OK && driver.goal.as_ref().is_some_and(|g| g.ended_unmet()) {
                         rep.fail(exit::FAILED);

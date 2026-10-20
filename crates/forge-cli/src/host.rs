@@ -207,6 +207,11 @@ impl ControlContext {
                 }
                 None => self.answer(id, Err(format!("invalid permission mode {:?}", b.data.get("mode")))),
             },
+            // Take back a message sent for the turn's next step, if it hasn't reached the model.
+            "cancel_queued" => {
+                let cancelled = b.get_str("uuid").is_some_and(|u| self.live.handle().cancel_steer(u));
+                self.answer(id, Ok(Some(json!({"cancelled": cancelled}))));
+            }
             "set_model" => {
                 self.live.handle().set_model(b.get_str("model").unwrap_or("default"));
                 self.answer(id, Ok(None));
@@ -303,6 +308,17 @@ pub async fn read_stdin(ctx: Arc<ControlContext>, tx: mpsc::UnboundedSender<Inpu
                 let cat = forge_core::commands::Catalog::default();
                 match forge_core::commands::command_text(&u.message.content) {
                     Some(text) if forge_core::commands::immediate(&text, &cat) => ctx.answer_immediate(text),
+                    // Sent while a turn runs, for its next step (`priority: "next"`): the model reads
+                    // it between tool calls. With no turn running, it is a turn of its own.
+                    _ if u.priority.as_deref() == Some("next") && u.uuid.is_some() => {
+                        let steer = forge_engine::Steer {
+                            uuid: u.uuid.clone().unwrap_or_default(),
+                            content: u.message.content.clone(),
+                        };
+                        if !ctx.live.handle().steer(steer) {
+                            let _ = tx.send(Input::User(u.message.content));
+                        }
+                    }
                     _ => {
                         let _ = tx.send(Input::User(u.message.content));
                     }

@@ -254,6 +254,19 @@ pub struct EngineHandle {
     /// Task agents running in this engine's turn, by their Task call's `tool_use_id`:
     /// a host stops one, or all, without ending the turn (`stop_task`).
     agents: Arc<Mutex<HashMap<String, (u64, CancellationToken)>>>,
+    /// Messages a host sent while the turn ran (a user line with `priority: "next"`): the
+    /// model gets them at its next step, between tool calls, as Claude Code does.
+    steers: Arc<Mutex<Vec<Steer>>>,
+    /// A turn is running: a steered message can still reach it.
+    turn_running: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A message sent while a turn runs, waiting for the model's next step.
+#[derive(Clone, Debug)]
+pub struct Steer {
+    /// The host's id for it, echoed when it is delivered (`PromptAccepted`).
+    pub uuid: String,
+    pub content: MessageContent,
 }
 
 /// A running Task agent's place in [`EngineHandle`]'s registry; dropping it removes the entry.
@@ -315,6 +328,42 @@ impl EngineHandle {
         let mut ids: Vec<String> = self.agents.lock().unwrap().keys().cloned().collect();
         ids.sort();
         ids
+    }
+
+    /// Queue a message for the running turn's next step. False when no turn runs:
+    /// the host sends it as a turn of its own instead.
+    pub fn steer(&self, steer: Steer) -> bool {
+        let mut steers = self.steers.lock().unwrap();
+        if !self.turn_running() {
+            return false;
+        }
+        steers.push(steer);
+        true
+    }
+
+    /// Take back a message not yet delivered. False when it was (or never was queued).
+    pub fn cancel_steer(&self, uuid: &str) -> bool {
+        let mut steers = self.steers.lock().unwrap();
+        let before = steers.len();
+        steers.retain(|s| s.uuid != uuid);
+        steers.len() != before
+    }
+
+    /// The messages waiting, in the order sent; the queue is left empty.
+    pub fn take_steers(&self) -> Vec<Steer> {
+        std::mem::take(&mut *self.steers.lock().unwrap())
+    }
+
+    pub fn turn_running(&self) -> bool {
+        self.turn_running.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether a turn runs; set by the turn itself and cleared by its host loop, which
+    /// then takes what is left ([`EngineHandle::take_steers`]) as the next turn.
+    pub fn set_turn_running(&self, on: bool) {
+        // Under the queue's lock, so a message is either queued before this or refused.
+        let _steers = self.steers.lock().unwrap();
+        self.turn_running.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Interrupt the running turn (contract C3).
@@ -546,6 +595,8 @@ impl Engine {
             transcript: parts.transcript.clone(),
             snapshot: Default::default(),
             agents: Default::default(),
+            steers: Default::default(),
+            turn_running: Default::default(),
         };
         let shared = Arc::new(Shared {
             provider: parts.provider,
@@ -632,6 +683,28 @@ impl Engine {
         self.state.context_tokens = from.context_tokens;
         self.state.counted = from.counted;
         self.session_started = !self.state.messages.is_empty();
+    }
+
+    /// Give the model the messages sent while the turn ran, each as a user message of its
+    /// own (said to come mid-task), and tell the host each one landed.
+    fn deliver_steers(&mut self) {
+        for steer in self.handle.take_steers() {
+            let mut blocks = steer.content.clone().into_blocks();
+            blocks.insert(
+                0,
+                ContentBlock::text(
+                    "<system-reminder>\nThe user sent the message below while you were working. Take it into \
+                     account now: adjust what you are doing, or answer it, then carry on.\n</system-reminder>",
+                ),
+            );
+            let msg = Message::user(blocks);
+            self.push_user(msg, false, None, false);
+            // The host's own id and words, so it can tell which of its messages landed.
+            self.emit(EngineEvent::PromptAccepted {
+                message: Message::user(steer.content.into_blocks()),
+                uuid: steer.uuid,
+            });
+        }
     }
 
     /// Tell the model something with the next prompt (a system reminder).
@@ -1454,8 +1527,20 @@ impl Engine {
         t
     }
 
-    /// Run one user turn to completion.
+    /// Run one user turn to completion. While it runs, a host may send messages for its
+    /// next step ([`EngineHandle::steer`]); any it ended before reaching are left for the
+    /// host to run next ([`EngineHandle::take_steers`]).
     pub async fn submit(&mut self, prompt: MessageContent) -> TurnResult {
+        if self.cfg.is_subagent {
+            return self.run_turn(prompt).await;
+        }
+        self.handle.set_turn_running(true);
+        let result = self.run_turn(prompt).await;
+        self.handle.set_turn_running(false);
+        result
+    }
+
+    async fn run_turn(&mut self, prompt: MessageContent) -> TurnResult {
         self.adopt_model();
         let started = Instant::now();
         let cancel = self.new_turn_token();
@@ -1900,6 +1985,10 @@ impl Engine {
                         Some("interrupted".into()),
                         None,
                     );
+                }
+                // What you sent while it worked: the model reads it now, at its next step.
+                if !self.cfg.is_subagent {
+                    self.deliver_steers();
                 }
                 if let Some(reason) = turn.stop.clone() {
                     self.notice(NoticeLevel::Info, format!("Stopped by hook: {reason}"));

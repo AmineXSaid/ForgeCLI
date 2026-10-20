@@ -397,6 +397,52 @@ async fn replay_uuid_drives_rewind_files() {
 }
 
 #[tokio::test]
+async fn a_message_sent_mid_turn_reaches_the_model_at_its_next_step() {
+    let e = env();
+    let f = e.cwd.join("notes.txt");
+    std::fs::write(&f, "notes").unwrap();
+    let api = MockApi::start(vec![
+        MockTurn::tool("Read", json!({"file_path": f})).with_delay(Duration::from_millis(400)),
+        MockTurn::text("Short, as asked."),
+    ])
+    .await;
+    let mut h =
+        Host::spawn(command(&forge_bin(), &e.cwd, &e.home, &api.url, &stream_args(&["--replay-user-messages"])));
+    h.send_user("read the notes").await;
+    h.until(|v| v["type"] == "user" && v["isReplay"] == true).await;
+    // While the model streams its first step: one message for its next step, one taken back.
+    let next = |uuid: &str, text: &str| {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+            "parent_tool_use_id": null, "session_id": "", "uuid": uuid, "priority": "next"})
+    };
+    h.send(next("q1", "Keep it short.")).await;
+    h.send(next("q2", "Forget that.")).await;
+    h.send(
+        json!({"type": "control_request", "request_id": "c1", "request": {"subtype": "cancel_queued", "uuid": "q2"}}),
+    )
+    .await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "c1").await;
+    assert_eq!(r["response"]["response"]["cancelled"], true, "{r}");
+    // It lands under its own id, before the turn's result, as one turn.
+    let landed = h.until(|v| v["type"] == "user" && v["isReplay"] == true).await;
+    assert_eq!(landed["uuid"], "q1", "{landed}");
+    let result = h.until_type("result").await;
+    assert_eq!(result["result"], "Short, as asked.");
+    assert_eq!(api.requests().len(), 2, "no extra turn");
+    let second = api.requests()[1]["messages"].to_string();
+    assert!(second.contains("Keep it short."), "{second}");
+    assert!(!second.contains("Forget that."));
+    // Too late to take back now.
+    h.send(
+        json!({"type": "control_request", "request_id": "c2", "request": {"subtype": "cancel_queued", "uuid": "q1"}}),
+    )
+    .await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "c2").await;
+    assert_eq!(r["response"]["response"]["cancelled"], false);
+    h.wait().await;
+}
+
+#[tokio::test]
 async fn headless_denies_and_reports() {
     let e = env();
     let api = MockApi::start(vec![
