@@ -1411,6 +1411,8 @@ async fn a_message_sent_mid_turn_reaches_the_next_step() {
     let second = &h.provider.requests()[1];
     let texts: String = second.messages.iter().flat_map(|m| m.content.iter()).filter_map(|b| b.as_text()).collect();
     assert!(texts.contains("Keep it short."), "{texts}");
+    // Said to come mid-task: more work joins the task list, the work in hand goes on.
+    assert!(texts.contains(STEER_REMINDER), "{texts}");
     assert!(!texts.contains("take it back"));
     // The host hears it landed, under its own id and words.
     assert!(h.sink.take().iter().any(|ev| matches!(ev, EngineEvent::PromptAccepted { uuid, message }

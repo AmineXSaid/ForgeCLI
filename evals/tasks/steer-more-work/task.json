@@ -1,0 +1,11 @@
+{
+  "instruction": "For each of a.txt, b.txt and c.txt, one at a time, write its number of lines into counts/<name>.count (for example counts/a.count), as a bare number.",
+  "steer": {
+    "after_tool_calls": 1,
+    "text": "Also write the sum of the three counts into counts/total. Finish the per-file counts first."
+  },
+  "check": "[ \"$(cat counts/a.count)\" = 3 ] && [ \"$(cat counts/b.count)\" = 5 ] && [ \"$(cat counts/c.count)\" = 2 ] && [ \"$(cat counts/total)\" = 10 ]",
+  "pillar": "long-horizon",
+  "tags": ["steering", "mid-turn"],
+  "timeout_secs": 600
+}

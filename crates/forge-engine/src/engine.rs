@@ -261,6 +261,15 @@ pub struct EngineHandle {
     turn_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// What the model is told about a message sent while it works. More work is added to the
+/// task list and done after the current step, so neither the new request nor the work in
+/// hand is dropped; a correction or a stop applies at once.
+pub const STEER_REMINDER: &str = "<system-reminder>\nThe user sent the message below while you were working. \
+    If it corrects, redirects or stops the current work, follow it now. If it asks for more work, \
+    add it to your task list (TodoWrite), finish the step you are on, then do it: do not drop \
+    what you were doing, and do not forget the new request. If it is a question, answer it \
+    briefly and carry on.\n</system-reminder>";
+
 /// A message sent while a turn runs, waiting for the model's next step.
 #[derive(Clone, Debug)]
 pub struct Steer {
@@ -690,13 +699,7 @@ impl Engine {
     fn deliver_steers(&mut self) {
         for steer in self.handle.take_steers() {
             let mut blocks = steer.content.clone().into_blocks();
-            blocks.insert(
-                0,
-                ContentBlock::text(
-                    "<system-reminder>\nThe user sent the message below while you were working. Take it into \
-                     account now: adjust what you are doing, or answer it, then carry on.\n</system-reminder>",
-                ),
-            );
+            blocks.insert(0, ContentBlock::text(STEER_REMINDER));
             let msg = Message::user(blocks);
             self.push_user(msg, false, None, false);
             // The host's own id and words, so it can tell which of its messages landed.

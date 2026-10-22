@@ -47,6 +47,40 @@ pub struct TaskSpec {
     /// Extra `forge` arguments for this task.
     #[serde(default)]
     pub args: Vec<String>,
+    /// A message sent while the agent works, as a desktop host sends one.
+    #[serde(default)]
+    pub steer: Option<SteerSpec>,
+}
+
+/// A message sent mid-turn (`priority: "next"`) once the agent has made `after_tool_calls`
+/// tool calls; if the turn ends before that, it is sent as the next turn instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SteerSpec {
+    pub after_tool_calls: usize,
+    pub text: String,
+}
+
+/// A stream-json user line; a steer is marked for the running turn's next step.
+fn user_line(text: &str, steer: bool) -> String {
+    let mut v = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": text }] },
+        "parent_tool_use_id": null,
+        "session_id": "",
+    });
+    if steer {
+        v["priority"] = "next".into();
+        v["uuid"] = "forge-eval-steer".into();
+    }
+    format!("{v}\n")
+}
+
+/// Tool calls the main agent made in one stream line (a sub-agent's are not counted).
+fn tool_uses(v: &Value) -> usize {
+    if v["type"] != "assistant" || v.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
+        return 0;
+    }
+    v["message"]["content"].as_array().map_or(0, |c| c.iter().filter(|b| b["type"] == "tool_use").count())
 }
 
 fn default_timeout() -> u64 {
@@ -350,14 +384,19 @@ pub async fn run_task(task: &Task, run: u32, opts: &RunOptions) -> anyhow::Resul
         }
     }
 
+    let steer = task.spec.steer.as_ref();
     let mut cmd = Command::new(&opts.forge);
-    cmd.arg("-p")
-        .arg(&task.spec.instruction)
-        .args(["--output-format", "stream-json", "--verbose"])
+    cmd.arg("-p");
+    // A task that steers talks to forge over stdin, as a host does.
+    match steer {
+        Some(_) => cmd.args(["--input-format", "stream-json"]),
+        None => cmd.arg(&task.spec.instruction),
+    };
+    cmd.args(["--output-format", "stream-json", "--verbose"])
         .args(&opts.args)
         .args(&task.spec.args)
         .current_dir(&ws)
-        .stdin(Stdio::null())
+        .stdin(if steer.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -368,14 +407,30 @@ pub async fn run_task(task: &Task, run: u32, opts: &RunOptions) -> anyhow::Resul
     let mut child = cmd.spawn().with_context(|| format!("cannot start {}", opts.forge.display()))?;
     let stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
+    let mut stdin = child.stdin.take();
+    if let Some(w) = stdin.as_mut() {
+        w.write_all(user_line(&task.spec.instruction, false).as_bytes()).await?;
+    }
     let transcript_path = run_dir.join("transcript.jsonl");
     let mut transcript = tokio::fs::File::create(&transcript_path).await?;
     let collect = async {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let mut parsed = vec![];
+        let mut calls = 0;
         while let Ok(Some(l)) = lines.next_line().await {
             let _ = transcript.write_all(format!("{l}\n").as_bytes()).await;
             if let Ok(v) = serde_json::from_str::<Value>(&l) {
+                calls += tool_uses(&v);
+                // The steer goes once the agent is that far in, or as the next turn if the
+                // turn ended first; then stdin closes and forge exits when the work is done.
+                if let (Some(s), Some(mut w)) = (steer, stdin.take()) {
+                    let ended = v["type"] == "result";
+                    if calls >= s.after_tool_calls || ended {
+                        let _ = w.write_all(user_line(&s.text, !ended).as_bytes()).await;
+                    } else {
+                        stdin = Some(w);
+                    }
+                }
                 parsed.push(v);
             }
         }
@@ -596,6 +651,25 @@ pub fn render_compare(a: &Report, b: &Report) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_steer_is_a_user_line_for_the_next_step() {
+        let v: Value = serde_json::from_str(&user_line("Also do d.", true)).unwrap();
+        assert_eq!((v["type"].as_str(), v["priority"].as_str()), (Some("user"), Some("next")));
+        assert_eq!(v["message"]["content"][0]["text"], "Also do d.");
+        assert!(v["uuid"].is_string());
+        let plain: Value = serde_json::from_str(&user_line("Go.", false)).unwrap();
+        assert!(plain.get("priority").is_none());
+    }
+
+    #[test]
+    fn only_the_main_agents_tool_calls_count() {
+        let main = json!({"type": "assistant", "parent_tool_use_id": null, "message": {"content": [
+            {"type": "text", "text": "x"}, {"type": "tool_use"}, {"type": "tool_use"}]}});
+        let sub =
+            json!({"type": "assistant", "parent_tool_use_id": "t1", "message": {"content": [{"type": "tool_use"}]}});
+        assert_eq!((tool_uses(&main), tool_uses(&sub), tool_uses(&json!({"type": "result"}))), (2, 0, 0));
+    }
 
     fn rec(passed: bool, had_error: bool, false_finish: bool, cost: f64) -> RunRecord {
         RunRecord {
