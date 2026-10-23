@@ -223,6 +223,40 @@ async fn host_permission_prompt_allow_and_deny() {
 }
 
 #[tokio::test]
+async fn host_reads_what_fills_the_context() {
+    let e = env();
+    let api = MockApi::start(vec![MockTurn::text("a short answer")]).await;
+    let mut h = Host::spawn(command(&forge_bin(), &e.cwd, &e.home, &api.url, &stream_args(&[])));
+    let ask =
+        |id: &str| json!({"type": "control_request", "request_id": id, "request": {"subtype": "get_context_usage"}});
+    h.send(ask("c1")).await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "c1").await;
+    assert_eq!(r["response"]["subtype"], "success");
+    let before = &r["response"]["response"];
+    let window = before["window"].as_u64().unwrap();
+    assert!(window > 0, "{before}");
+    // The parts add up to the total, and what is left is free.
+    let parts: u64 = before["categories"].as_array().unwrap().iter().map(|c| c["tokens"].as_u64().unwrap()).sum();
+    assert_eq!(parts, before["total"].as_u64().unwrap());
+    assert_eq!(before["free"].as_u64().unwrap(), window - parts);
+    let named = |v: &serde_json::Value, name: &str| {
+        v["categories"].as_array().unwrap().iter().find(|c| c["name"] == name).map(|c| c["tokens"].as_u64().unwrap())
+    };
+    assert!(named(before, "System prompt").unwrap() > 0);
+    assert!(named(before, "Built-in tools").unwrap() > 0);
+    assert!(!before["tools"].as_array().unwrap().is_empty());
+    // After a turn, the conversation counts.
+    h.send_user("hello").await;
+    h.until_type("result").await;
+    h.send(ask("c2")).await;
+    let r = h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "c2").await;
+    let after = &r["response"]["response"];
+    assert!(named(after, "Messages").unwrap() > named(before, "Messages").unwrap(), "{after}");
+    let (code, _) = h.wait().await;
+    assert_eq!(code, 0);
+}
+
+#[tokio::test]
 async fn host_controls_mode_model_and_interrupt() {
     let e = env();
     let api =

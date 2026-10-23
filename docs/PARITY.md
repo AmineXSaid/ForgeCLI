@@ -47,6 +47,7 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `control_request` `set_model` | done | inferred | `e2e::host_controls_mode_model_and_interrupt` |  |
 | `control_request` `set_max_thinking_tokens` | done | inferred | `e2e::host_sets_thinking_tokens` |  |
 | `control_request` `mcp_status` | done | inferred | `mcp::session_uses_mcp_tools_and_reports_status` | `{mcpServers: [{name, status, scope, serverInfo, tools, error}]}` |
+| `control_request` `get_context_usage` | done | forge | `forge-cli::e2e::host_reads_what_fills_the_context` | Forge's own: `/context`'s numbers as JSON (model, window, total, free, measured, autocompactAt, categories, tools, memoryFiles, skills, tips), answered from the view, mid-turn too |
 | `control_request` `mcp_reconnect` | done | inferred | `client::servers_turn_off_on_and_reconnect` | `{serverName}`; answered when the restart ends (success with no body, or an error saying why), while other control requests keep being answered |
 | `control_request` `mcp_toggle` | done | inferred | `client::servers_turn_off_on_and_reconnect` | `{serverName, enabled}`; the same as `/mcp enable` / `disable`, saved the same way |
 | `control_request` `rewind_files` | done | inferred | `e2e::replay_uuid_drives_rewind_files` | Contract C4 |

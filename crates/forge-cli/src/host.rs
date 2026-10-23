@@ -225,6 +225,9 @@ impl ControlContext {
                 let servers = self.mcp.as_ref().map(|m| m.status_json()).unwrap_or_else(|| json!([]));
                 self.answer(id, Ok(Some(json!({"mcpServers": servers}))))
             }
+            // What fills the context window (`/context`'s numbers), from the
+            // published view: answered at once, mid-turn too.
+            "get_context_usage" => self.answer(id, Ok(Some(forge_core::commands::context_usage(&self.view)))),
             "rewind_files" => {
                 let Some(msg_id) = b.get_str("user_message_id") else {
                     return self.answer(id, Err("user_message_id is required".into()));

@@ -401,6 +401,44 @@ pub(super) fn context_data(v: &SessionView) -> ContextData {
     c
 }
 
+/// What fills the context window, for a host (`get_context_usage`): the
+/// numbers `/context` shows, as JSON. Counts are estimates at four
+/// characters a token, except `measured`, the size the endpoint reported for
+/// the last request (0 when it hasn't said).
+pub fn context_usage(v: &SessionView) -> Value {
+    let c = context_data(v);
+    let rows = |rows: &[(String, u64)], key: &str| -> Vec<Value> {
+        rows.iter().map(|(n, t)| serde_json::json!({ key: n, "tokens": t })).collect()
+    };
+    let mut categories = vec![
+        serde_json::json!({"name": "System prompt", "tokens": c.system}),
+        serde_json::json!({"name": "Built-in tools", "tokens": c.builtin}),
+        serde_json::json!({"name": "MCP tools", "tokens": c.mcp}),
+        serde_json::json!({"name": "Skills", "tokens": c.skills}),
+    ];
+    // Before the first prompt the memory files wait to be sent; after it
+    // they are part of the messages, and counted there.
+    if c.memory_pending && c.memory > 0 {
+        categories.push(serde_json::json!({"name": "Memory files", "tokens": c.memory}));
+    }
+    categories.push(serde_json::json!({"name": "Messages", "tokens": c.messages}));
+    serde_json::json!({
+        "model": c.model,
+        "window": c.window,
+        "total": c.total(),
+        "free": c.free(),
+        "measured": c.measured,
+        "autocompactAt": c.autocompact_at,
+        "memoryPending": c.memory_pending,
+        "memory": c.memory,
+        "categories": categories,
+        "tools": rows(&c.tools, "name"),
+        "memoryFiles": rows(&c.memory_files, "path"),
+        "skills": rows(&c.skill_rows, "name"),
+        "tips": c.tips,
+    })
+}
+
 fn context(v: &SessionView, args: &str) -> Exec {
     let all = match args {
         "" => false,
