@@ -40,7 +40,8 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             };
         }
         Invocation::Skills { chain, args } => {
-            let prompts: Vec<String> = chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args)).collect();
+            let prompts: Vec<String> =
+                chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args, d.engine.tool_ctx())).collect();
             return Exec::Submit(MessageContent::Text(prompts.join("\n\n")));
         }
         Invocation::McpPrompt { name, args } => {

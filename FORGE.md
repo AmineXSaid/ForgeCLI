@@ -36,3 +36,11 @@ cargo test --workspace
 ForgeCLI uses only Forge names: `FORGE_*` environment variables, `.forge/` and
 `FORGE.md` for configuration, and neutral wording in docs. API wire constants
 stay confined to `crates/forge-api/src/messages.rs`.
+
+One exception, for compatibility: skills, commands, agents and plugins written
+for the reference CLI load unchanged. So ForgeCLI also reads its folders
+(`~/.claude/<kind>`, or `$CLAUDE_CONFIG_DIR`, and `.claude/<kind>` from the
+repository root down), its plugin manifest (`.claude-plugin/plugin.json`) and
+its `${CLAUDE_*}` placeholders, each as an alias of the Forge name
+(`${FORGE_SKILL_DIR}`, `${FORGE_PLUGIN_ROOT}`…). Forge's own files and docs
+keep the Forge names.

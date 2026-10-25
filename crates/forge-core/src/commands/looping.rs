@@ -116,7 +116,11 @@ pub(crate) async fn scheduled_prompt(d: &Driver, prompt: &str) -> MessageContent
             }
         }
         Invocation::Skills { chain, args } if chain.iter().all(|s| s.model_invocable) => MessageContent::Text(
-            chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args)).collect::<Vec<_>>().join("\n\n"),
+            chain
+                .iter()
+                .map(|s| forge_agents::skills::skill_prompt(s, args, d.engine.tool_ctx()))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
         ),
         _ => MessageContent::Text(prompt.to_string()),
     }

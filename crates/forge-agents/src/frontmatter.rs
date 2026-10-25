@@ -26,25 +26,44 @@ impl Frontmatter {
     }
 
     /// A list field, or a comma/space separated text field read as a list.
+    /// `Bash(git add *) Bash(git commit *)` is two items: separators inside
+    /// parentheses or quotes don't split.
     pub fn list(&self, key: &str) -> Option<Vec<String>> {
         match self.fields.get(key)? {
             Field::List(l) => Some(l.clone()),
-            Field::Text(t) => Some(
-                t.split([',', ' '])
-                    .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect(),
-            ),
+            Field::Text(t) => Some(split_items(t, &[',', ' ', '\t'])),
         }
     }
 
     pub fn flag(&self, key: &str) -> Option<bool> {
         match self.text(key)?.to_ascii_lowercase().as_str() {
-            "true" | "yes" | "on" => Some(true),
-            "false" | "no" | "off" => Some(false),
+            "true" | "yes" | "on" | "1" => Some(true),
+            "false" | "no" | "off" | "0" => Some(false),
             _ => None,
         }
     }
+}
+
+/// `text` split at any of `seps` outside parentheses and quotes; each item
+/// trimmed and unquoted, empty ones dropped.
+fn split_items(text: &str, seps: &[char]) -> Vec<String> {
+    let (mut out, mut cur, mut depth, mut quote) = (vec![], String::new(), 0usize, None::<char>);
+    for c in text.chars() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (None, '"' | '\'') if cur.trim().is_empty() => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => depth = depth.saturating_sub(1),
+            (None, _) if depth == 0 && seps.contains(&c) => {
+                out.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    out.push(cur);
+    out.into_iter().map(|s| unquote(&s)).filter(|s| !s.is_empty()).collect()
 }
 
 fn unquote(v: &str) -> String {
@@ -94,11 +113,17 @@ pub fn parse(text: &str) -> (Frontmatter, String) {
             }
             fm.fields.insert(key, if items.is_empty() { Field::Text(String::new()) } else { Field::List(items) });
         } else if let Some(inner) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            let items = inner.split(',').map(unquote).filter(|s| !s.is_empty()).collect();
             fm.raw.insert(key.clone(), v.to_string());
-            fm.fields.insert(key, Field::List(items));
+            fm.fields.insert(key, Field::List(split_items(inner, &[','])));
         } else {
-            fm.fields.insert(key, Field::Text(unquote(v)));
+            // A plain value may go on over indented lines: YAML folds them with spaces.
+            let mut value = v.to_string();
+            while i < lines.len() && lines[i].starts_with([' ', '\t']) && !lines[i].trim_start().starts_with("- ") {
+                value.push(' ');
+                value.push_str(lines[i].trim());
+                i += 1;
+            }
+            fm.fields.insert(key, Field::Text(unquote(&value)));
         }
     }
     (fm, body)
@@ -123,5 +148,15 @@ mod tests {
         assert!(fm.fields.is_empty());
         assert_eq!(body, "no frontmatter\n---\nhere");
         assert_eq!(parse("---\nmodel: haiku\n---\n").0.list("model").unwrap(), ["haiku"]);
+    }
+
+    #[test]
+    fn reads_reference_cli_skill_frontmatter() {
+        let text = "---\nname: pdf\ndescription: Extract text from PDFs.\n  Use it when the user shares a PDF.\nallowed-tools: Bash(git add *) Bash(git commit *), Read\nargs: [\"Bash(a, b)\", Write]\nfork: 1\n---\n";
+        let (fm, _) = parse(text);
+        assert_eq!(fm.text("description"), Some("Extract text from PDFs. Use it when the user shares a PDF."));
+        assert_eq!(fm.list("allowed-tools").unwrap(), ["Bash(git add *)", "Bash(git commit *)", "Read"]);
+        assert_eq!(fm.list("args").unwrap(), ["Bash(a, b)", "Write"]);
+        assert_eq!(fm.flag("fork"), Some(true));
     }
 }

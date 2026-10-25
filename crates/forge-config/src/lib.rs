@@ -74,14 +74,40 @@ pub enum Scope {
     Project,
 }
 
+/// The reference CLI's configuration folder, read for compatibility so the
+/// skills, commands and agents installed for it load here unchanged:
+/// `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
+pub fn compat_home() -> PathBuf {
+    env_dir("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home().join(".claude"))
+}
+
+/// The folders from the project's repository root down to `project`, root
+/// first: where its `.claude/<kind>` folders are looked for. Outside a
+/// repository, only `project`. A linked worktree (`.git` is a file) is its own root.
+pub fn project_chain(project: &Path) -> Vec<PathBuf> {
+    let mut chain = vec![];
+    for dir in project.ancestors() {
+        chain.push(dir.to_path_buf());
+        if dir.join(".git").exists() {
+            chain.reverse();
+            return chain;
+        }
+    }
+    vec![project.to_path_buf()]
+}
+
 /// Directories holding `kind` resources (`agents`, `commands`, `skills`,
-/// `output-styles`), lowest precedence first: user, then the project's
-/// vendor-neutral `.agents/<kind>` (shared with other agent CLIs), then its
-/// `.forge/<kind>`.
+/// `output-styles`), lowest precedence first: the user's (the reference CLI's
+/// `~/.claude/<kind>`, then Forge's), then the project's: `.claude/<kind>` from
+/// the repository root down, the vendor-neutral `.agents/<kind>` (shared with
+/// other agent CLIs), then `.forge/<kind>`.
 pub fn resource_dirs(kind: &str, project: &Path) -> Vec<(Scope, PathBuf)> {
-    vec![
-        (Scope::User, forge_home().join(kind)),
-        (Scope::Project, project.join(".agents").join(kind)),
-        (Scope::Project, project.join(".forge").join(kind)),
-    ]
+    let mut out = vec![(Scope::User, compat_home().join(kind)), (Scope::User, forge_home().join(kind))];
+    out.extend(project_chain(project).into_iter().map(|d| (Scope::Project, d.join(".claude").join(kind))));
+    out.push((Scope::Project, project.join(".agents").join(kind)));
+    out.push((Scope::Project, project.join(".forge").join(kind)));
+    // A project at the home folder: its `.claude` is the user's, read once.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|(_, d)| seen.insert(d.clone()));
+    out
 }

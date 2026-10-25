@@ -748,7 +748,8 @@ async fn cd_and_reload_rebuild_the_session() {
     let id = t.d.info.session_id.clone();
     let n = t.d.engine.state.messages.len();
     let out = local(&mut t.d, "/reload-skills").await;
-    assert!(out.starts_with("Reloaded: 13 skills (+1, -0)"), "{out}");
+    // (The total counts the machine's own user skills too; the change is what's checked.)
+    assert!(out.starts_with("Reloaded: ") && out.contains(" skills (+1, -0)"), "{out}");
     assert_eq!((t.d.info.session_id.clone(), t.d.engine.state.messages.len()), (id, n));
     assert!(local(&mut t.d, "/skills").await.contains("lint - Lint it"));
 }

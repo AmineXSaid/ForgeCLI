@@ -187,11 +187,8 @@ pub fn resolve_mcp(opts: &LaunchOptions) -> forge_mcp::Resolved {
     let cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
     let settings = session_settings(opts, &cwd);
     // Plugin servers count as explicitly chosen, like --mcp-config.
-    let mut configs: Vec<String> = session_plugins(opts, &settings, &cwd, &mut vec![])
-        .iter()
-        .filter_map(|p| p.mcp_file())
-        .map(|f| f.display().to_string())
-        .collect();
+    let mut configs: Vec<String> =
+        session_plugins(opts, &settings, &cwd, &mut vec![]).iter().filter_map(|p| p.mcp_config()).collect();
     configs.extend(opts.mcp_configs.iter().cloned());
     forge_mcp::resolve(&settings, &cwd, &configs, opts.strict_mcp_config || opts.bare)
 }
@@ -766,6 +763,10 @@ pub fn build_session(
     }
     let mut env: HashMap<String, String> = settings.env().into_iter().collect();
     env.insert("FORGE_SESSION_ID".into(), session_id.clone());
+    // The session's effort, for skills that ask for `${FORGE_EFFORT}`.
+    if let Some(e) = opts.effort.clone().or_else(|| settings.str("/effortLevel").map(str::to_string)) {
+        env.insert("FORGE_EFFORT".into(), e);
+    }
     tool_ctx.env = Arc::new(env);
 
     // Hooks.

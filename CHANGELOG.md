@@ -2,6 +2,20 @@
 
 ## 0.1.0 (unreleased)
 
+### Skills written for the reference CLI
+- They load unchanged: Forge also reads `~/.claude/skills` (or
+  `$CLAUDE_CONFIG_DIR/skills`) and the project's `.claude/skills` from the
+  repository root down. The same goes for commands, agents and output
+  styles. A plugin's `.claude-plugin/plugin.json` is its manifest too.
+- A skill's text is filled in before the model reads it: `$ARGUMENTS`,
+  `$ARGUMENTS[N]` and `$N` (from 0, with quoting: `/migrate "Button group"`),
+  `$name` from `arguments:`, and the skill's, project's and plugin's folders
+  (`${FORGE_SKILL_DIR}`, or `${CLAUDE_SKILL_DIR}` as such skills write it).
+  Before, those reached the model as literal text.
+- Frontmatter reads as there: `allowed-tools: Bash(git add *) Bash(git commit *)`
+  is two rules, not five words; a skill without a description uses its first
+  line; `when_to_use` joins the description.
+
 ### Windows
 - Commands run on Windows: Forge finds Git Bash (next to `git.exe`, the
   standard install directories, scoop), else PowerShell; `FORGE_SHELL` picks

@@ -45,6 +45,7 @@ and stderr.
 | crlf-config | tool-design | Edit one CRLF line in a file with a duplicate key elsewhere |
 | csv-to-json | tool-design | Write new code to a precise spec checked on hidden input |
 | steer-more-work | long-horizon | A request sent mid-task ("also write the total") must be done without dropping the per-file work in hand |
+| reference-skill | compatibility | `/version-notes 1.4.0 changes.txt` runs a skill written for the reference CLI (`.claude/skills`, named and indexed arguments, `${CLAUDE_SKILL_DIR}`) |
 
 Add tasks for every harness change, and name the pillar they exercise.
 

@@ -67,3 +67,36 @@ async fn eval_measures_a_pass_and_a_false_finish() {
     assert!(!rec.passed);
     assert!(rec.false_finish, "a success claim with a failing check is a false finish");
 }
+
+/// A skill written for the reference CLI (`.claude/skills`, named arguments,
+/// `$ARGUMENTS[N]`, `$0`, `${CLAUDE_SKILL_DIR}`) runs from `/name args` with
+/// everything filled in, and the task passes.
+#[tokio::test]
+async fn a_reference_cli_skill_runs_unchanged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let task = load_tasks(&tasks_dir(), &["reference-skill".into()]).unwrap().remove(0);
+    let out = root.join("run");
+    let ws = out.join("reference-skill-1/workspace");
+    let script = ws.join(".claude/skills/version-notes/scripts/notes.py");
+    let api = MockApi::start(vec![
+        MockTurn::tool(
+            "Bash",
+            json!({"command": format!("python3 {} changes.txt 1.4.0 > RELEASE-1.4.0.md", script.display())}),
+        ),
+        MockTurn::text("Wrote RELEASE-1.4.0.md."),
+    ])
+    .await;
+    let rec = run_task(&task, 1, &options(&out, &root, &api)).await.unwrap();
+    let reqs = api.requests();
+    assert!(rec.passed, "check output: {}\nrequests: {}", rec.check_output, serde_json::to_string(&reqs).unwrap());
+    let first = serde_json::to_string(&reqs[0]["messages"]).unwrap();
+    for want in [
+        "Write the release notes for version 1.4.0.".to_string(),
+        format!("python3 {} changes.txt 1.4.0", script.display()),
+        "RELEASE-1.4.0.md".to_string(),
+    ] {
+        assert!(first.contains(&want), "missing {want:?} in {first}");
+    }
+    assert!(!first.contains("CLAUDE_SKILL_DIR") && !first.contains("$ARGUMENTS"), "{first}");
+}

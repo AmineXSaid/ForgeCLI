@@ -1,0 +1,5 @@
+fix: a crash when the config is empty
+feat: export to CSV
+chore: bump the linter
+feat: dark theme
+fix: wrong totals for refunds

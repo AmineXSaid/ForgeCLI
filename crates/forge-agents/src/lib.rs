@@ -14,6 +14,7 @@ pub mod frontmatter;
 pub mod plugins;
 pub mod skills;
 pub mod styles;
+pub mod substitute;
 mod task;
 
 pub use commands::{load_commands, CommandDef};

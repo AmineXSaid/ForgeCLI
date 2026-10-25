@@ -1,0 +1,7 @@
+{
+  "instruction": "/version-notes 1.4.0 changes.txt",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "compatibility",
+  "tags": ["skills", "reference-cli"],
+  "timeout_secs": 300
+}
