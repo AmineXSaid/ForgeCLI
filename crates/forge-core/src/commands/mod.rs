@@ -429,13 +429,22 @@ pub fn parse<'a>(text: &'a str, cat: &'a Catalog) -> Invocation<'a> {
     if name.is_empty() || name.contains('/') || name.contains('\\') {
         return Invocation::NotACommand;
     }
-    if let Some(spec) = lookup(name) {
-        return Invocation::Builtin { spec, args };
+    let skill = |n: &str| {
+        let n = n.trim();
+        cat.skills.iter().find(|s| s.user_invocable && (s.name == n || s.name.eq_ignore_ascii_case(n)))
+    };
+    // As in the reference CLI: a skill of yours replaces a built-in command of the
+    // same name (not its aliases) and a command file of the same name.
+    let own_skill = skill(name).filter(|s| s.source != "bundled");
+    match lookup(name) {
+        Some(spec) if own_skill.is_none() || spec.name != name => return Invocation::Builtin { spec, args },
+        _ => {}
     }
-    if let Some(def) = cat.commands.iter().find(|c| c.name == name) {
-        return Invocation::Custom { def, args };
+    if own_skill.is_none() {
+        if let Some(def) = cat.commands.iter().find(|c| c.name == name) {
+            return Invocation::Custom { def, args };
+        }
     }
-    let skill = |n: &str| cat.skills.iter().find(|s| s.user_invocable && s.name == n);
     if let Some(first) = skill(name) {
         let mut chain = vec![first];
         let mut rest_args = args;
@@ -546,6 +555,26 @@ mod tests {
         }
         assert_eq!(parse("/nope", &cat), Invocation::Unknown("nope"));
         assert_eq!(parse("/login", &cat), Invocation::Unknown("login"));
+        assert!(matches!(parse("/PDF x", &cat), Invocation::Skills { .. }), "names match regardless of case");
+    }
+
+    #[test]
+    fn your_skill_replaces_a_built_in_or_a_command_of_its_name() {
+        let d = tempfile::tempdir().unwrap();
+        let mut cat = catalog(d.path());
+        let mk = |n: &str, source: &str| {
+            forge_agents::skills::parse_skill(d.path(), &format!("---\nname: {n}\ndescription: x\n---\nx"), source)
+                .unwrap()
+        };
+        cat.skills.extend([mk("release-notes", "project"), mk("usage", "project"), mk("review-pr", "user")]);
+        assert!(matches!(parse("/release-notes 1.2", &cat), Invocation::Skills { args: "1.2", .. }));
+        assert!(matches!(parse("/usage", &cat), Invocation::Skills { .. }));
+        // Not an alias: /cost still runs the built-in.
+        assert!(matches!(parse("/cost", &cat), Invocation::Builtin { spec, .. } if spec.id == Builtin::Usage));
+        assert!(matches!(parse("/review-pr 3", &cat), Invocation::Skills { .. }), "a skill beats a command file");
+        // Forge's own bundled skills never shadow a built-in.
+        cat.skills = vec![mk("compact", "bundled")];
+        assert!(matches!(parse("/compact", &cat), Invocation::Builtin { .. }));
     }
 
     #[test]

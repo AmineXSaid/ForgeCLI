@@ -6,14 +6,15 @@
 //! invokes the skill, or when the user types `/<name>`. This keeps the
 //! context small (GOALS pillar 1).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use forge_permissions::Subject;
 use forge_tools::{Tool, ToolContext, ToolOutput};
 use serde_json::{json, Value};
 
 use crate::frontmatter;
-use crate::substitute::SkillVars;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SkillDef {
@@ -48,6 +49,12 @@ pub struct SkillDef {
     pub shell: Option<String>,
     /// The plugin it came with: the plugin's folder.
     pub plugin_dir: Option<PathBuf>,
+    /// `hooks`: the settings `hooks` shape, kept for the session once it runs.
+    pub hooks: Option<Value>,
+    /// Its ``!`command` `` lines are not run (`disableSkillShellExecution`).
+    pub no_shell: bool,
+    /// Listed to the model by name only (`skillOverrides: name-only`).
+    pub name_only: bool,
 }
 
 /// Descriptions longer than this are cut in the Skill tool's list.
@@ -98,6 +105,9 @@ pub fn parse_skill(dir: &Path, text: &str, source: &str) -> Result<SkillDef, Str
         paths: list("paths"),
         shell: text("shell"),
         plugin_dir: None,
+        hooks: fm.value("hooks").filter(Value::is_object),
+        no_shell: false,
+        name_only: false,
     })
 }
 
@@ -151,63 +161,165 @@ pub fn load_skills(project: &Path, plugins: &[crate::plugins::Plugin], warnings:
         .map(|(scope, d)| (d, if scope == forge_config::Scope::User { "user" } else { "project" }.to_string(), None))
         .collect();
     for p in plugins {
-        dirs.push((p.dir.join("skills"), p.name.clone(), Some(p.name.clone())));
+        for d in p.component_dirs("skills") {
+            dirs.push((d, p.name.clone(), Some(p.name.clone())));
+        }
     }
     let plugin_dirs: Vec<(String, PathBuf)> = plugins.iter().map(|p| (p.name.clone(), p.dir.clone())).collect();
     let mut out: Vec<SkillDef> = bundled_skills(warnings);
-    for (root, source, prefix) in dirs {
-        let Ok(rd) = std::fs::read_dir(&root) else { continue };
-        let mut subdirs: Vec<PathBuf> =
-            rd.flatten().map(|e| e.path()).filter(|p| p.join("SKILL.md").is_file()).collect();
-        subdirs.sort();
-        for d in subdirs {
-            match std::fs::read_to_string(d.join("SKILL.md"))
-                .map_err(|e| e.to_string())
-                .and_then(|t| parse_skill(&d, &t, &source))
-            {
+    // A plugin that is one skill: `SKILL.md` at its root, named by its `name` or the plugin's.
+    for p in plugins {
+        let file = p.dir.join("SKILL.md");
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            match parse_skill(&p.dir, &text, &p.name) {
                 Ok(mut s) => {
-                    if let Some(p) = &prefix {
-                        s.name = format!("{p}:{}", s.name);
-                        s.plugin_dir = plugin_dirs.iter().find(|(n, _)| n == p).map(|(_, d)| d.clone());
-                    }
+                    let has_name = frontmatter::parse(&text).0.text("name").is_some_and(|n| !n.is_empty());
+                    s.name = if has_name { format!("{}:{}", p.name, s.name) } else { p.name.clone() };
+                    s.plugin_dir = Some(p.dir.clone());
                     out.retain(|o| o.name != s.name);
                     out.push(s);
                 }
-                Err(e) => warnings.push(format!("skill {}: {e}", d.display())),
+                Err(e) => warnings.push(format!("skill {}: {e}", file.display())),
             }
+        }
+    }
+    for (root, source, prefix) in dirs {
+        for mut s in load_dir(&root, &source, warnings) {
+            if let Some(p) = &prefix {
+                s.name = format!("{p}:{}", s.name);
+                s.plugin_dir = plugin_dirs.iter().find(|(n, _)| n == p).map(|(_, d)| d.clone());
+            }
+            out.retain(|o| o.name != s.name);
+            out.push(s);
         }
     }
     out
 }
 
-/// The text a skill puts in the conversation: its body with its arguments
-/// and folders filled in (`substitute.rs`).
-pub fn skill_prompt(skill: &SkillDef, args: &str, ctx: &ToolContext) -> String {
-    let plugin = skill.plugin_dir.as_deref().zip(skill.name.split_once(':').map(|(p, _)| p));
-    let vars = SkillVars {
-        skill_dir: Some(skill.dir.as_path()).filter(|d| !d.as_os_str().is_empty()),
-        project_dir: Some(ctx.project_dir.as_path()),
-        session_id: Some(ctx.session_id.as_str()).filter(|s| !s.is_empty()),
-        effort: ctx.env.get("FORGE_EFFORT").map(String::as_str),
-        plugin,
-    };
-    let body = crate::substitute::fill(skill.body.trim(), args, &skill.arguments, &vars);
-    if skill.dir.as_os_str().is_empty() {
-        body
-    } else {
-        format!("Base directory for this skill: {}\n\n{body}", skill.dir.display())
+/// The skills in one `skills/` folder: each direct subfolder holding a `SKILL.md`.
+pub fn load_dir(root: &Path, source: &str, warnings: &mut Vec<String>) -> Vec<SkillDef> {
+    let Ok(rd) = std::fs::read_dir(root) else { return vec![] };
+    let mut subdirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.join("SKILL.md").is_file()).collect();
+    subdirs.sort();
+    let mut out = vec![];
+    for d in subdirs {
+        match std::fs::read_to_string(d.join("SKILL.md"))
+            .map_err(|e| e.to_string())
+            .and_then(|t| parse_skill(&d, &t, source))
+        {
+            Ok(s) => out.push(s),
+            Err(e) => warnings.push(format!("skill {}: {e}", d.display())),
+        }
     }
+    out
+}
+
+/// Skills from folders added with `--add-dir` (their `.claude/skills` and
+/// `.forge/skills`), added to `skills`. One whose name is taken runs as
+/// `<folder>:<name>`; between two added folders, the first keeps the plain name.
+pub fn add_dir_skills(skills: &mut Vec<SkillDef>, dirs: &[PathBuf], warnings: &mut Vec<String>) {
+    for dir in dirs {
+        let folder = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        for root in [dir.join(".claude").join("skills"), dir.join(".forge").join("skills")] {
+            for mut s in load_dir(&root, "add-dir", warnings) {
+                if skills.iter().any(|o| o.name == s.name) {
+                    s.name = format!("{folder}:{}", s.name);
+                }
+                if !skills.iter().any(|o| o.name == s.name) {
+                    skills.push(s);
+                }
+            }
+        }
+    }
+}
+
+/// What the Skill tool reaches once the session exists: the runtime that
+/// starts sub-agents (`context: fork`) and holds the engine and hooks, and
+/// the session's files (for `paths`).
+pub struct SkillLinks {
+    pub rt: Arc<crate::AgentRuntime>,
+    pub files: Arc<forge_tools::FileState>,
 }
 
 /// `Skill`: load a skill's instructions.
 pub struct SkillTool {
     pub skills: Vec<SkillDef>,
+    pub links: Arc<OnceLock<SkillLinks>>,
+    /// Skills already loaded (name and arguments): loading one again adds a note, not a copy.
+    loaded: Mutex<HashSet<String>>,
+    /// Skills from `.claude/skills` in the project's subfolders, found once a
+    /// file there is read or written, and the folders already looked in.
+    nested: Mutex<Vec<SkillDef>>,
+    scanned: Mutex<HashSet<PathBuf>>,
 }
 
 impl SkillTool {
-    fn offered(&self) -> impl Iterator<Item = &SkillDef> {
-        self.skills.iter().filter(|s| s.model_invocable)
+    pub fn new(skills: Vec<SkillDef>) -> Self {
+        Self::with_links(skills, Default::default())
     }
+
+    pub fn with_links(skills: Vec<SkillDef>, links: Arc<OnceLock<SkillLinks>>) -> Self {
+        SkillTool {
+            skills,
+            links,
+            loaded: Mutex::new(HashSet::new()),
+            nested: Mutex::new(vec![]),
+            scanned: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// The session's skills and those found in subfolders so far.
+    fn all(&self) -> Vec<SkillDef> {
+        let Some(l) = self.links.get() else { return self.skills.clone() };
+        let project = l.rt.project_dir.clone();
+        let mut nested = self.nested.lock().unwrap();
+        let mut scanned = self.scanned.lock().unwrap();
+        for file in l.files.touched() {
+            let Some(parent) = file.parent() else { continue };
+            for dir in parent.ancestors().take_while(|d| *d != project && d.starts_with(&project)) {
+                if !scanned.insert(dir.to_path_buf()) {
+                    continue;
+                }
+                let rel = dir.strip_prefix(&project).unwrap_or(dir).to_string_lossy().replace('\\', "/");
+                for mut s in load_dir(&dir.join(".claude").join("skills"), "nested", &mut vec![]) {
+                    if self.skills.iter().chain(nested.iter()).any(|o| o.name == s.name) {
+                        s.name = format!("{rel}:{}", s.name);
+                    }
+                    nested.push(s);
+                }
+            }
+        }
+        self.skills.iter().chain(nested.iter()).cloned().collect()
+    }
+
+    /// The skills the model may load: model-invocable, and for one with
+    /// `paths`, only once a matching file has been read or written.
+    fn offered(&self) -> Vec<SkillDef> {
+        let touched: Vec<PathBuf> = self.links.get().map(|l| l.files.touched()).unwrap_or_default();
+        let project = self.links.get().map(|l| l.rt.project_dir.clone());
+        self.all()
+            .into_iter()
+            .filter(|s| s.model_invocable && paths_match(&s.paths, &touched, project.as_deref()))
+            .collect()
+    }
+}
+
+/// Whether any of `touched` matches one of `paths` (globs relative to the project); no paths: yes.
+fn paths_match(paths: &[String], touched: &[PathBuf], project: Option<&Path>) -> bool {
+    if paths.is_empty() {
+        return true;
+    }
+    let mut set = globset::GlobSetBuilder::new();
+    for p in paths {
+        if let Ok(g) = globset::GlobBuilder::new(p.trim_start_matches("./")).literal_separator(false).build() {
+            set.add(g);
+        }
+    }
+    let Ok(set) = set.build() else { return true };
+    touched.iter().any(|t| {
+        let rel = project.and_then(|p| t.strip_prefix(p).ok()).unwrap_or(t);
+        set.is_match(rel)
+    })
 }
 
 #[async_trait::async_trait]
@@ -218,8 +330,9 @@ impl Tool for SkillTool {
 
     fn description(&self) -> String {
         let mut list = String::new();
-        for s in self.offered() {
-            let line = format!("- {}: {}\n", s.name, s.description.chars().take(300).collect::<String>());
+        for s in &self.offered() {
+            let line =
+                if s.name_only { format!("- {}\n", s.name) } else { format!("- {}: {}\n", s.name, s.description) };
             if list.len() + line.len() > 12_000 {
                 list.push_str("- (more skills not listed)\n");
                 break;
@@ -250,25 +363,55 @@ impl Tool for SkillTool {
     }
 
     fn is_enabled(&self) -> bool {
-        self.offered().next().is_some()
+        self.skills.iter().any(|s| s.model_invocable)
     }
 
     fn permission_subject(&self, input: &Value, _ctx: &ToolContext) -> Subject {
-        Subject::Name(
-            input.get("skill").and_then(Value::as_str).unwrap_or_default().trim_start_matches('/').to_string(),
-        )
+        let name = input.get("skill").and_then(Value::as_str).unwrap_or_default().trim_start_matches('/');
+        let args = input.get("args").and_then(Value::as_str).unwrap_or_default().trim();
+        // `Skill(name)` matches the bare call, `Skill(name *)` any arguments.
+        Subject::Name(if args.is_empty() { name.to_string() } else { format!("{name} {args}") })
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> ToolOutput {
         let name = input.get("skill").and_then(Value::as_str).unwrap_or_default().trim_start_matches('/');
         let args = input.get("args").and_then(Value::as_str).unwrap_or_default();
-        match self.offered().find(|s| s.name == name || s.name.eq_ignore_ascii_case(name)) {
-            Some(s) => {
-                ToolOutput::text(skill_prompt(s, args, ctx)).with_structured(json!({"skill": s.name, "success": true}))
+        // A skill limited by `paths` may still be named outright.
+        let all = self.all();
+        let Some(s) =
+            all.iter().filter(|s| s.model_invocable).find(|s| s.name == name || s.name.eq_ignore_ascii_case(name))
+        else {
+            let names: Vec<String> = self.offered().into_iter().map(|s| s.name).collect();
+            return ToolOutput::error(format!("Unknown skill {name:?}. Available: {}", names.join(", ")));
+        };
+        let links = self.links.get();
+        let handle = links.and_then(|l| l.rt.parent.get()).map(|p| &p.handle);
+        let session = crate::invoke::Session { handle, hooks: links.map(|l| &l.rt.hooks) };
+        let structured = json!({"skill": s.name, "success": true});
+        match crate::invoke::invoke(s, args, ctx, session).await {
+            Err(e) => ToolOutput::error(e),
+            Ok(crate::invoke::Invoked::Fork { agent, prompt }) => {
+                let Some(l) = links else {
+                    return ToolOutput::error("This skill runs in a sub-agent, which this session cannot start.");
+                };
+                let task = crate::TaskTool { rt: l.rt.clone() };
+                let input = json!({"description": format!("/{}", s.name), "prompt": prompt, "subagent_type": agent});
+                if let Err(e) = task.validate(&input, ctx) {
+                    return ToolOutput::error(format!("/{}: {e}", s.name));
+                }
+                task.call(input, ctx).await
             }
-            None => {
-                let names: Vec<&str> = self.offered().map(|s| s.name.as_str()).collect();
-                ToolOutput::error(format!("Unknown skill {name:?}. Available: {}", names.join(", ")))
+            Ok(crate::invoke::Invoked::Text(text)) => {
+                let first = self.loaded.lock().unwrap().insert(format!("{}\u{0}{}", s.name, args.trim()));
+                if first {
+                    ToolOutput::text(text).with_structured(structured)
+                } else {
+                    ToolOutput::text(format!(
+                        "The {} skill is already loaded in this conversation (above); follow it.",
+                        s.name
+                    ))
+                    .with_structured(structured)
+                }
             }
         }
     }
@@ -304,7 +447,7 @@ mod tests {
         assert_eq!(names, ["review-pr", "deploy", "pdf", "terse"]);
         assert_eq!(own[3].description, "Tidy imports");
         assert_eq!(w.iter().filter(|w| w.contains("empty")).count(), 1, "{w:?}");
-        let tool = SkillTool { skills };
+        let tool = SkillTool::new(skills);
         assert!(tool.description().contains("- pdf: Work with PDF files") && !tool.description().contains("deploy"));
         let c = ToolContext::new(d.path());
         let out = tool.call(json!({"skill": "pdf", "args": "report.pdf"}), &c).await;
@@ -334,11 +477,13 @@ mod tests {
         .unwrap();
         let mut w = vec![];
         let plugins = crate::plugins::load_plugins(&[plugin_dir], &mut w);
-        let skills = load_skills(d.path(), &plugins, &mut w);
-        let m = skills.iter().find(|s| s.name == "migrate").unwrap();
+        let mut skills = load_skills(d.path(), &plugins, &mut w);
+        let m = skills.iter_mut().find(|s| s.name == "migrate").unwrap();
         assert_eq!(m.allowed_tools, ["Bash(${CLAUDE_SKILL_DIR}/run.sh *)", "Read"]);
         assert!(m.fork && m.agent.as_deref() == Some("Explore") && m.model.is_none());
-        let tool = SkillTool { skills: skills.clone() };
+        // (Run inline here, to check its text; a fork goes to a sub-agent.)
+        m.fork = false;
+        let tool = SkillTool::new(skills.clone());
         let c = ToolContext::new(d.path());
         let out = tool.call(json!({"skill": "migrate", "args": "\"Button group\" react vue"}), &c).await;
         let text = out.text_content();
@@ -383,7 +528,14 @@ mod tests {
         let review = b.iter().find(|s| s.name == "review").unwrap();
         assert!(review.body.contains("--fix") && review.description.ends_with("(same as /code-review)"));
         // No directory line for bundled skills.
-        assert!(skill_prompt(review, "--fix 12", &ToolContext::new(Path::new("/p"))).starts_with("Review code changes"));
+        let ctx = ToolContext::new(Path::new("/p"));
+        let Ok(crate::invoke::Invoked::Text(t)) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(crate::invoke::invoke(review, "--fix 12", &ctx, Default::default()))
+        else {
+            panic!()
+        };
+        assert!(t.starts_with("Review code changes"));
         // Forge's own words only.
         for s in &b {
             let low = s.body.to_lowercase();

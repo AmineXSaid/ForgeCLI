@@ -115,13 +115,14 @@ pub(crate) async fn scheduled_prompt(d: &Driver, prompt: &str) -> MessageContent
                 Err(_) => MessageContent::Text(prompt.to_string()),
             }
         }
-        Invocation::Skills { chain, args } if chain.iter().all(|s| s.model_invocable) => MessageContent::Text(
-            chain
-                .iter()
-                .map(|s| forge_agents::skills::skill_prompt(s, args, d.engine.tool_ctx()))
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        ),
+        Invocation::Skills { chain, args } if chain.iter().all(|s| s.model_invocable) => {
+            let chain: Vec<forge_agents::SkillDef> = chain.into_iter().cloned().collect();
+            let args = args.to_string();
+            match super::run::invoke_skills(d, &chain, &args).await {
+                Ok(text) => MessageContent::Text(text),
+                Err(_) => MessageContent::Text(prompt.to_string()),
+            }
+        }
         _ => MessageContent::Text(prompt.to_string()),
     }
 }

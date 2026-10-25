@@ -1846,3 +1846,163 @@ fn unknown_model_notice_says_how_to_set_limits() {
     );
     assert!(n.contains("\"modelLimits\"") && n.contains("modelPricing") && n.contains("FORGE_CONTEXT_WINDOW"), "{n}");
 }
+
+/// A skill written for the reference CLI, in the project's `.claude/skills`.
+fn ship_skill(proj: &Path) {
+    let dir = proj.join(".claude/skills/ship");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\ndescription: Ship a release\nallowed-tools: Bash(echo *) Bash(touch *)\ndisallowed-tools: Glob\nmodel: sonnet\neffort: low\nhooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: \"echo hooked >> ${CLAUDE_SKILL_DIR}/hook.log\"\n---\nBranch: !`echo main`\nShip $ARGUMENTS from ${CLAUDE_SKILL_DIR}.",
+    )
+    .unwrap();
+}
+
+fn texts(req: &forge_types::MessagesRequest) -> String {
+    serde_json::to_string(&req.messages).unwrap()
+}
+
+fn tool_names(req: &forge_types::MessagesRequest) -> Vec<String> {
+    req.tools.iter().map(|t| t.name.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_typed_skill_holds_its_frontmatter_for_its_turn_only() {
+    let mut t = driver_with(|_, o| {
+        // Nothing allowed by the session: only the skill's grant can let `echo` run.
+        o.setting_sources = Some(vec![SettingSource::Project, SettingSource::Local]);
+    });
+    ship_skill(&t.proj);
+    local(&mut t.d, "/reload-skills").await;
+    t.p.push(MockTurn::tool("Bash", serde_json::json!({"command": "touch shipped.txt"})));
+    t.p.push(MockTurn::text("Shipped."));
+    let r = run(&mut t.d, "/ship v2").await;
+    assert!(!r.is_error, "{:?}", r.result);
+    let reqs = t.p.requests();
+    let first = &reqs[0];
+    let skill_dir = t.proj.join(".claude/skills/ship");
+    assert!(texts(first).contains("Branch: main"), "the command ran first: {}", texts(first));
+    assert!(texts(first).contains(&format!("Ship v2 from {}.", skill_dir.display())));
+    assert_eq!(first.model, forge_api::resolve_model("sonnet"));
+    assert_eq!(first.output_config.as_ref().unwrap()["effort"], "low");
+    assert!(!tool_names(first).contains(&"Glob".to_string()), "disallowed-tools hides Glob");
+    // The grant let `touch` run without a prompt (the test's prompter denies all).
+    assert!(t.proj.join("shipped.txt").exists(), "{}", texts(&reqs[1]));
+    // Its hook ran, from its own folder.
+    assert_eq!(std::fs::read_to_string(skill_dir.join("hook.log")).unwrap().trim(), "hooked");
+
+    // The next turn: model, effort, tools and grants are back; the hook stays for the session.
+    t.p.push(MockTurn::tool("Bash", serde_json::json!({"command": "touch again.txt"})));
+    t.p.push(MockTurn::text("ok"));
+    run(&mut t.d, "and again").await;
+    let reqs = t.p.requests();
+    let next = &reqs[2];
+    assert_eq!(next.model, "claude-opus-5-5");
+    assert!(tool_names(next).contains(&"Glob".to_string()));
+    assert!(!t.proj.join("again.txt").exists(), "the grant ended with its turn: {}", texts(&reqs[3]));
+    assert!(std::fs::read_to_string(skill_dir.join("hook.log")).unwrap().lines().count() >= 2, "the hook stays");
+    assert!(t.d.engine.handle().skills_context().unwrap().contains("Ship v2"), "kept for compaction");
+}
+
+#[tokio::test]
+async fn the_model_loads_a_skill_and_its_grants_hold_for_the_rest_of_the_turn() {
+    let mut t = driver();
+    ship_skill(&t.proj);
+    local(&mut t.d, "/reload-skills").await;
+    t.p.push(MockTurn::tool("Skill", serde_json::json!({"skill": "ship", "args": "v3"})));
+    t.p.push(MockTurn::tool("Bash", serde_json::json!({"command": "touch shipped.txt"})));
+    t.p.push(MockTurn::text("Done."));
+    run(&mut t.d, "ship v3 please").await;
+    let reqs = t.p.requests();
+    assert!(tool_names(&reqs[0]).iter().any(|n| n == "Skill"));
+    assert!(texts(&reqs[1]).contains("Ship v3 from"), "{}", texts(&reqs[1]));
+    assert_eq!(reqs[1].model, forge_api::resolve_model("sonnet"), "the model switched for the rest of the turn");
+    assert!(t.proj.join("shipped.txt").exists(), "{}", texts(&reqs[2]));
+}
+
+#[tokio::test]
+async fn a_fork_skill_runs_in_a_sub_agent_and_its_report_joins_the_conversation() {
+    let mut t = driver();
+    let dir = t.proj.join(".claude/skills/survey");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\ndescription: Survey the API\ncontext: fork\nagent: Explore\n---\nList the endpoints in $ARGUMENTS.",
+    )
+    .unwrap();
+    local(&mut t.d, "/reload-skills").await;
+    t.p.push(MockTurn::text("Three endpoints: /a, /b, /c."));
+    t.p.push(MockTurn::text("Noted."));
+    let r = run(&mut t.d, "/survey src/api").await;
+    assert!(!r.is_error, "{:?}", r.result);
+    let reqs = t.p.requests();
+    assert!(texts(&reqs[0]).contains("List the endpoints in src/api."), "the sub-agent got the skill");
+    assert!(reqs[0].system[0].text.contains("Explore") || reqs[0].system.iter().any(|s| s.text.contains("read-only")));
+    let main = texts(&reqs[1]);
+    assert!(main.contains("ran in a sub-agent (Explore) and reported") && main.contains("Three endpoints"), "{main}");
+}
+
+fn skill_list(req: &forge_types::MessagesRequest) -> String {
+    req.tools.iter().find(|t| t.name == "Skill").map(|t| t.description.clone()).unwrap_or_default()
+}
+
+fn mk_skill(root: &Path, name: &str, extra: &str) {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), format!("---\ndescription: The {name} skill\n{extra}---\nDo {name}."))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn path_limited_and_nested_skills_appear_once_their_files_are_in_play() {
+    let mut t = driver();
+    let skills = t.proj.join(".claude/skills");
+    mk_skill(&skills, "sql-style", "paths: [\"**/*.sql\"]\n");
+    mk_skill(&skills, "deploy", "");
+    mk_skill(&t.proj.join("apps/web/.claude/skills"), "deploy", "");
+    mk_skill(&t.proj.join("apps/web/.claude/skills"), "web-only", "");
+    std::fs::create_dir_all(t.proj.join("db")).unwrap();
+    std::fs::write(t.proj.join("db/schema.sql"), "create table t (id int);").unwrap();
+    std::fs::write(t.proj.join("apps/web/index.js"), "export {}").unwrap();
+    local(&mut t.d, "/reload-skills").await;
+    t.p.push(MockTurn::tool("Read", serde_json::json!({"file_path": t.proj.join("db/schema.sql")})));
+    t.p.push(MockTurn::tool("Read", serde_json::json!({"file_path": t.proj.join("apps/web/index.js")})));
+    t.p.push(MockTurn::text("ok"));
+    run(&mut t.d, "look around").await;
+    let reqs = t.p.requests();
+    assert!(!skill_list(&reqs[0]).contains("sql-style") && !skill_list(&reqs[0]).contains("web-only"));
+    assert!(skill_list(&reqs[1]).contains("- sql-style: The sql-style skill"), "{}", skill_list(&reqs[1]));
+    let last = skill_list(&reqs[2]);
+    assert!(last.contains("- web-only:") && last.contains("- apps/web:deploy:"), "{last}");
+}
+
+#[tokio::test]
+async fn added_folders_and_overrides_shape_the_skills() {
+    let mut t = driver_with(|root, o| {
+        let other = root.join("shared-tools");
+        mk_skill(&other.join(".claude/skills"), "lint", "");
+        mk_skill(&other.join(".claude/skills"), "fmt", "");
+        o.add_dirs = vec![other];
+        let proj = root.join("proj");
+        mk_skill(&proj.join(".claude/skills"), "lint", "");
+        mk_skill(&proj.join(".claude/skills"), "secret", "");
+        mk_skill(&proj.join(".claude/skills"), "quiet", "");
+        mk_skill(&proj.join(".claude/skills"), "mine", "");
+        std::fs::write(
+            proj.join(".forge/settings.json"),
+            r#"{"skillOverrides": {"secret": "off", "quiet": "name-only", "mine": "user-invocable-only"}}"#,
+        )
+        .unwrap();
+    });
+    t.p.push(MockTurn::text("ok"));
+    run(&mut t.d, "hi").await;
+    let list = skill_list(&t.p.requests()[0]);
+    assert!(list.contains("- lint: The lint skill") && list.contains("- shared-tools:lint:"), "{list}");
+    assert!(list.contains("- fmt: The fmt skill"), "{list}");
+    assert!(!list.contains("secret") && !list.contains("- mine"), "{list}");
+    assert!(list.contains("- quiet\n"), "name only: {list}");
+    // Off is off for you too; user-invocable-only still runs from /.
+    assert!(fails(&mut t.d, "/secret").await.contains("Unknown command"));
+    t.p.push(MockTurn::text("ok"));
+    assert!(!run(&mut t.d, "/mine").await.is_error);
+}

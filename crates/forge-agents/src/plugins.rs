@@ -59,6 +59,26 @@ impl Plugin {
         Some(v.to_string())
     }
 
+    /// Where the plugin keeps `kind` (`skills`, `commands`, `agents`,
+    /// `output-styles`): its `<kind>/` folder, plus any paths its manifest
+    /// gives for that key (a string or a list), as the reference CLI reads them.
+    pub fn component_dirs(&self, kind: &str) -> Vec<PathBuf> {
+        let mut out = vec![self.dir.join(kind)];
+        let extra: Vec<&str> = match self.manifest.get(kind) {
+            Some(Value::String(p)) => vec![p.as_str()],
+            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
+        };
+        for p in extra {
+            let d = self.dir.join(p.trim_start_matches("./"));
+            // Only inside the plugin.
+            if d.starts_with(&self.dir) && !p.contains("..") && !out.contains(&d) {
+                out.push(d);
+            }
+        }
+        out
+    }
+
     /// The plugin's own folder for data that survives updates ([`data_dir`]).
     pub fn data_dir(&self) -> PathBuf {
         data_dir(&self.name)

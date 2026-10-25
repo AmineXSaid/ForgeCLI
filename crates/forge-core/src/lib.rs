@@ -182,6 +182,29 @@ fn session_settings(opts: &LaunchOptions, cwd: &Path) -> LoadedSettings {
     load_settings(&sopts)
 }
 
+/// Settings that shape the skills, as the reference CLI reads them:
+/// `skillOverrides` (`{"name": "on" | "name-only" | "user-invocable-only" |
+/// "off"}`, plugin skills excepted) and `disableSkillShellExecution` (their
+/// ``!`command` `` lines become a placeholder; Forge's bundled skills excepted).
+pub(crate) fn apply_skill_settings(skills: &mut Vec<forge_agents::SkillDef>, settings: &LoadedSettings) {
+    let from_plugin = |s: &forge_agents::SkillDef| s.plugin_dir.is_some();
+    if let Some(overrides) = settings.get("/skillOverrides").and_then(serde_json::Value::as_object) {
+        skills.retain(|s| from_plugin(s) || overrides.get(&s.name).and_then(serde_json::Value::as_str) != Some("off"));
+        for s in skills.iter_mut().filter(|s| !from_plugin(s)) {
+            match overrides.get(&s.name).and_then(serde_json::Value::as_str) {
+                Some("name-only") => s.name_only = true,
+                Some("user-invocable-only") => s.model_invocable = false,
+                _ => {}
+            }
+        }
+    }
+    if settings.bool("/disableSkillShellExecution") == Some(true) {
+        for s in skills.iter_mut().filter(|s| s.source != "bundled") {
+            s.no_shell = true;
+        }
+    }
+}
+
 /// Which MCP servers this session would start (contract C16). `--bare` keeps only `--mcp-config`.
 pub fn resolve_mcp(opts: &LaunchOptions) -> forge_mcp::Resolved {
     let cwd = forge_platform::path::canonicalize(&opts.cwd).unwrap_or(opts.cwd.clone());
@@ -536,7 +559,8 @@ pub fn build_session(
     // Plugins, commands, skills and output styles (M5).
     let plugins = session_plugins(&opts, &settings, &cwd, &mut warnings);
     let commands = if opts.bare { vec![] } else { forge_agents::load_commands(&cwd, &plugins, &mut warnings) };
-    let skills = if opts.bare { vec![] } else { forge_agents::load_skills(&cwd, &plugins, &mut warnings) };
+    let mut skills = if opts.bare { vec![] } else { forge_agents::load_skills(&cwd, &plugins, &mut warnings) };
+    apply_skill_settings(&mut skills, &settings);
     let styles = forge_agents::load_styles(&cwd, &plugins, &mut warnings);
     let style_name = settings.str("/outputStyle").unwrap_or("default").to_string();
     let style = match forge_agents::styles::find(&styles, &style_name) {
@@ -633,6 +657,13 @@ pub fn build_session(
     if let Some(r) = &resumed {
         add_dirs.extend(r.additional_dirs.iter().cloned());
     }
+    // Their skills load too, in the order they were added.
+    if !opts.bare {
+        let mut seen = std::collections::HashSet::new();
+        let ordered: Vec<PathBuf> = add_dirs.iter().filter(|d| seen.insert((*d).clone())).cloned().collect();
+        forge_agents::skills::add_dir_skills(&mut skills, &ordered, &mut warnings);
+        apply_skill_settings(&mut skills, &settings);
+    }
     add_dirs.sort();
     add_dirs.dedup();
     if !add_dirs.is_empty() {
@@ -680,8 +711,10 @@ pub fn build_session(
     for t in &web_tools {
         tools.register(t.clone());
     }
+    // The Skill tool reaches the session (sub-agents, hooks, files) once it exists.
+    let skill_links: Arc<std::sync::OnceLock<forge_agents::skills::SkillLinks>> = Default::default();
     if skills.iter().any(|s| s.model_invocable) {
-        tools.register(Arc::new(forge_agents::SkillTool { skills: skills.clone() }));
+        tools.register(Arc::new(forge_agents::SkillTool::with_links(skills.clone(), skill_links.clone())));
     }
     // Scheduled prompts (C19), unless FORGE_DISABLE_CRON is set.
     let scheduler = (!schedule::disabled()).then(|| {
@@ -723,6 +756,7 @@ pub fn build_session(
     tools.retain(|n| !removed.iter().any(|r| Rule::parse(r).map(|rule| rule.covers_tool(n)).unwrap_or(false)));
 
     let mut tool_ctx = ToolContext::new(&cwd);
+    let session_files = tool_ctx.files.clone();
     tool_ctx.shell = shell.clone();
     if let Some(shells) = &opts.shells {
         tool_ctx.shells = shells.clone();
@@ -950,6 +984,7 @@ pub fn build_session(
         prompter: engine.prompter(),
         history: engine.history().clone(),
     });
+    let _ = skill_links.set(forge_agents::skills::SkillLinks { rt: agent_rt.clone(), files: session_files });
     if let Some(r) = resumed.as_mut() {
         engine.restore(r);
         engine.set_start_source("resume");

@@ -176,6 +176,13 @@ impl HooksConfig {
     pub fn has(&self, event: HookEvent) -> bool {
         self.events.get(&event).map(|v| !v.is_empty()).unwrap_or(false)
     }
+
+    /// Add `other`'s matchers after this config's own.
+    pub fn extend(&mut self, other: HooksConfig) {
+        for (event, matchers) in other.events {
+            self.events.entry(event).or_default().extend(matchers);
+        }
+    }
 }
 
 /// Combined result of all hooks that ran for one event.
@@ -289,15 +296,27 @@ pub struct HookRunner {
     pub disabled: bool,
     /// The session's shell; `None` uses the one found from the process environment.
     pub shell: Option<ShellChoice>,
+    /// Hooks added while the session runs (a skill's `hooks` frontmatter), kept
+    /// for the rest of the session. Shared by every clone of this runner, so
+    /// sub-agents see them too.
+    pub session: std::sync::Arc<std::sync::RwLock<HooksConfig>>,
 }
 
 impl HookRunner {
     pub fn new(config: HooksConfig, base: HookBase) -> Self {
-        HookRunner { config, base, disabled: false, shell: None }
+        HookRunner { config, base, disabled: false, shell: None, session: Default::default() }
     }
 
     pub fn enabled_for(&self, event: HookEvent) -> bool {
-        !self.disabled && self.config.has(event)
+        !self.disabled && (self.config.has(event) || self.session.read().unwrap().has(event))
+    }
+
+    /// Keep `hooks` (the settings `hooks` shape) for the rest of the session.
+    /// Returns what could not be read.
+    pub fn add_session_hooks(&self, hooks: &Value) -> Vec<String> {
+        let (cfg, errors) = HooksConfig::from_settings(Some(hooks));
+        self.session.write().unwrap().extend(cfg);
+        errors
     }
 
     /// Run every matching hook for `event` in parallel and combine the results.
@@ -314,8 +333,14 @@ impl HookRunner {
         if !self.enabled_for(event) {
             return out;
         }
-        let commands: Vec<HookCommand> = self.config.events[&event]
-            .iter()
+        let session = self.session.read().unwrap().events.get(&event).cloned().unwrap_or_default();
+        let commands: Vec<HookCommand> = self
+            .config
+            .events
+            .get(&event)
+            .into_iter()
+            .flatten()
+            .chain(session.iter())
             .filter(|m| m.matches(match_value))
             .flat_map(|m| m.hooks.iter().cloned())
             .collect();

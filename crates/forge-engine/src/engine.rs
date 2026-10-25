@@ -259,7 +259,20 @@ pub struct EngineHandle {
     steers: Arc<Mutex<Vec<Steer>>>,
     /// A turn is running: a steered message can still reach it.
     turn_running: Arc<std::sync::atomic::AtomicBool>,
+    /// The model and effort to go back to when the turn ends, while a skill's
+    /// `model`/`effort` holds for it.
+    turn_restore: Arc<Mutex<Option<ModelAndEffort>>>,
+    /// Skills loaded in this conversation (name, text), oldest first: re-attached after compaction.
+    skills_loaded: Arc<Mutex<Vec<(String, String)>>>,
 }
+
+/// A model and its effort, as a turn found them.
+type ModelAndEffort = (String, Option<String>);
+
+/// After compaction, each loaded skill keeps at most this much of its text, and all of them together this much
+/// (the reference CLI's 5,000 and 25,000 tokens, at about four characters a token).
+const SKILL_REATTACH_CHARS: usize = 20_000;
+const SKILLS_REATTACH_CHARS: usize = 100_000;
 
 /// What the model is told about a message sent while it works. More work is added to the
 /// task list and done after the current step, so neither the new request nor the work in
@@ -409,6 +422,65 @@ impl EngineHandle {
 
     pub fn set_effort(&self, effort: Option<String>) {
         self.runtime.write().unwrap().effort = effort;
+    }
+
+    /// Run the rest of this turn on `model` and/or at `effort` (a skill's
+    /// frontmatter); both go back to what they were when the turn ends.
+    pub fn override_for_turn(&self, model: Option<&str>, effort: Option<&str>) {
+        if model.is_none() && effort.is_none() {
+            return;
+        }
+        let mut rt = self.runtime.write().unwrap();
+        self.turn_restore.lock().unwrap().get_or_insert_with(|| (rt.model.clone(), rt.effort.clone()));
+        if let Some(m) = model {
+            rt.model = forge_api::resolve_model(m);
+        }
+        if let Some(e) = effort {
+            rt.effort = Some(e.to_string());
+        }
+    }
+
+    /// A skill was loaded with `text`: remembered, so compaction can put it back.
+    pub fn record_skill(&self, name: &str, text: &str) {
+        let mut list = self.skills_loaded.lock().unwrap();
+        list.retain(|(n, _)| n != name);
+        list.push((name.to_string(), text.to_string()));
+    }
+
+    /// The loaded skills, most recent first, within the re-attach limits: for the
+    /// message that starts a compacted conversation.
+    pub fn skills_context(&self) -> Option<String> {
+        let list = self.skills_loaded.lock().unwrap();
+        let mut out = String::new();
+        for (name, text) in list.iter().rev() {
+            let room = SKILLS_REATTACH_CHARS.saturating_sub(out.len());
+            if room < 200 {
+                break;
+            }
+            let body = forge_tools::truncate_middle(text, SKILL_REATTACH_CHARS.min(room));
+            out.push_str(&format!("\n\n### The {name} skill\n\n{body}"));
+        }
+        (!out.is_empty()).then(|| {
+            format!(
+                "Skills loaded earlier in this conversation, attached again after it was compacted; they still \
+                 apply:{out}"
+            )
+        })
+    }
+
+    /// `/clear`: the loaded skills are forgotten with the conversation.
+    pub fn forget_skills(&self) {
+        self.skills_loaded.lock().unwrap().clear();
+    }
+
+    /// The turn ended: a skill's grants, removed tools, model and effort go.
+    pub fn end_turn_overrides(&self) {
+        self.permissions.write().unwrap().clear_turn();
+        if let Some((model, effort)) = self.turn_restore.lock().unwrap().take() {
+            let mut rt = self.runtime.write().unwrap();
+            rt.model = model;
+            rt.effort = effort;
+        }
     }
 
     pub fn set_fast(&self, on: bool) {
@@ -606,6 +678,8 @@ impl Engine {
             agents: Default::default(),
             steers: Default::default(),
             turn_running: Default::default(),
+            turn_restore: Default::default(),
+            skills_loaded: Default::default(),
         };
         let shared = Arc::new(Shared {
             provider: parts.provider,
@@ -953,6 +1027,17 @@ impl Engine {
         self.emit(EngineEvent::System { subtype: subtype.into(), data });
     }
 
+    /// The tools the model is offered: all of them but those a running skill
+    /// took away for this turn (`disallowed-tools`).
+    fn offered_tools(&self) -> Vec<forge_types::ToolSpec> {
+        let perms = self.shared.permissions.read().unwrap();
+        let mut specs = self.shared.tools.specs();
+        if !perms.turn_removed.is_empty() {
+            specs.retain(|s| !perms.removed_this_turn(&s.name));
+        }
+        specs
+    }
+
     fn build_request(&self, model: &str) -> MessagesRequest {
         let rt = self.handle.runtime.read().unwrap().clone();
         crate::snapshot::assemble(
@@ -962,7 +1047,7 @@ impl Engine {
                 messages: &self.state.messages,
                 microcompacted: &self.state.microcompacted,
                 system: &self.system,
-                tools: self.shared.tools.specs(),
+                tools: self.offered_tools(),
                 max_output_tokens: self.output_cap.unwrap_or(self.cfg.max_output_tokens),
                 json_schema: self.cfg.json_schema.as_ref(),
                 metadata_user_id: self.cfg.metadata_user_id.as_deref(),
@@ -1229,7 +1314,13 @@ impl Engine {
         self.state.messages.clear();
         self.state.uuids.clear();
         self.state.microcompacted.clear();
-        let context: Vec<String> = self.session_context.iter().cloned().chain(self.plan_context()).collect();
+        let context: Vec<String> = self
+            .session_context
+            .iter()
+            .cloned()
+            .chain(self.plan_context())
+            .chain(self.handle.skills_context())
+            .collect();
         let context = (!context.is_empty()).then(|| context.join("\n\n"));
         let first = forge_compact::summary_message(&summary, context.as_deref(), continue_work);
         self.push_user(first, true, None, false);
@@ -1433,6 +1524,7 @@ impl Engine {
         self.state.counted = 0;
         self.shared.tool_ctx.todos.lock().unwrap().clear();
         self.shared.tool_ctx.files.forget_all_views();
+        self.handle.forget_skills();
         self.reattach_context = self.session_context.is_some();
     }
 
@@ -1540,6 +1632,7 @@ impl Engine {
         self.handle.set_turn_running(true);
         let result = self.run_turn(prompt).await;
         self.handle.set_turn_running(false);
+        self.handle.end_turn_overrides();
         result
     }
 

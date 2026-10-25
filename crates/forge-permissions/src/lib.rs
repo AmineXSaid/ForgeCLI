@@ -237,6 +237,10 @@ pub struct Engine {
     /// Rules added while the session runs (prompt answers, `/permissions add`),
     /// so a rebuilt session (`/clear`, `/reload-*`) keeps them.
     pub added: RuleSet,
+    /// Allowed for this turn only: a skill's `allowed-tools`. Cleared when the turn ends.
+    pub turn_allow: Vec<Rule>,
+    /// Tools taken away for this turn only: a skill's `disallowed-tools`.
+    pub turn_removed: Vec<String>,
 }
 
 impl Engine {
@@ -249,7 +253,42 @@ impl Engine {
                 working_dirs.push(d);
             }
         }
-        Engine { mode, rules, cwd, working_dirs, read_dirs: vec![], added: RuleSet::default() }
+        Engine {
+            mode,
+            rules,
+            cwd,
+            working_dirs,
+            read_dirs: vec![],
+            added: RuleSet::default(),
+            turn_allow: vec![],
+            turn_removed: vec![],
+        }
+    }
+
+    /// For the rest of this turn: allow `allow` without asking, and take the
+    /// `removed` tools away. Deny rules still win.
+    pub fn grant_turn(&mut self, allow: Vec<Rule>, removed: Vec<String>) {
+        self.turn_allow.extend(allow);
+        for t in removed {
+            if !self.turn_removed.contains(&t) {
+                self.turn_removed.push(t);
+            }
+        }
+    }
+
+    /// The turn ended: its grants and removals go.
+    pub fn clear_turn(&mut self) {
+        self.turn_allow.clear();
+        self.turn_removed.clear();
+    }
+
+    /// Whether `tool` is taken away for this turn.
+    pub fn removed_this_turn(&self, tool: &str) -> bool {
+        self.turn_removed.iter().any(|t| t == tool)
+    }
+
+    fn allow_rules(&self) -> impl Iterator<Item = &Rule> {
+        self.rules.allow.iter().chain(self.turn_allow.iter())
     }
 
     /// Add a rule while the session runs; it is remembered in [`Engine::added`].
@@ -297,7 +336,7 @@ impl Engine {
                     read_only: req.read_only,
                     sandboxed: req.sandboxed,
                 };
-                let r = self.rules.allow.iter().find(|r| r.matches(&sub, &self.cwd, MatchMode::All))?;
+                let r = self.allow_rules().find(|r| r.matches(&sub, &self.cwd, MatchMode::All))?;
                 let name = r.to_string();
                 if !used.contains(&name) {
                     used.push(name);
@@ -305,13 +344,22 @@ impl Engine {
             }
             return Some(used.join(", "));
         }
-        self.rules.allow.iter().find(|r| r.matches(req, &self.cwd, MatchMode::All)).map(|r| r.to_string())
+        self.allow_rules().find(|r| r.matches(req, &self.cwd, MatchMode::All)).map(|r| r.to_string())
     }
 
     pub fn decide(&self, req: &Request) -> Decision {
         // 1. Deny rules always win. For compound commands a deny matches if any part does.
         if let Some(r) = self.first_match(&self.rules.deny, req) {
             return Decision::Deny { reason: Reason::Rule { behavior: Behavior::Deny, rule: r.to_string() } };
+        }
+        // 1b. A tool the running skill took away for this turn.
+        if self.removed_this_turn(req.tool) {
+            return Decision::Deny {
+                reason: Reason::Rule {
+                    behavior: Behavior::Deny,
+                    rule: format!("{} (the skill's disallowed-tools)", req.tool),
+                },
+            };
         }
         // 2. Bypass skips prompts, not deny rules.
         if self.mode == PermissionMode::BypassPermissions {

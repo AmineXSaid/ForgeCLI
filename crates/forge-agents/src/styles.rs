@@ -56,7 +56,9 @@ pub fn load_styles(project: &Path, plugins: &[crate::plugins::Plugin], warnings:
         .into_iter()
         .map(|(scope, d)| (d, if scope == forge_config::Scope::User { "user" } else { "project" }.to_string()))
         .collect();
-    dirs.extend(plugins.iter().map(|p| (p.dir.join("output-styles"), p.name.clone())));
+    dirs.extend(
+        plugins.iter().flat_map(|p| p.component_dirs("output-styles").into_iter().map(|d| (d, p.name.clone()))),
+    );
     for (dir, source) in dirs {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         let mut files: Vec<_> =

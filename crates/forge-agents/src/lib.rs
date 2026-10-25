@@ -11,6 +11,7 @@ pub mod attach;
 pub mod commands;
 mod definitions;
 pub mod frontmatter;
+pub mod invoke;
 pub mod plugins;
 pub mod skills;
 pub mod styles;

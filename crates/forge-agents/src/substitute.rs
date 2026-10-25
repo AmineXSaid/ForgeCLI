@@ -80,6 +80,29 @@ fn var(name: &str, v: &SkillVars) -> Option<String> {
     }
 }
 
+/// `text` with only its `${…}` folder placeholders filled in: for
+/// `allowed-tools` rules and hook commands, where `$1` means something else.
+pub fn fill_vars(text: &str, vars: &SkillVars) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("${") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        match after.find('}').and_then(|e| var(&after[..e], vars).map(|v| (v, e))) {
+            Some((v, e)) => {
+                out.push_str(&v);
+                rest = &after[e + 1..];
+            }
+            None => {
+                out.push_str("${");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn ident_len(s: &str) -> usize {
     s.char_indices().find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_')).map_or(s.len(), |(i, _)| i)
 }
@@ -210,5 +233,6 @@ mod tests {
             "/s/pdf/x.py /s/pdf /p abc ${CLAUDE_EFFORT} ${OTHER}"
         );
         assert_eq!(fill("\\${CLAUDE_SKILL_DIR}", "", &[], &v), "${CLAUDE_SKILL_DIR}");
+        assert_eq!(fill_vars("Bash(${CLAUDE_SKILL_DIR}/x.sh $1 ${HOME})", &v), "Bash(/s/pdf/x.sh $1 ${HOME})");
     }
 }

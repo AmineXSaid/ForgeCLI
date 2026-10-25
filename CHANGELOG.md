@@ -15,6 +15,21 @@
 - Frontmatter reads as there: `allowed-tools: Bash(git add *) Bash(git commit *)`
   is two rules, not five words; a skill without a description uses its first
   line; `when_to_use` joins the description.
+- A skill's frontmatter now acts as there. Its ``!`command` `` lines and
+  ` ```! ` blocks run first and their output takes their place (allowed by
+  its `allowed-tools` or your rules; a deny rule or a failure stops it).
+  For the turn it runs in, `allowed-tools` needs no prompt, `disallowed-tools`
+  is hidden, and `model` and `effort` apply; its `hooks` stay for the
+  session. `context: fork` runs it in a sub-agent (`agent:`) and brings back
+  the report.
+- Which skill runs: yours replaces a built-in command or a command file of
+  the same name; names match regardless of case. Skills in a subfolder's
+  `.claude/skills` appear once a file there is used, `--add-dir` folders'
+  skills load, `paths:` holds a skill back until a matching file is used,
+  and `skillOverrides` and `disableSkillShellExecution` are read. Loaded
+  skills come back after compaction.
+- Plugins: extra component paths in the manifest, and a `SKILL.md` at the
+  plugin's root.
 
 ### Windows
 - Commands run on Windows: Forge finds Git Bash (next to `git.exe`, the

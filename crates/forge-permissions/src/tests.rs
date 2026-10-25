@@ -227,3 +227,26 @@ fn read_dirs_are_readable_not_writable() {
     assert_eq!(e.decide(&edit("/cache/tool-output/s1/toolu_1-stdout.txt")).behavior(), Behavior::Ask);
     assert_eq!(e.decide(&read("/cache/other.txt")).behavior(), Behavior::Ask);
 }
+
+#[test]
+fn a_skill_s_grants_last_one_turn() {
+    let mut e = engine(PermissionMode::Default, &[], &[], &["Bash(rm *)"]);
+    let script = "/home/me/.claude/skills/pdf/extract.sh in.pdf";
+    assert!(matches!(e.decide(&bash(script)), Decision::Ask { .. }));
+    e.grant_turn(
+        vec![
+            Rule::parse("Bash(/home/me/.claude/skills/pdf/extract.sh *)").unwrap(),
+            Rule::parse("Bash(rm *)").unwrap(),
+        ],
+        vec!["WebFetch".into()],
+    );
+    assert!(matches!(e.decide(&bash(script)), Decision::Allow { .. }));
+    // Deny rules still win; other commands still ask.
+    assert!(matches!(e.decide(&bash("rm -rf x")), Decision::Deny { .. }));
+    assert!(matches!(e.decide(&bash("curl x")), Decision::Ask { .. }));
+    let fetch = Request { tool: "WebFetch", subject: Subject::Name("x".into()), read_only: true, sandboxed: false };
+    assert!(matches!(e.decide(&fetch), Decision::Deny { .. }));
+    e.clear_turn();
+    assert!(matches!(e.decide(&bash(script)), Decision::Ask { .. }));
+    assert!(matches!(e.decide(&fetch), Decision::Allow { .. }));
+}

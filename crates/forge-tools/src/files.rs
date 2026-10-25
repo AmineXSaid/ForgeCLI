@@ -28,6 +28,11 @@ impl FileState {
         self.record_read(path);
     }
 
+    /// Every file read or written in this session.
+    pub fn touched(&self) -> Vec<PathBuf> {
+        self.reads.lock().unwrap().keys().cloned().collect()
+    }
+
     pub fn forget(&self, path: &Path) {
         self.reads.lock().unwrap().remove(path);
     }

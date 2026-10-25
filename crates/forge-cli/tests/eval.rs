@@ -95,6 +95,8 @@ async fn a_reference_cli_skill_runs_unchanged() {
         "Write the release notes for version 1.4.0.".to_string(),
         format!("python3 {} changes.txt 1.4.0", script.display()),
         "RELEASE-1.4.0.md".to_string(),
+        // Its `!` line ran before the model saw it.
+        "The changes, as of now:\\nfix: a crash when the config is empty".to_string(),
     ] {
         assert!(first.contains(&want), "missing {want:?} in {first}");
     }

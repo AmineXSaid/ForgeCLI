@@ -88,7 +88,9 @@ pub fn load_commands(
         })
         .collect();
     for p in plugins {
-        dirs.push((p.dir.join("commands"), p.name.clone(), Some(p.name.clone())));
+        for d in p.component_dirs("commands") {
+            dirs.push((d, p.name.clone(), Some(p.name.clone())));
+        }
     }
     let mut out: Vec<CommandDef> = vec![];
     for (dir, source, prefix) in dirs {

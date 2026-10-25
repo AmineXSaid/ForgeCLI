@@ -26,6 +26,38 @@ pub(super) fn err(text: impl Into<String>) -> Exec {
     Exec::Local { text: text.into(), is_error: true }
 }
 
+/// Invoke each skill of `/a /b args` (`forge_agents::invoke`) and join what
+/// they give: a `context: fork` skill runs in a sub-agent first, and its
+/// report is what joins.
+pub(crate) async fn invoke_skills(d: &Driver, chain: &[forge_agents::SkillDef], args: &str) -> Result<String, String> {
+    use forge_agents::invoke::{invoke, Invoked, Session};
+    use forge_tools::Tool as _;
+    let handle = d.engine.handle();
+    let ctx = d.engine.tool_ctx().clone();
+    let session = Session { handle: Some(&handle), hooks: Some(&d.agent_rt.hooks) };
+    let mut parts = vec![];
+    for s in chain {
+        match invoke(s, args, &ctx, session).await? {
+            Invoked::Text(t) => parts.push(t),
+            Invoked::Fork { agent, prompt } => {
+                let task = forge_agents::TaskTool { rt: d.agent_rt.clone() };
+                let input = serde_json::json!({"description": format!("/{}", s.name), "prompt": prompt, "subagent_type": agent});
+                task.validate(&input, &ctx).map_err(|e| format!("/{}: {e}", s.name))?;
+                let out = task.call(input, &ctx).await;
+                if out.is_error {
+                    return Err(format!("/{}: {}", s.name, out.text_content()));
+                }
+                parts.push(format!(
+                    "The /{} skill ran in a sub-agent ({agent}) and reported:\n\n{}",
+                    s.name,
+                    out.text_content()
+                ));
+            }
+        }
+    }
+    Ok(parts.join("\n\n"))
+}
+
 /// Run the slash command in `text` (a message starting with `/`).
 pub async fn execute(d: &mut Driver, text: &str) -> Exec {
     let cwd = d.info.cwd.clone();
@@ -40,9 +72,12 @@ pub async fn execute(d: &mut Driver, text: &str) -> Exec {
             };
         }
         Invocation::Skills { chain, args } => {
-            let prompts: Vec<String> =
-                chain.iter().map(|s| forge_agents::skills::skill_prompt(s, args, d.engine.tool_ctx())).collect();
-            return Exec::Submit(MessageContent::Text(prompts.join("\n\n")));
+            let chain: Vec<forge_agents::SkillDef> = chain.into_iter().cloned().collect();
+            let args = args.to_string();
+            return match invoke_skills(d, &chain, &args).await {
+                Ok(text) => Exec::Submit(MessageContent::Text(text)),
+                Err(e) => err(e),
+            };
         }
         Invocation::McpPrompt { name, args } => {
             let name = name.to_string();

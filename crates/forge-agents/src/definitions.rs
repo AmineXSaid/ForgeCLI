@@ -196,7 +196,7 @@ pub fn load_agents(
             (source, d)
         })
         .collect();
-    dirs.extend(plugins.iter().map(|p| (AgentSource::Project, p.dir.join("agents"))));
+    dirs.extend(plugins.iter().flat_map(|p| p.component_dirs("agents")).map(|d| (AgentSource::Project, d)));
     for (source, dir) in dirs {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         let mut files: Vec<_> =
