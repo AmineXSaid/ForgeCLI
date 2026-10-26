@@ -988,6 +988,7 @@ mod tests {
                 name: "Read".into(),
                 input: serde_json::json!({"file_path": "src/a.rs"}),
                 cache_control: None,
+                provider: None,
             }],
             stop_reason: Some(StopReason::ToolUse),
             stop_sequence: None,

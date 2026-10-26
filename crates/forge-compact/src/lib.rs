@@ -159,6 +159,7 @@ mod tests {
                 name: name.into(),
                 input: json!({}),
                 cache_control: None,
+                provider: None,
             }]),
             Message::user(vec![ContentBlock::tool_result(id, "x".repeat(size), false)]),
         ]

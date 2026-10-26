@@ -77,6 +77,10 @@ impl MessageAccumulator {
                     (ContentBlock::Thinking { signature, .. }, Delta::SignatureDelta { signature: s }) => {
                         signature.push_str(s)
                     }
+                    (
+                        ContentBlock::Text { provider, .. } | ContentBlock::ToolUse { provider, .. },
+                        Delta::ProviderDelta { provider: p },
+                    ) => merge_provider(provider, p),
                     _ => {}
                 }
             }
@@ -130,9 +134,24 @@ impl MessageAccumulator {
     pub fn finish(self) -> Result<ApiMessage, ApiError> {
         let mut m = self.message.ok_or_else(|| ApiError::Parse("stream ended without a message".into()))?;
         m.role = Role::Assistant;
-        // Drop empty text blocks the API never sent (padding from out-of-order starts).
-        m.content.retain(|b| !matches!(b, ContentBlock::Text { text, citations: None, .. } if text.is_empty()));
+        // Drop empty text blocks the API never sent (padding from out-of-order starts);
+        // an empty one carrying provider data (a Gemini signature) stays.
+        m.content.retain(
+            |b| !matches!(b, ContentBlock::Text { text, citations: None, provider: None, .. } if text.is_empty()),
+        );
         Ok(m)
+    }
+}
+
+/// Merge provider data into a block's: objects key by key, anything else replaces.
+pub fn merge_provider(into: &mut Option<Value>, from: &Value) {
+    match (into.as_mut(), from) {
+        (Some(Value::Object(a)), Value::Object(b)) => {
+            for (k, v) in b {
+                a.insert(k.clone(), v.clone());
+            }
+        }
+        _ => *into = Some(from.clone()),
     }
 }
 
@@ -176,6 +195,7 @@ mod tests {
                     name: "Read".into(),
                     input: json!({"file_path":"/a"}),
                     cache_control: None,
+                    provider: None,
                 },
             ],
             stop_reason: Some(StopReason::ToolUse),

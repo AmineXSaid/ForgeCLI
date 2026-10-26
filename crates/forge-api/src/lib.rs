@@ -7,6 +7,7 @@
 
 pub mod accumulate;
 pub mod auth;
+pub mod gemini_rules;
 pub mod limit;
 pub mod messages;
 pub mod mock;

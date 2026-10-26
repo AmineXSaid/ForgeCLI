@@ -3,6 +3,7 @@
 //! streamed chunks are translated back into Messages API stream events, so the
 //! engine never sees the difference.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use forge_types::{
@@ -12,6 +13,7 @@ use forge_types::{
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
+use crate::gemini_rules::{self, ToolNames};
 use crate::messages::{http_error, spawn_sse_pump};
 use crate::{backoff_delay, ApiError, EventStream, Provider};
 
@@ -111,24 +113,56 @@ impl OpenAiProvider {
     }
 }
 
+/// The tool names a request sends: Gemini models get an alias for each name
+/// they wouldn't take (`gemini_rules`); everything else, the names as they are.
+pub fn tool_names(req: &MessagesRequest) -> ToolNames {
+    if gemini_rules::is_gemini(&req.model) {
+        ToolNames::new(req.tools.iter().map(|t| t.name.as_str()))
+    } else {
+        ToolNames::default()
+    }
+}
+
+/// What writing history back needs to know about the request.
+struct Writing<'a> {
+    /// A Gemini model (behind Google's endpoint or a gateway such as OmniRoute).
+    gemini: bool,
+    names: &'a ToolNames,
+    /// Each tool call's name, by id, for the `tool` messages that answer it.
+    call_names: HashMap<String, String>,
+}
+
 /// Translate a Messages request into a chat-completions body.
 pub fn to_chat_request(req: &MessagesRequest) -> Value {
+    let gemini = gemini_rules::is_gemini(&req.model);
+    let names = tool_names(req);
+    let call_names = req
+        .messages
+        .iter()
+        .flat_map(|m| m.tool_uses().map(|(id, name, _)| (id.to_string(), name.to_string())))
+        .collect();
+    let w = Writing { gemini, names: &names, call_names };
     let mut messages = Vec::new();
     let system: Vec<&str> = req.system.iter().map(|b| b.text.as_str()).collect();
     if !system.is_empty() {
         messages.push(json!({"role": "system", "content": system.join("\n\n")}));
     }
     for m in &req.messages {
-        push_message(&mut messages, m);
+        push_message(&mut messages, m, &w);
     }
     let tools: Vec<Value> = req
         .tools
         .iter()
         .filter(|t| t.kind.is_none())
         .map(|t| {
-            json!({"type": "function", "function": {
-                "name": t.name, "description": t.description, "parameters": t.input_schema
-            }})
+            let mut f = json!({"name": names.sent(&t.name), "description": t.description});
+            // Gemini takes a narrower schema, and none for a tool without arguments.
+            let params =
+                if gemini { gemini_rules::sanitize_schema(&t.input_schema) } else { Some(t.input_schema.clone()) };
+            if let Some(p) = params {
+                f["parameters"] = p;
+            }
+            json!({"type": "function", "function": f})
         })
         .collect();
     let reasoning = is_reasoning_model(&req.model);
@@ -146,6 +180,14 @@ pub fn to_chat_request(req: &MessagesRequest) -> Value {
     }
     if let Some(t) = req.temperature.filter(|_| !reasoning) {
         body["temperature"] = json!(t);
+    }
+    // Gemini's thinking depth, from the effort (Google's endpoint and OmniRoute
+    // both read `reasoning_effort`).
+    if gemini {
+        let effort = req.output_config.as_ref().and_then(|c| c.get("effort")).and_then(Value::as_str);
+        if let Some(level) = effort.and_then(|e| gemini_rules::thinking_level(e, &req.model)) {
+            body["reasoning_effort"] = json!(level);
+        }
     }
     body
 }
@@ -202,21 +244,58 @@ pub fn adapt_to_refusal(body: &mut Value, err: &ApiError) -> bool {
     if m.contains("stream_options") && o.remove("stream_options").is_some() {
         changed = true;
     }
+    if m.contains("reasoning_effort") && o.remove("reasoning_effort").is_some() {
+        changed = true;
+    }
     changed
 }
 
-fn push_message(out: &mut Vec<Value>, m: &Message) {
+/// Put back what a provider attached (`provider` on a block, as the stream
+/// reader kept it): `tool_call` keys onto the call, `function` keys onto its
+/// function, `message` keys onto the message, unchanged.
+fn restore_provider(provider: &Value, call: &mut Value, msg: &mut Value) {
+    let put = |from: Option<&Value>, into: &mut Value| {
+        if let (Some(Value::Object(f)), Some(o)) = (from, into.as_object_mut()) {
+            for (k, v) in f {
+                o.insert(k.clone(), v.clone());
+            }
+        }
+    };
+    put(provider.get("tool_call"), call);
+    put(provider.get("function"), &mut call["function"]);
+    put(provider.get("message"), msg);
+}
+
+fn push_message(out: &mut Vec<Value>, m: &Message, w: &Writing) {
     match m.role {
         Role::Assistant => {
             let text: String = m.content.iter().filter_map(|b| b.as_text()).collect::<Vec<_>>().join("");
-            let calls: Vec<Value> = m
-                .tool_uses()
-                .map(|(id, name, input)| {
-                    json!({"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}})
-                })
-                .collect();
             let mut msg =
                 json!({"role": "assistant", "content": if text.is_empty() { Value::Null } else { json!(text) }});
+            // Gemini's thoughts go back as it sent them (OmniRoute turns them into thought parts).
+            let thinking: String = m
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if w.gemini && !thinking.is_empty() {
+                msg["reasoning_content"] = json!(thinking);
+            }
+            let mut calls = vec![];
+            for b in &m.content {
+                if let ContentBlock::ToolUse { id, name, input, provider, .. } = b {
+                    let mut call = json!({"id": id, "type": "function", "function": {
+                        "name": w.names.sent(name), "arguments": input.to_string()
+                    }});
+                    if let Some(p) = provider {
+                        restore_provider(p, &mut call, &mut msg);
+                    }
+                    calls.push(call);
+                }
+            }
             if !calls.is_empty() {
                 msg["tool_calls"] = Value::Array(calls);
             }
@@ -234,7 +313,12 @@ fn push_message(out: &mut Vec<Value>, m: &Message) {
                         if is_error == &Some(true) {
                             text = format!("Error: {text}");
                         }
-                        out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": text}));
+                        let mut tool = json!({"role": "tool", "tool_call_id": tool_use_id, "content": text});
+                        // Some endpoints (Gemini's among them) match a result to its call by name too.
+                        if let Some(name) = w.call_names.get(tool_use_id) {
+                            tool["name"] = json!(w.names.sent(name));
+                        }
+                        out.push(tool);
                     }
                     ContentBlock::Text { text, .. } => parts.push(json!({"type": "text", "text": text})),
                     ContentBlock::Image { source, .. } => parts.extend(image_part(source)),
@@ -331,7 +415,36 @@ pub struct ChunkTranslator {
     /// A tool call was streamed: the turn ends in tool use whatever
     /// `finish_reason` says (some providers send "stop" with tool calls).
     saw_tool: bool,
+    /// The open tool call's id: a delta with another id is another call,
+    /// even at the same `index` (some endpoints send every call at 0).
+    open_call_id: Option<String>,
+    /// What each tool call carried besides its id, name and arguments, by
+    /// block: Gemini's `extra_content`, a gateway's `thought_signature`.
+    provider: HashMap<usize, Value>,
+    /// The turn's first tool call's block, for a message-level signature.
+    first_call: Option<usize>,
+    /// A message-level signature seen before any tool call.
+    pending_message: Option<Value>,
+    /// Tool names as sent (aliases for Gemini), to map back.
+    names: ToolNames,
+    /// A Gemini model: `<thought>…</thought>` in content is thinking.
+    gemini: bool,
+    /// Inside a `<thought>` in content, and a tag cut across chunks, held back.
+    in_thought: bool,
+    held: String,
 }
+
+/// The keys a tool call has that are not its own (id, type, function, index):
+/// what a provider attached. The same for its function (beyond name and arguments).
+fn extra_keys(v: &Value, own: &[&str]) -> Option<Value> {
+    let o = v.as_object()?;
+    let extra: serde_json::Map<String, Value> =
+        o.iter().filter(|(k, _)| !own.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    (!extra.is_empty()).then_some(Value::Object(extra))
+}
+
+/// Message-level signatures some gateways send with a tool-call turn.
+const MESSAGE_SIGNATURES: [&str; 3] = ["thinking_signature", "thought_signature", "thoughtSignature"];
 
 /// Tool-call ids for providers that send none, unique in this process.
 static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -345,7 +458,77 @@ enum OpenKind {
 
 impl ChunkTranslator {
     pub fn new(model: &str) -> Self {
-        ChunkTranslator { model: model.into(), ..Default::default() }
+        ChunkTranslator { model: model.into(), gemini: gemini_rules::is_gemini(model), ..Default::default() }
+    }
+
+    /// Map tool names the request sent as aliases back to the tools' names.
+    pub fn with_tool_names(mut self, names: ToolNames) -> Self {
+        self.names = names;
+        self
+    }
+
+    /// Record provider data for a tool block and send it on.
+    fn add_provider(&mut self, out: &mut Vec<StreamEvent>, index: usize, key: &str, data: Value) {
+        let entry = self.provider.entry(index).or_insert_with(|| json!({}));
+        let slot = entry.as_object_mut().expect("object").entry(key).or_insert_with(|| json!({}));
+        if let (Some(a), Value::Object(b)) = (slot.as_object_mut(), data) {
+            a.extend(b);
+        }
+        out.push(StreamEvent::ContentBlockDelta { index, delta: Delta::ProviderDelta { provider: entry.clone() } });
+    }
+
+    /// Text that may hold `<thought>…</thought>` (Gemini through an
+    /// OpenAI-compatible endpoint): the thoughts as thinking, the rest as text.
+    /// A tag cut across chunks is held back until it is whole.
+    fn content(&mut self, out: &mut Vec<StreamEvent>, text: &str) {
+        let mut rest = std::mem::take(&mut self.held) + text;
+        while !rest.is_empty() {
+            let tag = if self.in_thought { "</thought>" } else { "<thought>" };
+            let (now, after) = match rest.find(tag) {
+                Some(at) => (rest[..at].to_string(), Some(rest[at + tag.len()..].to_string())),
+                None => {
+                    // The end may be the start of a tag: hold it.
+                    let keep = (1..tag.len()).rev().find(|n| rest.ends_with(&tag[..*n])).unwrap_or(0);
+                    self.held = rest[rest.len() - keep..].to_string();
+                    (rest[..rest.len() - keep].to_string(), None)
+                }
+            };
+            if !now.is_empty() {
+                if self.in_thought {
+                    self.thinking(out, &now);
+                } else {
+                    self.text(out, &now);
+                }
+            }
+            match after {
+                Some(a) => {
+                    self.in_thought = !self.in_thought;
+                    rest = a;
+                }
+                None => break,
+            }
+        }
+    }
+
+    fn thinking(&mut self, out: &mut Vec<StreamEvent>, r: &str) {
+        let index = match self.open {
+            Some((OpenKind::Thinking, i, _)) => i,
+            _ => self.open(
+                out,
+                OpenKind::Thinking,
+                ContentBlock::Thinking { thinking: String::new(), signature: String::new() },
+                None,
+            ),
+        };
+        out.push(StreamEvent::ContentBlockDelta { index, delta: Delta::ThinkingDelta { thinking: r.into() } });
+    }
+
+    fn text(&mut self, out: &mut Vec<StreamEvent>, text: &str) {
+        let index = match self.open {
+            Some((OpenKind::Text, i, _)) => i,
+            _ => self.open(out, OpenKind::Text, ContentBlock::text(""), None),
+        };
+        out.push(StreamEvent::ContentBlockDelta { index, delta: Delta::TextDelta { text: text.into() } });
     }
 
     fn ensure_started(&mut self, out: &mut Vec<StreamEvent>, id: Option<&str>) {
@@ -408,49 +591,73 @@ impl ChunkTranslator {
         let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
         let reasoning = delta.get("reasoning_content").or_else(|| delta.get("reasoning")).and_then(Value::as_str);
         if let Some(r) = reasoning.filter(|r| !r.is_empty()) {
-            let index = match self.open {
-                Some((OpenKind::Thinking, i, _)) => i,
-                _ => self.open(
-                    &mut out,
-                    OpenKind::Thinking,
-                    ContentBlock::Thinking { thinking: String::new(), signature: String::new() },
-                    None,
-                ),
-            };
-            out.push(StreamEvent::ContentBlockDelta { index, delta: Delta::ThinkingDelta { thinking: r.into() } });
+            self.thinking(&mut out, r);
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
-            let index = match self.open {
-                Some((OpenKind::Text, i, _)) => i,
-                _ => self.open(&mut out, OpenKind::Text, ContentBlock::text(""), None),
-            };
-            out.push(StreamEvent::ContentBlockDelta { index, delta: Delta::TextDelta { text: text.into() } });
+            if self.gemini {
+                self.content(&mut out, text);
+            } else {
+                self.text(&mut out, text);
+            }
+        }
+        // A signature some gateways send on the message, not the call: it
+        // belongs to the turn's first tool call.
+        let message_sig: serde_json::Map<String, Value> = MESSAGE_SIGNATURES
+            .iter()
+            .filter_map(|k| {
+                delta.get(*k).filter(|v| v.as_str().is_some_and(|s| !s.is_empty())).map(|v| (k.to_string(), v.clone()))
+            })
+            .collect();
+        if !message_sig.is_empty() {
+            match self.first_call {
+                Some(i) => self.add_provider(&mut out, i, "message", Value::Object(message_sig)),
+                None => self.pending_message = Some(Value::Object(message_sig)),
+            }
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
                 let tidx = call.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let call_id = call.get("id").and_then(Value::as_str).filter(|i| !i.is_empty());
+                let same_call = call_id.is_none() || call_id == self.open_call_id.as_deref();
                 let index = match self.open {
-                    Some((OpenKind::Tool, i, Some(t))) if t == tidx => i,
+                    Some((OpenKind::Tool, i, Some(t))) if t == tidx && same_call => i,
                     _ => {
                         // Without an id, results couldn't be matched to calls: give one.
-                        let id = call
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .filter(|i| !i.is_empty())
-                            .map(str::to_string)
-                            .unwrap_or_else(|| {
-                                format!("call_forge_{}", NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-                            });
-                        let name = call.pointer("/function/name").and_then(Value::as_str).unwrap_or("").to_string();
+                        let id = call_id.map(str::to_string).unwrap_or_else(|| {
+                            format!("call_forge_{}", NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                        });
+                        let sent = call.pointer("/function/name").and_then(Value::as_str).unwrap_or("");
+                        let name = self.names.original(sent);
                         self.saw_tool = true;
-                        self.open(
+                        let i = self.open(
                             &mut out,
                             OpenKind::Tool,
-                            ContentBlock::ToolUse { id, name, input: json!({}), cache_control: None },
+                            ContentBlock::ToolUse {
+                                id: id.clone(),
+                                name,
+                                input: json!({}),
+                                cache_control: None,
+                                provider: None,
+                            },
                             Some(tidx),
-                        )
+                        );
+                        self.open_call_id = Some(id);
+                        if self.first_call.is_none() {
+                            self.first_call = Some(i);
+                            if let Some(m) = self.pending_message.take() {
+                                self.add_provider(&mut out, i, "message", m);
+                            }
+                        }
+                        i
                     }
                 };
+                // What the call carries besides its own fields goes back with it, unchanged.
+                if let Some(extra) = extra_keys(call, &["id", "type", "function", "index"]) {
+                    self.add_provider(&mut out, index, "tool_call", extra);
+                }
+                if let Some(extra) = call.get("function").and_then(|f| extra_keys(f, &["name", "arguments"])) {
+                    self.add_provider(&mut out, index, "function", extra);
+                }
                 // Arguments come as JSON text, in pieces; some providers send
                 // the object itself, whole.
                 let args = match call.pointer("/function/arguments") {
@@ -509,6 +716,15 @@ impl ChunkTranslator {
         }
         self.finished = true;
         self.ensure_started(out, None);
+        // Text held back as a possible tag start was text after all.
+        let held = std::mem::take(&mut self.held);
+        if !held.is_empty() {
+            if self.in_thought {
+                self.thinking(out, &held);
+            } else {
+                self.text(out, &held);
+            }
+        }
         self.close(out);
         let stop = match self.stop {
             None | Some(StopReason::EndTurn) if self.saw_tool => StopReason::ToolUse,
@@ -690,7 +906,7 @@ impl Provider for OpenAiProvider {
                 Err(e) => return Err(e.with_origin(self.config.origin())),
             }
         };
-        let mut tr = ChunkTranslator::new(&request.model);
+        let mut tr = ChunkTranslator::new(&request.model).with_tool_names(tool_names(&request));
         // Asked to stream, some servers answer with the whole completion.
         let whole = resp
             .headers()
@@ -721,6 +937,12 @@ mod tests {
 
     const PDF: &[u8] = b"%PDF-1.4\n4 0 obj << /Length 44 >>\nstream\nBT 72 720 Td (Total due: 1,234.50 EUR) Tj ET\nendstream\nendobj\n%%EOF";
 
+    /// How history is written for a model that isn't Gemini.
+    fn plain() -> Writing<'static> {
+        static NAMES: std::sync::OnceLock<ToolNames> = std::sync::OnceLock::new();
+        Writing { gemini: false, names: NAMES.get_or_init(ToolNames::default), call_names: HashMap::new() }
+    }
+
     fn pdf_block() -> ContentBlock {
         ContentBlock::Document {
             source: MediaSource::Base64 { media_type: "application/pdf".into(), data: b64(PDF) },
@@ -732,7 +954,7 @@ mod tests {
     #[test]
     fn a_pdf_reaches_an_openai_endpoint_as_its_text() {
         let mut out = vec![];
-        push_message(&mut out, &Message::user(vec![ContentBlock::text("What is the total?"), pdf_block()]));
+        push_message(&mut out, &Message::user(vec![ContentBlock::text("What is the total?"), pdf_block()]), &plain());
         let parts = out[0]["content"].as_array().unwrap();
         assert_eq!(parts.len(), 2, "the document is not dropped");
         assert_eq!(parts[1]["text"], "<document title=\"invoice.pdf\">\nTotal due: 1,234.50 EUR\n</document>");
@@ -759,7 +981,7 @@ mod tests {
             },
         ]);
         let mut out = vec![];
-        push_message(&mut out, &m);
+        push_message(&mut out, &m, &plain());
         assert_eq!(out[0]["role"], "tool");
         let t1 = out[0]["content"].as_str().unwrap();
         assert!(t1.contains("Total due: 1,234.50 EUR") && !t1.contains(&b64(PDF)), "{t1}");
@@ -777,7 +999,7 @@ mod tests {
             cache_control: None,
         };
         let mut out = vec![];
-        push_message(&mut out, &Message::user(vec![doc]));
+        push_message(&mut out, &Message::user(vec![doc]), &plain());
         let t = out[0]["content"][0]["text"].as_str().unwrap();
         assert!(t.starts_with("[Document \"scan.pdf\": its text couldn't be read here"), "{t}");
     }
@@ -1059,6 +1281,7 @@ mod tests {
                     name: "Bash".into(),
                     input: json!({"command":"ls"}),
                     cache_control: None,
+                    provider: None,
                 }]),
                 Message::user(vec![ContentBlock::tool_result("t1", "a\nb", false)]),
             ],
@@ -1198,5 +1421,183 @@ mod tests {
         let mut b = json!({"max_tokens": 64, "stream": true});
         apply_refused(&mut b, &["max_tokens".into(), "max_completion_tokens".into()]);
         assert_eq!(b, json!({"stream": true}));
+    }
+}
+
+/// Gemini (through Google's OpenAI-compatible endpoint) and gateways such as
+/// OmniRoute: what they attach to a turn comes back exactly as they sent it.
+#[cfg(test)]
+mod gemini_tests {
+    use super::*;
+    use crate::MessageAccumulator;
+    use forge_types::{ApiMessage, ToolSpec};
+
+    fn turn(model: &str, names: ToolNames, chunks: &[&str]) -> ApiMessage {
+        let mut tr = ChunkTranslator::new(model).with_tool_names(names);
+        let mut acc = MessageAccumulator::new();
+        for c in chunks {
+            for e in tr.push(c).unwrap() {
+                acc.push(&e).unwrap();
+            }
+        }
+        let mut end = vec![];
+        tr.finish_into(&mut end);
+        for e in &end {
+            acc.push(e).unwrap();
+        }
+        acc.finish().unwrap()
+    }
+
+    fn request(model: &str, messages: Vec<Message>, tools: Vec<ToolSpec>, effort: Option<&str>) -> MessagesRequest {
+        MessagesRequest {
+            model: model.into(),
+            max_tokens: 1000,
+            messages,
+            system: vec![],
+            tools,
+            tool_choice: None,
+            thinking: None,
+            temperature: None,
+            metadata: None,
+            output_config: effort.map(|e| json!({"effort": e})),
+            speed: None,
+            stream: true,
+            betas: vec![],
+        }
+    }
+
+    fn tool(name: &str, schema: Value) -> ToolSpec {
+        serde_json::from_value(json!({"name": name, "description": "d", "input_schema": schema})).unwrap()
+    }
+
+    /// The history after a tool-call turn: the user's prompt, the turn, its results.
+    fn after(turn: &ApiMessage) -> Vec<Message> {
+        let results: Vec<ContentBlock> = turn
+            .to_message()
+            .tool_uses()
+            .map(|(id, _, _)| ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: ToolResultContent::Text("ok".into()),
+                is_error: None,
+                cache_control: None,
+            })
+            .collect();
+        vec![Message::user_text("go"), turn.to_message(), Message::user(results)]
+    }
+
+    #[test]
+    fn google_s_signatures_go_back_on_the_calls_they_came_with() {
+        // Parallel calls: only the first carries a signature; the second comes at the same index with its own id.
+        let t = turn(
+            "gemini-3.1-pro-preview",
+            ToolNames::default(),
+            &[
+                r#"{"id":"c","choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"/a\"}"},"extra_content":{"google":{"thought_signature":"U0lHX0E="}}}]}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_b","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"/b\"}"}}]}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+                "[DONE]",
+            ],
+        );
+        let calls: Vec<(String, Value)> =
+            t.to_message().tool_uses().map(|(id, _, input)| (id.to_string(), input.clone())).collect();
+        assert_eq!(
+            calls,
+            [("call_a".into(), json!({"file_path": "/a"})), ("call_b".into(), json!({"file_path": "/b"}))]
+        );
+        let body = to_chat_request(&request("gemini-3.1-pro-preview", after(&t), vec![tool("Read", json!({}))], None));
+        let msgs = body["messages"].as_array().unwrap();
+        let sent = &msgs[1]["tool_calls"];
+        // Ids exactly as issued; the signature back on its own call, unchanged; none invented for the other.
+        assert_eq!((sent[0]["id"].as_str(), sent[1]["id"].as_str()), (Some("call_a"), Some("call_b")));
+        assert_eq!(sent[0]["extra_content"], json!({"google": {"thought_signature": "U0lHX0E="}}));
+        assert!(sent[1].get("extra_content").is_none());
+        // Results name their call.
+        assert_eq!((msgs[2]["name"].as_str(), msgs[3]["name"].as_str()), (Some("Read"), Some("Read")));
+    }
+
+    #[test]
+    fn a_gateway_s_message_signature_and_reasoning_go_back_too() {
+        // OmniRoute-style: reasoning as `reasoning_content`, a signature on the message, not the call.
+        let t = turn(
+            "gc/gemini-3-flash",
+            ToolNames::default(),
+            &[
+                r#"{"id":"c","choices":[{"delta":{"reasoning_content":"Look at the file first."}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{"thinking_signature":"TVNH"}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{"tool_calls":[{"index":0,"id":"toolu_gem_1","function":{"name":"Read","arguments":"{}","thought_signature":"RlNJRw=="}}]}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+            ],
+        );
+        let body = to_chat_request(&request("gc/gemini-3-flash", after(&t), vec![], None));
+        let m = &body["messages"][1];
+        assert_eq!(m["reasoning_content"], "Look at the file first.");
+        assert_eq!(m["thinking_signature"], "TVNH");
+        assert_eq!(m["tool_calls"][0]["id"], "toolu_gem_1");
+        assert_eq!(m["tool_calls"][0]["function"]["thought_signature"], "RlNJRw==");
+        // Another provider's model: no reasoning sent back.
+        let gpt = to_chat_request(&request("gpt-4o", after(&t), vec![], None));
+        assert!(gpt["messages"][1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn gemini_gets_names_schemas_and_effort_it_takes() {
+        let long = "mcp__github-enterprise-server__list_pull_request_review_comments_for_repository";
+        let tools = vec![
+            tool(
+                long,
+                json!({"type": "object", "properties": {"n": {"type": ["integer", "null"]}}, "additionalProperties": false}),
+            ),
+            tool("Ping", json!({"type": "object", "properties": {}})),
+        ];
+        let req = request("gemini-3-flash", vec![Message::user_text("hi")], tools, Some("max"));
+        let body = to_chat_request(&req);
+        let sent = body["tools"][0]["function"]["name"].as_str().unwrap().to_string();
+        assert!(sent.len() <= 64 && sent != long, "{sent}");
+        assert_eq!(
+            body["tools"][0]["function"]["parameters"],
+            json!({"type": "object", "properties": {"n": {"type": "integer", "nullable": true}}})
+        );
+        assert!(body["tools"][1]["function"].get("parameters").is_none(), "no arguments: no schema");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("temperature").is_none());
+        // The model calls the alias; ForgeCLI sees the tool's own name.
+        let chunk = format!(
+            r#"{{"id":"c","choices":[{{"delta":{{"tool_calls":[{{"index":0,"id":"c1","function":{{"name":"{sent}","arguments":"{{}}"}}}}]}},"finish_reason":"tool_calls"}}]}}"#
+        );
+        let t = turn("gemini-3-flash", tool_names(&req), &[&chunk]);
+        assert_eq!(t.to_message().tool_uses().next().unwrap().1, long);
+        // Not Gemini: schemas and names as they are, no effort sent this way.
+        let other = to_chat_request(&request("gpt-4o", vec![Message::user_text("hi")], req.tools.clone(), Some("max")));
+        assert_eq!(other["tools"][0]["function"]["name"], long);
+        assert!(other.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn thoughts_in_content_tags_become_thinking() {
+        let t = turn(
+            "gemini-2.5-pro",
+            ToolNames::default(),
+            &[
+                r#"{"id":"c","choices":[{"delta":{"content":"<thou"}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{"content":"ght>Plan it.</th"}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{"content":"ought>The answer is 4 <"}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{"content":"3"}}]}"#,
+                r#"{"id":"c","choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            ],
+        );
+        assert_eq!(
+            t.content,
+            vec![
+                ContentBlock::Thinking { thinking: "Plan it.".into(), signature: String::new() },
+                ContentBlock::text("The answer is 4 <3"),
+            ]
+        );
+        // Others' content is left as it is.
+        let o = turn(
+            "gpt-4o",
+            ToolNames::default(),
+            &[r#"{"id":"c","choices":[{"delta":{"content":"<thought>x</thought>"},"finish_reason":"stop"}]}"#],
+        );
+        assert_eq!(o.to_message().text(), "<thought>x</thought>");
     }
 }

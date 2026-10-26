@@ -808,6 +808,7 @@ async fn max_tokens_continues_text_and_answers_cut_off_calls() {
             name: "Write".into(),
             input: json!({ forge_api::TRUNCATED_INPUT: "incomplete JSON" }),
             cache_control: None,
+            provider: None,
         }],
         StopReason::MaxTokens,
     ));
@@ -842,6 +843,7 @@ async fn invalid_tool_json_is_repaired_or_explained() {
         name: "Write".into(),
         input: marked(raw),
         cache_control: None,
+        provider: None,
     };
     let h = Harness::new(vec![]);
     std::fs::create_dir_all(h.cwd()).unwrap();

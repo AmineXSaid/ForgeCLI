@@ -291,6 +291,7 @@ mod tests {
                 name: "Bash".into(),
                 input: json!({"command": "cargo test"}),
                 cache_control: None,
+                provider: None,
             }]),
             Message::user(vec![ContentBlock::tool_result("t", long, false)]),
         ];
@@ -309,6 +310,7 @@ mod tests {
                 name: "Task".into(),
                 input: json!({"prompt": "audit"}),
                 cache_control: None,
+                provider: None,
             }])
         };
         let mut msgs = vec![Message::user_text("audit the repo with sub-agents"), call("a")];

@@ -54,6 +54,15 @@ Test names are `<crate or file>::<test>`; `e2e` is `crates/forge-cli/tests/e2e.r
 | `system/compact_boundary` | done | inferred | `engine::c9_auto_triggers_at_threshold` | `compact_metadata: {trigger, pre_tokens}` |
 | `system/model_fallback` | done | inferred | `engine::c6_fallback_on_overload_for_this_turn_only` | Contract C6 |
 
+## Providers: Gemini and gateways
+
+| Item | Status | Test | Notes |
+| --- | --- | --- | --- |
+| Gemini 3 thought signatures on the OpenAI-compatible wire | done | `openai::gemini_tests::google_s_signatures_go_back_on_the_calls_they_came_with` | A tool call's `extra_content` (Google's `extra_content.google.thought_signature`), any other key it carries, and its function's extra keys are kept on the block (`provider`, in transcripts) and sent back on that call unchanged. Parallel calls at one `index` with their own ids stay apart. Tool messages carry `name` |
+| Gateways' signatures and reasoning (OmniRoute) | done | `openai::gemini_tests::a_gateway_s_message_signature_and_reasoning_go_back_too`, `messages::provider_data_tests::thinking_signatures_and_tool_ids_go_back_unchanged` | A message-level `thinking_signature`/`thought_signature` rides on the turn's first call and goes back on the message; a call's `thought_signature` goes back on it; tool-call ids go back exactly as issued (OmniRoute keys its signature store by them); Gemini models get their `reasoning_content` back. On the Messages wire, thinking signatures and ids go back unchanged and `provider` is never sent |
+| Gemini's request rules on the OpenAI-compatible wire | done | `gemini_rules::tests::*`, `openai::gemini_tests::gemini_gets_names_schemas_and_effort_it_takes`, `openai::gemini_tests::thoughts_in_content_tags_become_thinking` | Gemini models (any gateway prefix): tool names over 64 characters or with other characters get a stable alias, mapped back; schemas cut to what Gemini takes (no `$schema`/`$ref`/`additionalProperties`/`default`/`examples`, `const`→`enum`, `["T","null"]`→`nullable`, `oneOf`→`anyOf`, no parameters for an empty object); effort as `reasoning_effort` (`minimal` on Flash, `xhigh`/`max`→`high`), dropped if refused; `<thought>` in content as thinking. No temperature unless set |
+| Native Gemini API (`generateContent`) | todo | | Planned: `gemini.rs` |
+
 ## Tools
 
 | Tool | Status | Test | Notes |

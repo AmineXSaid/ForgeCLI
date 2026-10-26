@@ -43,6 +43,7 @@ impl MockTurn {
                     name: (*name).into(),
                     input: input.clone(),
                     cache_control: None,
+                    provider: None,
                 })
                 .collect(),
             StopReason::ToolUse,
@@ -185,6 +186,7 @@ pub fn events_for(msg: &ApiMessage) -> Vec<StreamEvent> {
                         name: name.clone(),
                         input: Value::Object(Default::default()),
                         cache_control: None,
+                        provider: None,
                     },
                 });
                 out.push(StreamEvent::ContentBlockDelta {

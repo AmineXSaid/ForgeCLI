@@ -147,7 +147,13 @@ mod tests {
     use forge_api::models::model_info;
 
     fn tool_use(id: &str) -> ContentBlock {
-        ContentBlock::ToolUse { id: id.into(), name: "Read".into(), input: json!({}), cache_control: None }
+        ContentBlock::ToolUse {
+            id: id.into(),
+            name: "Read".into(),
+            input: json!({}),
+            cache_control: None,
+            provider: None,
+        }
     }
 
     #[test]

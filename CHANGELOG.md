@@ -45,6 +45,20 @@
   permission rules accept Git Bash paths and compare paths without regard to
   case, as the filesystem does. `forge doctor` finds `git.exe`.
 
+### Gemini and gateways (OmniRoute)
+- Gemini 3 tool loops work through OpenAI-compatible endpoints: each tool
+  call's thought signature (`extra_content`, or a gateway's
+  `thought_signature`) is kept and sent back on that call. Before, the
+  second step of any tool loop failed with "Function call is missing a
+  thought_signature".
+- Through OmniRoute, tool-call ids go back exactly as issued and a
+  message-level signature goes back on its message; Gemini's reasoning goes
+  back as `reasoning_content`.
+- Parallel tool calls an endpoint sends at the same `index` are kept apart.
+- Gemini models get tool names, schemas and effort they accept: long MCP
+  tool names are aliased, schemas trimmed to Gemini's subset, effort sent as
+  `reasoning_effort`, `<thought>` tags read as thinking.
+
 ### OpenAI-compatible endpoints
 - OpenAI's reasoning models (the o-series, GPT-5 and Codex) are sent
   `max_completion_tokens` and no `temperature`, also behind a gateway's

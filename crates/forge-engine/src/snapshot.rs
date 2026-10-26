@@ -233,6 +233,7 @@ mod tests {
                 name: "Task".into(),
                 input: json!({"description": "audit the parser", "prompt": "Read src/"}),
                 cache_control: None,
+                provider: None,
             },
         ]);
         EngineSnapshot {

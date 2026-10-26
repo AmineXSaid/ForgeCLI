@@ -75,6 +75,11 @@ pub enum ContentBlock {
         citations: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
+        /// What a provider attached to this text and needs back exactly as it
+        /// sent it (Gemini's `thoughtSignature` on a final text part). Kept in
+        /// transcripts; never sent on the Messages wire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<Value>,
     },
     Image {
         source: MediaSource,
@@ -102,6 +107,12 @@ pub enum ContentBlock {
         input: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
+        /// What a provider attached to this call and needs back exactly as it
+        /// sent it: Gemini's `thoughtSignature`, an OpenAI-compatible
+        /// endpoint's `extra_content`, a gateway's `thought_signature`. Kept in
+        /// transcripts; never sent on the Messages wire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<Value>,
     },
     ToolResult {
         tool_use_id: String,
@@ -130,7 +141,7 @@ pub enum ContentBlock {
 
 impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
-        ContentBlock::Text { text: text.into(), citations: None, cache_control: None }
+        ContentBlock::Text { text: text.into(), citations: None, cache_control: None, provider: None }
     }
 
     pub fn tool_result(id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
@@ -374,11 +385,27 @@ pub struct MessagesRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Delta {
-    TextDelta { text: String },
-    InputJsonDelta { partial_json: String },
-    ThinkingDelta { thinking: String },
-    SignatureDelta { signature: String },
-    CitationsDelta { citation: Value },
+    TextDelta {
+        text: String,
+    },
+    InputJsonDelta {
+        partial_json: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+    },
+    SignatureDelta {
+        signature: String,
+    },
+    /// Provider data for the block (merged into its `provider`): what an
+    /// OpenAI-compatible or Gemini stream attaches after the block starts.
+    /// Never on the Messages wire.
+    ProviderDelta {
+        provider: Value,
+    },
+    CitationsDelta {
+        citation: Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -227,6 +227,18 @@ fn header_value(v: &str) -> Result<HeaderValue, ApiError> {
 }
 
 /// Turn a non-2xx response into an [`ApiError::Http`].
+/// Take out what other providers attached to blocks (`provider`): this wire's
+/// API rejects fields it doesn't know.
+pub(crate) fn strip_provider_data(body: &mut Value) {
+    for m in body.get_mut("messages").and_then(Value::as_array_mut).into_iter().flatten() {
+        for b in m.get_mut("content").and_then(Value::as_array_mut).into_iter().flatten() {
+            if let Some(o) = b.as_object_mut() {
+                o.remove("provider");
+            }
+        }
+    }
+}
+
 pub(crate) async fn http_error(resp: reqwest::Response) -> ApiError {
     let status = resp.status().as_u16();
     let url = crate::auth::display_url(resp.url().as_str());
@@ -338,7 +350,8 @@ impl Provider for MessagesProvider {
         }
         let origin = self.config.origin();
         request.stream = true;
-        let body = serde_json::to_value(&request).map_err(|e| ApiError::Parse(e.to_string()))?;
+        let mut body = serde_json::to_value(&request).map_err(|e| ApiError::Parse(e.to_string()))?;
+        strip_provider_data(&mut body);
         let mut attempt = 0;
         let resp = loop {
             let res = tokio::select! {
@@ -374,6 +387,7 @@ impl Provider for MessagesProvider {
 
     async fn count_tokens(&self, request: &MessagesRequest) -> Option<u64> {
         let mut body = serde_json::to_value(request).ok()?;
+        strip_provider_data(&mut body);
         let obj = body.as_object_mut()?;
         for k in ["max_tokens", "stream", "metadata", "temperature"] {
             obj.remove(k);
@@ -388,6 +402,90 @@ impl Provider for MessagesProvider {
             .ok()?;
         let v: Value = resp.json().await.ok()?;
         v.get("input_tokens").and_then(Value::as_u64)
+    }
+}
+
+#[cfg(test)]
+mod provider_data_tests {
+    use forge_types::{ContentBlock, Message, MessagesRequest};
+    use serde_json::json;
+
+    #[test]
+    fn provider_data_stays_in_transcripts_but_never_reaches_this_wire() {
+        let call = ContentBlock::ToolUse {
+            id: "toolu_1".into(),
+            name: "Read".into(),
+            input: json!({"file_path": "/a"}),
+            cache_control: None,
+            provider: Some(json!({"thoughtSignature": "c2ln"})),
+        };
+        // A transcript keeps it, and reads it back.
+        let saved = serde_json::to_string(&call).unwrap();
+        assert!(saved.contains("thoughtSignature"));
+        assert_eq!(serde_json::from_str::<ContentBlock>(&saved).unwrap(), call);
+        // An old transcript without it still reads.
+        let old: ContentBlock =
+            serde_json::from_value(json!({"type": "tool_use", "id": "t", "name": "Read", "input": {}})).unwrap();
+        assert!(matches!(old, ContentBlock::ToolUse { provider: None, .. }));
+        // The request body this wire sends has none.
+        let req = MessagesRequest {
+            model: "m".into(),
+            max_tokens: 10,
+            messages: vec![Message::assistant(vec![call])],
+            system: vec![],
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            temperature: None,
+            metadata: None,
+            output_config: None,
+            speed: None,
+            stream: true,
+            betas: vec![],
+        };
+        let mut body = serde_json::to_value(&req).unwrap();
+        super::strip_provider_data(&mut body);
+        assert!(!body.to_string().contains("provider") && body.to_string().contains("toolu_1"));
+    }
+
+    /// A gateway (OmniRoute) in front of Gemini on this wire carries Gemini's
+    /// signature as the thinking block's: it and the gateway's tool ids go back as they came.
+    #[test]
+    fn thinking_signatures_and_tool_ids_go_back_unchanged() {
+        let turn = Message::assistant(vec![
+            ContentBlock::Thinking { thinking: "Read it first.".into(), signature: "R0VNSU5JX1NJRw==".into() },
+            ContentBlock::ToolUse {
+                id: "toolu_vrtx_01Gx".into(),
+                name: "Read".into(),
+                input: json!({"file_path": "/a"}),
+                cache_control: None,
+                provider: None,
+            },
+        ]);
+        let req = MessagesRequest {
+            model: "gemini-3-flash".into(),
+            max_tokens: 10,
+            messages: vec![Message::user_text("go"), turn],
+            system: vec![],
+            tools: vec![],
+            tool_choice: None,
+            thinking: None,
+            temperature: None,
+            metadata: None,
+            output_config: None,
+            speed: None,
+            stream: true,
+            betas: vec![],
+        };
+        let mut body = serde_json::to_value(&req).unwrap();
+        super::strip_provider_data(&mut body);
+        assert_eq!(
+            body["messages"][1]["content"],
+            json!([
+                {"type": "thinking", "thinking": "Read it first.", "signature": "R0VNSU5JX1NJRw=="},
+                {"type": "tool_use", "id": "toolu_vrtx_01Gx", "name": "Read", "input": {"file_path": "/a"}}
+            ])
+        );
     }
 }
 

@@ -316,6 +316,7 @@ async fn host_stops_one_agent_and_the_turn_goes_on() {
                     name: "LS".into(),
                     input: json!({"path": "."}),
                     cache_control: None,
+                    provider: None,
                 },
             ],
             forge_types::StopReason::ToolUse,
