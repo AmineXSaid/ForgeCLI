@@ -2,6 +2,9 @@
 //!
 //! * [`MockApi`] is a tiny HTTP server that answers `POST /v1/messages` with
 //!   scripted SSE responses and records every request body.
+//! * [`MockGemini`] answers Gemini's `:streamGenerateContent` as strictly as
+//!   Google does: a function call that lost its thought signature, a tool name
+//!   it wouldn't take or a setting a model refuses gets Google's 400.
 //! * [`Host`] spawns `forge` with stream-json in and out and talks to it the
 //!   way an IDE extension does.
 
@@ -122,6 +125,168 @@ impl MockApi {
     pub fn requests(&self) -> Vec<Value> {
         self.requests.lock().unwrap().clone()
     }
+}
+
+/// A scripted Gemini endpoint that enforces Google's rules. Each request gets
+/// the next turn's parts (as one streamed chunk); a rule broken gets the 400
+/// Google sends, and the reason is kept in [`MockGemini::violations`].
+pub struct MockGemini {
+    /// The base URL (`http://127.0.0.1:<port>/v1beta`).
+    pub url: String,
+    requests: Arc<Mutex<Vec<Value>>>,
+    violations: Arc<Mutex<Vec<String>>>,
+}
+
+/// What Google refuses in a request, given the signatures it issued (by
+/// function name and arguments). `None` when the request is fine.
+pub fn gemini_violation(path: &str, body: &Value, issued: &[(String, String)]) -> Option<String> {
+    let model = path.rsplit("/models/").next().unwrap_or_default().split(':').next().unwrap_or_default();
+    for t in body["tools"].as_array().into_iter().flatten() {
+        for d in t["functionDeclarations"].as_array().into_iter().flatten() {
+            let name = d["name"].as_str().unwrap_or_default();
+            if name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c)) {
+                return Some(format!("Invalid function name: {name}. Must be at most 64 characters long."));
+            }
+            if let Some(p) = d.get("parameters") {
+                for bad in ["$schema", "additionalProperties", "$ref", "const"] {
+                    if p.to_string().contains(&format!("\"{bad}\"")) {
+                        return Some(format!("Invalid JSON payload received. Unknown name \"{bad}\""));
+                    }
+                }
+            }
+        }
+    }
+    if model.starts_with("gemini-4") && body.pointer("/generationConfig/thinkingConfig/thinkingBudget").is_some() {
+        return Some("thinking_budget is not supported by this model. Use thinking_level instead.".into());
+    }
+    let mut calls = 0;
+    for c in body["contents"].as_array().into_iter().flatten() {
+        for p in c["parts"].as_array().into_iter().flatten() {
+            if let Some(fc) = p.get("functionCall").filter(|_| c["role"] == "model") {
+                calls += 1;
+                let key = format!("{}{}", fc["name"].as_str().unwrap_or_default(), fc["args"]);
+                if let Some((_, sig)) = issued.iter().find(|(k, _)| *k == key) {
+                    if p["thoughtSignature"].as_str() != Some(sig) {
+                        return Some("Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance.".into());
+                    }
+                }
+            }
+            if let Some(fr) = p.get("functionResponse") {
+                if fr["name"].as_str().is_none_or(str::is_empty) {
+                    return Some("functionResponse.name is required.".into());
+                }
+                calls -= 1;
+            }
+        }
+    }
+    (calls != 0).then(|| {
+        "Please ensure that the number of function response parts is equal to the number of function call parts of the function call turn.".into()
+    })
+}
+
+impl MockGemini {
+    pub async fn start(turns: Vec<Vec<Value>>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}/v1beta", listener.local_addr().unwrap());
+        let turns = Arc::new(Mutex::new(VecDeque::from(turns)));
+        let requests = Arc::new(Mutex::new(vec![]));
+        let violations = Arc::new(Mutex::new(vec![]));
+        let issued: Arc<Mutex<Vec<(String, String)>>> = Default::default();
+        let (t, r, v) = (turns.clone(), requests.clone(), violations.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let (t, r, v, issued) = (t.clone(), r.clone(), v.clone(), issued.clone());
+                tokio::spawn(async move {
+                    let Some((head, body)) = read_request(&mut sock).await else { return };
+                    let path = head.split(' ').nth(1).unwrap_or_default().to_string();
+                    let reply = |status: &str, ct: &str, out: String| {
+                        format!("HTTP/1.1 {status}\r\ncontent-type: {ct}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}", out.len())
+                    };
+                    let response = if path.contains(":countTokens") {
+                        reply("200 OK", "application/json", r#"{"totalTokens": 1000}"#.into())
+                    } else if !path.contains(":streamGenerateContent") {
+                        reply("200 OK", "application/json", r#"{"models": []}"#.into())
+                    } else {
+                        r.lock().unwrap().push(body.clone());
+                        let broken = gemini_violation(&path, &body, &issued.lock().unwrap());
+                        match broken {
+                            Some(why) => {
+                                v.lock().unwrap().push(why.clone());
+                                let e = serde_json::json!({"error": {"code": 400, "message": why, "status": "INVALID_ARGUMENT"}});
+                                reply("400 Bad Request", "application/json", e.to_string())
+                            }
+                            None => {
+                                // A title or summary request (no tools) gets a short text, not the script.
+                                let parts = if body.get("tools").is_none() {
+                                    vec![serde_json::json!({"text": "A title"})]
+                                } else {
+                                    t.lock()
+                                        .unwrap()
+                                        .pop_front()
+                                        .unwrap_or_else(|| vec![serde_json::json!({"text": "(mock gemini exhausted)"})])
+                                };
+                                for p in &parts {
+                                    if let (Some(fc), Some(sig)) =
+                                        (p.get("functionCall"), p["thoughtSignature"].as_str())
+                                    {
+                                        let key = format!("{}{}", fc["name"].as_str().unwrap_or_default(), fc["args"]);
+                                        issued.lock().unwrap().push((key, sig.to_string()));
+                                    }
+                                }
+                                let chunk = serde_json::json!({
+                                    "candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": "STOP"}],
+                                    "usageMetadata": {"promptTokenCount": 1000, "candidatesTokenCount": 20, "thoughtsTokenCount": 10}
+                                });
+                                reply("200 OK", "text/event-stream", format!("data: {chunk}\r\n\r\n"))
+                            }
+                        }
+                    };
+                    let _ = sock.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        MockGemini { url, requests, violations }
+    }
+
+    pub fn requests(&self) -> Vec<Value> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// The rules requests broke, in Google's words.
+    pub fn violations(&self) -> Vec<String> {
+        self.violations.lock().unwrap().clone()
+    }
+}
+
+/// One HTTP request: its request line and its JSON body.
+async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<(String, Value)> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 8192];
+    let (head_end, len) = loop {
+        let n = sock.read(&mut tmp).await.unwrap_or(0);
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&buf[..pos]).to_ascii_lowercase();
+            let len = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                .unwrap_or(0);
+            break (pos + 4, len);
+        }
+    };
+    while buf.len() < head_end + len {
+        let n = sock.read(&mut tmp).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+    let line = String::from_utf8_lossy(&buf[..head_end]).lines().next().unwrap_or_default().to_string();
+    Some((line, serde_json::from_slice(&buf[head_end..]).unwrap_or(Value::Null)))
 }
 
 /// Path of the built `forge` binary (set by Cargo for integration tests).

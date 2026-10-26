@@ -65,6 +65,10 @@
   thinking level (or 2.5's budget), PDFs go as files, a malformed function
   call is asked again once, and Google's retry delay is honoured. `forge
   doctor` shows the Gemini endpoint and key.
+- Switching to a Gemini 3 model mid-session (`/model`), or resuming an old
+  session on one, no longer fails on the first tool call: calls Gemini
+  never signed get Google's placeholder signature, and one model's
+  signatures are never sent to another.
 
 ### OpenAI-compatible endpoints
 - OpenAI's reasoning models (the o-series, GPT-5 and Codex) are sent

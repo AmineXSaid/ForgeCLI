@@ -151,8 +151,15 @@ pub fn events_for(msg: &ApiMessage) -> Vec<StreamEvent> {
     let mut out = vec![StreamEvent::MessageStart { message: start }];
     for (index, block) in msg.content.iter().enumerate() {
         match block {
-            ContentBlock::Text { text, .. } => {
+            ContentBlock::Text { text, provider, .. } => {
                 out.push(StreamEvent::ContentBlockStart { index, content_block: ContentBlock::text("") });
+                // Provider data comes as the OpenAI and Gemini wires send it.
+                if let Some(p) = provider {
+                    out.push(StreamEvent::ContentBlockDelta {
+                        index,
+                        delta: Delta::ProviderDelta { provider: p.clone() },
+                    });
+                }
                 // Split into two deltas so tests exercise accumulation.
                 let mid = text.char_indices().nth(text.chars().count() / 2).map(|(i, _)| i).unwrap_or(0);
                 for part in [&text[..mid], &text[mid..]] {
@@ -178,7 +185,7 @@ pub fn events_for(msg: &ApiMessage) -> Vec<StreamEvent> {
                     delta: Delta::SignatureDelta { signature: signature.clone() },
                 });
             }
-            ContentBlock::ToolUse { id, name, input, .. } => {
+            ContentBlock::ToolUse { id, name, input, provider, .. } => {
                 out.push(StreamEvent::ContentBlockStart {
                     index,
                     content_block: ContentBlock::ToolUse {
@@ -189,6 +196,12 @@ pub fn events_for(msg: &ApiMessage) -> Vec<StreamEvent> {
                         provider: None,
                     },
                 });
+                if let Some(p) = provider {
+                    out.push(StreamEvent::ContentBlockDelta {
+                        index,
+                        delta: Delta::ProviderDelta { provider: p.clone() },
+                    });
+                }
                 out.push(StreamEvent::ContentBlockDelta {
                     index,
                     delta: Delta::InputJsonDelta { partial_json: serde_json::to_string(input).unwrap() },

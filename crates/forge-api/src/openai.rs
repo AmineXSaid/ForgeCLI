@@ -127,6 +127,8 @@ pub fn tool_names(req: &MessagesRequest) -> ToolNames {
 struct Writing<'a> {
     /// A Gemini model (behind Google's endpoint or a gateway such as OmniRoute).
     gemini: bool,
+    /// Gemini 3 or later: the first call of a turn needs a thought signature.
+    gemini3: bool,
     names: &'a ToolNames,
     /// Each tool call's name, by id, for the `tool` messages that answer it.
     call_names: HashMap<String, String>,
@@ -141,7 +143,7 @@ pub fn to_chat_request(req: &MessagesRequest) -> Value {
         .iter()
         .flat_map(|m| m.tool_uses().map(|(id, name, _)| (id.to_string(), name.to_string())))
         .collect();
-    let w = Writing { gemini, names: &names, call_names };
+    let w = Writing { gemini, gemini3: gemini_rules::is_gemini3_or_later(&req.model), names: &names, call_names };
     let mut messages = Vec::new();
     let system: Vec<&str> = req.system.iter().map(|b| b.text.as_str()).collect();
     if !system.is_empty() {
@@ -292,6 +294,13 @@ fn push_message(out: &mut Vec<Value>, m: &Message, w: &Writing) {
                     }});
                     if let Some(p) = provider {
                         restore_provider(p, &mut call, &mut msg);
+                    }
+                    // A call Gemini 3 never signed (another model's, an old
+                    // session's): Google's placeholder, on the turn's first call.
+                    let signed = provider.as_ref().and_then(crate::gemini::signature_of).is_some();
+                    if w.gemini3 && calls.is_empty() && !signed {
+                        call["extra_content"] =
+                            json!({"google": {"thought_signature": crate::gemini::PLACEHOLDER_SIGNATURE}});
                     }
                     calls.push(call);
                 }
@@ -940,7 +949,12 @@ mod tests {
     /// How history is written for a model that isn't Gemini.
     fn plain() -> Writing<'static> {
         static NAMES: std::sync::OnceLock<ToolNames> = std::sync::OnceLock::new();
-        Writing { gemini: false, names: NAMES.get_or_init(ToolNames::default), call_names: HashMap::new() }
+        Writing {
+            gemini: false,
+            gemini3: false,
+            names: NAMES.get_or_init(ToolNames::default),
+            call_names: HashMap::new(),
+        }
     }
 
     fn pdf_block() -> ContentBlock {
@@ -1446,6 +1460,27 @@ mod gemini_tests {
             acc.push(e).unwrap();
         }
         acc.finish().unwrap()
+    }
+
+    #[test]
+    fn a_call_gemini_3_never_signed_gets_the_placeholder() {
+        let call = |id: &str| ContentBlock::ToolUse {
+            id: id.into(),
+            name: "Read".into(),
+            input: json!({}),
+            cache_control: None,
+            provider: None,
+        };
+        let history = vec![
+            Message::user(vec![ContentBlock::text("go")]),
+            Message { role: Role::Assistant, content: vec![call("a"), call("b")] },
+        ];
+        let body = to_chat_request(&request("gemini-3-flash-preview", history.clone(), vec![], None));
+        let calls = &body["messages"][1]["tool_calls"];
+        assert_eq!(calls[0]["extra_content"]["google"]["thought_signature"], crate::gemini::PLACEHOLDER_SIGNATURE);
+        assert!(calls[1].get("extra_content").is_none());
+        let body = to_chat_request(&request("gpt-5", history, vec![], None));
+        assert!(body["messages"][1]["tool_calls"][0].get("extra_content").is_none());
     }
 
     fn request(model: &str, messages: Vec<Message>, tools: Vec<ToolSpec>, effort: Option<&str>) -> MessagesRequest {

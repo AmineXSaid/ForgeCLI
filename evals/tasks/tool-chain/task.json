@@ -1,0 +1,7 @@
+{
+  "instruction": "START.txt says where to look first. Follow the trail it starts and write the release code it leads to into release.txt (the code alone, on one line).",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "compatibility",
+  "tags": ["tools", "gemini", "multi-step"],
+  "timeout_secs": 300
+}

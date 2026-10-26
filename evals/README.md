@@ -46,6 +46,7 @@ and stderr.
 | csv-to-json | tool-design | Write new code to a precise spec checked on hidden input |
 | steer-more-work | long-horizon | A request sent mid-task ("also write the total") must be done without dropping the per-file work in hand |
 | reference-skill | compatibility | `/version-notes 1.4.0 changes.txt` runs a skill written for the reference CLI (`.claude/skills`, named and indexed arguments, `${CLAUDE_SKILL_DIR}`) |
+| tool-chain | compatibility | Follow a trail through four files, one tool call at a time, to the right release code; run with a Gemini 3 model (`--model gemini-3-flash-preview`, `FORGE_GEMINI_API_KEY`) it checks that thought signatures survive a multi-step tool loop |
 
 Add tasks for every harness change, and name the pillar they exercise.
 

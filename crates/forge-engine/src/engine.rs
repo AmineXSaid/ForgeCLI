@@ -970,6 +970,14 @@ impl Engine {
             for m in &mut self.state.messages {
                 m.content
                     .retain(|b| !matches!(b, ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }));
+                // What the last model attached (Gemini's thought signatures) is
+                // that model's: another one refuses it. Calls without one get
+                // the wire's placeholder where the new model needs it.
+                for b in &mut m.content {
+                    if let ContentBlock::ToolUse { provider, .. } | ContentBlock::Text { provider, .. } = b {
+                        *provider = None;
+                    }
+                }
             }
             // A message left empty stays in place (its uuid lines up with
             // it); requests skip empty messages.

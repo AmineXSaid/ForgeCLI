@@ -1364,7 +1364,12 @@ async fn a_new_model_gets_the_whole_conversation_without_foreign_thinking() {
         MockTurn::blocks(
             vec![
                 ContentBlock::Thinking { thinking: "pondering".into(), signature: "sig-from-a".into() },
-                ContentBlock::text(text),
+                ContentBlock::Text {
+                    text: text.into(),
+                    citations: None,
+                    cache_control: None,
+                    provider: Some(json!({"part": {"thoughtSignature": "sig-from-a"}})),
+                },
             ],
             forge_types::StopReason::EndTurn,
         )
@@ -1376,6 +1381,11 @@ async fn a_new_model_gets_the_whole_conversation_without_foreign_thinking() {
     // The same model keeps its thinking: the signatures are its own.
     let same = &h.provider.requests()[1];
     assert!(same.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, ContentBlock::Thinking { .. })));
+    assert!(same
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, ContentBlock::Text { provider: Some(_), .. })));
     // Another model (on any endpoint) gets every message, minus the thinking.
     e.handle().set_model("claude-sonnet-5-5");
     e.submit(prompt("three")).await;
@@ -1386,6 +1396,11 @@ async fn a_new_model_gets_the_whole_conversation_without_foreign_thinking() {
         assert!(words.iter().any(|w| w.contains(said)), "{said} is missing: {words:?}");
     }
     assert!(!other.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, ContentBlock::Thinking { .. })));
+    // Nor the last model's provider data (Gemini's signatures are its own).
+    assert!(!other.messages.iter().flat_map(|m| &m.content).any(|b| matches!(
+        b,
+        ContentBlock::Text { provider: Some(_), .. } | ContentBlock::ToolUse { provider: Some(_), .. }
+    )));
 }
 
 fn steer(uuid: &str, text: &str) -> Steer {
