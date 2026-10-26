@@ -104,3 +104,68 @@ async fn bypass_asks_nothing_once_allowed() {
     assert_eq!(std::fs::read_to_string(e.cwd.join("notes.txt")).unwrap(), "changed");
     assert!(!e.cwd.join("junk.txt").exists());
 }
+
+/// The mode changed by the host while a turn runs (Shift+Tab in Forge's
+/// desktop): the next tool call already follows it, and the model is told
+/// at its next prompt, when planning starts and once when it ends.
+#[tokio::test]
+async fn a_mode_change_mid_turn_applies_at_once_and_reaches_the_model() {
+    let e = env();
+    let notes = e.cwd.join("notes.txt");
+    let api = MockApi::start(vec![
+        MockTurn::tool("Read", json!({"file_path": notes})),
+        MockTurn::tool("Bash", json!({"command": "touch made.txt"})),
+        MockTurn::tool("Edit", json!({"file_path": notes, "old_string": "original", "new_string": "changed"})),
+        MockTurn::text("first done"),
+        MockTurn::text("second done"),
+        MockTurn::text("third done"),
+    ])
+    .await;
+    let args = [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-prompt-tool",
+        "stdio",
+        "--permission-mode",
+        "default",
+    ];
+    let mut h = Host::spawn(command(&forge_bin(), &e.cwd, &e.home, &api.url, &args));
+    h.send_user("tidy up").await;
+    // Manual: the command asks. While it waits, the person switches to Plan.
+    let ask: Value = h.until(|v| v["type"] == "control_request").await;
+    assert_eq!(ask["request"]["tool_name"], "Bash");
+    h.send(json!({"type": "control_request", "request_id": "m1", "request": {"subtype": "set_permission_mode", "mode": "plan"}}))
+        .await;
+    h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "m1").await;
+    let id = ask["request_id"].as_str().unwrap().to_string();
+    h.send(json!({"type": "control_response", "response": {"subtype": "success", "request_id": id,
+        "response": {"behavior": "allow", "updatedInput": ask["request"]["input"]}}}))
+        .await;
+    // The edit that follows runs in Plan: refused, nothing asked.
+    let next: Value = h.until(|v| v["type"] == "result" || v["type"] == "control_request").await;
+    assert_eq!(next["type"], "result", "Plan asked instead of refusing: {next}");
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "original", "no edit once in Plan");
+    let refused = api.requests().last().unwrap().to_string();
+    assert!(refused.contains("plan"), "the refusal says why: {refused}");
+
+    // The next prompt tells the model it is planning now.
+    h.send_user("go on").await;
+    h.until_type("result").await;
+    let second = api.requests().last().unwrap().to_string();
+    assert!(second.contains("Plan mode is active"), "{second}");
+
+    // Back to Edit automatically between prompts: told once that planning ended.
+    h.send(json!({"type": "control_request", "request_id": "m2", "request": {"subtype": "set_permission_mode", "mode": "acceptEdits"}}))
+        .await;
+    h.until(|v| v["type"] == "control_response" && v["response"]["request_id"] == "m2").await;
+    h.send_user("and now?").await;
+    h.until_type("result").await;
+    let third = api.requests().last().unwrap().to_string();
+    assert!(third.contains("Plan mode is off (the permission mode is now acceptEdits)"), "{third}");
+    h.close_stdin();
+    h.wait().await;
+}
