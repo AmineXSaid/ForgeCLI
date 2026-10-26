@@ -35,6 +35,7 @@ cargo build --release
 | `FORGE_BASE_URL` | A different Messages API endpoint |
 | `FORGE_CUSTOM_HEADERS` | Extra request headers, one `Name: value` per line |
 | `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint |
+| `FORGE_GEMINI_API_KEY`, `FORGE_GEMINI_BASE_URL` | Google's Gemini API (Google AI Studio by default; Vertex AI or a gateway by URL) |
 
 ## Optional external prompt set
 

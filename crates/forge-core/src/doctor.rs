@@ -83,9 +83,21 @@ pub fn endpoint_checks(settings: &forge_config::LoadedSettings, env: &dyn Fn(&st
             }
             d
         }
-        (Backend::Messages, _) => {
-            "Messages API (set FORGE_OPENAI_BASE_URL to use an OpenAI-compatible endpoint)".to_string()
+        (Backend::Gemini, from) => {
+            let header = match env("FORGE_GEMINI_AUTH_HEADER")
+                .or_else(|| settings.get("/gemini/authHeader").and_then(|v| v.as_str()).map(str::to_string))
+            {
+                Some(h) => format!("; key header {h} (gemini.authHeader)"),
+                None => String::new(),
+            };
+            match from {
+                Some(_) => format!("Gemini API, chosen by {}{header}", r.url_origin()),
+                None => format!("Gemini API (Google AI Studio), chosen by FORGE_GEMINI_API_KEY{header}"),
+            }
         }
+        (Backend::Messages, _) => "Messages API (set FORGE_OPENAI_BASE_URL to use an OpenAI-compatible endpoint, or \
+             FORGE_GEMINI_API_KEY for Gemini)"
+            .to_string(),
     };
     let url_problem = r.problems.iter().find(|p| p.contains("is not a valid http"));
     let suffix = r.warnings.iter().find(|w| w.contains("ends in /chat/completions"));
@@ -95,6 +107,9 @@ pub fn endpoint_checks(settings: &forge_config::LoadedSettings, env: &dyn Fn(&st
         (Some(p), _, _) => (false, p.clone()),
         (None, Some(w), _) => (false, w.clone()),
         (None, None, Some(u)) => (true, format!("{u} (from {})", r.url_origin())),
+        (None, None, None) if r.backend() == Backend::Gemini => {
+            (true, format!("{} (the default for Gemini)", crate::endpoint::GEMINI_DEFAULT_URL))
+        }
         (None, None, None) => (true, "default (the Messages API's own host)".to_string()),
     };
     if r.warnings.iter().any(|w| w.contains("would travel unencrypted")) {
@@ -144,6 +159,24 @@ pub fn endpoint_checks(settings: &forge_config::LoadedSettings, env: &dyn Fn(&st
                         if r.others.len() == 1 { "is set" } else { "are set" },
                         if r.others.len() == 1 { "it is" } else { "they are" },
                     ),
+                ),
+            },
+            Backend::Gemini => match (&r.key, &r.helper) {
+                (Some(k), _) => (
+                    true,
+                    format!("FORGE_GEMINI_API_KEY ({}){}", crate::endpoint::mask(k), quoted("FORGE_GEMINI_API_KEY")),
+                ),
+                (None, Some((_, setting, file))) => (
+                    true,
+                    format!(
+                        "{setting}{} (not run; `forge doctor --probe` runs it)",
+                        file.as_ref().map(|f| format!(" in {}", f.display())).unwrap_or_default()
+                    ),
+                ),
+                (None, None) if r.local => (true, "none (a server on this machine or network often needs none)".into()),
+                (None, None) => (
+                    !r.problems.iter().any(|p| p.starts_with("no key for")),
+                    "none: set FORGE_GEMINI_API_KEY (Google AI Studio: https://aistudio.google.com/apikey)".into(),
                 ),
             },
             Backend::Messages => {

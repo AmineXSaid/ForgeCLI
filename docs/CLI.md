@@ -240,6 +240,7 @@ check that the URL and key work.
 | Endpoint | Chosen by | Key | Sent as |
 | --- | --- | --- | --- |
 | OpenAI-compatible | `FORGE_OPENAI_BASE_URL`, else `openai.baseUrl` | `FORGE_OPENAI_API_KEY`, else `openai.apiKeyHelper` | `Authorization: Bearer` |
+| Gemini API | `FORGE_GEMINI_BASE_URL`, else `gemini.baseUrl`, else `FORGE_GEMINI_API_KEY` alone (Google AI Studio, when no Messages key is set) | `FORGE_GEMINI_API_KEY`, else `gemini.apiKeyHelper` | `x-goog-api-key` for Google AI Studio, `Authorization: Bearer` for Vertex AI, both for other hosts; `gemini.authHeader` (or `FORGE_GEMINI_AUTH_HEADER`) chooses: `x-goog-api-key`, `bearer`, `both` |
 | Messages API | `FORGE_BASE_URL`, else `baseUrl`, else the default host | `FORGE_API_KEY` and/or `FORGE_AUTH_TOKEN`, else `apiKeyHelper` | `x-api-key` / `Authorization: Bearer` |
 
 - A key is never sent to the other kind of endpoint. With an OpenAI-compatible
@@ -248,10 +249,18 @@ check that the URL and key work.
 - The OpenAI-compatible endpoint may need no key (a local server): Forge
   starts without one, silently for `localhost` and private addresses, with a
   warning otherwise. The Messages API always needs one.
+- The Gemini endpoint's URL ends at the API version: Google AI Studio's is
+  `https://generativelanguage.googleapis.com/v1beta` (the default); Vertex
+  AI's is `https://<location>-aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/publishers/google`,
+  with `gemini.apiKeyHelper` set to `gcloud auth print-access-token`. Forge
+  adds `/models/<model>:streamGenerateContent`. Gemini 3 and later get
+  effort as their thinking level, 2.5 as a thinking budget; each tool call's
+  thought signature goes back on that call.
 - Values wrapped in quotes (what `set X="..."` leaves in cmd.exe) are
   unquoted, with a warning. A key with spaces or control characters, or a URL
   that isn't `http(s)://`, stops startup with exit `3`.
-- `baseUrl`, `openai.baseUrl`, `apiKeyHelper` and `openai.apiKeyHelper` are
+- `baseUrl`, `openai.baseUrl`, `gemini.baseUrl`, `apiKeyHelper`,
+  `openai.apiKeyHelper` and `gemini.apiKeyHelper` are
   read from your user, local, `--settings` and managed settings only. In a
   project's checked-in `.forge/settings.json` they are ignored with a warning:
   a repository can't choose where your key goes or run a command for it.
@@ -382,6 +391,7 @@ the context window to compact in time, and prices to show costs.
 | `FORGE_BASE_URL` | API endpoint |
 | `FORGE_CUSTOM_HEADERS` | Extra headers, one `Name: value` per line |
 | `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint instead |
+| `FORGE_GEMINI_API_KEY`, `FORGE_GEMINI_BASE_URL`, `FORGE_GEMINI_AUTH_HEADER` | Google's Gemini API instead (Google AI Studio by default, Vertex AI or a gateway by URL) |
 | `FORGE_MODEL` | Default model |
 | `FORGE_MAX_OUTPUT_TOKENS` | Per-request output cap |
 | `FORGE_CONTEXT_WINDOW` | Context window, in tokens, for models Forge doesn't know (see `modelLimits`) |

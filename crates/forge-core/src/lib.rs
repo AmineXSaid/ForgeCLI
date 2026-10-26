@@ -23,7 +23,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use forge_api::{MessagesConfig, MessagesProvider, OpenAiConfig, OpenAiProvider, Provider};
+use forge_api::{
+    GeminiConfig, GeminiProvider, MessagesConfig, MessagesProvider, OpenAiConfig, OpenAiProvider, Provider,
+};
 use forge_config::{load_memory, load_settings, LoadedSettings, MemoryKind, SettingSource, SettingsOptions};
 use forge_engine::{Engine, EngineConfig, EngineParts, EnvInfo, EventSink, PermissionPrompter, Pricing};
 use forge_hooks::{HookBase, HookRunner, HooksConfig};
@@ -352,6 +354,31 @@ fn make_provider_with_shell(
                 cfg.max_retries = n;
             }
             Ok(Arc::new(OpenAiProvider::new(cfg)?))
+        }
+        forge_api::auth::Backend::Gemini => {
+            use forge_api::gemini::AuthHeader;
+            let header = env_nonempty("FORGE_GEMINI_AUTH_HEADER")
+                .or_else(|| settings.get("/gemini/authHeader").and_then(|v| v.as_str()).map(str::to_string));
+            let auth_header = match header {
+                Some(h) => AuthHeader::parse(&h).ok_or_else(|| {
+                    CoreError::Auth(format!(
+                        "gemini.authHeader is \"{h}\": it takes x-goog-api-key, bearer, both or auto"
+                    ))
+                })?,
+                None => AuthHeader::Auto,
+            };
+            let mut cfg = GeminiConfig {
+                base_url: r.url.clone().unwrap_or_else(|| endpoint::GEMINI_DEFAULT_URL.to_string()),
+                api_key: key,
+                auth_header,
+                url_from: r.url_from,
+                key_helper: helper_name,
+                ..Default::default()
+            };
+            if let Some(n) = env_nonempty("FORGE_MAX_RETRIES").and_then(|v| v.trim().parse().ok()) {
+                cfg.max_retries = n;
+            }
+            Ok(Arc::new(GeminiProvider::new(cfg)?))
         }
         forge_api::auth::Backend::Messages => {
             let mut cfg = MessagesConfig::from_env();

@@ -7,6 +7,7 @@
 
 pub mod accumulate;
 pub mod auth;
+pub mod gemini;
 pub mod gemini_rules;
 pub mod limit;
 pub mod messages;
@@ -25,6 +26,7 @@ use futures::Stream;
 use tokio_util::sync::CancellationToken;
 
 pub use accumulate::{MessageAccumulator, INVALID_INPUT, MAX_RAW_INPUT, RAW_INPUT, TRUNCATED_INPUT};
+pub use gemini::{GeminiConfig, GeminiProvider};
 pub use messages::{describe_network_error, MessagesConfig, MessagesProvider};
 pub use mock::{MockProvider, MockTurn};
 pub use models::{resolve_model, ModelInfo, ThinkingStyle};
@@ -131,7 +133,8 @@ impl ApiError {
             _ => None,
         };
         Some(match self {
-            ApiError::Http { status: 401 | 403, .. } => match origin {
+            // Gemini refuses a bad key with a 400 (API_KEY_INVALID), named by its kind.
+            e @ ApiError::Http { .. } if e.is_auth_failure() => match origin {
                 Some(o) => o.auth_hint(),
                 None => "Check the endpoint's key; `forge doctor` shows what is configured.".into(),
             },

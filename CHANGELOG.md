@@ -58,6 +58,13 @@
 - Gemini models get tool names, schemas and effort they accept: long MCP
   tool names are aliased, schemas trimmed to Gemini's subset, effort sent as
   `reasoning_effort`, `<thought>` tags read as thinking.
+- A native Gemini wire: `FORGE_GEMINI_API_KEY=... forge -m
+  gemini-3-flash-preview` talks to Google AI Studio directly;
+  `FORGE_GEMINI_BASE_URL` points it at Vertex AI or a gateway. Thought
+  signatures go back on the parts they came with, effort becomes Gemini's
+  thinking level (or 2.5's budget), PDFs go as files, a malformed function
+  call is asked again once, and Google's retry delay is honoured. `forge
+  doctor` shows the Gemini endpoint and key.
 
 ### OpenAI-compatible endpoints
 - OpenAI's reasoning models (the o-series, GPT-5 and Codex) are sent

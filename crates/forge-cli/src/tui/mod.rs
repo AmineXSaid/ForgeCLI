@@ -525,6 +525,7 @@ fn endpoint_label(url: Option<&str>, backend: Option<forge_api::auth::Backend>) 
     }
     match backend {
         Some(forge_api::auth::Backend::OpenAi) => "an OpenAI-compatible endpoint".into(),
+        Some(forge_api::auth::Backend::Gemini) => "the Gemini API".into(),
         _ => "the Messages API".into(),
     }
 }

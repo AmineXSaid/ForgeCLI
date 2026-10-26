@@ -1,12 +1,14 @@
 //! Which endpoint a request goes to and where its URL and key came from, so
 //! an error can name the one variable to fix. Keys are per provider: a
-//! Messages key is never sent to an OpenAI-compatible endpoint, nor the reverse.
+//! Messages key is never sent to an OpenAI-compatible or Gemini endpoint, nor the reverse.
 
 /// The wire protocol of the endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Messages,
     OpenAi,
+    /// Google's Gemini API (`generateContent`), or a gateway speaking it.
+    Gemini,
 }
 
 /// What supplied the key a request carries. Each is a variable or setting name.
@@ -23,7 +25,9 @@ pub enum KeyFrom {
     ApiKeyAndToken,
     /// `FORGE_OPENAI_API_KEY` (OpenAI-compatible, `Authorization: Bearer`).
     OpenAiKey,
-    /// A key helper command: `apiKeyHelper` or `openai.apiKeyHelper`.
+    /// `FORGE_GEMINI_API_KEY` (Gemini, `x-goog-api-key` or `Authorization: Bearer`).
+    GeminiKey,
+    /// A key helper command: `apiKeyHelper`, `openai.apiKeyHelper` or `gemini.apiKeyHelper`.
     Helper(&'static str),
 }
 
@@ -43,6 +47,7 @@ impl Origin {
         self.url_from.unwrap_or(match self.backend {
             Backend::Messages => "FORGE_BASE_URL",
             Backend::OpenAi => "FORGE_OPENAI_BASE_URL",
+            Backend::Gemini => "FORGE_GEMINI_BASE_URL",
         })
     }
 
@@ -53,6 +58,7 @@ impl Origin {
             KeyFrom::ApiKey | KeyFrom::ApiKeyAndToken => "FORGE_API_KEY",
             KeyFrom::AuthToken => "FORGE_AUTH_TOKEN",
             KeyFrom::OpenAiKey => "FORGE_OPENAI_API_KEY",
+            KeyFrom::GeminiKey => "FORGE_GEMINI_API_KEY",
             KeyFrom::Helper(s) => s,
         }
     }
@@ -63,7 +69,19 @@ impl Origin {
             (Backend::OpenAi, KeyFrom::None) => "No key was sent: set FORGE_OPENAI_API_KEY to this endpoint's key. \
                  FORGE_API_KEY and FORGE_AUTH_TOKEN are never sent to an OpenAI-compatible endpoint."
                 .to_string(),
-            (Backend::OpenAi, KeyFrom::Helper(s)) | (Backend::Messages, KeyFrom::Helper(s)) => format!(
+            (Backend::Gemini, KeyFrom::None) => "No key was sent: set FORGE_GEMINI_API_KEY to this endpoint's key \
+                 (Google AI Studio: https://aistudio.google.com/apikey). FORGE_API_KEY and FORGE_OPENAI_API_KEY are \
+                 never sent to a Gemini endpoint."
+                .to_string(),
+            (Backend::Gemini, KeyFrom::Helper(_)) => "The endpoint did not accept the token printed by \
+                 gemini.apiKeyHelper: run that command yourself and check what it prints (for Vertex AI, `gcloud \
+                 auth print-access-token`; the token lasts an hour)."
+                .to_string(),
+            (Backend::Gemini, _) => "The endpoint did not accept the key in FORGE_GEMINI_API_KEY: check its value. \
+                 Google AI Studio takes it as x-goog-api-key, Vertex AI and most gateways as Authorization: Bearer; \
+                 gemini.authHeader chooses."
+                .to_string(),
+            (_, KeyFrom::Helper(s)) => format!(
                 "The endpoint did not accept the key printed by {s}: run that command yourself and check what it prints."
             ),
             (Backend::OpenAi, _) => {
@@ -95,6 +113,12 @@ impl Origin {
                 self.url_var()
             ),
             Backend::Messages => format!("Check the model name (--model or FORGE_MODEL) and {}.", self.url_var()),
+            Backend::Gemini => format!(
+                "Check the model name (--model or FORGE_MODEL, e.g. gemini-3-flash-preview) and {}: Forge adds \
+                 /models/<model>:streamGenerateContent to it, so it ends in /v1beta for Google AI Studio, or in \
+                 /publishers/google for Vertex AI.",
+                self.url_var()
+            ),
         }
     }
 

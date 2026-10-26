@@ -53,10 +53,12 @@ pub fn is_flash(model: &str) -> bool {
 
 /// The thinking level for ForgeCLI's effort: `low`, `medium` and `high` as
 /// they are, `xhigh` and `max` as `high`, `minimal` on Flash (else `low`).
+/// Gemini 3.0 Pro has no `medium`: it thinks `high` then.
 pub fn thinking_level(effort: &str, model: &str) -> Option<&'static str> {
     Some(match effort {
         "minimal" if is_flash(model) => "minimal",
         "minimal" | "low" => "low",
+        "medium" if version(model) == Some((3, 0)) && !is_flash(model) => "high",
         "medium" => "medium",
         "high" | "xhigh" | "max" => "high",
         _ => return None,
@@ -225,6 +227,8 @@ mod tests {
         assert_eq!(thinking_level("minimal", "gemini-3-flash"), Some("minimal"));
         assert_eq!(thinking_level("minimal", "gemini-3-pro"), Some("low"));
         assert_eq!(thinking_level("max", "gemini-3-pro"), Some("high"));
+        assert_eq!(thinking_level("medium", "gemini-3-pro-preview"), Some("high"));
+        assert_eq!(thinking_level("medium", "gemini-3.1-pro-preview"), Some("medium"));
         assert_eq!(thinking_level("auto", "gemini-3-pro"), None);
     }
 

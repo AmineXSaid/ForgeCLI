@@ -56,6 +56,26 @@ impl ModelInfo {
 
 const ALL_EFFORT: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const NO_XHIGH: &[&str] = &["low", "medium", "high", "max"];
+/// Gemini: ForgeCLI's levels, sent as Gemini's own (`gemini_rules::thinking_level`).
+const GEMINI_EFFORT: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// A Gemini model: always thinking, effort as its thinking level (3 and
+/// later) or budget (2.5). List prices for prompts up to 200k tokens.
+const fn gemini(id: &'static str, display_name: &'static str, max_output: u32, prices: (f64, f64, f64)) -> ModelInfo {
+    ModelInfo {
+        id,
+        display_name,
+        context_window: 1_048_576,
+        max_output,
+        input_price: prices.0,
+        output_price: prices.1,
+        cache_read_price: prices.2,
+        thinking: ThinkingStyle::AlwaysOn,
+        effort_levels: GEMINI_EFFORT,
+        default_effort: Some("high"),
+        supports_fast_mode: false,
+    }
+}
 
 pub const MODELS: &[ModelInfo] = &[
     ModelInfo {
@@ -201,6 +221,12 @@ pub const MODELS: &[ModelInfo] = &[
         default_effort: None,
         supports_fast_mode: false,
     },
+    gemini("gemini-3.1-pro", "Gemini 3.1 Pro", 65_536, (2.0, 12.0, 0.20)),
+    gemini("gemini-3-pro", "Gemini 3 Pro", 65_536, (2.0, 12.0, 0.20)),
+    gemini("gemini-3-flash", "Gemini 3 Flash", 65_536, (0.50, 3.0, 0.05)),
+    gemini("gemini-2.5-pro", "Gemini 2.5 Pro", 65_536, (1.25, 10.0, 0.125)),
+    gemini("gemini-2.5-flash", "Gemini 2.5 Flash", 65_536, (0.30, 2.50, 0.03)),
+    gemini("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite", 65_536, (0.10, 0.40, 0.01)),
 ];
 
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";

@@ -4,8 +4,12 @@
 //! Rules:
 //! - Keys are per provider. `FORGE_API_KEY` / `FORGE_AUTH_TOKEN` (and
 //!   `apiKeyHelper`) go only to the Messages endpoint; `FORGE_OPENAI_API_KEY`
-//!   (and `openai.apiKeyHelper`) only to the OpenAI-compatible one. A key is
-//!   never sent to the other host: a mix-up is named instead.
+//!   (and `openai.apiKeyHelper`) only to the OpenAI-compatible one;
+//!   `FORGE_GEMINI_API_KEY` (and `gemini.apiKeyHelper`) only to the Gemini
+//!   one. A key is never sent to another host: a mix-up is named instead.
+//! - The Gemini endpoint is chosen by `FORGE_GEMINI_BASE_URL` or
+//!   `gemini.baseUrl`, or by `FORGE_GEMINI_API_KEY` alone (Google AI Studio)
+//!   when no Messages key is set.
 //! - A project's checked-in `.forge/settings.json` can't choose where the key
 //!   goes (`baseUrl`, `openai.baseUrl`) or run a key helper; the user's own
 //!   settings (user, local, `--settings`, managed) can.
@@ -23,17 +27,22 @@ const TRUSTED: [SettingSource; 4] =
     [SettingSource::User, SettingSource::Local, SettingSource::Flag, SettingSource::Managed];
 
 /// Settings that send the key somewhere or run a command for it.
-const SENSITIVE: [(&str, &str); 4] = [
+const SENSITIVE: [(&str, &str); 6] = [
     ("/baseUrl", "baseUrl"),
     ("/openai/baseUrl", "openai.baseUrl"),
+    ("/gemini/baseUrl", "gemini.baseUrl"),
     ("/apiKeyHelper", "apiKeyHelper"),
     ("/openai/apiKeyHelper", "openai.apiKeyHelper"),
+    ("/gemini/apiKeyHelper", "gemini.apiKeyHelper"),
 ];
+
+/// Google AI Studio's Gemini API, when no `FORGE_GEMINI_BASE_URL` is set.
+pub const GEMINI_DEFAULT_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 #[derive(Debug, Clone, Default)]
 pub struct Resolution {
     pub backend: Option<Backend>,
-    /// The base URL (cleaned), or `None` for the Messages API's default host.
+    /// The base URL (cleaned), or `None` for the backend's default host.
     pub url: Option<String>,
     /// The variable or setting that chose the URL.
     pub url_from: Option<&'static str>,
@@ -152,6 +161,12 @@ pub fn resolve(settings: &LoadedSettings, env: &dyn Fn(&str) -> Option<String>) 
     } else if let Some((u, f)) = trusted_str(settings, "/openai/baseUrl") {
         r.backend = Some(Backend::OpenAi);
         (Some(u.trim().to_string()), Some("openai.baseUrl"), f)
+    } else if let Some(u) = var("FORGE_GEMINI_BASE_URL", &mut r) {
+        r.backend = Some(Backend::Gemini);
+        (Some(u), Some("FORGE_GEMINI_BASE_URL"), None)
+    } else if let Some((u, f)) = trusted_str(settings, "/gemini/baseUrl") {
+        r.backend = Some(Backend::Gemini);
+        (Some(u.trim().to_string()), Some("gemini.baseUrl"), f)
     } else if let Some(u) = var("FORGE_BASE_URL", &mut r) {
         r.backend = Some(Backend::Messages);
         (Some(u), Some("FORGE_BASE_URL"), None)
@@ -159,7 +174,13 @@ pub fn resolve(settings: &LoadedSettings, env: &dyn Fn(&str) -> Option<String>) 
         r.backend = Some(Backend::Messages);
         (Some(u.trim().to_string()), Some("baseUrl"), f)
     } else {
-        r.backend = Some(Backend::Messages);
+        // A Gemini key (or helper) and no Messages key: Google AI Studio.
+        let set = |k: &str| env(k).is_some_and(|v| !v.trim().is_empty());
+        let gemini = (set("FORGE_GEMINI_API_KEY") || trusted_str(settings, "/gemini/apiKeyHelper").is_some())
+            && !set("FORGE_API_KEY")
+            && !set("FORGE_AUTH_TOKEN")
+            && trusted_str(settings, "/apiKeyHelper").is_none();
+        r.backend = Some(if gemini { Backend::Gemini } else { Backend::Messages });
         (None, None, None)
     };
     r.url_from = from;
@@ -168,7 +189,21 @@ pub fn resolve(settings: &LoadedSettings, env: &dyn Fn(&str) -> Option<String>) 
         match parse_base_url(u) {
             Ok(parsed) => {
                 r.local = is_local_url(&parsed);
-                if parsed.path().trim_end_matches('/').ends_with("/chat/completions") {
+                let path = parsed.path().trim_end_matches('/');
+                if r.backend == Some(Backend::Gemini) && (path.ends_with("/models") || path.contains(':')) {
+                    r.warnings.push(format!(
+                        "{} should end before /models: Forge adds /models/<model>:streamGenerateContent itself. \
+                         For Google AI Studio it is {GEMINI_DEFAULT_URL}.",
+                        r.url_from.unwrap_or("The URL"),
+                    ));
+                } else if r.backend == Some(Backend::Gemini) && path.ends_with("/openai") {
+                    r.warnings.push(format!(
+                        "{} is Google's OpenAI-compatible path; the Gemini wire takes the part before /openai. To \
+                         use that path, set FORGE_OPENAI_BASE_URL to it instead.",
+                        r.url_from.unwrap_or("The URL"),
+                    ));
+                }
+                if path.ends_with("/chat/completions") {
                     r.warnings.push(format!(
                         "{} ends in /chat/completions, which Forge adds itself, so requests would go to \
                          {}/chat/completions. Set it to the part before /chat/completions.",
@@ -216,6 +251,40 @@ pub fn resolve(settings: &LoadedSettings, env: &dyn Fn(&str) -> Option<String>) 
                 });
             }
         }
+        Backend::Gemini => {
+            r.key = var("FORGE_GEMINI_API_KEY", &mut r);
+            if r.key.is_some() {
+                r.key_var = Some("FORGE_GEMINI_API_KEY");
+            } else if let Some((cmd, f)) = trusted_str(settings, "/gemini/apiKeyHelper") {
+                r.helper = Some((cmd, "gemini.apiKeyHelper", f));
+            }
+            r.others =
+                ["FORGE_API_KEY", "FORGE_AUTH_TOKEN", "FORGE_OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]
+                    .into_iter()
+                    .filter(|k| env(k).is_some_and(|v| !v.trim().is_empty()))
+                    .collect();
+            let google = r.url.as_deref().is_none_or(|u| {
+                parse_base_url(u).ok().and_then(|p| p.host_str().map(|h| h.ends_with("googleapis.com"))) == Some(true)
+            });
+            if r.key.is_none() && r.helper.is_none() && !r.local && r.problems.is_empty() {
+                let url = r.url.clone().unwrap_or_else(|| GEMINI_DEFAULT_URL.to_string());
+                let others = match r.others.as_slice() {
+                    [] => String::new(),
+                    [one] => format!(" {one} is set, but Forge never sends it to a Gemini endpoint."),
+                    many => format!(" {} are set, but Forge never sends them to a Gemini endpoint.", and_list(many)),
+                };
+                if google {
+                    r.problems.push(format!(
+                        "no key for {url}: set FORGE_GEMINI_API_KEY (an API key from \
+                         https://aistudio.google.com/apikey), or gemini.apiKeyHelper for Vertex AI.{others}"
+                    ));
+                } else {
+                    r.warnings.push(format!(
+                        "No key for {url}: FORGE_GEMINI_API_KEY is not set, so requests carry none.{others}"
+                    ));
+                }
+            }
+        }
         Backend::Messages => {
             r.key = var("FORGE_API_KEY", &mut r);
             if r.key.is_some() {
@@ -247,6 +316,14 @@ pub fn resolve(settings: &LoadedSettings, env: &dyn Fn(&str) -> Option<String>) 
                         .into(),
                 );
             }
+            if env("FORGE_GEMINI_API_KEY").is_some_and(|v| !v.trim().is_empty()) && r.problems.is_empty() {
+                r.warnings.push(
+                    "FORGE_GEMINI_API_KEY is set but unused: a Messages key or URL is set too, so the Messages API \
+                     is used. Set FORGE_GEMINI_BASE_URL (for Google AI Studio, \
+                     https://generativelanguage.googleapis.com/v1beta) to use Gemini."
+                        .into(),
+                );
+            }
         }
     }
 
@@ -269,8 +346,15 @@ pub fn resolve(settings: &LoadedSettings, env: &dyn Fn(&str) -> Option<String>) 
             "{q} was wrapped in quotes; Forge removed them. In cmd.exe, write set {q}=value without quotes."
         ));
     }
-    for name in ["FORGE_API_KEY", "FORGE_AUTH_TOKEN", "FORGE_OPENAI_API_KEY", "FORGE_BASE_URL", "FORGE_OPENAI_BASE_URL"]
-    {
+    for name in [
+        "FORGE_API_KEY",
+        "FORGE_AUTH_TOKEN",
+        "FORGE_OPENAI_API_KEY",
+        "FORGE_GEMINI_API_KEY",
+        "FORGE_BASE_URL",
+        "FORGE_OPENAI_BASE_URL",
+        "FORGE_GEMINI_BASE_URL",
+    ] {
         if env(name).is_some() {
             continue;
         }
@@ -417,5 +501,71 @@ mod tests {
     fn masks_show_only_the_tail() {
         assert_eq!(mask("sk-abcdefghijklmnopqrstuv1234"), "...1234, 29 characters");
         assert_eq!(mask("abc"), "3 characters");
+    }
+
+    #[test]
+    fn a_gemini_key_alone_chooses_google_ai_studio() {
+        let r = run(&[("FORGE_GEMINI_API_KEY", "AIzaSyD-0123456789abcdef")], vec![]);
+        assert_eq!(r.backend(), Backend::Gemini);
+        assert_eq!((r.url.as_deref(), r.key_var), (None, Some("FORGE_GEMINI_API_KEY")));
+        assert!(r.problems.is_empty() && r.warnings.is_empty(), "{:?} {:?}", r.problems, r.warnings);
+        // With a Messages key too, Messages stays (and the unused key is named).
+        let r = run(
+            &[("FORGE_GEMINI_API_KEY", "AIzaSyD-0123456789abcdef"), ("FORGE_API_KEY", "sk-0123456789abcdef")],
+            vec![],
+        );
+        assert_eq!(r.backend(), Backend::Messages);
+        assert!(r.warnings.iter().any(|w| w.starts_with("FORGE_GEMINI_API_KEY is set but unused")), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn gemini_keys_stay_with_the_gemini_endpoint() {
+        let r = run(
+            &[
+                ("FORGE_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+                ("FORGE_API_KEY", "sk-0123456789abcdef"),
+                ("GEMINI_API_KEY", "AIza-x"),
+            ],
+            vec![],
+        );
+        assert_eq!(r.backend(), Backend::Gemini);
+        assert!(r.key.is_none(), "FORGE_API_KEY is never sent to Gemini");
+        let p = r.problems.first().expect("Google needs a key");
+        assert!(p.contains("FORGE_GEMINI_API_KEY") && p.contains("GEMINI_API_KEY") && p.contains("never sends"), "{p}");
+        // A gateway on this machine may need none.
+        let r = run(&[("FORGE_GEMINI_BASE_URL", "http://127.0.0.1:20128/v1beta")], vec![]);
+        assert!(r.problems.is_empty() && r.local);
+        // A URL with the method in it is named.
+        let r = run(
+            &[
+                ("FORGE_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/models"),
+                ("FORGE_GEMINI_API_KEY", "AIzaSyD-0123456789abcdef"),
+            ],
+            vec![],
+        );
+        assert!(r.warnings.iter().any(|w| w.contains("should end before /models")), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_project_cannot_choose_the_gemini_endpoint_or_helper() {
+        let r = run(
+            &[("FORGE_GEMINI_API_KEY", "AIzaSyD-0123456789abcdef")],
+            vec![layer(
+                SettingSource::Project,
+                json!({"gemini": {"baseUrl": "https://evil.example.com", "apiKeyHelper": "steal"}}),
+            )],
+        );
+        assert_eq!(r.url, None);
+        assert!(r.helper.is_none());
+        assert!(r.warnings.iter().any(|w| w.starts_with("Ignored gemini.baseUrl")), "{:?}", r.warnings);
+        let r = run(
+            &[],
+            vec![layer(
+                SettingSource::User,
+                json!({"gemini": {"baseUrl": "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/publishers/google", "apiKeyHelper": "gcloud auth print-access-token"}}),
+            )],
+        );
+        assert_eq!((r.backend(), r.url_from), (Backend::Gemini, Some("gemini.baseUrl")));
+        assert_eq!(r.helper.as_ref().map(|h| h.1), Some("gemini.apiKeyHelper"));
     }
 }

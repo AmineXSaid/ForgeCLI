@@ -161,6 +161,7 @@ fn status(v: &SessionView) -> String {
             let kind = match o.backend {
                 forge_api::auth::Backend::OpenAi => "OpenAI-compatible endpoint",
                 forge_api::auth::Backend::Messages => "Messages API",
+                forge_api::auth::Backend::Gemini => "Gemini API",
             };
             let at = match url {
                 Some(u) => format!(" {u} ({})", o.url_var()),
