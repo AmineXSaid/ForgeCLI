@@ -10,6 +10,7 @@
 #   KODACT_HARBOR_MODEL    the model, as the endpoint names it (default deep-thinking); the same
 #                         variable sets it for run.sh, run-forgecode.sh, run-ante.sh and run-pi.sh
 #   KODACT_CONTEXT_WINDOW  the model's context window (default 200000, as KodAct assumes)
+#   KODACT_MAX_OUTPUT_TOKENS  the most tokens per reply (default 32000, as KodAct)
 #   KODACT_HARBOR_DATASET  default terminal-bench@2.0
 #   KODACT_HARBOR_JOBS     tasks in parallel (default 2)
 #   KODACT_HARBOR_CA_BUNDLE   extra CAs to trust in containers (job name gets -hostca)
