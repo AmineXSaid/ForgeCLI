@@ -14,6 +14,9 @@ Configuration comes from the environment of the `harbor` process:
   one provider, `forge-endpoint`; the key stays in an environment variable.
 - `FORGE_CONTEXT_WINDOW`: the model's context window, as for ForgeCLI (default
   200,000, what ForgeCLI assumes; Pi's own default is 128,000).
+- `FORGE_MAX_OUTPUT_TOKENS`: the most tokens one reply may have, as for ForgeCLI
+  (default 32,000, ForgeCLI's; Pi's own default for a custom model is 16,384,
+  which a reasoning model can spend thinking before its first tool call).
 - `PI_HARBOR_API`: Pi's API type for the endpoint (default `openai-completions`).
 - `PI_HARBOR_THINKING`: Pi's thinking level (`low`, `high`, ...); unset leaves
   reasoning off, Pi's default for a custom model.
@@ -60,7 +63,11 @@ def models_json(url: str, model: str) -> str:
     own = os.environ.get("PI_MODELS_JSON")
     if own:
         return Path(own).read_text()
-    entry = {"id": model, "contextWindow": int(os.environ.get("FORGE_CONTEXT_WINDOW") or 200_000)}
+    entry = {
+        "id": model,
+        "contextWindow": int(os.environ.get("FORGE_CONTEXT_WINDOW") or 200_000),
+        "maxTokens": int(os.environ.get("FORGE_MAX_OUTPUT_TOKENS") or 32_000),
+    }
     if os.environ.get("PI_HARBOR_THINKING", "off") != "off":
         entry["reasoning"] = True
     provider = {

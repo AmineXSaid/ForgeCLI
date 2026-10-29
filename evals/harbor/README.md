@@ -191,7 +191,9 @@ Pi runs once per task as `pi -p --mode json --no-session --provider forge-endpoi
 --model <model> "<task>"`. Its `models.json` declares one provider for
 `FORGE_OPENAI_BASE_URL`, API `openai-completions`, with `FORGE_CONTEXT_WINDOW`
 as the context window (200,000 when unset, what ForgeCLI assumes; Pi's own
-default is 128,000). The key stays in an environment variable. Pi's defaults
+default is 128,000) and `FORGE_MAX_OUTPUT_TOKENS` as the most tokens per reply
+(32,000 when unset, ForgeCLI's; Pi's own 16,384 cut a reasoning model off mid-thought,
+before its first tool call). The key stays in an environment variable. Pi's defaults
 are kept otherwise: reasoning off for a custom model unless
 `PI_HARBOR_THINKING=high` (or another level; the job name gets `-think-high`),
 no time limit of its own (Harbor stops it), its 4 tools. `PI_VERSION` picks the

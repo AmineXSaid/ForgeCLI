@@ -10,6 +10,7 @@
 #   FORGE_HARBOR_MODEL    the model, as the endpoint names it (default deep-thinking); the same
 #                         variable sets it for run.sh, run-forgecode.sh, run-ante.sh and run-pi.sh
 #   FORGE_CONTEXT_WINDOW  the model's context window (default 200000, as ForgeCLI assumes)
+#   FORGE_MAX_OUTPUT_TOKENS  the most tokens per reply (default 32000, as ForgeCLI)
 #   FORGE_HARBOR_DATASET  default terminal-bench@2.0
 #   FORGE_HARBOR_JOBS     tasks in parallel (default 2)
 #   FORGE_HARBOR_CA_BUNDLE   extra CAs to trust in containers (job name gets -hostca)
