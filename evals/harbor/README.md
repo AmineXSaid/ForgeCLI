@@ -179,8 +179,8 @@ internet in every task container and has none of the network handling above. So
 `run-pi.sh` builds a bundle once per Pi version on this machine
 (`~/.pi-harbor/pi-<version>-node22-linux-x64.tar.gz`, about 70 MB: Node's
 official Linux x64 binary, checksum verified, and Pi's npm package) and
-`pi_agent.py` copies it into each container. This machine needs `npm` and
-`curl`; containers need `tar` and glibc (Node's binary doesn't run on Alpine).
+`pi_agent.py` copies it into each container. This machine needs `python3` and
+`curl` (and `npm` only on a non-Linux machine); containers need `tar` and glibc (Node's binary doesn't run on Alpine).
 
 ```bash
 evals/harbor/run-pi.sh smoke             # 1 task first
