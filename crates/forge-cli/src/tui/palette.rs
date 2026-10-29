@@ -94,10 +94,11 @@ impl Role {
 // The roles, each from a Forge token (`src/webview/src/styles/forge-tokens.css`
 // in Forge for VS Code) and its Pajamas stop.
 
-/// `--forge-brand`: the logo, the prompt mark, the spinner, selections.
-pub const BRAND: Role = role(0x9475db, 0x7759c2, Color::LightMagenta, Color::Magenta);
-/// `--forge-brand-hover`: the brand a step brighter, for emphasis.
-pub const BRAND_STRONG: Role = role(0xac93e6, 0x5c47a6, Color::LightMagenta, Color::Magenta);
+/// The brand: the prompt mark, the spinner, selections, the keys. Forge
+/// Desktop's copper (its `mark_top` and link), as the logo's cube top.
+pub const BRAND: Role = role(0xe2895b, 0x93401c, Color::LightYellow, Color::Yellow);
+/// The brand a step brighter, for emphasis: the wordmark.
+pub const BRAND_STRONG: Role = role(0xeb9d74, 0x86391a, Color::LightYellow, Color::Yellow);
 /// `--forge-text-muted`: secondary text.
 pub const MUTED: Role = role(0xa5a3a3, 0x646163, Color::Gray, Color::DarkGray);
 /// `--forge-text-subtle`: placeholders, hints.
@@ -204,9 +205,9 @@ mod tests {
 
     #[test]
     fn roles_differ_for_light_and_dark_backgrounds() {
-        assert_eq!(BRAND.color(Depth::True, false), Color::Rgb(0x94, 0x75, 0xdb));
-        assert_eq!(BRAND.color(Depth::True, true), Color::Rgb(0x77, 0x59, 0xc2));
-        assert_eq!(BRAND.color(Depth::Ansi16, false), Color::LightMagenta);
+        assert_eq!(BRAND.color(Depth::True, false), Color::Rgb(0xe2, 0x89, 0x5b));
+        assert_eq!(BRAND.color(Depth::True, true), Color::Rgb(0x93, 0x40, 0x1c));
+        assert_eq!(BRAND.color(Depth::Ansi16, false), Color::LightYellow);
         assert!(matches!(BRAND.color(Depth::Ansi256, false), Color::Indexed(_)));
     }
 }

@@ -1,8 +1,8 @@
 //! Forge's mark in the terminal: the F-and-cube logo, drawn as a pixel sprite
 //! in half blocks (each cell is two pixels stacked, so the pixels come out
 //! square), and the two screens it heads: the welcome banner and the
-//! first-run card. The sprite and its inks are Forge for VS Code's
-//! (`terminalBrand.ts`), in its Pajamas purples.
+//! first-run card. The sprite is Forge for VS Code's (`terminalBrand.ts`);
+//! its inks are Forge Desktop's ember: ink, warm grey and copper.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -50,18 +50,29 @@ pub const MARK_SMALL: [&str; 12] = [
     "OOOOO.OOOO..",
 ];
 
-/// The logo's inks: hex, and the ANSI colour for 16-colour terminals.
-fn mark_ink(c: char) -> Option<(u32, Color)> {
-    Some(match c {
-        'O' => (0x27243e, Color::Reset),
-        'H' => (0xac93e6, Color::LightMagenta),
-        'F' => (0x7b58cf, Color::Magenta),
-        'D' => (0x5c47a6, Color::Magenta),
-        'T' => (0xe1d8f9, Color::White),
-        'G' => (0xf4f0ff, Color::White),
-        'L' => (0x9475db, Color::LightMagenta),
-        'S' => (0x493c83, Color::Magenta),
-        'E' => (0x342d59, Color::Magenta),
+/// The logo's inks for a light or dark background: hex, and the ANSI colour
+/// for 16-colour terminals. Forge's ember: the F in ink (paper on a dark
+/// background), the cube as Forge Desktop's mark, a copper top over an ink
+/// (paper) face and a warm grey one, so the faces part by lightness.
+fn mark_ink(c: char, light: bool) -> Option<(u32, Color)> {
+    Some(match (c, light) {
+        ('O', _) => (0x1e1e1e, Color::Reset),
+        ('H', true) => (0x5a554f, Color::DarkGray),
+        ('F', true) => (0x2b2825, Color::Black),
+        ('D', true) => (0x1e1e1e, Color::Black),
+        ('T', true) => (0x93401c, Color::Yellow),
+        ('G', true) => (0xb4532a, Color::Yellow),
+        ('L', true) => (0x1e1e1e, Color::Black),
+        ('S', true) => (0x8b857e, Color::DarkGray),
+        ('E', true) => (0x5a554f, Color::DarkGray),
+        ('H', false) => (0xf5f2f0, Color::White),
+        ('F', false) => (0xd9d1cb, Color::White),
+        ('D', false) => (0xa8a29b, Color::Gray),
+        ('T', false) => (0xe2895b, Color::LightYellow),
+        ('G', false) => (0xf3b694, Color::LightYellow),
+        ('L', false) => (0xf0e9e5, Color::White),
+        ('S', false) => (0x7d776f, Color::DarkGray),
+        ('E', false) => (0x5a554f, Color::DarkGray),
         _ => return None,
     })
 }
@@ -69,14 +80,14 @@ fn mark_ink(c: char) -> Option<(u32, Color)> {
 /// A sprite in half blocks. The outline is drawn only where it reads: on a
 /// light background, in 256 or 24-bit colour. Without colour the shape is
 /// drawn in the terminal's own colour.
-fn sprite(rows: &[&str], ink: fn(char) -> Option<(u32, Color)>, t: &Theme) -> Vec<Line<'static>> {
+fn sprite(rows: &[&str], ink: fn(char, bool) -> Option<(u32, Color)>, t: &Theme) -> Vec<Line<'static>> {
     let outline = t.color && t.light && t.depth != Depth::Ansi16;
     let color_of = |c: Option<char>| -> Option<Color> {
         let c = c?;
         if c == 'O' && !outline {
             return None;
         }
-        let (hex, ansi) = ink(c)?;
+        let (hex, ansi) = ink(c, t.light)?;
         if !t.color {
             return Some(Color::Reset);
         }
@@ -129,9 +140,10 @@ pub fn mark(t: &Theme, small: bool) -> Vec<Line<'static>> {
 /// The logo at text size, for one-line places: `▛◆`.
 pub fn mark_inline(t: &Theme) -> Vec<Span<'static>> {
     let (f, cube) = if t.color {
+        let ink = |c| mark_ink(c, t.light).map(|(hex, ansi)| palette::ink(hex, t.depth, ansi));
         (
-            Style::default().fg(palette::ink(0x7759c2, t.depth, Color::Magenta)),
-            Style::default().fg(palette::ink(0xcbbbf2, t.depth, Color::LightMagenta)),
+            ink('F').map(|c| Style::default().fg(c)).unwrap_or_default(),
+            ink('T').map(|c| Style::default().fg(c)).unwrap_or_default(),
         )
     } else {
         (Style::default(), Style::default())
@@ -170,6 +182,25 @@ fn trim_end(mut l: Line<'static>) -> Line<'static> {
     l
 }
 
+/// `s` in at most `max` columns, its end kept: `…/live/proj`.
+fn keep_end(s: &str, max: usize) -> String {
+    if width(s) <= max {
+        return s.to_string();
+    }
+    let mut tail: Vec<char> = vec![];
+    let mut w = 1;
+    for c in s.chars().rev() {
+        let cw = width(&c.to_string());
+        if w + cw > max {
+            break;
+        }
+        w += cw;
+        tail.push(c);
+    }
+    tail.reverse();
+    format!("…{}", tail.into_iter().collect::<String>())
+}
+
 /// What the welcome banner says.
 pub struct Welcome<'a> {
     pub version: &'a str,
@@ -187,8 +218,12 @@ pub const KEYS: [(&str, &str); 4] = [("/", "commands"), ("@", "files"), ("!", "s
 pub const WELCOME_LINE: &str = "What to do first? Ask about this codebase or we can start writing code.";
 
 fn keys_line(t: &Theme, gap: usize) -> Line<'static> {
+    keys_of(t, &KEYS, gap)
+}
+
+fn keys_of(t: &Theme, keys: &[(&str, &str)], gap: usize) -> Line<'static> {
     let mut spans = vec![];
-    for (i, (k, what)) in KEYS.iter().enumerate() {
+    for (i, (k, what)) in keys.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" ".repeat(gap)));
         }
@@ -207,21 +242,38 @@ pub fn welcome(t: &Theme, w: &Welcome, cols: usize) -> Vec<Line<'static>> {
         Span::styled("ForgeCLI", t.brand_strong().add_modifier(Modifier::BOLD)),
         Span::styled(format!("  v{}", w.version), t.dim()),
     ]);
-    let runs = Line::from(vec![
-        Span::styled(w.model.to_string(), t.bold()),
-        Span::styled(" on ", t.dim()),
-        Span::raw(w.endpoint.to_string()),
-    ]);
-    let cwd = Line::from(Span::styled(w.cwd.to_string(), t.dim()));
+    // Beside the logo a line never wraps (a wrapped line would open a gap
+    // in the logo): the endpoint and the folder keep their ends.
+    let runs_in = |room: usize| {
+        let endpoint = keep_end(w.endpoint, room.saturating_sub(width(w.model) + 4).max(8));
+        Line::from(vec![
+            Span::styled(w.model.to_string(), t.bold()),
+            Span::styled(" on ", t.dim()),
+            Span::raw(endpoint),
+        ])
+    };
+    let cwd_in = |room: usize| Line::from(Span::styled(keep_end(w.cwd, room), t.dim()));
+    // Room beside an art `art_w` wide: two columns in, three between.
+    let room = |art_w: usize| cols.saturating_sub(2 + art_w + 3);
     let mut out = vec![Line::default()];
     let text_w = [width(w.model) + 4 + width(w.endpoint), width(w.cwd), 41].into_iter().max().unwrap_or(0);
     if cols >= 16 + 5 + text_w.min(56) && cols >= 64 {
-        let text = vec![Line::default(), title, runs, cwd, Line::default(), keys_line(t, 3)];
+        let r = room(16);
+        let text = vec![Line::default(), title, runs_in(r), cwd_in(r), Line::default(), keys_line(t, 3)];
         out.extend(beside(mark(t, false), 16, text));
-    } else if cols >= 12 + 5 + 41 {
-        let text = vec![title, runs, cwd, Line::default(), keys_line(t, 2)];
+    } else if cols >= 16 + 5 + 24 {
+        // A narrow pane (a side terminal): the whole logo still, its text
+        // kept to the room beside it, the keys two to a line.
+        let r = room(16);
+        let text = vec![Line::default(), title, runs_in(r), cwd_in(r), Line::default(), keys_of(t, &KEYS[..2], 2), keys_of(t, &KEYS[2..], 2)];
+        out.extend(beside(mark(t, false), 16, text));
+    } else if cols >= 12 + 5 + 24 {
+        // Narrower: the small logo.
+        let r = room(12);
+        let text = vec![title, runs_in(r), cwd_in(r), keys_of(t, &KEYS[..2], 2), keys_of(t, &KEYS[2..], 2)];
         out.extend(beside(mark(t, true), 12, text));
     } else {
+        let (runs, cwd) = (runs_in(usize::MAX), cwd_in(usize::MAX));
         for l in [title, runs, cwd] {
             let mut spans = vec![Span::raw("  ")];
             spans.extend(l.spans);
@@ -408,9 +460,14 @@ mod tests {
         assert_eq!(m.len(), 8);
         assert!(m.iter().all(|l| l.spans.iter().map(|s| width(&s.content)).sum::<usize>() <= 16));
         assert_eq!(mark(&DARK, true).len(), 6);
-        // The F's top bar is a full row of upper/lower halves in brand purples.
+        // The F's top bar is a full row in the F's paper on a dark background.
         let top = &m[1];
-        assert!(top.spans.iter().any(|s| s.style.fg == Some(Color::Rgb(0x7b, 0x58, 0xcf))), "{top:?}");
+        assert!(top.spans.iter().any(|s| s.style.fg == Some(Color::Rgb(0xd9, 0xd1, 0xcb))), "{top:?}");
+        // On a light one the F is ink, and the cube's top is copper.
+        let light = mark(&Theme { light: true, ..DARK }, false);
+        assert!(light[1].spans.iter().any(|s| s.style.fg == Some(Color::Rgb(0x2b, 0x28, 0x25))), "{light:?}");
+        let copper = Some(Color::Rgb(0x93, 0x40, 0x1c));
+        assert!(light.iter().flat_map(|l| &l.spans).any(|s| s.style.fg == copper || s.style.bg == copper));
     }
 
     #[test]
@@ -438,6 +495,24 @@ mod tests {
         }
         assert!(plain(&welcome(&DARK, &w, 100)).join("\n").contains("/ commands   @ files   ! shell   ? shortcuts"));
         assert!(plain(&welcome(&DARK, &w, 40)).iter().all(|l| !l.contains('▀')), "no logo when narrow");
+        // A side pane (the desktop's terminal dock): the whole logo, the keys two to a line.
+        let side = plain(&welcome(&DARK, &w, 54));
+        assert!(side.iter().any(|l| l.contains('▀')), "{side:?}");
+        assert!(side.iter().any(|l| l.ends_with("/ commands  @ files")), "{side:?}");
+        assert!(side.iter().any(|l| l.ends_with("! shell  ? shortcuts")), "{side:?}");
+        assert!(side.iter().all(|l| width(l) <= 54), "{side:?}");
+        // A long folder stays on its line beside the logo, its end kept.
+        let deep = Welcome { cwd: "/tmp/claude-0/-home-user-forge-gpui/3b3af639/scratchpad/live/proj", ..w };
+        let lines = plain(&welcome(&DARK, &deep, 54));
+        assert!(lines.iter().any(|l| l.ends_with("/live/proj") && l.contains('…')), "{lines:?}");
+        let art_rows = lines.iter().filter(|l| l.contains('▀') || l.contains('▄') || l.contains('█')).count();
+        assert_eq!(art_rows, 8, "the whole logo, unbroken: {lines:?}");
+        // Narrower still, the small logo, also unbroken.
+        let small = plain(&welcome(&DARK, &deep, 42));
+        let art_rows = small.iter().filter(|l| l.contains('▀') || l.contains('▄') || l.contains('█')).count();
+        assert_eq!(art_rows, 6, "{small:?}");
+        assert!(small.iter().all(|l| width(l) <= 42), "{small:?}");
+        assert_eq!(keep_end("abcdef", 4), "…def");
     }
 
     #[test]
