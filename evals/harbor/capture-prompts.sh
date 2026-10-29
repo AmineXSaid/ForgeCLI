@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Save the exact system prompt and tool descriptions that ForgeCLI, Forge Code and Ante
+# Save the exact system prompt and tool descriptions that ForgeCLI, Forge Code, Ante and Pi
 # send to a model, for side-by-side comparison. Nothing leaves this machine: each agent
 # talks to capture_prompt.py on localhost, which records the request and answers "Done.".
 #
-#   evals/harbor/capture-prompts.sh            # all three that are installed
-#   evals/harbor/capture-prompts.sh ante       # one of: forgecli forgecode ante
+#   evals/harbor/capture-prompts.sh            # all of them that are installed
+#   evals/harbor/capture-prompts.sh ante       # one of: forgecli forgecode ante pi
 #
 # Output: evals/harbor/prompts/<harness>/system.md, tools.json, request-*.json, version.txt,
 # and agent.log / server.log to see why when nothing was captured.
 # Binaries: FORGECLI_BIN (target-static/release/forge, else target/release/forge), FORGECODE_BIN
-# (~/.forgecode/forge), ANTE_BIN (~/.ante/bin/ante). Set CAPTURE_PORT to change the port.
+# (~/.forgecode/forge), ANTE_BIN (~/.ante/bin/ante), PI_BIN (`pi` on PATH). Set CAPTURE_PORT to
+# change the port.
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$repo"
@@ -17,7 +18,7 @@ port="${CAPTURE_PORT:-8765}"
 url="http://127.0.0.1:$port/v1"
 task="Reply with the single word: done."
 out="evals/harbor/prompts"
-which=("${@:-forgecli forgecode ante}")
+which=("${@:-forgecli forgecode ante pi}")
 read -r -a which <<< "${which[*]}"
 
 capture() {  # name, binary, then the command to run with its environment
@@ -32,7 +33,7 @@ capture() {  # name, binary, then the command to run with its environment
     python3 -c "import sys,urllib.request; urllib.request.urlopen(sys.argv[1] + '/models', timeout=1)" "$url" 2>/dev/null && break
     sleep 0.2
   done
-  (cd "$(mktemp -d)" && timeout 60 env "$@" > "$repo/$out/$name/agent.log" 2>&1)
+  (cd "$(mktemp -d)" && timeout 60 env "$@" < /dev/null > "$repo/$out/$name/agent.log" 2>&1)
   local status=$?
   kill "$server" 2>/dev/null
   wait "$server" 2>/dev/null
@@ -64,6 +65,14 @@ for h in "${which[@]}"; do
       [ -x "$bin" ] || { echo "== ante: $bin not found"; continue; }
       capture ante "$bin" OPENAI_COMPATIBLE_BASE_URL="$url" OPENAI_COMPATIBLE_API_KEY=capture \
         "$bin" --provider openai-compatible --model capture --yolo --no-session-save --no-skills -p "$task" ;;
-    *) echo "unknown harness: $h (forgecli, forgecode, ante)" >&2 ;;
+    pi)
+      bin="${PI_BIN:-$(command -v pi || true)}"
+      [ -n "$bin" ] && [ -x "$bin" ] || { echo "== pi: not found (npm install -g @earendil-works/pi-coding-agent, or set PI_BIN)"; continue; }
+      cfg="$(mktemp -d)"
+      printf '{"providers": {"capture": {"baseUrl": "%s", "api": "openai-completions", "apiKey": "capture", "models": [{"id": "capture"}]}}}\n' \
+        "$url" > "$cfg/models.json"
+      capture pi "$bin" PI_CODING_AGENT_DIR="$cfg" PI_OFFLINE=1 \
+        "$bin" -p --no-session --provider capture --model capture "$task" ;;
+    *) echo "unknown harness: $h (forgecli, forgecode, ante, pi)" >&2 ;;
   esac
 done

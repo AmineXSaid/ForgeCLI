@@ -9,8 +9,9 @@
 
 ForgeCLI's stream-json (forge.jsonl) is shown like a conversation: what the
 model says, one short line per tool call, failed tool calls, and how the run
-ended. Any other *.jsonl / *.stdout.txt / *.stderr.txt in a task's agent/
-folder (Ante, Forge Code, ...) is shown line by line as plain text. A task's
+ended, and so is Pi's event stream (pi.jsonl, read through pi_stream.py). Any
+other *.jsonl / *.stdout.txt / *.stderr.txt in a task's agent/ folder (Ante,
+Forge Code, ...) is shown line by line as plain text. A task's
 reward is shown when its verifier writes it.
 
 A step appears when the model finishes it (a reasoning model can be quiet for
@@ -23,6 +24,8 @@ import sys
 import time
 from pathlib import Path
 
+from pi_stream import PiStream
+
 COLORS = ["\033[36m", "\033[35m", "\033[33m", "\033[32m", "\033[34m", "\033[31m"]
 DIM, BOLD, RED, GREEN, RESET = "\033[2m", "\033[1m", "\033[91m", "\033[92m", "\033[0m"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -34,6 +37,8 @@ QUIET_SYSTEM = {None, "init", "compact_boundary"}
 
 THINKING = "--thinking" in sys.argv or "--full" in sys.argv
 FULL = "--full" in sys.argv
+# Pi's tool names, as the ones tool_line() knows.
+PI_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "grep": "Grep", "find": "Glob", "ls": "LS"}
 
 
 def short(text, width: int = 160) -> str:
@@ -56,6 +61,7 @@ def tool_line(name: str, args: dict) -> str:
     if "_truncated_input" in args:
         return f"{name} (input cut off)"
     path = args.get("file_path") or args.get("notebook_path") or args.get("path") or ""
+    name = PI_TOOLS.get(name, name)
     if name == "Bash":
         command, why = str(args.get("command", "")), args.get("description")
         if "\n" in command.strip() and why:
@@ -111,20 +117,20 @@ def finish_line(event: dict) -> str:
     return f"{RED}{BOLD}✘ {event.get('subtype')}{RESET} · {stats} · {first_line(why, 200)}"
 
 
-def render(event: dict) -> list[str]:
+def render(event: dict, who: str = "Forge") -> list[str]:
     kind = event.get("type")
     out = []
     if kind == "assistant":
         blocks = event.get("message", {}).get("content", [])
         if FULL:
-            out.append(f"{BOLD}❖ Forge{RESET}")
+            out.append(f"{BOLD}❖ {who}{RESET}")
         for block in blocks:
             t = block.get("type")
             if t == "thinking" and block.get("thinking") and THINKING:
                 out += [f"{DIM}  ~ {line}{RESET}" for line in block["thinking"].strip().splitlines()[:TEXT_LINES]]
             elif t == "text" and block.get("text", "").strip():
                 if not FULL:
-                    out.append(f"{BOLD}❖ Forge{RESET}")
+                    out.append(f"{BOLD}❖ {who}{RESET}")
                 lines = block["text"].strip().splitlines()
                 out += lines[:TEXT_LINES]
                 if len(lines) > TEXT_LINES:
@@ -169,8 +175,11 @@ def render(event: dict) -> list[str]:
     return out
 
 
-def handle(line: str, is_err: bool) -> list[str]:
-    """One log line -> display lines: stream-json events are rendered, anything else shown as text."""
+def handle(line: str, is_err: bool, pi: PiStream | None = None) -> list[str]:
+    """One log line -> display lines: stream-json events are rendered, anything else shown as text.
+
+    `pi` translates the lines of a Pi event stream first.
+    """
     line = ANSI.sub("", line).rstrip()
     if not line.strip():
         return []
@@ -178,6 +187,8 @@ def handle(line: str, is_err: bool) -> list[str]:
         event = json.loads(line)
     except ValueError:
         event = None
+    if pi is not None and isinstance(event, dict):
+        return [text for ev in pi.feed(event) for text in render(ev, "Pi")]
     if isinstance(event, dict) and event.get("type") in KNOWN:
         return render(event)
     if is_err:
@@ -210,6 +221,7 @@ def main() -> None:
     offsets: dict[Path, int] = {}
     colors: dict[str, str] = {}
     pending: dict[Path, str] = {}
+    pi_streams: dict[Path, PiStream] = {}
     rewarded: set[Path] = set()
     first_scan = True
 
@@ -239,8 +251,9 @@ def main() -> None:
                 lines = lines[:-1]
             task = log.parent.parent.name.split("__")[0]
             is_err = log.name.endswith(".stderr.txt")
+            pi = pi_streams.setdefault(log, PiStream()) if log.name == "pi.jsonl" else None
             for line in lines:
-                for text in handle(line, is_err):
+                for text in handle(line, is_err, pi):
                     show(task, text)
         first_scan = False
         for reward in sorted(job.glob("*/verifier/reward.txt")):

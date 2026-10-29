@@ -13,10 +13,11 @@ the whole conversation, shortened where tool output is long. A JSON block at the
 end holds the same numbers for scripts. With several jobs, a comparison
 (`jobs/comparison-<time>.md`) puts the tasks side by side.
 
-Works for ForgeCLI (`agent/forge.jsonl`) and for other agents (Forge Code, Ante, ...),
-whose `agent/*.stdout.txt` and `*.stderr.txt` are included as text. API keys are
-removed before anything is written. run.sh, run-forgecode.sh and run-ante.sh call
-this script when their job ends.
+Works for ForgeCLI (`agent/forge.jsonl`), for Pi (`agent/pi.jsonl`, read through
+pi_stream.py) and for other agents (Forge Code, Ante, ...), whose `agent/*.stdout.txt`
+and `*.stderr.txt` are included as text. API keys are removed before anything is
+written. run.sh, run-forgecode.sh, run-ante.sh and run-pi.sh call this script when
+their job ends.
 """
 
 import json
@@ -28,6 +29,8 @@ import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+
+from pi_stream import PiStream
 
 TEXT = 2000  # characters kept from a message of the model
 THINK = 1200  # from one block of reasoning
@@ -144,11 +147,11 @@ def tool_text(block: dict) -> str:
 def tool_call_text(name: str, args) -> str:
     if not isinstance(args, dict):
         return clip(args, TOOL_IN)
-    if name == "Write" and "content" in args:
+    if name in ("Write", "write") and "content" in args:
         content = str(args.get("content", ""))
         lines = content.splitlines()
-        return f"{args.get('file_path', '')} ({len(lines)} lines)\n{clip(content, TOOL_IN)}"
-    if name == "Bash":
+        return f"{args.get('file_path') or args.get('path', '')} ({len(lines)} lines)\n{clip(content, TOOL_IN)}"
+    if name in ("Bash", "bash"):
         why = f"   # {args['description']}" if args.get("description") else ""
         return clip(args.get("command", ""), TOOL_IN) + why
     return clip(json.dumps(args, ensure_ascii=False), TOOL_IN)
@@ -183,15 +186,20 @@ class Trial:
             self.limit_s = self.run_meta["time_limit_s"]
         self.instruction = read(path / "agent" / "instruction.txt")
         self.events: list[dict] = []
-        self.forge = (path / "agent" / "forge.jsonl").is_file()
+        # A structured stream: ForgeCLI's stream-json, or Pi's events in the same shape.
+        pi = (path / "agent" / "pi.jsonl").is_file()
+        stream = path / "agent" / ("pi.jsonl" if pi else "forge.jsonl")
+        self.stderr_name = "pi.stderr.txt" if pi else "forge.stderr.txt"
+        self.forge = stream.is_file()
+        translate = PiStream() if pi else None
         if self.forge:
-            for line in read(path / "agent" / "forge.jsonl").splitlines():
+            for line in read(stream).splitlines():
                 try:
                     ev = json.loads(line)
                 except ValueError:
                     continue
                 if isinstance(ev, dict):
-                    self.events.append(ev)
+                    self.events.extend(translate.feed(ev) if translate else [ev])
         self.other_logs = {
             p.name: read(p)
             for p in sorted((path / "agent").glob("*"))
@@ -386,7 +394,7 @@ class Trial:
                     f"== {ev.get('subtype')} after {ev.get('num_turns')} turns, "
                     f"{(ev.get('duration_ms') or 0) / 1000:.0f}s (API {(ev.get('duration_api_ms') or 0) / 1000:.0f}s)"
                 )
-        stderr = self.other_logs.get("forge.stderr.txt", "").strip()
+        stderr = self.other_logs.get(self.stderr_name, "").strip()
         if stderr:
             counts = Counter(ln.strip() for ln in stderr.splitlines() if ln.strip())
             out += ["", "-- stderr (distinct lines) --"] + [f"{n}× {clip(ln, 300)}" for ln, n in counts.most_common(30)]
@@ -396,7 +404,7 @@ class Trial:
     def plain_logs(self) -> list[str]:
         out = []
         for name, text in self.other_logs.items():
-            if not text.strip() or name == "forge.stderr.txt":
+            if not text.strip() or name == self.stderr_name:
                 continue
             out += [f"`{name}`", "", "```text", head_tail(text, 40_000), "```", ""]
         return out or ["(no agent logs)"]
@@ -441,7 +449,7 @@ class Job:
         self.model = (agents[0].get("model_name") or "").split("/", 1)[-1] or (self.trials[0].result.get("config", {}).get("agent", {}).get("model_name") if self.trials else "?")
         self.harness = (
             "ForgeCLI" if "forge_agent" in self.agent else "Forge Code" if "forgecode" in self.agent
-            else "Ante" if "ante" in self.agent else self.agent
+            else "Ante" if "ante" in self.agent else "Pi" if "pi_agent" in self.agent or self.agent == "pi" else self.agent
         )
         self.version = next((t.result.get("agent_info", {}).get("version") for t in self.trials if t.result.get("agent_info")), "?")
         self.concurrency = self.config.get("n_concurrent_trials")

@@ -51,7 +51,7 @@ evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FORGE_HARBOR_MODEL` | `deep-thinking` | the model as the endpoint names it (a `provider/` prefix is dropped); the same variable sets it for `run-forgecode.sh` and `run-ante.sh` |
+| `FORGE_HARBOR_MODEL` | `deep-thinking` | the model as the endpoint names it (a `provider/` prefix is dropped); the same variable sets it for `run-forgecode.sh`, `run-ante.sh` and `run-pi.sh` |
 | `FORGE_HARBOR_DATASET` | `terminal-bench@2.0` | Harbor dataset |
 | `FORGE_HARBOR_JOBS` | `2` | Tasks in parallel |
 | `FORGE_HARBOR_ARGS` | | Extra `forge` flags, e.g. `--max-turns 100` |
@@ -110,12 +110,12 @@ python3 evals/harbor/watch.py --full       # also tool input and output
 One colour per task. For ForgeCLI it shows what the model says, one short line
 per tool call (`$ ls -la /app`, `Read /app/x.py`), failed tool calls, ForgeCLI's
 reminders, how the run ended (with the error when it failed) and the task's
-reward once the verifier writes it. Other agents' logs (Ante, ...) are shown as
-they are. A step shows up once the model finishes it.
+reward once the verifier writes it. Pi's events are shown the same way. Other
+agents' logs (Ante, ...) are shown as they are. A step shows up once the model finishes it.
 
 ## The report of a run
 
-When a job ends, `run.sh`, `run-forgecode.sh` and `run-ante.sh` write
+When a job ends, `run.sh`, `run-forgecode.sh`, `run-ante.sh` and `run-pi.sh` write
 `jobs/<job>/report.md`: one file with everything needed to judge the run.
 
 - **Setup:** harness, version, model, tasks in parallel, start and end, agent
@@ -130,7 +130,8 @@ When a job ends, `run.sh`, `run-forgecode.sh` and `run-ante.sh` write
   by tool, unknown tool names, ForgeCLI's reminders and other events.
 - **Per task:** the instruction, the agent's last words, the verifier's failing
   tests and output, tool use, and the whole conversation (reasoning, messages,
-  tool calls and results, shortened where long); other agents' logs as text.
+  tool calls and results, shortened where long), for ForgeCLI and Pi; other
+  agents' logs as text.
 - **Data:** the same numbers as JSON, for scripts.
 
 ```bash
@@ -148,8 +149,9 @@ the report writes.
 To compare harnesses, keep the model and the tasks fixed and change only the
 agent:
 - `-a opencode` or another built-in Harbor agent, against this one;
-- Ante (`run-ante.sh`, `ante_agent.py`) or Forge Code (`run-forgecode.sh`,
-  `forgecode_agent.py`), against the same endpoint and model;
+- Ante (`run-ante.sh`, `ante_agent.py`), Forge Code (`run-forgecode.sh`,
+  `forgecode_agent.py`) or Pi (`run-pi.sh`, `pi_agent.py`), against the same
+  endpoint and model;
 - two ForgeCLI builds;
 - `FORGE_VERIFY=0` against the default.
 
@@ -158,6 +160,8 @@ export FORGE_HARBOR_MODEL=deep-thinking
 evals/harbor/run.sh subset
 evals/harbor/run-forgecode.sh subset
 evals/harbor/run-ante.sh subset
+evals/harbor/run-pi.sh subset
+python3 evals/harbor/report.py jobs/forgecli-subset-* jobs/pi-subset-*   # side by side
 ```
 
 `run-forgecode.sh` downloads Forge Code's static Linux build
@@ -166,6 +170,36 @@ first use; `FORGECODE_BIN` points it at another binary. It passes the endpoint
 and key as `OPENAI_URL` and `OPENAI_API_KEY`, and none of ForgeCLI's `FORGE_*`
 settings, which Forge Code would read as its own. `run-forgecode.sh smoke` runs
 one task: try it first.
+
+### Pi
+
+`run-pi.sh` runs [Pi](https://github.com/badlogic/pi-mono) (`pi-coding-agent`).
+Harbor has a Pi agent of its own (`-a pi`), but it installs Node and Pi from the
+internet in every task container and has none of the network handling above. So
+`run-pi.sh` builds a bundle once per Pi version on this machine
+(`~/.pi-harbor/pi-<version>-node22-linux-x64.tar.gz`, about 70 MB: Node's
+official Linux x64 binary, checksum verified, and Pi's npm package) and
+`pi_agent.py` copies it into each container. This machine needs `npm` and
+`curl`; containers need `tar` and glibc (Node's binary doesn't run on Alpine).
+
+```bash
+evals/harbor/run-pi.sh smoke             # 1 task first
+evals/harbor/run-pi.sh subset
+```
+
+Pi runs once per task as `pi -p --mode json --no-session --provider forge-endpoint
+--model <model> "<task>"`. Its `models.json` declares one provider for
+`FORGE_OPENAI_BASE_URL`, API `openai-completions`, with `FORGE_CONTEXT_WINDOW`
+as the context window (200,000 when unset, what ForgeCLI assumes; Pi's own
+default is 128,000). The key stays in an environment variable. Pi's defaults
+are kept otherwise: reasoning off for a custom model unless
+`PI_HARBOR_THINKING=high` (or another level; the job name gets `-think-high`),
+no time limit of its own (Harbor stops it), its 4 tools. `PI_VERSION` picks the
+version, `PI_HARBOR_ARGS` adds flags, and `PI_MODELS_JSON` replaces the
+`models.json` (keep the provider name `forge-endpoint`), for example to set
+`compat` for a server that rejects the `developer` role. Pi's events go to
+`agent/pi.jsonl`, without the per-token updates, and `report.py` and `watch.py`
+read them like ForgeCLI's stream.
 
 Run the jobs one after another, not at the same time: an endpoint with a limit
 on concurrent requests answers the extra ones with HTTP 429, and the runs that
@@ -181,7 +215,7 @@ once against `capture_prompt.py`, a fake endpoint on localhost that records the
 request and answers "Done.", so nothing leaves the machine and no key is needed.
 
 ```bash
-evals/harbor/capture-prompts.sh          # forgecli, forgecode and ante, those installed
+evals/harbor/capture-prompts.sh          # forgecli, forgecode, ante and pi, those installed
 evals/harbor/capture-prompts.sh ante     # one of them
 ```
 
