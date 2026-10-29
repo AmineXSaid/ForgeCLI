@@ -21,7 +21,8 @@ Configuration comes from the environment of the `harbor` process:
   provider must be `forge-endpoint`).
 - `PI_HARBOR_ARGS`: extra Pi flags for every task.
 - `FORGE_HARBOR_HOSTS`, `FORGE_HARBOR_HOST_IP`, `FORGE_HARBOR_CA_BUNDLE`: as for
-  ForgeCLI (see forge_agent.py). Node gets the extra CAs as `NODE_EXTRA_CA_CERTS`.
+  ForgeCLI (see forge_agent.py). Node gets the system CA bundle, extra CAs included,
+  as `NODE_EXTRA_CA_CERTS`.
 
 Pi's JSON events go to `pi.jsonl` (without the per-token `message_update` and
 `tool_execution_update` events) and its stderr to `pi.stderr.txt`; report.py and
@@ -65,7 +66,7 @@ def models_json(url: str, model: str) -> str:
     provider = {
         "baseUrl": url,
         "api": os.environ.get("PI_HARBOR_API", "openai-completions"),
-        "apiKey": KEY_VAR,  # the name of the variable that holds the key, not the key
+        "apiKey": f"${KEY_VAR}",  # the variable that holds the key; a bare name is sent as the key itself
         "models": [entry],
     }
     return json.dumps({"providers": {PROVIDER: provider}}, indent=2)
@@ -115,8 +116,6 @@ class PiAgent(BaseInstalledAgent):
             "PI_OFFLINE": "1",  # no update check or other startup download
             "PI_TASK": instruction,
         }
-        if os.environ.get("FORGE_HARBOR_CA_BUNDLE"):
-            env["NODE_EXTRA_CA_CERTS"] = REMOTE_CA
         flags = ["-p", "--mode", "json", "--no-session", "--provider", PROVIDER, "--model", model]
         thinking = os.environ.get("PI_HARBOR_THINKING", "off")
         if thinking != "off":
@@ -133,8 +132,15 @@ class PiAgent(BaseInstalledAgent):
                 name: {**p, "apiKey": "<set>"} for name, p in (json.loads(config).get("providers") or {}).items()
             },
         }
+        # Node trusts its own CAs only: give it the system bundle, which TRUST_CA added the extra CAs to.
+        trust = ""
+        if os.environ.get("FORGE_HARBOR_CA_BUNDLE"):
+            trust = (
+                "for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem "
+                f'{REMOTE_CA}; do if [ -r "$f" ]; then export NODE_EXTRA_CA_CERTS="$f"; break; fi; done; '
+            )
         command = (
-            f"set -o pipefail; mkdir -p {LOG_DIR} {CONFIG_DIR}; "
+            f"set -o pipefail; mkdir -p {LOG_DIR} {CONFIG_DIR}; {trust}"
             f"printf '%s\\n' {shlex.quote(config)} > {CONFIG_DIR}/models.json; "
             + record_run("PI_TASK", meta)
             + f'{REMOTE_PI} {shlex.join(flags)} "$PI_TASK" < /dev/null 2> {LOG_DIR}/pi.stderr.txt '
