@@ -285,5 +285,8 @@ also pass the bundle to the tests (`harbor run --ve`, see `verifier-ca.sh`):
 `pytorch-model-cli` (Torch from download.pytorch.org) and `reshard-c4-data`
 (the C4 dataset from huggingface.co) scored 0 before any test ran. A trial whose
 test phase still fails this way is marked `verifier error` by `report.py` and
-left out of the valid-trial count. For real scores, run from a network without
+left out of the valid-trial count, as is one whose tests run out of time
+(`VerifierTimeoutError`). Downloading Torch through a slow proxy can take longer
+than the task's 15-minute verifier limit; give the tests more time, not the
+agent, with `--verifier-timeout-multiplier 3` after the mode. For real scores, run from a network without
 TLS inspection.

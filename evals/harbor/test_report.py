@@ -95,3 +95,11 @@ def test_verifier_error_is_left_out_of_valid_trials(tmp_path):
     valid = [t for t in trials if not t.verdict.startswith(invalid)]
     # Only the genuine failure is a valid trial; the cert-failed verifier is set apart.
     assert [t.task for t in valid] == ["gpt2-codegolf"]
+
+
+def test_verifier_timeout_is_verifier_error(tmp_path):
+    # The tests ran out of time (e.g. downloading Torch through a slow proxy) and wrote no reward:
+    # nothing about the agent was measured.
+    t = make_trial(tmp_path, "pytorch-model-cli", "", "", ran_tests=None)
+    t.exception = "VerifierTimeoutError"
+    assert t.decide() == "verifier error"
