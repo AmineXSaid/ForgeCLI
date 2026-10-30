@@ -276,15 +276,14 @@ for `uv`. This changes the task environment, so:
 - their scores only compare ForgeCLI builds with each other;
 - they aren't comparable with the leaderboard, and must not be submitted.
 
-This covers the agent's own container, not the verifier. Harbor runs each task's
-tests in a **separate** container built from the task image, which the agent
-never touches, so `FORGE_HARBOR_CA_BUNDLE` does not reach it. Tasks whose tests
-download packages or data over HTTPS (`pytorch-model-cli` pulls Torch,
-`reshard-c4-data` pulls the C4 dataset) therefore still fail in the test phase
-behind a TLS-inspecting proxy, whatever the agent produced. `report.py` marks
-such a trial `verifier error` and leaves it out of the valid-trial count (its
-test phase shows a cert/network failure and no test ran), so it does not read as
-the agent failing — but the task still does not score. Trusting the proxy CA in
-the verifier is not something the agent can do from here; it needs the task
-image or Harbor's own test environment to trust it. For real scores, run from a
-network without TLS inspection.
+Harbor runs each task's tests in that same container, but the tools test
+scripts use to fetch packages and data bring their own certificate lists (uv's
+rustls, pip and requests through certifi, huggingface_hub). So the run scripts
+also pass the bundle to the tests (`harbor run --ve`, see `verifier-ca.sh`):
+`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `PIP_CERT`,
+`GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS` and `UV_NATIVE_TLS=1`. Without them,
+`pytorch-model-cli` (Torch from download.pytorch.org) and `reshard-c4-data`
+(the C4 dataset from huggingface.co) scored 0 before any test ran. A trial whose
+test phase still fails this way is marked `verifier error` by `report.py` and
+left out of the valid-trial count. For real scores, run from a network without
+TLS inspection.

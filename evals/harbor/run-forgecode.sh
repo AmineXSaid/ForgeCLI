@@ -50,12 +50,13 @@ echo "job: $job"
 
 # The report is written even when harbor fails part way.
 status=0
+. "$repo/evals/harbor/verifier-ca.sh"
 PYTHONPATH="$repo/evals/harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   -d "${FORGE_HARBOR_DATASET:-terminal-bench@2.0}" \
   -m "$model" \
   --agent forgecode_agent:ForgeCode \
   --n-concurrent "${FORGE_HARBOR_JOBS:-2}" \
   --job-name "$job" \
-  "${scope[@]}" "$@" || status=$?
+  ${verifier_ca[@]+"${verifier_ca[@]}"} "${scope[@]}" "$@" || status=$?
 python3 "$repo/evals/harbor/report.py" "jobs/$job" || true
 exit "$status"
