@@ -319,7 +319,9 @@ class Trial:
             return "timeout"
         if api_error:
             return "api error before any work" if not self.turns else "api error"
-        if getattr(self, "verifier_infra", False):
+        if getattr(self, "verifier_infra", False) or self.exception == "VerifierTimeoutError":
+            # The tests could not judge the agent's work: they failed to fetch what they need,
+            # or ran out of time (often the same thing on a slow proxy). Not the agent failing.
             return "verifier error"
         if REFUSAL.search(text[-1500:]) and sum(self.tools.values()) <= 3:
             return "refused"
