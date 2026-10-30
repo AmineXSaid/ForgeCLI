@@ -31,6 +31,7 @@ from pathlib import Path
 
 REPO = "https://raw.githubusercontent.com/laude-institute/terminal-bench-2"
 COMMIT = os.environ.get("FORGE_HARBOR_TB2_COMMIT") or "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c"
+ATTEMPTS = 3
 # uvx options that take a value; anything else starting with "-" is a flag.
 WITH_VALUE = {
     "-p", "--python", "-w", "--with", "--from", "--index", "--default-index", "--index-url",
@@ -105,6 +106,9 @@ def main() -> None:
     cache = Path(os.environ.get("FORGE_HARBOR_UV_CACHE") or Path.home() / ".forge-harbor" / "uv-cache").expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k != "UV_CACHE_DIR"}
+    # uv gives up on a download after 30 s without data; through a slow proxy, Torch and OpenCV
+    # need far longer.
+    env.setdefault("UV_HTTP_TIMEOUT", "600")
     ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
     if ca:
         env["SSL_CERT_FILE"] = str(Path(ca).resolve())
@@ -121,7 +125,12 @@ def main() -> None:
         runner = ["uvx", "--from", f"uv=={version}", "uvx"] if version else ["uvx"]
         cmd = runner + ["--cache-dir", str(cache)] + warm_args(words)
         print(f"{task}: {shlex.join(cmd)}", flush=True)
-        if subprocess.run(cmd, env=env).returncode != 0:
+        # A slow proxy can drop a download part way; what finished stays in the cache.
+        for attempt in range(1, ATTEMPTS + 1):
+            if subprocess.run(cmd, env=env).returncode == 0:
+                break
+            print(f"{task}: attempt {attempt} of {ATTEMPTS} failed" + ("; trying again" if attempt < ATTEMPTS else ""), flush=True)
+        else:
             failed.append(task)
     dropped = prune_environments(cache)
     size = sum(p.stat().st_size for p in cache.rglob("*") if p.is_file() and not p.is_symlink())

@@ -20,3 +20,7 @@ fi
 if [ -n "${FORGE_HARBOR_UV_CACHE:-}" ]; then
   verifier_ca+=(--ve UV_CACHE_DIR=/usr/local/share/forge/uv-cache)
 fi
+# uv gives up on a download after 30 s without data, too soon for a slow proxy.
+if [ -n "${FORGE_HARBOR_CA_BUNDLE:-}${FORGE_HARBOR_UV_CACHE:-}" ]; then
+  verifier_ca+=(--ve UV_HTTP_TIMEOUT=600)
+fi
