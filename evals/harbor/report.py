@@ -50,6 +50,20 @@ SECRET_VALUES = [
     if len(os.environ.get(k, "")) >= 8
 ]
 
+# The verifier itself failed to run, not the agent's work: its test phase could not reach the
+# internet to install packages or download data. On the KPIT endpoint behind a TLS-inspecting
+# proxy, the agent trusts the proxy's CA (FORGE_HARBOR_CA_BUNDLE), but pip/uv and huggingface_hub
+# in the test phase do not, so the fetch fails with an unknown-issuer / cert-verify error before a
+# single assertion about the agent's output runs. A real test failure (a wrong answer) shows an
+# AssertionError instead, so these signatures do not match it. Such a trial measures the network,
+# not the harness: it is set apart like an API failure, not counted as the agent failing.
+VERIFIER_INFRA = re.compile(
+    r"(?i)(invalid peer certificate|unknownissuer|certificate[_ ]verify[_ ]failed|unable to get local issuer|"
+    r"ssl: certificate|failed to fetch:.*\.(whl|metadata|tar\.gz)|"
+    r"couldn.?t be found on the hugging\s*face hub|could not (resolve host|connect to)|"
+    r"temporary failure in name resolution|connection refused|max retries exceeded)"
+)
+
 REFUSAL = re.compile(r"(?i)\b(i can.?t help with|i cannot help with|i can.?t assist|i won.?t (help|assist)|against (my|the) polic)")
 GIVE_UP = re.compile(
     r"(?i)(i.?m sorry|unfortunately|not (realistic|feasible|possible|practical)|can.?t (reliably|realistically)|"
@@ -284,6 +298,16 @@ class Trial:
             if t.get("status") not in ("passed", "skipped")
         ]
         stdout = read(self.path / "verifier" / "test-stdout.txt")
+        # The agent did not pass, and the test phase hit a network/cert failure before it could
+        # judge the agent's output. Only count it when the tests never ran: pytest prints a
+        # "N passed"/"N failed" footer once a test body is reached, so its presence means the tests
+        # did evaluate the agent (a wrong answer), even if an unrelated cert warning scrolled past
+        # during setup. Its absence, with the infra signature, means the verifier died fetching its
+        # own dependencies or data and measured nothing.
+        tests_ran = re.search(r"\b\d+ (passed|failed)\b", stdout)
+        self.verifier_infra = bool(
+            (self.reward or 0) < 1 and not tests_ran and VERIFIER_INFRA.search(stdout)
+        )
         return {"summary": res.get("summary") or {}, "failed": failed, "stdout_tail": stdout.splitlines()[-VERIFIER_LINES:]}
 
     def decide(self) -> str:
@@ -295,6 +319,8 @@ class Trial:
             return "timeout"
         if api_error:
             return "api error before any work" if not self.turns else "api error"
+        if getattr(self, "verifier_infra", False):
+            return "verifier error"
         if REFUSAL.search(text[-1500:]) and sum(self.tools.values()) <= 3:
             return "refused"
         if GIVE_UP.search(text[-1500:]) and sum(self.tools.values()) <= 6:
@@ -464,7 +490,8 @@ class Job:
     def report(self) -> str:
         passed, n = self.score()
         verdicts = Counter(t.verdict for t in self.trials)
-        valid = [t for t in self.trials if not t.verdict.startswith("api error")]
+        invalid = ("api error", "verifier error")
+        valid = [t for t in self.trials if not t.verdict.startswith(invalid)]
         wall = None
         if self.started and self.finished:
             a, b = parse_time(self.started), parse_time(self.finished)
@@ -485,8 +512,8 @@ class Job:
             "## Score",
             "",
             f"- **{passed}/{n} passed** (mean {passed / n if n else 0:.2f})",
-            f"- valid trials (reached the model, no API failure): {len(valid)}/{n}; "
-            f"passed among them: {sum(1 for t in valid if (t.reward or 0) >= 1)}/{len(valid)}",
+            f"- valid trials (model reached, verifier ran): {len(valid)}/{n}; "
+            f"passed among them: {sum(1 for t in valid if (t.reward or 0) >= 1)}/{len(valid) or 1}",
             "- verdicts: " + ", ".join(f"{k} {v}" for k, v in verdicts.most_common()),
             "",
             "## Trials",
@@ -542,7 +569,7 @@ def comparison(jobs: list[Job]) -> str:
     out += ["| job | harness | model | passed | valid trials | parallel | verdicts |", "|---|---|---|---|---|---|---|"]
     for j in jobs:
         p, n = j.score()
-        valid = sum(1 for t in j.trials if not t.verdict.startswith("api error"))
+        valid = sum(1 for t in j.trials if not t.verdict.startswith(("api error", "verifier error")))
         v = ", ".join(f"{k} {c}" for k, c in Counter(t.verdict for t in j.trials).most_common())
         out.append(f"| {j.name} | {j.harness} | {j.model} | {p}/{n} | {valid} | {j.concurrency} | {v} |")
     out += ["", "| task | " + " | ".join(f"{j.harness} ({i + 1})" for i, j in enumerate(jobs)) + " |"]
