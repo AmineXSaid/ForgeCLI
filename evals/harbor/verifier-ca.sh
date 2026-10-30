@@ -13,5 +13,10 @@ if [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ]; then
   for var in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE PIP_CERT GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS; do
     verifier_ca+=(--ve "$var=/usr/local/share/forge/ca-bundle.pem")
   done
-  verifier_ca+=(--ve UV_NATIVE_TLS=1)
+  verifier_ca+=(--ve UV_NATIVE_TLS=1 --ve UV_SYSTEM_CERTS=1)  # the second is the newer uv's name
+fi
+# With FORGE_HARBOR_UV_CACHE (made by warm_uv_cache.py), the agent copies that uv cache into the
+# container; the tests' uv uses it, so Torch and the like come from disk, not through the proxy.
+if [ -n "${FORGE_HARBOR_UV_CACHE:-}" ]; then
+  verifier_ca+=(--ve UV_CACHE_DIR=/usr/local/share/forge/uv-cache)
 fi

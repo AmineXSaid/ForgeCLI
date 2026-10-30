@@ -42,7 +42,7 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from forge_agent import REMOTE_CA, TRUST_CA, container_url, pinned_hosts, record_run, settings, task_time_limit
+from forge_agent import REMOTE_CA, TRUST_CA, upload_uv_cache, container_url, pinned_hosts, record_run, settings, task_time_limit
 
 REMOTE_DIR = "/opt/pi-harbor"
 REMOTE_PI = f"{REMOTE_DIR}/pi"
@@ -103,6 +103,7 @@ class PiAgent(BaseInstalledAgent):
         if hosts:
             lines = "\n".join(f"{ip} {name}" for ip, name in hosts)
             await self.exec_as_root(environment, command=f"printf '%s\\n' {shlex.quote(lines)} >> /etc/hosts")
+        await upload_uv_cache(self, environment)
         ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():

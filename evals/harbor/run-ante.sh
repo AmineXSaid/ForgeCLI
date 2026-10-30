@@ -27,6 +27,7 @@ model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 provider="${ANTE_PROVIDER:-openai-compatible}"
 install="${ANTE_INSTALL_ARGS:-}"
 ca=""; [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
+[ -n "${FORGE_HARBOR_UV_CACHE:-}" ] && ca="${ca}-uvcache"
 job="ante-${mode}-${model_tag}-${install:-stable}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 

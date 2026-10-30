@@ -61,6 +61,8 @@ REMOTE_CA = "/tmp/forge-extra-ca.pem"
 # A copy outside /tmp, which a task or the agent may clear, for the task's tests
 # (`verifier-ca.sh` points them here): a test that finds no bundle trusts nothing.
 KEPT_CA = "/usr/local/share/forge/ca-bundle.pem"
+# Where FORGE_HARBOR_UV_CACHE goes in the container; verifier-ca.sh points the tests' uv here.
+KEPT_UV_CACHE = "/usr/local/share/forge/uv-cache"
 # Trust REMOTE_CA in the container: in the system store (now, and for any later
 # `update-ca-certificates`, e.g. when a test script installs curl), in existing bundle files,
 # and for uv, which test scripts use to install their tools.
@@ -84,6 +86,23 @@ done
 mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
 mkdir -p "$(dirname %s)" && cp "$src" %s && chmod 644 %s
 """ % (REMOTE_CA, KEPT_CA, KEPT_CA, KEPT_CA)
+
+
+async def upload_uv_cache(agent: BaseInstalledAgent, environment: BaseEnvironment) -> None:
+    """Copy FORGE_HARBOR_UV_CACHE (made by warm_uv_cache.py) into the container for the task's tests.
+
+    The tests then take Torch and the like from disk instead of the network (see verifier-ca.sh).
+    """
+    cache = os.environ.get("FORGE_HARBOR_UV_CACHE")
+    if not cache:
+        return
+    path = Path(cache).expanduser()
+    if not path.is_dir():
+        raise RuntimeError(f"FORGE_HARBOR_UV_CACHE: {cache} is not a directory (make it with warm_uv_cache.py)")
+    await agent.exec_as_root(environment, command=f"mkdir -p {KEPT_UV_CACHE}")
+    await environment.upload_dir(path.resolve(), KEPT_UV_CACHE)
+    # Whatever user the tests run as, their uv takes locks and writes in its cache.
+    await agent.exec_as_root(environment, command=f"chmod -R a+rwX {KEPT_UV_CACHE}")
 
 
 def pinned_hosts() -> list[tuple[str, str]]:
@@ -199,6 +218,7 @@ class ForgeCLI(BaseInstalledAgent):
         if hosts:
             lines = "\n".join(f"{ip} {name}" for ip, name in hosts)
             await self.exec_as_root(environment, command=f"printf '%s\\n' {shlex.quote(lines)} >> /etc/hosts")
+        await upload_uv_cache(self, environment)
         ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():

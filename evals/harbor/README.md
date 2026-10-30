@@ -290,3 +290,25 @@ left out of the valid-trial count, as is one whose tests run out of time
 than the task's 15-minute verifier limit; give the tests more time, not the
 agent, with `--verifier-timeout-multiplier 3` after the mode. For real scores, run from a network without
 TLS inspection.
+
+### Slow proxy: download the tests' packages once
+
+Some tests download large packages every time they run (`pytorch-model-cli`
+installs Torch, torchvision and OpenCV). Through a slow proxy that can take
+longer than the verifier limit. Download them once on this machine, then let
+every run reuse them:
+
+```bash
+python3 evals/harbor/warm_uv_cache.py pytorch-model-cli
+export FORGE_HARBOR_UV_CACHE=~/.forge-harbor/uv-cache
+```
+
+`warm_uv_cache.py` reads each named task's own test script and runs its `uvx`
+line once, with the same uv version, into that cache (with
+`FORGE_HARBOR_CA_BUNDLE`, uv here trusts it too). It drops the environments uv
+built on this machine's Python and keeps the packages. With the variable set,
+the agent copies the cache into each task container and the tests' uv uses it
+(`UV_CACHE_DIR`), so the packages come from disk; uv only checks the index for
+changes. Jobs get `-uvcache` in their name. This saves the tests' downloads only:
+data a test fetches itself (`reshard-c4-data` loads C4 from Hugging Face) still
+goes through the network.

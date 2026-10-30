@@ -56,6 +56,7 @@ git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || dirty="-dirty"
 # Runs with extra trusted CAs change the task environment: label them, they're for local comparisons.
 ca=""
 [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
+[ -n "${FORGE_HARBOR_UV_CACHE:-}" ] && ca="${ca}-uvcache"
 case "${FORGE_HARBOR_AUTONOMOUS:-1}" in 0|false|no|off) ca="${ca}-noauto" ;; esac
 model="${FORGE_HARBOR_MODEL:-deep-thinking}"
 model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
