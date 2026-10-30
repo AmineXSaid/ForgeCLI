@@ -58,6 +58,9 @@ STDERR_LOG = "forge.stderr.txt"
 # Seconds kept back from the task's limit, so the final report is written before the cut-off.
 TIME_MARGIN = 30
 REMOTE_CA = "/tmp/forge-extra-ca.pem"
+# A copy that outlives the agent's run, for the task's tests (`verifier-ca.sh` points them here):
+# /tmp is not kept until then, and a test that finds no bundle trusts nothing.
+KEPT_CA = "/usr/local/share/forge/ca-bundle.pem"
 # Trust REMOTE_CA in the container: in the system store (now, and for any later
 # `update-ca-certificates`, e.g. when a test script installs curl), in existing bundle files,
 # and for uv, which test scripts use to install their tools.
@@ -78,7 +81,8 @@ for b in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /et
   if [ -f "$b" ]; then cat "$src" >> "$b"; fi
 done
 mkdir -p /etc/uv && printf 'native-tls = true\n' > /etc/uv/uv.toml
-""" % REMOTE_CA
+mkdir -p "$(dirname %s)" && cp "$src" %s && chmod 644 %s
+""" % (REMOTE_CA, KEPT_CA, KEPT_CA, KEPT_CA)
 
 
 def pinned_hosts() -> list[tuple[str, str]]:
