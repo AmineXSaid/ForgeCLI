@@ -120,10 +120,13 @@ When a job ends, `run.sh`, `run-forgecode.sh`, `run-ante.sh` and `run-pi.sh` wri
 
 - **Setup:** harness, version, model, tasks in parallel, start and end, agent
   flags and settings (keys left out).
-- **Score:** passed, valid trials (those that reached the model without an API
-  failure), and one verdict per task: passed, failed, false success (said done,
-  checker failed), gave up, refused, api error (before any work or later),
-  timeout, crashed.
+- **Score:** passed, valid trials (those that reached the model and whose
+  verifier actually ran), and one verdict per task: passed, failed, false success
+  (said done, checker failed), gave up, refused, api error (before any work or
+  later), verifier error (the test phase could not fetch its own packages or
+  data — a cert/network failure before any test ran — so it judged nothing;
+  set apart like an api error, not counted as the agent failing), timeout,
+  crashed.
 - **Trials table:** reward, verdict, turns, agent time against the limit,
   tokens, tool calls and errors, API retries, how the run ended.
 - **Signals:** HTTP 429s and retries, run-ending errors, tool errors by kind and
