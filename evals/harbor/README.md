@@ -269,13 +269,22 @@ export FORGE_HARBOR_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 evals/harbor/run.sh subset
 ```
 
-The agent adds those certificates to each container's trust store, including
-for any later `update-ca-certificates`, and turns on `native-tls` for `uv`.
-This changes the task environment, so:
+The agent adds those certificates to the trust store of the container it runs
+in, including for any later `update-ca-certificates`, and turns on `native-tls`
+for `uv`. This changes the task environment, so:
 - these jobs are named `-hostca`;
 - their scores only compare ForgeCLI builds with each other;
 - they aren't comparable with the leaderboard, and must not be submitted.
 
-Tools that bring their own certificate list (for example `pip` through
-`certifi`) may still fail. For real scores, run from a network without TLS
-inspection.
+This covers the agent's own container, not the verifier. Harbor runs each task's
+tests in a **separate** container built from the task image, which the agent
+never touches, so `FORGE_HARBOR_CA_BUNDLE` does not reach it. Tasks whose tests
+download packages or data over HTTPS (`pytorch-model-cli` pulls Torch,
+`reshard-c4-data` pulls the C4 dataset) therefore still fail in the test phase
+behind a TLS-inspecting proxy, whatever the agent produced. `report.py` marks
+such a trial `verifier error` and leaves it out of the valid-trial count (its
+test phase shows a cert/network failure and no test ran), so it does not read as
+the agent failing — but the task still does not score. Trusting the proxy CA in
+the verifier is not something the agent can do from here; it needs the task
+image or Harbor's own test environment to trust it. For real scores, run from a
+network without TLS inspection.
