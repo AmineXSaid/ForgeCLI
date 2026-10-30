@@ -291,6 +291,23 @@ than the task's 15-minute verifier limit; give the tests more time, not the
 agent, with `--verifier-timeout-multiplier 3` after the mode. For real scores, run from a network without
 TLS inspection.
 
+### Containers can't resolve names
+
+If runs fail at random with `Name does not resolve` (for your endpoint) or
+`Could not resolve host` (in the tests), check the DNS servers Docker hands to
+containers: by default, those of the host. A public resolver such as `8.8.8.8`
+in that list can't resolve internal names, and a company network may block or
+slow it, so any lookup sent there fails. Find servers that answer both an
+internal and a public name:
+
+```bash
+for s in $(grep nameserver /etc/resolv.conf | cut -d' ' -f2); do echo "$s: $(timeout 4 nslookup example.com $s >/dev/null 2>&1 && echo ok || echo FAIL)"; done
+```
+
+Then list only those in `/etc/docker/daemon.json` (`"dns": ["10.x.x.x", ...]`)
+and restart Docker; with Docker Desktop, in Settings > Docker Engine. Check with
+`docker run --rm alpine nslookup <your endpoint's host>`.
+
 ### Slow proxy: download the tests' packages once
 
 Some tests download large packages every time they run (`pytorch-model-cli`
