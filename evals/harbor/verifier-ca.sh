@@ -1,8 +1,8 @@
 # Sourced by run.sh, run-pi.sh, run-ante.sh and run-forgecode.sh.
 #
 # With FORGE_HARBOR_CA_BUNDLE, the agent uploads the bundle, adds it to the container's trust store
-# and keeps a copy at /usr/local/share/forge/ca-bundle.pem (KEPT_CA in forge_agent.py; /tmp is
-# not kept until the tests run). Harbor then runs the task's tests in that same container, but
+# and keeps a copy at /usr/local/share/forge/ca-bundle.pem (KEPT_CA in forge_agent.py, outside
+# /tmp, which a task or the agent may clear). Harbor then runs the task's tests in that same container, but
 # the tools the test scripts use to fetch packages and data bring their own certificate lists:
 # uv (rustls), pip and requests (certifi), huggingface_hub. Behind a TLS-inspecting proxy they
 # reject its certificate, and tasks such as pytorch-model-cli (Torch from download.pytorch.org)

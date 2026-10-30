@@ -61,7 +61,7 @@ class ForgeCode(BaseInstalledAgent):
         if ca:
             if not Path(ca).is_file():
                 raise RuntimeError(f"FORGE_HARBOR_CA_BUNDLE: {ca} not found")
-            await environment.upload_file(Path(ca), REMOTE_CA)
+            await environment.upload_file(Path(ca).resolve(), REMOTE_CA)  # docker cp copies a symlink as a link
             await self.exec_as_root(environment, command=TRUST_CA)
 
     @with_prompt_template

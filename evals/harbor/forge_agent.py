@@ -58,14 +58,15 @@ STDERR_LOG = "forge.stderr.txt"
 # Seconds kept back from the task's limit, so the final report is written before the cut-off.
 TIME_MARGIN = 30
 REMOTE_CA = "/tmp/forge-extra-ca.pem"
-# A copy that outlives the agent's run, for the task's tests (`verifier-ca.sh` points them here):
-# /tmp is not kept until then, and a test that finds no bundle trusts nothing.
+# A copy outside /tmp, which a task or the agent may clear, for the task's tests
+# (`verifier-ca.sh` points them here): a test that finds no bundle trusts nothing.
 KEPT_CA = "/usr/local/share/forge/ca-bundle.pem"
 # Trust REMOTE_CA in the container: in the system store (now, and for any later
 # `update-ca-certificates`, e.g. when a test script installs curl), in existing bundle files,
 # and for uv, which test scripts use to install their tools.
 TRUST_CA = r"""
 src=%s
+[ -s "$src" ] || { echo "FORGE_HARBOR_CA_BUNDLE did not arrive in the container: $src is missing or empty" >&2; exit 1; }
 mkdir -p /usr/local/share/ca-certificates
 if command -v awk >/dev/null 2>&1; then
   awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("/usr/local/share/ca-certificates/forge-extra-%%03d.crt", n)} n>0{print > f}' "$src"
@@ -202,7 +203,7 @@ class ForgeCLI(BaseInstalledAgent):
         if ca:
             if not Path(ca).is_file():
                 raise RuntimeError(f"FORGE_HARBOR_CA_BUNDLE: {ca} not found")
-            await environment.upload_file(Path(ca), REMOTE_CA)
+            await environment.upload_file(Path(ca).resolve(), REMOTE_CA)  # docker cp copies a symlink as a link
             await self.exec_as_root(environment, command=TRUST_CA)
 
     @with_prompt_template
