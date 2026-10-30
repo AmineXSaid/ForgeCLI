@@ -20,3 +20,7 @@ fi
 if [ -n "${KODACT_HARBOR_UV_CACHE:-}" ]; then
   verifier_ca+=(--ve UV_CACHE_DIR=/usr/local/share/kodact/uv-cache)
 fi
+# uv gives up on a download after 30 s without data, too soon for a slow proxy.
+if [ -n "${KODACT_HARBOR_CA_BUNDLE:-}${KODACT_HARBOR_UV_CACHE:-}" ]; then
+  verifier_ca+=(--ve UV_HTTP_TIMEOUT=600)
+fi
