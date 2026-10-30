@@ -36,6 +36,7 @@ export OPENAI_COMPATIBLE_BASE_URL="$KODACT_OPENAI_BASE_URL" OPENAI_COMPATIBLE_AP
 # The report is written even when harbor fails part way.
 status=0
 # The agent is evals/harbor/ante_agent.py; ~/ante-src/ante-harbor, if there, comes after it.
+. "$repo/evals/harbor/verifier-ca.sh"
 PYTHONPATH="$repo/evals/harbor:$HOME/ante-src/ante-harbor${PYTHONPATH:+:$PYTHONPATH}" harbor run \
   -d "${KODACT_HARBOR_DATASET:-terminal-bench@2.0}" \
   -m "$model" \
@@ -45,6 +46,6 @@ PYTHONPATH="$repo/evals/harbor:$HOME/ante-src/ante-harbor${PYTHONPATH:+:$PYTHONP
   --ae "OPENAI_COMPATIBLE_API_KEY=$KODACT_OPENAI_API_KEY" \
   --n-concurrent "${KODACT_HARBOR_JOBS:-2}" \
   --job-name "$job" \
-  "${scope[@]}" "$@" || status=$?
+  ${verifier_ca[@]+"${verifier_ca[@]}"} "${scope[@]}" "$@" || status=$?
 python3 "$repo/evals/harbor/report.py" "jobs/$job" || true
 exit "$status"
