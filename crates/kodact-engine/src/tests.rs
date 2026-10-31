@@ -769,6 +769,62 @@ async fn verify_sees_shell_writes_through_git_and_failed_checks() {
 }
 
 #[tokio::test]
+async fn verify_ignores_a_commit_after_a_passing_check() {
+    // Fix, run the tests, commit: the commit changes no file, so there is nothing left to verify.
+    let h = Harness::new(vec![]);
+    let cwd = h.cwd();
+    std::fs::create_dir_all(&cwd).unwrap();
+    for args in [&["init", "-q"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
+        assert!(std::process::Command::new("git").args(args).current_dir(&cwd).status().unwrap().success());
+    }
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": cwd.join("fix.py"), "content": "x = 1\n"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "true"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "git add fix.py && git commit -q -m fix"})));
+    h.provider.push(MockTurn::text("fixed, tested and committed"));
+    let mut e = verifying_engine(&h, &["true"]);
+    let r = e.submit(prompt("fix it")).await;
+    assert_eq!(r.num_turns, 4, "no reminder after a commit");
+    assert!(!h.transcript_text().contains(r#""subtype":"verification""#));
+
+    // A shell edit after the check still counts.
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": cwd.join("fix.py"), "content": "x = 2\n"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "true"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "echo 'y = 3' >> fix.py"})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::text("ok"));
+    let r = e.submit(prompt("change it")).await;
+    assert_eq!(r.num_turns, 5);
+    let n = h.provider.requests().len();
+    assert!(last_user_text(&h.provider.requests()[n - 1]).contains("through shell commands"));
+}
+
+#[tokio::test]
+async fn verify_sees_a_shell_rewrite_after_the_last_check_outside_git() {
+    // winning-avg-corewars (22f2cd7): the warrior was edited and tested, then rewritten with
+    // `cat > my_warrior.red <<EOF` and never run again. /app is not a git repository.
+    let h = Harness::new(vec![]);
+    let cwd = h.cwd();
+    std::fs::create_dir_all(&cwd).unwrap();
+    let warrior = cwd.join("my_warrior.red");
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": warrior, "content": ";redcode-94\nmov 0, 1\n"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "true"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "ls"})));
+    h.provider.push(MockTurn::text("tested"));
+    let mut e = verifying_engine(&h, &["true"]);
+    assert_eq!(e.submit(prompt("write a warrior")).await.num_turns, 4, "tested, then only looked");
+
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": warrior, "content": ";redcode-94\nmov 0, 1\n"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "true"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "printf ';redcode-94\\nspl 0, 1\\n' > my_warrior.red"})));
+    h.provider.push(MockTurn::text("rewrote it"));
+    h.provider.push(MockTurn::text("ok"));
+    let r = e.submit(prompt("improve it")).await;
+    assert_eq!(r.num_turns, 5);
+    let n = h.provider.requests().len();
+    assert!(last_user_text(&h.provider.requests()[n - 1]).contains("through shell commands"));
+}
+
+#[tokio::test]
 async fn loop_guard_reminds_after_repeated_failures() {
     let h = Harness::new(vec![]);
     for _ in 0..3 {

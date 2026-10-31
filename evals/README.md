@@ -36,6 +36,7 @@ and stderr.
 | slugify-trap | verification | Optimize without changing behaviour; hidden edge cases punish skipped tests (false finish) |
 | verify-inline | verification | Fix a bug in a project with no test suite, checked by running the code inline (`python3 -c`); the verification loop must count that check instead of reminding (`verify_reminders`) |
 | verify-program-arg | verification | Fix a config file and check it by running the unchanged tool on it (`python3 route.py routes.conf /api/v2/users`); the verification loop must count a program run on a changed file as a check (`verify_reminders`) |
+| verify-commit | verification | Fix a bug, run the tests, commit (the workspace is a git repo); committing changes no file, so the verification loop must not ask to verify again (`verify_reminders`) |
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |
 | log-needle | context | A 330 KB log with one error line in the middle; the fix is one setting |

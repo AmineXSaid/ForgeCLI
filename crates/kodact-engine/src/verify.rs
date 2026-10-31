@@ -13,8 +13,9 @@
 //! naming a changed file are not checks, and here-document bodies are data.
 //!
 //! Changes are the edit tools' writes, from the file history, so sub-agent
-//! edits count too. Shell commands that may write are confirmed against a git
-//! worktree fingerprint, so a `sed -i` counts and an `ls` does not.
+//! edits count too. Shell commands that may write are confirmed against a
+//! fingerprint of the files (not of git's state), so a `sed -i` counts and an
+//! `ls` or a `git commit` does not.
 
 use std::path::{Path, PathBuf};
 

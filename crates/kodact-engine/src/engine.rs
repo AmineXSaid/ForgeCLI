@@ -2364,9 +2364,12 @@ impl Engine {
         self.cfg.verify.is_some() && !self.cfg.is_subagent
     }
 
+    /// The verification loop's view of the files: the worktree's files in a git repository,
+    /// plus the files written this turn (so a shell rewrite of one is seen outside git too).
     async fn worktree_fingerprint(&self) -> Option<u64> {
         let dir = self.shared.tool_ctx.project_dir.clone();
-        tokio::task::spawn_blocking(move || kodact_git::worktree_fingerprint(&dir)).await.ok().flatten()
+        let written = self.shared.history.writes_since(0);
+        tokio::task::spawn_blocking(move || kodact_git::worktree_fingerprint(&dir, &written)).await.ok().flatten()
     }
 
     /// Note checks and possible shell writes among the calls just run.

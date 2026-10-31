@@ -1,0 +1,8 @@
+{
+  "instruction": "test_wordcount.py fails. Fix the bug in wordcount.py so the tests pass, then commit the fix with git (any message). Do not change the tests.",
+  "setup": "git config user.email dev@example.com && git config user.name Dev",
+  "check": "python3 -m unittest -q test_wordcount && python3 \"$KODACT_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["python", "bugfix", "git"],
+  "timeout_secs": 600
+}
