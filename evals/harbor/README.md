@@ -128,9 +128,18 @@ When a job ends, `run.sh`, `run-forgecode.sh`, `run-ante.sh` and `run-pi.sh` wri
   set apart like an api error, not counted as the agent failing), timeout,
   crashed.
 - **Trials table:** reward, verdict, turns, agent time against the limit,
-  tokens, tool calls and errors, API retries, how the run ended.
+  tokens, tool calls and errors, API retries, KodAct's own reminders
+  (verification, loop guard, act, attempt, next step, todo), how the run ended.
 - **Signals:** HTTP 429s and retries, run-ending errors, tool errors by kind and
-  by tool, unknown tool names, KodAct's reminders and other events.
+  by tool, unknown tool names, KodAct's reminders by kind (for example
+  `loop_guard:repeated_failure after changes`) and in how many trials, and other
+  events.
+
+Each reminder is either needed or a false positive, so audit the ones a change
+leaves: fewer reminders only count as better when the pass rate holds. The
+comparison of several jobs shows, per job, the agent time per solved task (all
+agent time, failed trials included, divided by the tasks passed) and the
+reminders per trial.
 - **Per task:** the instruction, the agent's last words, the verifier's failing
   tests and output, tool use, and the whole conversation (reasoning, messages,
   tool calls and results, shortened where long), for KodAct and Pi; other
