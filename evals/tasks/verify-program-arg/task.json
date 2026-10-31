@@ -1,0 +1,7 @@
+{
+  "instruction": "Requests for /api/v2/... are sent to the wrong backend: they must go to v2-backend. The bug is in routes.conf; fix the config, not the router. `python3 route.py routes.conf <path>` prints the backend a request path goes to.",
+  "check": "python3 \"$KODACT_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["config", "bugfix", "no-tests"],
+  "timeout_secs": 600
+}

@@ -315,12 +315,27 @@ A main-agent turn that changed files doesn't end on the model's first
   from the one taken at the turn start or at the last check. Outside git,
   shell writes aren't seen.
 
-**What counts as a check:** a Bash call whose command (after env assignments
-and wrappers like `timeout`, `uv run`) starts with:
+**What counts as a check:** a Bash call whose command (after env assignments,
+wrappers like `timeout`, `uv run`, and shell keywords like `do`, `if`) starts
+with:
 - a configured or detected check command;
 - a well-known build, test or lint tool;
-- or runs a `build*`/`test*`/`check*` script, a test file, or one of the files
-  changed this turn.
+- or runs a `build*`/`test*`/`check*`/`eval*`/`bench*` script, a test file, or
+  one of the files changed this turn;
+- or runs a program on a changed file (`pmars -b -f my_warrior.red …`,
+  `shellcheck x.sh`, `./app --config=config.json`, `./prog < input.txt`);
+- or runs inline code (`python3 -c`, `node -e`, `python3 - <<EOF`) that names
+  a changed file, imports a changed module, or names it in a string
+  (`importlib.import_module('optimizer')`, `require('./util')`).
+
+Not checks, even when they name a changed file: viewers, file managers,
+editors, version control, archives, formatters and installers (`cat f`,
+`cp f g`, `git add f`, `black f.py`, `pip install -r f`), in-place edits
+(`sed -i`, `perl -pi -e`), redirect targets (`echo x > f`), and the lines of a
+here-document (`cat > run.sh <<EOF … EOF` is a file being written).
+`bash -c "…"` is judged on the command it runs. A check that only reaches the
+changed file through another file (a harness that loads it) isn't visible on
+the command line and doesn't count.
 
 A check that fails still counts as evidence.
 
@@ -342,7 +357,11 @@ fix it or say plainly that it fails. Each reminder:
 
 Tests: `engine::verify_reminds_once_when_changes_are_unchecked`,
 `engine::verify_accepts_a_check_after_the_last_change`,
-`engine::verify_sees_shell_writes_through_git_and_failed_checks`.
+`engine::verify_sees_shell_writes_through_git_and_failed_checks`,
+`verify::recognizes_a_program_run_on_a_changed_file`,
+`verify::recognizes_inline_code_that_names_a_changed_module`,
+`verify::eval_and_bench_scripts_are_checks`,
+`verify::here_document_bodies_are_data_not_commands`.
 
 ### C13. Recovery
 

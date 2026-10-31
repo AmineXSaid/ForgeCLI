@@ -7,7 +7,10 @@
 //!
 //! Evidence is a Bash call, made after the last change, that runs a check: a
 //! configured or detected command, a well-known test/build/lint tool, a
-//! `build*`/`test*` script, or one of the changed files itself.
+//! `build*`/`test*`/`eval*`/`bench*` script, one of the changed files itself, a
+//! program run on a changed file (`pmars -f my_warrior.red`), or inline code that
+//! loads a changed module. Viewers, file managers, editors and version control
+//! naming a changed file are not checks, and here-document bodies are data.
 //!
 //! Changes are the edit tools' writes, from the file history, so sub-agent
 //! edits count too. Shell commands that may write are confirmed against a git
@@ -221,7 +224,13 @@ fn skip_wrappers(words: &[String]) -> &[String] {
     while i < words.len() {
         let w = words[i].as_str();
         let assignment = w.contains('=') && !w.starts_with('-') && !w.starts_with('=');
-        let step = if assignment || matches!(w, "env" | "time" | "nice" | "nohup" | "command" | "exec" | "xvfb-run") {
+        // Shell keywords that start a command (`do pmars …` inside a loop, `if pytest; then`) count
+        // as wrappers too.
+        let keyword = matches!(w, "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "!" | "{" | "sudo");
+        let step = if assignment
+            || keyword
+            || matches!(w, "env" | "time" | "nice" | "nohup" | "command" | "exec" | "xvfb-run")
+        {
             1
         } else if w == "timeout"
             || (matches!(w, "uv" | "poetry" | "pipenv" | "hatch" | "pdm" | "rye")
@@ -247,8 +256,292 @@ fn starts_with_words(words: &[String], prefix: &str) -> bool {
 
 fn is_check_script(word: &str) -> bool {
     let name = word.rsplit('/').next().unwrap_or(word).to_ascii_lowercase();
-    ["build", "test", "check", "run_tests", "runtests", "verify", "ci"].iter().any(|p| name.starts_with(p))
+    ["build", "test", "check", "run_tests", "runtests", "verify", "ci", "eval", "bench"]
+        .iter()
+        .any(|p| name.starts_with(p))
         && (word.contains('/') || name.ends_with(".sh") || name.ends_with(".py"))
+}
+
+/// Programs that show, move, edit, install or archive a file without running it, and
+/// shell syntax that isn't a program: naming a changed file doesn't make them a check.
+const NOT_CHECKS: &[&str] = &[
+    // viewers and file information
+    "cat",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "bat",
+    "batcat",
+    "nl",
+    "wc",
+    "file",
+    "stat",
+    "ls",
+    "tree",
+    "du",
+    "readlink",
+    "realpath",
+    "basename",
+    "dirname",
+    "xxd",
+    "od",
+    "hexdump",
+    "strings",
+    "test",
+    "[",
+    "[[",
+    // file management and transfer
+    "cp",
+    "mv",
+    "rm",
+    "ln",
+    "touch",
+    "mkdir",
+    "rmdir",
+    "chmod",
+    "chown",
+    "chgrp",
+    "install",
+    "rsync",
+    "scp",
+    "dd",
+    "truncate",
+    "curl",
+    "wget",
+    // editors and openers
+    "vi",
+    "vim",
+    "nvim",
+    "nano",
+    "emacs",
+    "ed",
+    "code",
+    "open",
+    "xdg-open",
+    // text tools
+    "echo",
+    "printf",
+    "sed",
+    "awk",
+    "gawk",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "ag",
+    "find",
+    "tee",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "diff",
+    "cmp",
+    "comm",
+    "paste",
+    "join",
+    "fold",
+    "fmt",
+    "column",
+    "iconv",
+    "base64",
+    "md5sum",
+    "cksum",
+    "b2sum",
+    // version control and archives
+    "git",
+    "hg",
+    "svn",
+    "tar",
+    "zip",
+    "unzip",
+    "gzip",
+    "gunzip",
+    "bzip2",
+    "bunzip2",
+    "xz",
+    "unxz",
+    "zcat",
+    "7z",
+    // formatters (they rewrite the file) and package managers
+    "black",
+    "isort",
+    "autopep8",
+    "yapf",
+    "rustfmt",
+    "gofmt",
+    "goimports",
+    "clang-format",
+    "prettier",
+    "shfmt",
+    "pip",
+    "pip3",
+    "uv",
+    "conda",
+    "mamba",
+    "apt",
+    "apt-get",
+    "brew",
+    "npm",
+    "pnpm",
+    "yarn",
+    // shell syntax and builtins
+    "for",
+    "case",
+    "select",
+    "in",
+    "done",
+    "esac",
+    "fi",
+    "export",
+    "cd",
+    "pushd",
+    "popd",
+    "unset",
+    "set",
+    "local",
+    "declare",
+    "read",
+    "wait",
+    "sleep",
+    "kill",
+    "exit",
+    "return",
+    "true",
+    "false",
+    ":",
+];
+
+fn not_a_check(program: &str) -> bool {
+    NOT_CHECKS.contains(&program) || (program.starts_with("sha") && program.ends_with("sum"))
+}
+
+/// The name a command word runs: `./tools/pmars` → `pmars`.
+fn program(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+fn is_changed(arg: &str, changed: &[PathBuf]) -> bool {
+    let t = arg.trim_start_matches("./");
+    !t.is_empty()
+        && changed.iter().any(|c| {
+            let c = c.to_string_lossy();
+            c == t || c.ends_with(&format!("/{t}"))
+        })
+}
+
+/// The files a command part names as arguments or input. Flags are skipped (a flag's
+/// `=value` counts), and so are output redirection targets (`> out`, `2>err`), which are
+/// written rather than run, and here-document delimiters. `< input` counts.
+fn file_args(args: &[String]) -> Vec<&str> {
+    let mut out = vec![];
+    let mut skip_next = false;
+    for a in args {
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        let a = a.as_str();
+        if let Some(rest) =
+            ["&>>", "&>", "2>>", "2>", "1>>", "1>", ">>", ">|", ">"].iter().find_map(|op| a.strip_prefix(op))
+        {
+            skip_next = rest.is_empty();
+            continue;
+        }
+        if a.starts_with("<<") {
+            skip_next = matches!(a, "<<" | "<<-" | "<<<");
+            continue;
+        }
+        if let Some(rest) = a.strip_prefix('<') {
+            if !rest.is_empty() {
+                out.push(rest);
+            }
+            continue;
+        }
+        if a.starts_with('-') {
+            if let Some((_, value)) = a.split_once('=') {
+                out.push(value);
+            }
+            continue;
+        }
+        out.push(a);
+    }
+    out
+}
+
+/// Does the command edit its file arguments in place (`perl -pi -e …`, `--in-place`)?
+/// Only for programs whose `-i` means that: elsewhere `-i` is often an input flag.
+fn in_place(prog: &str, args: &[String]) -> bool {
+    args.iter().any(|a| {
+        a == "--in-place"
+            || a.starts_with("--in-place=")
+            || a == "--write"
+            || (matches!(prog, "perl" | "ruby")
+                && a.starts_with('-')
+                && !a.starts_with("--")
+                && a[1..]
+                    .split('.')
+                    .next()
+                    .is_some_and(|f| f.contains('i') && f.chars().all(|c| c.is_ascii_alphabetic())))
+    })
+}
+
+/// The command a shell runs with `-c` (`bash -c "cd x && pytest"`, `sh -ec '…'`). Whether
+/// it is a check is decided on that command, not on the shell.
+fn shell_command(prog: &str, args: &[String]) -> Option<String> {
+    if !matches!(prog, "bash" | "sh" | "zsh" | "dash" | "ksh") {
+        return None;
+    }
+    let i = args.iter().position(|a| {
+        a.len() >= 2
+            && a.starts_with('-')
+            && !a.starts_with("--")
+            && a.ends_with('c')
+            && a[1..].chars().all(|c| c.is_ascii_alphabetic())
+    })?;
+    Some(args[i + 1..].join(" "))
+}
+
+/// The command without its here-document bodies: the lines between `<<EOF` and `EOF` are
+/// data (a file being written, code fed to an interpreter), not commands. A here-document
+/// whose end line is missing is kept as is.
+fn strip_heredoc_bodies(command: &str) -> String {
+    let lines: Vec<&str> = command.lines().collect();
+    let mut out: Vec<&str> = vec![];
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        out.push(line);
+        i += 1;
+        for delim in heredoc_delimiters(line) {
+            if let Some(end) = lines[i..].iter().position(|l| l.trim() == delim) {
+                i += end + 1;
+            }
+        }
+    }
+    out.join("\n")
+}
+
+/// The delimiters of the here-documents a line opens: `<<EOF`, `<< 'EOF'`, `<<-"END"`.
+fn heredoc_delimiters(line: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut rest = line;
+    while let Some(i) = rest.find("<<") {
+        let after = &rest[i + 2..];
+        if let Some(herestring) = after.strip_prefix('<') {
+            rest = herestring;
+            continue;
+        }
+        let after = after.strip_prefix('-').unwrap_or(after).trim_start();
+        let quoted = after.starts_with('\'') || after.starts_with('"');
+        let word: String =
+            after.trim_start_matches(['\'', '"']).chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if !word.is_empty() && (quoted || word.starts_with(|c: char| c.is_alphabetic() || c == '_')) {
+            out.push(word);
+        }
+        rest = after;
+    }
+    out
 }
 
 /// Inline code (`python3 -c`, `node -e`), stdin (`python3 -`) or a heredoc, as
@@ -285,53 +578,24 @@ fn references_changed(command: &str, changed: &[PathBuf]) -> bool {
             .iter()
             .enumerate()
             .any(|(i, w)| (w == "import" || w == "from") && ws.get(i + 1).is_some_and(|n| module(n) == stem));
+        // The module named in a string, however the code loads it: `require('./util')`,
+        // `importlib.import_module('optimizer')`, `for m in ['optimizer', 'sweep']`,
+        // `__import__('algo')`. A bare stem must be 3 characters or more: `'a'` is any string.
+        let relative = [format!("'./{stem}'"), format!("\"./{stem}\"")];
+        let bare = [format!("'{stem}'"), format!("\"{stem}\"")];
         import
-            || [
-                format!("require('{stem}')"),
-                format!("require(\"{stem}\")"),
-                format!("require('./{stem}')"),
-                format!("require(\"./{stem}\")"),
-            ]
-            .iter()
-            .any(|p| command.contains(p))
+            || relative.iter().any(|p| command.contains(p))
+            || (stem.chars().count() >= 3 && bare.iter().any(|p| command.contains(p)))
     })
 }
 
 /// Does this Bash command run a check? `changed` are the files written this
-/// turn, relative or absolute; running one of them counts as a check.
+/// turn, relative or absolute; running one of them, or running a program on one,
+/// counts as a check.
 pub fn is_check(command: &str, configured: &[String], changed: &[PathBuf]) -> bool {
-    let parts = kodact_permissions::split_compound(command);
-    let per_part = parts.iter().any(|part| {
-        let all = words(part);
-        let w = skip_wrappers(&all);
-        let Some(first) = w.first() else { return false };
-        if configured.iter().map(String::as_str).chain(CHECK_PREFIXES.iter().copied()).any(|c| starts_with_words(w, c))
-        {
-            return true;
-        }
-        if is_check_script(first) {
-            return true;
-        }
-        let interp = INTERPRETERS.contains(&first.rsplit('/').next().unwrap_or(first));
-        let args: Vec<&String> =
-            if interp { w.iter().skip(1).filter(|a| !a.starts_with('-')).collect() } else { vec![] };
-        if args.first().map(|a| is_check_script(a) || a.contains("test")).unwrap_or(false) {
-            return true;
-        }
-        // Running a changed file: `python3 convert.py x.csv`, `./tool.sh`.
-        let target = if interp { args.first().map(|a| a.as_str()) } else { Some(first.as_str()) };
-        target
-            .map(|t| {
-                let t = t.trim_start_matches("./");
-                !t.is_empty()
-                    && changed.iter().any(|c| {
-                        let c = c.to_string_lossy();
-                        c == t || c.ends_with(&format!("/{t}"))
-                    })
-            })
-            .unwrap_or(false)
-    });
-    if per_part {
+    let commands = strip_heredoc_bodies(command);
+    let parts = kodact_permissions::split_compound(&commands);
+    if parts.iter().any(|part| part_is_check(part, configured, changed)) {
         return true;
     }
     // Inline interpreter checks the per-part scan can't see: `python3 -c "import
@@ -341,10 +605,56 @@ pub fn is_check(command: &str, configured: &[String], changed: &[PathBuf]) -> bo
         let all = words(part);
         let w = skip_wrappers(&all);
         w.first()
-            .map(|f| INTERPRETERS.contains(&f.rsplit('/').next().unwrap_or(f)) && runs_inline_code(&w[1..]))
+            .map(|f| {
+                let prog = program(f);
+                INTERPRETERS.contains(&prog)
+                    && runs_inline_code(&w[1..])
+                    && shell_command(prog, &w[1..]).is_none()
+                    && !in_place(prog, &w[1..])
+            })
             .unwrap_or(false)
     });
     inline_interp && references_changed(command, changed)
+}
+
+fn part_is_check(part: &str, configured: &[String], changed: &[PathBuf]) -> bool {
+    let all = words(part);
+    let w = skip_wrappers(&all);
+    let Some(first) = w.first() else { return false };
+    if configured.iter().map(String::as_str).chain(CHECK_PREFIXES.iter().copied()).any(|c| starts_with_words(w, c)) {
+        return true;
+    }
+    if is_check_script(first) {
+        return true;
+    }
+    let prog = program(first);
+    if let Some(inner) = shell_command(prog, &w[1..]) {
+        return is_check(&inner, configured, changed);
+    }
+    let interp = INTERPRETERS.contains(&prog);
+    let args: Vec<&String> = if interp { w.iter().skip(1).filter(|a| !a.starts_with('-')).collect() } else { vec![] };
+    if args.first().map(|a| is_check_script(a) || a.contains("test")).unwrap_or(false) {
+        return true;
+    }
+    // Running a changed file: `python3 convert.py x.csv`, `./tool.sh`.
+    let target = if interp { args.first().map(|a| a.as_str()) } else { Some(first.as_str()) };
+    if target.is_some_and(|t| is_changed(t, changed)) {
+        return true;
+    }
+    // A program run on a changed file: `pmars -b -f my_warrior.red …`, `shellcheck x.sh`,
+    // `./app --config=config.json`, `./prog < input.txt`. Not a viewer, file manager, editor
+    // or VCS (`cat f`, `cp f g`, `git add f`), inline code (decided by `references_changed`),
+    // an in-place edit (`perl -pi -e … f`), an installer module (`python3 -m pip install -r
+    // requirements.txt`) or a redirect target (`echo x > f`).
+    let module = w.iter().position(|a| a == "-m").and_then(|i| w.get(i + 1)).map(String::as_str);
+    if not_a_check(prog)
+        || (interp && runs_inline_code(&w[1..]))
+        || in_place(prog, &w[1..])
+        || (interp && matches!(module, Some("pip" | "venv" | "ensurepip" | "virtualenv")))
+    {
+        return false;
+    }
+    file_args(&w[1..]).iter().any(|a| is_changed(a, changed))
 }
 
 /// Per-turn verification state.
@@ -501,6 +811,120 @@ mod tests {
             r#"echo "import algo""#,                  // echo, not an interpreter
         ] {
             assert!(!is_check(no, none, &changed), "{no}");
+        }
+    }
+
+    #[test]
+    fn recognizes_a_program_run_on_a_changed_file() {
+        let none: &[String] = &[];
+        let changed = [
+            PathBuf::from("/app/my_warrior.red"),
+            PathBuf::from("/app/x.sh"),
+            PathBuf::from("/app/a.xml"),
+            PathBuf::from("/app/config.json"),
+            PathBuf::from("/app/input.txt"),
+            PathBuf::from("/app/f.py"),
+        ];
+        for yes in [
+            // winning-avg-corewars (231fd6b): the warrior was edited, then run against each opponent.
+            "cd /app && for opp in stone vampire paper snake g2-clear; do\n  pmars -b -r 100 -f my_warrior.red \
+             warriors/$opp.red | tail -1\ndone",
+            "pmars -b -r 100 -f my_warrior.red warriors/stone.red 2>&1 | tail -4",
+            "shellcheck x.sh",
+            "xmllint --noout a.xml",
+            "./app config.json",
+            "./app --config=config.json",
+            "./solve < input.txt",
+            "python3 tool.py config.json",
+            "python3 -m json.tool config.json",
+            "if pmars -b my_warrior.red w/stone.red; then echo ok; fi",
+            "bash -c \"cd /app && pmars -b my_warrior.red w/stone.red\"",
+        ] {
+            assert!(is_check(yes, none, &changed), "{yes}");
+        }
+        for no in [
+            "cat my_warrior.red",
+            "head -5 my_warrior.red && wc -l my_warrior.red",
+            "grep -n spl my_warrior.red",
+            "cp my_warrior.red /tmp/best.red",
+            "rm -f input.txt",
+            "chmod +x x.sh",
+            "sed -i 's/a/b/' f.py",
+            "perl -pi -e 's/a/b/' f.py",
+            "perl -i.bak -pe 's/a/b/' f.py",
+            "git add f.py && git commit -m fix",
+            "echo x > config.json",
+            "./prog > input.txt 2>&1",
+            "test -f my_warrior.red",
+            "black f.py",
+            "vim f.py",
+            "python3 -m pip install -r input.txt",
+            "for f in my_warrior.red x.sh; do echo $f; done",
+            "bash -c \"cat my_warrior.red\"",
+        ] {
+            assert!(!is_check(no, none, &changed), "{no}");
+        }
+    }
+
+    #[test]
+    fn recognizes_inline_code_that_names_a_changed_module() {
+        let none: &[String] = &[];
+        // llm-inference-batching-scheduler (f4d913e): both changed modules imported by name.
+        let changed = [PathBuf::from("/app/task_file/scripts/optimizer.py"), PathBuf::from("/app/scripts/sweep.py")];
+        let real = "cd /app/task_file/scripts && python3 -c \"\nimport importlib, sys\n# import both changed modules \
+                    to confirm they parse/import cleanly\nfor m in ['optimizer','sweep']:\n    \
+                    importlib.import_module(m)\nprint('ok')\"";
+        assert!(is_check(real, none, &changed));
+        for yes in [
+            r#"python3 -c "__import__('optimizer').main()""#,
+            r#"python3 -c "import importlib.util as u; s = u.spec_from_file_location('sweep', 'x')""#,
+            r#"node -e "require('./sweep')""#,
+        ] {
+            assert!(is_check(yes, none, &changed), "{yes}");
+        }
+        for no in
+            [r#"python3 -c "import optimizers""#, r#"python3 -c "print('optimizers')""#, r#"python3 -c "x = 'swe'""#]
+        {
+            assert!(!is_check(no, none, &changed), "{no}");
+        }
+        let short = [PathBuf::from("/app/ab.py")];
+        assert!(!is_check(r#"python3 -c "x = 'ab'""#, none, &short), "a 2-letter string is not the module");
+        assert!(is_check(r#"python3 -c "import ab""#, none, &short), "an import is, whatever the length");
+    }
+
+    #[test]
+    fn eval_and_bench_scripts_are_checks() {
+        let none: &[String] = &[];
+        // largest-eigenval (f4d913e): the task's own evaluation script, run twice.
+        let changed = [PathBuf::from("/app/eigen.py"), PathBuf::from("/app/_fast_eigen.c")];
+        for yes in [
+            r#"python eval.py && echo "=== second run ===" && python eval.py"#,
+            "./bench.sh",
+            "python3 benchmark.py --quick",
+            "bash scripts/evaluate.sh",
+        ] {
+            assert!(is_check(yes, none, &changed), "{yes}");
+        }
+        assert!(!is_check(r#"eval "$(ssh-agent -s)""#, none, &changed), "the shell builtin is not a script");
+    }
+
+    #[test]
+    fn here_document_bodies_are_data_not_commands() {
+        let none: &[String] = &[];
+        let changed = [PathBuf::from("/app/solver.py"), PathBuf::from("/app/my_warrior.red")];
+        for no in [
+            "cat > run.sh <<'EOF'\npython3 solver.py input.txt\nEOF",
+            "cat > my_warrior.red <<'EOF'\n;redcode-94\n        org start\nstart   spl 1\nEOF",
+        ] {
+            assert!(!is_check(no, none, &changed), "{no}");
+        }
+        for yes in [
+            "python3 - <<'EOF'\nimport solver\nprint(solver.solve(1))\nEOF",
+            "cat > run.sh <<'EOF'\necho hi\nEOF\npython3 solver.py input.txt",
+            // An unterminated `<<` (a shift inside code) hides nothing.
+            "python3 -c \"x = 1 << n\nimport solver\"",
+        ] {
+            assert!(is_check(yes, none, &changed), "{yes}");
         }
     }
 
