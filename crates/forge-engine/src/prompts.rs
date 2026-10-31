@@ -198,6 +198,7 @@ mod tests {
         let (b, _) = build_system(&SystemPromptOptions { autonomous: true, ..Default::default() }, &env());
         assert!(b[0].text.contains("# Running unattended"));
         assert!(b[0].text.contains("Make a real attempt"));
+        assert!(b[0].text.contains("keep the best version you have tested"));
     }
 
     #[test]

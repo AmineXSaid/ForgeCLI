@@ -2279,7 +2279,8 @@ impl Engine {
             (None, None, None) => return None,
         };
         Some(format!(
-            "<system-reminder>\nYou have {what}. Wrap up: finish the most important change, check it, and end with \
+            "<system-reminder>\nYou have {what}. Wrap up: if the version now in place tested worse than one you had \
+             before, put the better one back first. Then finish the most important change, check it, and end with \
              what is done, what was verified and what remains.\n</system-reminder>"
         ))
     }
