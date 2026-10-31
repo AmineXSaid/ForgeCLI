@@ -317,8 +317,9 @@ A main-agent turn that changed files doesn't end on the model's first
   skipped), plus the content of the files written this turn. It looks at the
   files, not at git's state, so `git add`, `git commit` or a new branch is not
   a change. Outside git only the files written this turn are followed, so a
-  shell rewrite of one (`cat > my_warrior.red <<EOF` after its last check) is
-  still seen.
+  shell edit of one after its last check (`sed -i … fix.py`, then nothing run)
+  is still seen. A command that rewrites a file and runs it (`cat > f <<EOF …
+  EOF` then `./prog f`) is a check.
 
 **What counts as a check:** a Bash call whose command (after env assignments,
 wrappers like `timeout`, `uv run`, and shell keywords like `do`, `if`) starts
