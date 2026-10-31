@@ -291,6 +291,25 @@ than the task's 15-minute verifier limit; give the tests more time, not the
 agent, with `--verifier-timeout-multiplier 3` after the mode. For real scores, run from a network without
 TLS inspection.
 
+### Slow network: cache what the agent installs too
+
+Some tasks withhold a package the agent then installs itself (`pytorch-model-cli`
+withholds Torch, so the agent runs `pip install torch`). On a slow proxy that
+download can outlast the task limit, or fall back to the multi-GB CUDA build and
+never finish. Download the CPU wheels once and let every run reuse them:
+
+```bash
+python3 evals/harbor/warm_pip_cache.py           # Torch CPU + deps, ~180 MB
+export FORGE_HARBOR_PIP_CACHE=~/.forge-harbor/pip-wheelhouse
+```
+
+Each agent then copies the wheelhouse into its container and points pip at it
+(`PIP_FIND_LINKS`), so the agent's own `pip install` comes from disk; anything
+not cached still falls back to the index. The task still withholds the package
+and every agent gets the same cache, so the comparison stays even; only the
+download speed changes. Jobs get `-pipcache`. This is a local-comparison aid,
+not for the leaderboard.
+
 ### Containers can't resolve names
 
 If runs fail at random with `Name does not resolve` (for your endpoint) or

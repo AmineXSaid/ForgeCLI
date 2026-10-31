@@ -99,6 +99,7 @@ export PI_BUNDLE
 ca=""
 [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
 [ -n "${FORGE_HARBOR_UV_CACHE:-}" ] && ca="${ca}-uvcache"
+[ -n "${FORGE_HARBOR_PIP_CACHE:-}" ] && ca="${ca}-pipcache"
 model="${FORGE_HARBOR_MODEL:-deep-thinking}"
 model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
 think=""

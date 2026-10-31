@@ -28,6 +28,7 @@ provider="${ANTE_PROVIDER:-openai-compatible}"
 install="${ANTE_INSTALL_ARGS:-}"
 ca=""; [ -n "${FORGE_HARBOR_CA_BUNDLE:-}" ] && ca="-hostca"
 [ -n "${FORGE_HARBOR_UV_CACHE:-}" ] && ca="${ca}-uvcache"
+[ -n "${FORGE_HARBOR_PIP_CACHE:-}" ] && ca="${ca}-pipcache"
 job="ante-${mode}-${model_tag}-${install:-stable}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 

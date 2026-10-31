@@ -63,6 +63,9 @@ REMOTE_CA = "/tmp/forge-extra-ca.pem"
 KEPT_CA = "/usr/local/share/forge/ca-bundle.pem"
 # Where FORGE_HARBOR_UV_CACHE goes in the container; verifier-ca.sh points the tests' uv here.
 KEPT_UV_CACHE = "/usr/local/share/forge/uv-cache"
+# A wheelhouse of what an agent may `pip install` (Torch, made by warm_pip_cache.py); pip_cache_env()
+# points pip here, so the agent's own install comes from disk, not a slow proxy.
+KEPT_PIP = "/usr/local/share/forge/pip-wheelhouse"
 # Trust REMOTE_CA in the container: in the system store (now, and for any later
 # `update-ca-certificates`, e.g. when a test script installs curl), in existing bundle files,
 # and for uv, which test scripts use to install their tools.
@@ -103,6 +106,36 @@ async def upload_uv_cache(agent: BaseInstalledAgent, environment: BaseEnvironmen
     await environment.upload_dir(path.resolve(), KEPT_UV_CACHE)
     # Whatever user the tests run as, their uv takes locks and writes in its cache.
     await agent.exec_as_root(environment, command=f"chmod -R a+rwX {KEPT_UV_CACHE}")
+
+
+async def upload_pip_cache(agent: BaseInstalledAgent, environment: BaseEnvironment) -> None:
+    """Copy FORGE_HARBOR_PIP_CACHE (a wheelhouse made by warm_pip_cache.py) into the container.
+
+    pip_cache_env() then points the agent's own `pip install` at it, so a package the task does not
+    provide (Torch) installs from disk instead of over the network. The task still withholds it; only
+    the download speed changes. Applies to every agent, so comparisons stay even.
+    """
+    cache = os.environ.get("FORGE_HARBOR_PIP_CACHE")
+    if not cache:
+        return
+    path = Path(cache).expanduser()
+    if not path.is_dir():
+        raise RuntimeError(f"FORGE_HARBOR_PIP_CACHE: {cache} is not a directory (make it with warm_pip_cache.py)")
+    await agent.exec_as_root(environment, command=f"mkdir -p {KEPT_PIP}")
+    await environment.upload_dir(path.resolve(), KEPT_PIP)
+    await agent.exec_as_root(environment, command=f"chmod -R a+rX {KEPT_PIP}")
+
+
+def pip_cache_env() -> dict[str, str]:
+    """Environment that makes the agent's `pip install` prefer the uploaded wheelhouse.
+
+    PIP_FIND_LINKS adds it as a source alongside any index the agent names, so a cached wheel is
+    used without the network and anything missing still falls back to the index. The longer timeout
+    and retries help that fallback survive a slow proxy. Empty when no cache was provided.
+    """
+    if not os.environ.get("FORGE_HARBOR_PIP_CACHE"):
+        return {}
+    return {"PIP_FIND_LINKS": KEPT_PIP, "PIP_DEFAULT_TIMEOUT": "600", "PIP_RETRIES": "10"}
 
 
 def pinned_hosts() -> list[tuple[str, str]]:
@@ -219,6 +252,7 @@ class ForgeCLI(BaseInstalledAgent):
             lines = "\n".join(f"{ip} {name}" for ip, name in hosts)
             await self.exec_as_root(environment, command=f"printf '%s\\n' {shlex.quote(lines)} >> /etc/hosts")
         await upload_uv_cache(self, environment)
+        await upload_pip_cache(self, environment)
         ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():
@@ -238,6 +272,7 @@ class ForgeCLI(BaseInstalledAgent):
             if env.get(var):
                 env[var] = container_url(env[var])
         env["FORGE_TASK"] = instruction
+        env.update(pip_cache_env())
         flags = ["--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
         if os.environ.get("FORGE_HARBOR_AUTONOMOUS", "1").strip().lower() not in ("0", "false", "no", "off"):
             flags.append("--autonomous")

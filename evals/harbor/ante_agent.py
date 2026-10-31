@@ -10,7 +10,7 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from forge_agent import REMOTE_CA, TRUST_CA, upload_uv_cache, container_url, record_run, settings, task_time_limit
+from forge_agent import REMOTE_CA, TRUST_CA, upload_uv_cache, upload_pip_cache, pip_cache_env, container_url, record_run, settings, task_time_limit
 
 ANTE_BIN = Path(os.environ.get("ANTE_BIN", str(Path.home() / ".ante/bin/ante")))
 REMOTE_BIN = "/usr/local/bin/ante"
@@ -43,6 +43,7 @@ class AnteAgent(BaseInstalledAgent):
                     environment, command=f"printf '%s\\n' {shlex.quote(f'{ip} {host}')} >> /etc/hosts"
                 )
         await upload_uv_cache(self, environment)
+        await upload_pip_cache(self, environment)
         ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():
@@ -59,6 +60,7 @@ class AnteAgent(BaseInstalledAgent):
             "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
             "ANTE_TASK": instruction,
         }
+        env.update(pip_cache_env())
         # Ante's own Harbor agent runs with these (plus JSON output, left out to keep logs readable).
         extra = os.environ.get("ANTE_HARBOR_ARGS", DEFAULT_ANTE_ARGS)
         flags = ["--provider", "openai-compatible", "--model", model, *shlex.split(extra), "-p"]

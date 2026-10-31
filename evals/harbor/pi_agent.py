@@ -42,7 +42,7 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from forge_agent import REMOTE_CA, TRUST_CA, upload_uv_cache, container_url, pinned_hosts, record_run, settings, task_time_limit
+from forge_agent import REMOTE_CA, TRUST_CA, upload_uv_cache, upload_pip_cache, pip_cache_env, container_url, pinned_hosts, record_run, settings, task_time_limit
 
 REMOTE_DIR = "/opt/pi-harbor"
 REMOTE_PI = f"{REMOTE_DIR}/pi"
@@ -104,6 +104,7 @@ class PiAgent(BaseInstalledAgent):
             lines = "\n".join(f"{ip} {name}" for ip, name in hosts)
             await self.exec_as_root(environment, command=f"printf '%s\\n' {shlex.quote(lines)} >> /etc/hosts")
         await upload_uv_cache(self, environment)
+        await upload_pip_cache(self, environment)
         ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():
@@ -124,6 +125,7 @@ class PiAgent(BaseInstalledAgent):
             "PI_OFFLINE": "1",  # no update check or other startup download
             "PI_TASK": instruction,
         }
+        env.update(pip_cache_env())
         flags = ["-p", "--mode", "json", "--no-session", "--provider", PROVIDER, "--model", model]
         thinking = os.environ.get("PI_HARBOR_THINKING", "off")
         if thinking != "off":
