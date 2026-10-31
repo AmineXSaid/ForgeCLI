@@ -117,7 +117,7 @@ pub fn validate_required(schema: &Value, input: &Value) -> Result<(), String> {
     if let Some(req) = schema.get("required").and_then(Value::as_array) {
         for k in req.iter().filter_map(Value::as_str) {
             if !obj.contains_key(k) || obj[k].is_null() {
-                return Err(format!("The required parameter `{k}` is missing"));
+                return Err(missing_parameter(k, schema, obj));
             }
         }
     }
@@ -144,6 +144,28 @@ pub fn validate_required(schema: &Value, input: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The error for a missing required parameter, naming the keys the call has that the tool doesn't
+/// take. A model that wrote its file body under `file_path_content` would otherwise read only
+/// "`content` is missing", not see why, and lose the work instead of sending the call again.
+fn missing_parameter(k: &str, schema: &Value, obj: &serde_json::Map<String, Value>) -> String {
+    let base = format!("The required parameter `{k}` is missing");
+    let Some(props) = schema.get("properties").and_then(Value::as_object) else { return base };
+    let unknown: Vec<&String> = obj.keys().filter(|key| !props.contains_key(key.as_str())).collect();
+    if unknown.is_empty() {
+        return base;
+    }
+    let names = unknown.iter().map(|u| format!("`{u}`")).collect::<Vec<_>>().join(", ");
+    let has = format!("{base}. The call has {names}, which this tool does not take");
+    // A near miss: the one unknown key contains the missing name, or the other way round.
+    if let [u] = unknown.as_slice() {
+        if u.contains(k) || k.contains(u.as_str()) {
+            return format!("{has}: did you mean `{k}`?");
+        }
+    }
+    let params = props.keys().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ");
+    format!("{has}. Its parameters are {params}.")
+}
+
 fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
@@ -152,5 +174,46 @@ fn type_name(v: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn write_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["file_path", "content"],
+        })
+    }
+
+    #[test]
+    fn a_missing_parameter_names_keys_the_tool_does_not_take() {
+        // Seen on Terminal-Bench write-compressor: the file body sent as `file_path_content`.
+        let e = validate_required(&write_schema(), &json!({"file_path": "/a.pl", "file_path_content": "code"}))
+            .unwrap_err();
+        assert_eq!(
+            e,
+            "The required parameter `content` is missing. The call has `file_path_content`, which this tool \
+             does not take: did you mean `content`?"
+        );
+
+        // No stray key: the message is the usual one.
+        let e = validate_required(&write_schema(), &json!({"file_path": "/a.pl"})).unwrap_err();
+        assert_eq!(e, "The required parameter `content` is missing");
+
+        // An unrelated key: no guess, the parameters are listed instead.
+        let e = validate_required(&write_schema(), &json!({"file_path": "/a.pl", "text": "code"})).unwrap_err();
+        assert!(
+            e.contains("The call has `text`, which this tool does not take")
+                && e.ends_with("Its parameters are `file_path`, `content`."),
+            "{e}"
+        );
+
+        // A complete call still passes, stray keys and all.
+        assert!(validate_required(&write_schema(), &json!({"file_path": "/a", "content": "x", "extra": 1})).is_ok());
     }
 }
