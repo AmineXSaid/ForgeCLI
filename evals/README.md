@@ -34,6 +34,7 @@ and stderr.
 | fix-median | verification | Fix a bug so the visible tests pass; hidden cases catch partial fixes |
 | invoice-rounding | verification | Round totals to cents; rounding in the shared helper breaks another test, which only running the suite reveals |
 | slugify-trap | verification | Optimize without changing behaviour; hidden edge cases punish skipped tests (false finish) |
+| verify-inline | verification | Fix a bug in a project with no test suite, checked by running the code inline (`python3 -c`); the verification loop must count that check instead of reminding (`verify_reminders`) |
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |
 | log-needle | context | A 330 KB log with one error line in the middle; the fix is one setting |
