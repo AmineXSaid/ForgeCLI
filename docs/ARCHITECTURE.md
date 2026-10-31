@@ -328,7 +328,7 @@ with:
 - a well-known build, test or lint tool;
 - or runs a `build*`/`test*`/`check*`/`eval*`/`bench*` script, a test file, or
   one of the files changed this turn;
-- or runs a program on a changed file (`pmars -b -f my_warrior.red …`,
+- or runs a program on a changed file (`./sim -f input.cfg`,
   `shellcheck x.sh`, `./app --config=config.json`, `./prog < input.txt`);
 - or runs inline code (`python3 -c`, `node -e`, `python3 - <<EOF`) that names
   a changed file, imports a changed module, or names it in a string

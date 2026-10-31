@@ -8,7 +8,7 @@
 //! Evidence is a Bash call, made after the last change, that runs a check: a
 //! configured or detected command, a well-known test/build/lint tool, a
 //! `build*`/`test*`/`eval*`/`bench*` script, one of the changed files itself, a
-//! program run on a changed file (`pmars -f my_warrior.red`), or inline code that
+//! program run on a changed file (`./sim -f input.cfg`), or inline code that
 //! loads a changed module. Viewers, file managers, editors and version control
 //! naming a changed file are not checks, and here-document bodies are data.
 //!
@@ -225,7 +225,7 @@ fn skip_wrappers(words: &[String]) -> &[String] {
     while i < words.len() {
         let w = words[i].as_str();
         let assignment = w.contains('=') && !w.starts_with('-') && !w.starts_with('=');
-        // Shell keywords that start a command (`do pmars …` inside a loop, `if pytest; then`) count
+        // Shell keywords that start a command (`do ./sim …` inside a loop, `if pytest; then`) count
         // as wrappers too.
         let keyword = matches!(w, "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "!" | "{" | "sudo");
         let step = if assignment
@@ -418,7 +418,7 @@ fn not_a_check(program: &str) -> bool {
     NOT_CHECKS.contains(&program) || (program.starts_with("sha") && program.ends_with("sum"))
 }
 
-/// The name a command word runs: `./tools/pmars` → `pmars`.
+/// The name a command word runs: `./tools/sim` → `sim`.
 fn program(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
@@ -665,7 +665,7 @@ fn part_is_check(part: &str, configured: &[String], changed: &[PathBuf]) -> bool
     if target.is_some_and(|t| is_changed(t, changed)) {
         return true;
     }
-    // A program run on a changed file: `pmars -b -f my_warrior.red …`, `shellcheck x.sh`,
+    // A program run on a changed file: `./sim -f input.cfg`, `shellcheck x.sh`,
     // `./app --config=config.json`, `./prog < input.txt`. Not a viewer, file manager, editor
     // or VCS (`cat f`, `cp f g`, `git add f`), inline code (decided by `references_changed`),
     // an in-place edit (`perl -pi -e … f`), an installer module (`python3 -m pip install -r
