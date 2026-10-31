@@ -103,3 +103,48 @@ def test_verifier_timeout_is_verifier_error(tmp_path):
     t = make_trial(tmp_path, "pytorch-model-cli", "", "", ran_tests=None)
     t.exception = "VerifierTimeoutError"
     assert t.decide() == "verifier error"
+
+
+def make_job(tmp: Path, trials: list[tuple[str, float, int, list[dict]]]) -> report.Job:
+    """A job dir: per trial its task, reward, agent seconds and the Forge system events it emitted."""
+    job = tmp / "forgecli-subset-test"
+    job.mkdir(parents=True)
+    (job / "config.json").write_text(json.dumps({"agents": [{"name": "forge_agent", "model_name": "m"}]}))
+    for task, reward, secs, events in trials:
+        d = job / f"{task}__T"
+        (d / "agent").mkdir(parents=True)
+        (d / "verifier").mkdir(parents=True)
+        span = {"started_at": "2026-10-31T10:00:00Z", "finished_at": f"2026-10-31T10:{secs // 60:02d}:{secs % 60:02d}Z"}
+        result = {"task_name": task, "verifier_result": {"rewards": {"reward": reward}}, "agent_execution": span}
+        (d / "result.json").write_text(json.dumps(result))
+        end = {"type": "result", "subtype": "success", "stop_reason": "end_turn", "num_turns": 9}
+        lines = [{"type": "system", **e} for e in events] + [end]
+        (d / "agent" / "forge.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    return report.Job(job)
+
+
+def test_forge_reminders_are_counted_per_trial_and_job(tmp_path):
+    # Shaped like corewars 231fd6b: a verification reminder, and loop warnings by kind, among other
+    # harness events that are not reminders (api_retry, compact_boundary).
+    events = [
+        {"subtype": "verification", "kind": "unchecked", "files": ["my_warrior.red"], "shell": False},
+        {"subtype": "loop_guard", "kind": "no_progress", "tool": "Read", "count": 3},
+        {"subtype": "loop_guard", "kind": "repeated_failure", "tool": "Bash", "count": 3, "after_changes": True},
+        {"subtype": "api_retry", "attempt": 1, "error": "network error"},
+        {"subtype": "compact_boundary"},
+    ]
+    job = make_job(tmp_path, [("winning-avg-corewars", 0.0, 1800, events), ("fix-git", 1.0, 600, [])])
+    corewars = job.trials[1] if job.trials[0].task == "fix-git" else job.trials[0]
+    assert dict(corewars.reminders) == {
+        "verification:unchecked": 1,
+        "loop_guard:no_progress": 1,
+        "loop_guard:repeated_failure after changes": 1,
+    }
+    assert corewars.reminder_cell() == "loop_guard 2, verification 1"
+    assert "| loop_guard 2, verification 1 |" in corewars.row()
+    text = job.report()
+    assert "- Forge reminders: 3 in 1 of 2 trials" in text
+    assert "loop_guard:repeated_failure after changes ×1" in text
+    # Per job: 3 reminders over 2 trials; 40 minutes of agent time for the 1 task solved.
+    cmp = report.comparison([job])
+    assert "| 40m00s | 1.5 (loop_guard 1.0, verification 0.5) |" in cmp, cmp

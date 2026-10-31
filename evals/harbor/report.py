@@ -151,6 +151,21 @@ def short_exception(message: str) -> str:
     return clip(head + (f": {err}" if err else ""), 140)
 
 
+# Forge's own reminders (`system` events). Each is either needed or a false positive, so a change
+# that makes fewer of them is only better if the pass rate holds.
+REMINDERS = ("verification", "loop_guard", "act_reminder", "attempt_reminder", "next_step_reminder", "todo_reminder")
+
+
+def reminder_label(ev: dict) -> str:
+    """`loop_guard:repeated_failure after changes`, `verification:unchecked`, `act_reminder`."""
+    label = ev.get("subtype", "")
+    if ev.get("kind"):
+        label += f":{ev['kind']}"
+    if ev.get("after_changes"):
+        label += " after changes"
+    return label
+
+
 def tool_text(block: dict) -> str:
     body = block.get("content")
     if isinstance(body, list):
@@ -227,6 +242,7 @@ class Trial:
         self.error_kinds = Counter()
         self.unknown_tools = Counter()
         self.system = Counter()
+        self.reminders = Counter()
         self.retries = []
         self.result_event = None
         self.tokens_in = self.tokens_out = 0
@@ -261,6 +277,8 @@ class Trial:
                             self.unknown_tools[m.group(1)] += 1
             elif kind == "system" and ev.get("subtype") not in (None, "init"):
                 self.system[ev["subtype"]] += 1
+                if ev["subtype"] in REMINDERS:
+                    self.reminders[reminder_label(ev)] += 1
                 if ev["subtype"] == "api_retry":
                     self.retries.append(ev.get("error", ""))
             elif kind == "result":
@@ -347,8 +365,16 @@ class Trial:
         finish = " ".join(x for x in (self.subtype, self.stop_reason, self.exception) if x)
         return (
             f"| {self.task} | {reward} | {self.verdict} | {self.turns if self.turns is not None else ''} | "
-            f"{fmt_s(self.agent_s)}{limit} | {tok} | {calls}/{errs} | {len(self.retries)} | {finish} |"
+            f"{fmt_s(self.agent_s)}{limit} | {tok} | {calls}/{errs} | {len(self.retries)} | {self.reminder_cell()} | "
+            f"{finish} |"
         )
+
+    def reminder_cell(self) -> str:
+        """Forge's reminders by subtype: `verification 1, loop_guard 2`."""
+        by = Counter()
+        for label, n in self.reminders.items():
+            by[label.split(":")[0]] += n
+        return ", ".join(f"{k} {v}" for k, v in by.most_common())
 
     def details(self) -> str:
         out = [f"### {self.task}: {self.verdict}", ""]
@@ -367,6 +393,8 @@ class Trial:
             out.append(f"- error: {clip(e, 400)}")
         if self.system:
             out.append("- harness events: " + ", ".join(f"{k} ×{v}" for k, v in self.system.most_common()))
+        if self.reminders:
+            out.append("- Forge reminders: " + ", ".join(f"{k} ×{v}" for k, v in self.reminders.most_common()))
         if self.tools:
             out.append(
                 "- tools (calls/errors): "
@@ -455,6 +483,7 @@ class Trial:
             "error_kinds": dict(self.error_kinds),
             "unknown_tools": dict(self.unknown_tools),
             "system_events": dict(self.system),
+            "reminders": dict(self.reminders),
             "api_retries": len(self.retries),
             "http_429": self.http_429,
             "tests": self.verifier["summary"],
@@ -520,16 +549,18 @@ class Job:
             "",
             "## Trials",
             "",
-            "| task | reward | verdict | turns | agent time | tokens in/out | tool calls/errors | API retries | finish |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "| task | reward | verdict | turns | agent time | tokens in/out | tool calls/errors | API retries "
+            "| Forge reminders | finish |",
+            "|---|---|---|---|---|---|---|---|---|---|",
         ]
         out += [t.row() for t in self.trials]
-        errors, kinds, unknown, system = Counter(), Counter(), Counter(), Counter()
+        errors, kinds, unknown, system, reminders = Counter(), Counter(), Counter(), Counter(), Counter()
         for t in self.trials:
             errors.update(t.tool_errors)
             kinds.update(t.error_kinds)
             unknown.update(t.unknown_tools)
             system.update(t.system)
+            reminders.update(t.reminders)
         api = Counter(clip(e, 160) for t in self.trials for e in t.errors)
         out += ["", "## Signals", ""]
         out.append(f"- HTTP 429 seen: {sum(t.http_429 for t in self.trials)}; API retries: {sum(len(t.retries) for t in self.trials)}")
@@ -543,6 +574,12 @@ class Job:
             out.append("- unknown tool names: " + ", ".join(f"{k} ×{v}" for k, v in unknown.most_common()))
         if system:
             out.append("- harness events: " + ", ".join(f"{k} ×{v}" for k, v in system.most_common()))
+        if reminders:
+            with_any = sum(1 for t in self.trials if t.reminders)
+            out.append(
+                f"- Forge reminders: {sum(reminders.values())} in {with_any} of {n} trials: "
+                + ", ".join(f"{k} ×{v}" for k, v in reminders.most_common())
+            )
         out += ["", "## Tasks in detail", ""]
         out += [t.details() for t in self.trials]
         data = {
@@ -565,15 +602,37 @@ class Job:
         return redact("\n".join(out))
 
 
+def reminders_per_trial(job: Job) -> str:
+    """Forge's reminders per trial, total and by subtype: `0.8 (verification 0.5, loop_guard 0.3)`."""
+    n = len(job.trials)
+    by = Counter()
+    for t in job.trials:
+        for label, c in t.reminders.items():
+            by[label.split(":")[0]] += c
+    if not n or not by:
+        return "0"
+    parts = ", ".join(f"{k} {v / n:.1f}" for k, v in by.most_common())
+    return f"{sum(by.values()) / n:.1f} ({parts})"
+
+
 def comparison(jobs: list[Job]) -> str:
     tasks = sorted({t.task for j in jobs for t in j.trials})
     out = ["# Comparison", ""]
-    out += ["| job | harness | model | passed | valid trials | parallel | verdicts |", "|---|---|---|---|---|---|---|"]
+    out += [
+        "| job | harness | model | passed | valid trials | parallel | agent time per pass | Forge reminders per trial "
+        "| verdicts |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
     for j in jobs:
         p, n = j.score()
         valid = sum(1 for t in j.trials if not t.verdict.startswith(("api error", "verifier error")))
         v = ", ".join(f"{k} {c}" for k, c in Counter(t.verdict for t in j.trials).most_common())
-        out.append(f"| {j.name} | {j.harness} | {j.model} | {p}/{n} | {valid} | {j.concurrency} | {v} |")
+        # All agent time spent, failed trials included, per task solved: minutes per solved task.
+        per_pass = fmt_s(sum(t.agent_s or 0 for t in j.trials) / p) if p else "–"
+        out.append(
+            f"| {j.name} | {j.harness} | {j.model} | {p}/{n} | {valid} | {j.concurrency} | {per_pass} | "
+            f"{reminders_per_trial(j)} | {v} |"
+        )
     out += ["", "| task | " + " | ".join(f"{j.harness} ({i + 1})" for i, j in enumerate(jobs)) + " |"]
     out.append("|---|" + "---|" * len(jobs))
     for task in tasks:
