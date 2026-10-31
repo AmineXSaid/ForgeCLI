@@ -998,6 +998,14 @@ files, for example a local, uncommitted copy of a published prompt extraction.
 `--system-prompt[-file]` and `--append-system-prompt[-file]` work as their help
 text says.
 
+The default prompt's "How to work" section (`02-working.md`) asks for a change
+to be checked with the project's own tests, linter or build, and for the work
+to finish once every requirement is met and checked. A result that already
+meets its stated target (a time, a size, a margin) isn't reworked unless the
+task asks for the best possible. A borderline pass on a measurement that
+varies between runs is run again, and its margin is reported. Test:
+`prompts::the_prompt_says_to_finish_once_the_target_is_met`.
+
 ## Configuration names
 
 - **Environment:** only `KODACT_*` variables are read, the API ones included:

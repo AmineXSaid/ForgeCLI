@@ -191,6 +191,23 @@ mod tests {
         assert!(blocks[0].text.contains("\nShell: Git Bash (C:\\Program Files\\Git\\bin\\bash.exe)\n"));
     }
 
+    /// llm-inference-batching-scheduler (22f2cd7): every threshold passed at reply 19 of 35, and
+    /// the rest of the run widened margins on deterministic metrics that couldn't change the
+    /// grade; the rework broke the solver script, restored with about 5 minutes left. The rule is
+    /// in the prompt for every mode, and it keeps the remaining work (06eba3b still had to write
+    /// the files the task grades after its metrics passed).
+    #[test]
+    fn the_prompt_says_to_finish_once_the_target_is_met() {
+        for autonomous in [false, true] {
+            let (b, _) = build_system(&SystemPromptOptions { autonomous, ..Default::default() }, &env());
+            let t = &b[0].text;
+            assert!(t.contains("Finish when the work is done"), "autonomous: {autonomous}");
+            assert!(t.contains("complete what is still asked (output files, cleanup)"));
+            assert!(t.contains("already meets its stated target") && t.contains("unless the task asks for the best"));
+            assert!(t.contains("run it again to confirm it holds, and mention the margin"));
+        }
+    }
+
     #[test]
     fn autonomous_section_is_added_only_when_asked() {
         let (b, _) = build_system(&SystemPromptOptions::default(), &env());

@@ -39,6 +39,7 @@ and stderr.
 | verify-commit | verification | Fix a bug, run the tests, commit (the workspace is a git repo); committing changes no file, so the verification loop must not ask to verify again (`verify_reminders`) |
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |
+| stop-at-target | long-horizon | Meet a stated target (pack the items into at most 33 bins), then write the result to bins.txt. The optimum (31) is reachable but not asked for: turns and minutes show whether the agent stops once the target is met, and the bins.txt step catches stopping before the task is done |
 | log-needle | context | A 330 KB log with one error line in the middle; the fix is one setting |
 | env-default | context | Find one bug among many files from a vague report |
 | trace-discount | context | Trace a symptom through 40 modules to a casing bug two calls away (exercises sub-agents) |
