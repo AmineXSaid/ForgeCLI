@@ -2058,7 +2058,14 @@ impl Engine {
                     .zip(&results)
                     .filter(|(_, r)| r.denial.is_none())
                     .filter_map(|((_, name, input), r)| {
-                        self.guard.observe(name, input, &r.output.text_content(), r.output.is_error)
+                        // Could the call have changed files? Then a command run after it may give a
+                        // new result, and the guard doesn't call a repeat of it a loop.
+                        let may_change = match name.as_str() {
+                            "Edit" | "MultiEdit" | "Write" | "NotebookEdit" | "Task" => !r.output.is_error,
+                            "Bash" => !self.shared.tools.get("Bash").map(|t| t.is_read_only(input)).unwrap_or(true),
+                            _ => false,
+                        };
+                        self.guard.observe(name, input, &r.output.text_content(), r.output.is_error, may_change)
                     })
                     .collect();
                 let mut interrupted = cancel.is_cancelled();

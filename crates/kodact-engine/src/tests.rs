@@ -861,6 +861,40 @@ async fn loop_guard_forgets_results_the_model_lost_to_compaction() {
 }
 
 #[tokio::test]
+async fn loop_guard_tells_when_changes_did_not_affect_a_failure() {
+    // The model keeps editing util.py, but the test loads another copy: three edits, the same
+    // failure each time.
+    let h = Harness::new(vec![]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    std::fs::write(h.cwd().join("check.sh"), "echo \"AssertionError: slugify('A B') == 'a-b'\"; exit 1\n").unwrap();
+    let util = h.cwd().join("util.py");
+    for i in 0..3 {
+        h.provider.push(MockTurn::tool("Write", json!({"file_path": util, "content": format!("v = {i}\n")})));
+        h.provider.push(MockTurn::tool("Bash", json!({"command": "sh check.sh"})));
+    }
+    h.provider.push(MockTurn::text("stuck"));
+    let r = h.engine().submit(prompt("fix slugify")).await;
+    assert_eq!(r.num_turns, 7);
+    let reqs = h.provider.requests();
+    let text = last_user_text(&reqs[6]);
+    assert!(text.contains("failed 3 times with the same error") && text.contains("did not affect it"), "{text}");
+    assert!(h.transcript_text().contains(r#""after_changes":true"#));
+
+    // Fixing one failure at a time: the same command fails differently after each edit.
+    let h = Harness::new(vec![]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    std::fs::write(h.cwd().join("check.sh"), "echo \"FAIL: case $(cat n.txt)\"; exit 1\n").unwrap();
+    for i in 1..=3 {
+        h.provider
+            .push(MockTurn::tool("Write", json!({"file_path": h.cwd().join("n.txt"), "content": format!("{i}")})));
+        h.provider.push(MockTurn::tool("Bash", json!({"command": "sh check.sh"})));
+    }
+    h.provider.push(MockTurn::text("three cases to go"));
+    h.engine().submit(prompt("fix the cases")).await;
+    assert!(!h.transcript_text().contains(r#""subtype":"loop_guard""#), "new errors are progress");
+}
+
+#[tokio::test]
 async fn loop_guard_reminds_after_repeated_failures() {
     let h = Harness::new(vec![]);
     for _ in 0..3 {

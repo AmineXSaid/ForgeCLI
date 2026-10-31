@@ -386,8 +386,19 @@ When there are several matches, the error lists the line each one starts on.
 below fires at most once. When it fires, a meta user message follows the tool
 results, and `system/loop_guard` `{kind, ...}` is recorded and emitted. The
 patterns:
-- the same tool call (name and input) failing 3 times;
-- the same call returning the same result 3 times (TodoWrite excluded);
+- the same tool call (name and input) failing 3 times with the same error. A
+  command that fails differently after each fix is making progress and isn't
+  counted. Test runners' and build tools' own timings (`in 0.12s`,
+  `finished in 0.00s`) and Python object addresses are ignored when comparing,
+  but a program's own timing is not. When files changed between those
+  failures, the reminder says the changes didn't affect the failure and asks
+  the model to check its assumption about the cause (`after_changes: true`);
+- the same call returning the same result 3 times with nothing changed in
+  between (TodoWrite excluded). A check or build run again after an edit,
+  with the same clean output, is a check, not a repeat. Read-only calls
+  (reads, `cat`, BashOutput polls) count as before. A change is a successful
+  Edit, MultiEdit, Write, NotebookEdit or Task call, or a shell command that
+  isn't read-only;
 - an Edit or MultiEdit replacement that reverses an earlier one on the same
   file;
 - 5 failed calls in a row.
@@ -427,6 +438,7 @@ Tests:
 - `stuck::*`;
 - `engine::loop_guard_reminds_after_repeated_failures`;
 - `engine::loop_guard_forgets_results_the_model_lost_to_compaction`;
+- `engine::loop_guard_tells_when_changes_did_not_affect_a_failure`;
 - `engine::max_tokens_continues_text_and_answers_cut_off_calls`;
 - `engine::a_reply_cut_off_while_reasoning_is_asked_to_act`;
 - `accumulate::invalid_tool_json_is_marked_truncated`.
