@@ -184,6 +184,13 @@ const MAX_CONTINUATIONS: u32 = 3;
 const CONTINUE_PROMPT: &str = "<system-reminder>\nYour reply was cut off by the output token limit. Continue \
                                exactly where it stopped: no apology, no recap, and do not repeat what you already \
                                wrote.\n</system-reminder>";
+/// For a reply cut off while it was all reasoning (no text, no tool call). Asking it to "continue
+/// exactly" only starts another reasoning pass up to the same limit; on a hard task that repeats
+/// until the run ends with nothing done. This asks it to act on what it has instead.
+const ACT_PROMPT: &str = "<system-reminder>\nYour reply reached the output token limit while you were still \
+                          reasoning, before you answered or took any action. Do not restart the analysis. Act on \
+                          what you have now: take the next concrete step (run a command, make an edit, or give your \
+                          answer), then continue from its result.\n</system-reminder>";
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -1956,6 +1963,8 @@ impl Engine {
             self.record_usage(&model, &msg.usage.clone(), &mut turn);
             let text = msg.to_message().text();
             let next_step = announced_next_step(&text);
+            // Read before `text` moves into `last_text`: a cut-off reply with no text was all reasoning.
+            let reply_has_text = !text.is_empty();
             if continuing {
                 // A reply continued after `max_tokens` is one answer.
                 last_text = Some(format!("{}{text}", last_text.take().unwrap_or_default()));
@@ -2014,8 +2023,15 @@ impl Engine {
                 }
                 if tool_uses.is_empty() && continuations < MAX_CONTINUATIONS {
                     continuations += 1;
-                    continuing = true;
-                    self.push_user(Message::user_text(CONTINUE_PROMPT), true, None, true);
+                    if reply_has_text {
+                        continuing = true;
+                        self.push_user(Message::user_text(CONTINUE_PROMPT), true, None, true);
+                    } else {
+                        // All reasoning, nothing to continue: the next reply is a fresh step, not the
+                        // rest of this one, so `continuing` stays false.
+                        self.system_event("act_reminder", json!({}));
+                        self.push_user(Message::user_text(ACT_PROMPT), true, None, true);
+                    }
                     continue;
                 }
             }

@@ -835,6 +835,35 @@ async fn max_tokens_continues_text_and_answers_cut_off_calls() {
 }
 
 #[tokio::test]
+async fn a_reply_cut_off_while_reasoning_is_asked_to_act() {
+    use forge_types::StopReason;
+    let thinking = |t: &str| ContentBlock::Thinking { thinking: t.into(), signature: String::new() };
+    // Seen on Terminal-Bench write-compressor: every reply spent the whole output limit reasoning.
+    // "Continue exactly" only started another pass; the model is asked to act on what it has.
+    let h = Harness::new(vec![
+        MockTurn::blocks(vec![thinking("a long plan, not finished")], StopReason::MaxTokens),
+        MockTurn::text("wrote a first version"),
+    ]);
+    let mut e = h.engine();
+    let r = e.submit(prompt("solve it")).await;
+    assert_eq!(r.result.as_deref(), Some("wrote a first version"), "a fresh step, not a continuation");
+    let asked = last_user_text(&h.provider.requests()[1]);
+    assert!(asked.contains("still reasoning") && !asked.contains("Continue exactly"), "{asked}");
+    assert!(h.transcript_text().contains(r#""subtype":"act_reminder""#));
+
+    // A cut-off reply with text is still continued as one answer.
+    let h = Harness::new(vec![
+        MockTurn::blocks(vec![thinking("plan"), ContentBlock::text("Part one, ")], StopReason::MaxTokens),
+        MockTurn::text("part two."),
+    ]);
+    let mut e = h.engine();
+    let r = e.submit(prompt("write")).await;
+    assert_eq!(r.result.as_deref(), Some("Part one, part two."));
+    assert!(last_user_text(&h.provider.requests()[1]).contains("Continue exactly"));
+    assert!(!h.transcript_text().contains("act_reminder"));
+}
+
+#[tokio::test]
 async fn invalid_tool_json_is_repaired_or_explained() {
     use forge_types::StopReason;
     let marked = |raw: &str| json!({ forge_api::TRUNCATED_INPUT: "incomplete JSON (x)", forge_api::RAW_INPUT: raw });

@@ -382,6 +382,11 @@ Denied calls are not counted.
   applied to a call cut off by `max_tokens`: its content is incomplete.
 - A text reply stopped by `max_tokens` is continued with a meta prompt, up
   to 3 times. The pieces join into one result.
+- A reply stopped by `max_tokens` that was all reasoning (no text, no tool
+  call) is not asked to continue: that only starts another reasoning pass up
+  to the same limit, and on a hard task it repeats until the run ends with
+  nothing done. It is asked instead to act on what it has (take a step, or
+  answer), and `system/act_reminder` is emitted. It shares the 3 continuations.
 - After the first `max_tokens` stop, the turn's output cap rises to 64,000
   (bounded by the model), unless the user set `FORGE_MAX_OUTPUT_TOKENS`, and
   `system/output_limit` is emitted.
@@ -391,6 +396,7 @@ Tests:
 - `stuck::*`;
 - `engine::loop_guard_reminds_after_repeated_failures`;
 - `engine::max_tokens_continues_text_and_answers_cut_off_calls`;
+- `engine::a_reply_cut_off_while_reasoning_is_asked_to_act`;
 - `accumulate::invalid_tool_json_is_marked_truncated`.
 
 ### C14. Dangerous commands and injected instructions
