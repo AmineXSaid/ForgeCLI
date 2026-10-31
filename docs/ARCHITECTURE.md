@@ -460,8 +460,10 @@ Tests:
 **Budget reminder:** with `--max-turns` of at least 6, or `--max-budget-usd`,
 one reminder per turn when 3 calls (or 15% of the budget) are left. With
 `--max-time`, the first prompt states the time left, and the same reminder
-comes when a fifth of the time (at least a minute) is left. The limit is
-counted from the start of the session; the engine never stops on it.
+comes when a fifth of the time (at least a minute) is left. The reminder asks
+first to put back a better earlier version if the one in place tested worse,
+then to finish and report. The limit is counted from the start of the
+session; the engine never stops on it.
 
 Tests:
 - `builtin::long_output_is_saved_in_full_and_pointed_to`;
@@ -873,6 +875,8 @@ For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
   - pick a reasonable reading and go on, instead of asking;
   - make a real attempt before concluding something can't be done;
   - plan with TodoWrite and finish every step;
+  - when improving something by trial, keep the best tested version in place
+    (try new ones on a copy) and put it back if a change made things worse;
   - check the work before finishing;
   - write large files in parts;
   - a message without a tool call ends the run (after waiting for commands

@@ -997,6 +997,9 @@ async fn the_model_is_told_when_turns_run_low() {
     let warned: Vec<usize> = (0..reqs.len()).filter(|&i| last_user_text(&reqs[i]).contains("Wrap up")).collect();
     assert_eq!(warned, vec![3], "once, when 3 calls are left");
     assert!(last_user_text(&reqs[3]).contains("3 model calls left"));
+    // Seen on winning-avg-corewars: a worse version overwrote a better one and was still in place
+    // when time ran out. Restoring the better one comes first.
+    assert!(last_user_text(&reqs[3]).contains("put the better one back first"));
 }
 
 #[tokio::test]
