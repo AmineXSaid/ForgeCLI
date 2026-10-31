@@ -1,0 +1,7 @@
+{
+  "instruction": "area() in shapes.py gives wrong results for some shapes. Fix it. This project has no test suite: check your fix by running the code.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["python", "bugfix", "no-tests"],
+  "timeout_secs": 600
+}

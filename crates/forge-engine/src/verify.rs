@@ -251,10 +251,57 @@ fn is_check_script(word: &str) -> bool {
         && (word.contains('/') || name.ends_with(".sh") || name.ends_with(".py"))
 }
 
+/// Inline code (`python3 -c`, `node -e`), stdin (`python3 -`) or a heredoc, as
+/// opposed to running a named script. These forms carry the check in the command
+/// itself, so [`references_changed`] decides whether it exercises a changed file.
+fn runs_inline_code(args: &[String]) -> bool {
+    args.iter().any(|a| a == "-c" || a == "-e" || a == "-" || a.starts_with("<<"))
+}
+
+/// Does `command` run the changed code inline? True when it names a changed file
+/// (`ast.parse(open('algo.py'))`) or imports a changed module by its stem
+/// (`import algo`, `from algo import map`, `require('algo')`). The code body is
+/// matched against the whole command because `split_compound` can break it on a
+/// `;` inside the string.
+fn references_changed(command: &str, changed: &[PathBuf]) -> bool {
+    if changed.is_empty() {
+        return false;
+    }
+    let ws = words(command);
+    changed.iter().any(|c| {
+        let name = c.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let stem = c.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.is_empty() && command.contains(name) {
+            return true; // the file named directly, e.g. open('algo.py')
+        }
+        if stem.is_empty() {
+            return false;
+        }
+        // The changed module imported by its stem: `import algo`, `from algo ...`.
+        // The module name after `import`/`from` may carry trailing punctuation
+        // (`import algo;`), so compare on its identifier part.
+        let module = |w: &str| w.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_').to_string();
+        let import = ws
+            .iter()
+            .enumerate()
+            .any(|(i, w)| (w == "import" || w == "from") && ws.get(i + 1).is_some_and(|n| module(n) == stem));
+        import
+            || [
+                format!("require('{stem}')"),
+                format!("require(\"{stem}\")"),
+                format!("require('./{stem}')"),
+                format!("require(\"./{stem}\")"),
+            ]
+            .iter()
+            .any(|p| command.contains(p))
+    })
+}
+
 /// Does this Bash command run a check? `changed` are the files written this
 /// turn, relative or absolute; running one of them counts as a check.
 pub fn is_check(command: &str, configured: &[String], changed: &[PathBuf]) -> bool {
-    forge_permissions::split_compound(command).iter().any(|part| {
+    let parts = forge_permissions::split_compound(command);
+    let per_part = parts.iter().any(|part| {
         let all = words(part);
         let w = skip_wrappers(&all);
         let Some(first) = w.first() else { return false };
@@ -283,7 +330,21 @@ pub fn is_check(command: &str, configured: &[String], changed: &[PathBuf]) -> bo
                     })
             })
             .unwrap_or(false)
-    })
+    });
+    if per_part {
+        return true;
+    }
+    // Inline interpreter checks the per-part scan can't see: `python3 -c "import
+    // algo; assert ..."` or a heredoc running the changed code. Verifying a
+    // scripts/data project with no test runner is the common real case.
+    let inline_interp = parts.iter().any(|part| {
+        let all = words(part);
+        let w = skip_wrappers(&all);
+        w.first()
+            .map(|f| INTERPRETERS.contains(&f.rsplit('/').next().unwrap_or(f)) && runs_inline_code(&w[1..]))
+            .unwrap_or(false)
+    });
+    inline_interp && references_changed(command, changed)
 }
 
 /// Per-turn verification state.
@@ -417,6 +478,30 @@ mod tests {
             assert!(!is_check(no, none, &changed), "{no}");
         }
         assert!(is_check("just verify", &["just verify".into()], &changed), "configured commands count");
+    }
+
+    #[test]
+    fn recognizes_inline_interpreter_checks() {
+        // A project with no test runner, verified by running the changed code inline.
+        let none: &[String] = &[];
+        let changed = [PathBuf::from("/app/repo/algo.py"), PathBuf::from("/app/util.js")];
+        for yes in [
+            r#"python3 -c "from algo import solve; assert solve(1) == 1""#,
+            r#"python3 -c "import algo; print(algo.area(2))""#,
+            r#"cd /app/repo && python3 -c "import ast; ast.parse(open('algo.py').read())""#,
+            "python3 - <<'EOF'\nimport algo\nprint(algo.solve(1))\nEOF",
+            r#"node -e "require('./util').run()""#,
+        ] {
+            assert!(is_check(yes, none, &changed), "{yes}");
+        }
+        for no in [
+            r#"python3 -c "print(1)""#,               // touches nothing changed
+            r#"python3 -c "import os; os.getcwd()""#, // imports an unrelated module
+            "cat algo.py",                            // not an interpreter running code
+            r#"echo "import algo""#,                  // echo, not an interpreter
+        ] {
+            assert!(!is_check(no, none, &changed), "{no}");
+        }
     }
 
     #[test]
