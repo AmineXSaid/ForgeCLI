@@ -265,7 +265,15 @@ pub fn welcome(t: &Theme, w: &Welcome, cols: usize) -> Vec<Line<'static>> {
         // A narrow pane (a side terminal): the whole logo still, its text
         // kept to the room beside it, the keys two to a line.
         let r = room(16);
-        let text = vec![Line::default(), title, runs_in(r), cwd_in(r), Line::default(), keys_of(t, &KEYS[..2], 2), keys_of(t, &KEYS[2..], 2)];
+        let text = vec![
+            Line::default(),
+            title,
+            runs_in(r),
+            cwd_in(r),
+            Line::default(),
+            keys_of(t, &KEYS[..2], 2),
+            keys_of(t, &KEYS[2..], 2),
+        ];
         out.extend(beside(mark(t, false), 16, text));
     } else if cols >= 12 + 5 + 24 {
         // Narrower: the small logo.
