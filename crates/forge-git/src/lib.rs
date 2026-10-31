@@ -99,22 +99,45 @@ pub fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<(), String
     }
 }
 
-/// A fingerprint of the working tree's uncommitted state: status, the tracked
-/// diff, and the size and mtime of untracked files. Two equal fingerprints mean
-/// nothing changed in between, as far as git can see. `None` outside a repository.
-pub fn worktree_fingerprint(dir: &Path) -> Option<u64> {
+/// Directories of caches that tools write as a side effect of running (Python, pytest,
+/// type checkers, linters): they appear and disappear without anyone changing the project.
+const CACHE_DIRS: &[&str] =
+    &["__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".hypothesis", ".tox", ".nox"];
+
+/// At most this many files are looked at, so a huge repository can't stall a turn.
+const MAX_FINGERPRINT_FILES: usize = 200_000;
+
+fn is_cache(path: &str) -> bool {
+    path.split('/').any(|c| CACHE_DIRS.contains(&c))
+        || path.ends_with(".pyc")
+        || path.ends_with("/.coverage")
+        || path == ".coverage"
+}
+
+/// A fingerprint of the working tree's files: the path, size and mtime of every tracked or
+/// untracked, not ignored file (caches skipped), plus the content of the `extra` files (the
+/// ones written this turn). Equal fingerprints mean no file was created, changed or deleted in
+/// between. It looks at the files, not at git's state, so staging, committing or creating a
+/// branch doesn't move it. Outside a repository only `extra` counts (`None` when it's empty).
+pub fn worktree_fingerprint(dir: &Path, extra: &[PathBuf]) -> Option<u64> {
     use std::hash::{Hash, Hasher};
-    let root = repo_root(dir)?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    git(&root, &["status", "--porcelain=v1", "--untracked-files=all"])?.hash(&mut h);
-    git(&root, &["diff", "--no-ext-diff", "--no-color", "HEAD"]).unwrap_or_default().hash(&mut h);
-    let untracked = git(&root, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
-    for f in untracked.lines().take(5000) {
-        if let Ok(m) = std::fs::metadata(root.join(f)) {
-            (f, m.len(), m.modified().ok()).hash(&mut h);
+    let mut any = false;
+    if let Some(root) = repo_root(dir) {
+        let files = git(&root, &["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
+        for f in files.split('\0').filter(|f| !f.is_empty() && !is_cache(f)).take(MAX_FINGERPRINT_FILES) {
+            let m = std::fs::symlink_metadata(root.join(f)).ok();
+            (f, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok())).hash(&mut h);
         }
+        any = true;
     }
-    Some(h.finish())
+    for p in extra {
+        let m = std::fs::metadata(p).ok();
+        let content = m.as_ref().filter(|m| m.len() <= 1 << 20).and_then(|_| std::fs::read(p).ok());
+        (p, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok()), content).hash(&mut h);
+        any = true;
+    }
+    any.then(|| h.finish())
 }
 
 /// Add `pattern` to the repository's `.git/info/exclude` (untracked, local ignore) if missing.
@@ -162,6 +185,10 @@ mod tests {
         }
     }
 
+    fn run(dir: &Path, args: &[&str]) {
+        assert!(Command::new("git").args(args).current_dir(dir).status().unwrap().success(), "git {args:?}");
+    }
+
     #[test]
     fn snapshot_and_worktree() {
         let d = tempfile::tempdir().unwrap();
@@ -183,15 +210,53 @@ mod tests {
     #[test]
     fn fingerprint_moves_with_the_worktree() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(worktree_fingerprint(d.path()), None);
+        assert_eq!(worktree_fingerprint(d.path(), &[]), None);
         let root = d.path().canonicalize().unwrap();
         init(&root);
-        let clean = worktree_fingerprint(&root).unwrap();
-        assert_eq!(worktree_fingerprint(&root), Some(clean), "stable when nothing changes");
+        let fp = || worktree_fingerprint(&root, &[]).unwrap();
+        let clean = fp();
+        assert_eq!(fp(), clean, "stable when nothing changes");
         std::fs::write(root.join("new.txt"), "a").unwrap();
-        let untracked = worktree_fingerprint(&root).unwrap();
-        assert_ne!(untracked, clean);
+        let untracked = fp();
+        assert_ne!(untracked, clean, "a created file counts");
         std::fs::write(root.join("new.txt"), "ab").unwrap();
-        assert_ne!(worktree_fingerprint(&root).unwrap(), untracked, "an edited untracked file counts");
+        let edited = fp();
+        assert_ne!(edited, untracked, "an edited untracked file counts");
+
+        // Fix, run the tests, commit: staging and committing change no file.
+        run(&root, &["add", "new.txt"]);
+        assert_eq!(fp(), edited, "git add is not a change");
+        run(&root, &["commit", "-q", "-m", "add new.txt"]);
+        assert_eq!(fp(), edited, "git commit is not a change");
+        run(&root, &["branch", "topic"]);
+        assert_eq!(fp(), edited, "creating a branch is not a change");
+        std::fs::create_dir_all(root.join("pkg/__pycache__")).unwrap();
+        std::fs::write(root.join("pkg/__pycache__/m.cpython-312.pyc"), "x").unwrap();
+        std::fs::create_dir_all(root.join(".pytest_cache")).unwrap();
+        std::fs::write(root.join(".pytest_cache/README.md"), "x").unwrap();
+        assert_eq!(fp(), edited, "caches written by running Python and pytest are not changes");
+        std::fs::remove_dir_all(root.join("pkg/__pycache__")).unwrap();
+        assert_eq!(fp(), edited, "nor is removing them");
+
+        std::fs::write(root.join("new.txt"), "abc").unwrap();
+        let tracked_edit = fp();
+        assert_ne!(tracked_edit, edited, "editing a tracked file counts");
+        std::fs::remove_file(root.join("new.txt")).unwrap();
+        assert_ne!(fp(), tracked_edit, "deleting a tracked file counts");
+    }
+
+    #[test]
+    fn fingerprint_outside_git_follows_the_files_written() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("my_warrior.red");
+        std::fs::write(&f, ";redcode-94\nimp mov 0, 1\n").unwrap();
+        let extra = [f.clone()];
+        let before = worktree_fingerprint(d.path(), &extra).unwrap();
+        assert_eq!(worktree_fingerprint(d.path(), &extra), Some(before));
+        std::fs::write(d.path().join("notes.txt"), "x").unwrap();
+        assert_eq!(worktree_fingerprint(d.path(), &extra), Some(before), "other files aren't followed outside git");
+        // `cat > my_warrior.red <<EOF` after the last check: same size, different content.
+        std::fs::write(&f, ";redcode-94\nimp mov 0, 2\n").unwrap();
+        assert_ne!(worktree_fingerprint(d.path(), &extra), Some(before), "a shell rewrite of a written file counts");
     }
 }

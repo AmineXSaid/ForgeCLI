@@ -310,10 +310,15 @@ A main-agent turn that changed files doesn't end on the model's first
 **What counts as a change:**
 - a write by an edit tool (Write, Edit, MultiEdit, NotebookEdit), including
   writes made by sub-agents, taken from the file history;
-- a shell command not classed as read-only, but only when the git worktree
-  fingerprint (status, tracked diff, untracked files' size and mtime) differs
-  from the one taken at the turn start or at the last check. Outside git,
-  shell writes aren't seen.
+- a shell command not classed as read-only, but only when the files'
+  fingerprint differs from the one taken at the turn start or at the last
+  check. The fingerprint covers the path, size and mtime of every tracked or
+  untracked, not ignored file (caches like `__pycache__/` and `.pytest_cache/`
+  skipped), plus the content of the files written this turn. It looks at the
+  files, not at git's state, so `git add`, `git commit` or a new branch is not
+  a change. Outside git only the files written this turn are followed, so a
+  shell rewrite of one (`cat > my_warrior.red <<EOF` after its last check) is
+  still seen.
 
 **What counts as a check:** a Bash call whose command (after env assignments,
 wrappers like `timeout`, `uv run`, and shell keywords like `do`, `if`) starts
@@ -358,6 +363,8 @@ fix it or say plainly that it fails. Each reminder:
 Tests: `engine::verify_reminds_once_when_changes_are_unchecked`,
 `engine::verify_accepts_a_check_after_the_last_change`,
 `engine::verify_sees_shell_writes_through_git_and_failed_checks`,
+`engine::verify_ignores_a_commit_after_a_passing_check`,
+`engine::verify_sees_a_shell_rewrite_after_the_last_check_outside_git`,
 `verify::recognizes_a_program_run_on_a_changed_file`,
 `verify::recognizes_inline_code_that_names_a_changed_module`,
 `verify::eval_and_bench_scripts_are_checks`,
