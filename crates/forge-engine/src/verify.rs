@@ -490,7 +490,7 @@ fn in_place(prog: &str, args: &[String]) -> bool {
 /// The command a shell runs with `-c` (`bash -c "cd x && pytest"`, `sh -ec '…'`). Whether
 /// it is a check is decided on that command, not on the shell.
 fn shell_command(prog: &str, args: &[String]) -> Option<String> {
-    if !matches!(prog, "bash" | "sh" | "zsh" | "dash" | "ksh") {
+    if !is_shell(prog) {
         return None;
     }
     let i = args.iter().position(|a| {
@@ -503,24 +503,38 @@ fn shell_command(prog: &str, args: &[String]) -> Option<String> {
     Some(args[i + 1..].join(" "))
 }
 
+fn is_shell(prog: &str) -> bool {
+    matches!(prog, "bash" | "sh" | "zsh" | "dash" | "ksh")
+}
+
 /// The command without its here-document bodies: the lines between `<<EOF` and `EOF` are
 /// data (a file being written, code fed to an interpreter), not commands. A here-document
 /// whose end line is missing is kept as is.
 fn strip_heredoc_bodies(command: &str) -> String {
+    split_heredocs(command).0
+}
+
+/// The command's here-documents, as (the line that opens one, its body).
+fn heredoc_bodies(command: &str) -> Vec<(String, String)> {
+    split_heredocs(command).1
+}
+
+fn split_heredocs(command: &str) -> (String, Vec<(String, String)>) {
     let lines: Vec<&str> = command.lines().collect();
-    let mut out: Vec<&str> = vec![];
+    let (mut kept, mut bodies) = (vec![], vec![]);
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
-        out.push(line);
+        kept.push(line);
         i += 1;
         for delim in heredoc_delimiters(line) {
             if let Some(end) = lines[i..].iter().position(|l| l.trim() == delim) {
+                bodies.push((line.to_string(), lines[i..i + end].join("\n")));
                 i += end + 1;
             }
         }
     }
-    out.join("\n")
+    (kept.join("\n"), bodies)
 }
 
 /// The delimiters of the here-documents a line opens: `<<EOF`, `<< 'EOF'`, `<<-"END"`.
@@ -599,6 +613,17 @@ pub fn is_check(command: &str, configured: &[String], changed: &[PathBuf]) -> bo
     if parts.iter().any(|part| part_is_check(part, configured, changed)) {
         return true;
     }
+    // A here-document fed to a shell (`bash <<'EOF' … EOF`) runs its lines as commands.
+    for (opener, body) in heredoc_bodies(command) {
+        let to_shell = forge_permissions::split_compound(&opener).iter().any(|p| {
+            let all = words(p);
+            let w = skip_wrappers(&all);
+            w.first().is_some_and(|f| is_shell(program(f))) && w.iter().any(|a| a.starts_with("<<"))
+        });
+        if to_shell && is_check(&body, configured, changed) {
+            return true;
+        }
+    }
     // Inline interpreter checks the per-part scan can't see: `python3 -c "import
     // algo; assert ..."` or a heredoc running the changed code. Verifying a
     // scripts/data project with no test runner is the common real case.
@@ -608,10 +633,8 @@ pub fn is_check(command: &str, configured: &[String], changed: &[PathBuf]) -> bo
         w.first()
             .map(|f| {
                 let prog = program(f);
-                INTERPRETERS.contains(&prog)
-                    && runs_inline_code(&w[1..])
-                    && shell_command(prog, &w[1..]).is_none()
-                    && !in_place(prog, &w[1..])
+                // A shell's inline code is judged on its commands (`bash -c`, a here-document).
+                INTERPRETERS.contains(&prog) && !is_shell(prog) && runs_inline_code(&w[1..]) && !in_place(prog, &w[1..])
             })
             .unwrap_or(false)
     });
@@ -916,10 +939,14 @@ mod tests {
         for no in [
             "cat > run.sh <<'EOF'\npython3 solver.py input.txt\nEOF",
             "cat > my_warrior.red <<'EOF'\n;redcode-94\n        org start\nstart   spl 1\nEOF",
+            // A shell fed a here-document runs its lines: here, only a viewer.
+            "bash <<'EOF'\ncat my_warrior.red\nEOF",
         ] {
             assert!(!is_check(no, none, &changed), "{no}");
         }
         for yes in [
+            "bash <<'EOF'\ncd /app && python3 -m pytest -q\nEOF",
+            "sh -s <<EOF\npmars -b my_warrior.red w/stone.red\nEOF",
             "python3 - <<'EOF'\nimport solver\nprint(solver.solve(1))\nEOF",
             "cat > run.sh <<'EOF'\necho hi\nEOF\npython3 solver.py input.txt",
             // An unterminated `<<` (a shift inside code) hides nothing.

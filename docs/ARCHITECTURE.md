@@ -338,7 +338,8 @@ editors, version control, archives, formatters and installers (`cat f`,
 `cp f g`, `git add f`, `black f.py`, `pip install -r f`), in-place edits
 (`sed -i`, `perl -pi -e`), redirect targets (`echo x > f`), and the lines of a
 here-document (`cat > run.sh <<EOF … EOF` is a file being written).
-`bash -c "…"` is judged on the command it runs. A check that only reaches the
+`bash -c "…"`, and a here-document fed to a shell (`bash <<'EOF' … EOF`), are
+judged on the commands they run. A check that only reaches the
 changed file through another file (a harness that loads it) isn't visible on
 the command line and doesn't count.
 
