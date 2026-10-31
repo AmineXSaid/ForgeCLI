@@ -386,7 +386,10 @@ Denied calls are not counted.
   call) is not asked to continue: that only starts another reasoning pass up
   to the same limit, and on a hard task it repeats until the run ends with
   nothing done. It is asked instead to act on what it has (take a step, or
-  answer), and `system/act_reminder` is emitted. It shares the 3 continuations.
+  answer), and `system/act_reminder` is emitted. Up to 3 in a row: a tool call
+  resets the count, so a long task gets one each time it stalls after real
+  work, while three stalls in a row with no tool call let the turn end. These
+  don't use up the 3 text continuations.
 - After the first `max_tokens` stop, the turn's output cap rises to 64,000
   (bounded by the model), unless the user set `FORGE_MAX_OUTPUT_TOKENS`, and
   `system/output_limit` is emitted.
