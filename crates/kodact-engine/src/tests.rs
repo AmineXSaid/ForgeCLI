@@ -861,6 +861,28 @@ async fn a_reply_cut_off_while_reasoning_is_asked_to_act() {
     assert_eq!(r.result.as_deref(), Some("Part one, part two."));
     assert!(last_user_text(&h.provider.requests()[1]).contains("Continue exactly"));
     assert!(!h.transcript_text().contains("act_reminder"));
+
+    // Counted per stretch, not per run (seen on winning-avg-corewars: 3 per run were gone by reply
+    // 35 of 66). Each reminder followed by a tool call resets the count, so a long run gets more.
+    let act = |h: &Harness| h.transcript_text().matches(r#""subtype":"act_reminder""#).count();
+    let mut turns = vec![];
+    for _ in 0..4 {
+        turns.push(MockTurn::blocks(vec![thinking("plan")], StopReason::MaxTokens));
+        turns.push(MockTurn::tool("SafeA", json!({"tag": "step"})));
+    }
+    turns.push(MockTurn::text("done"));
+    let h = Harness::new(turns);
+    let mut e = h.engine();
+    let r = e.submit(prompt("long task")).await;
+    assert_eq!(r.result.as_deref(), Some("done"));
+    assert_eq!(act(&h), 4, "a tool call starts a new stretch");
+
+    // Three in a row without a tool call: the model isn't making progress, the fourth ends the turn.
+    let h = Harness::new((0..4).map(|_| MockTurn::blocks(vec![thinking("plan")], StopReason::MaxTokens)).collect());
+    let mut e = h.engine();
+    let r = e.submit(prompt("stuck")).await;
+    assert_eq!((r.num_turns, r.stop_reason.as_deref()), (4, Some("max_tokens")));
+    assert_eq!(act(&h), 3);
 }
 
 #[tokio::test]

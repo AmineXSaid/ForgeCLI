@@ -181,6 +181,9 @@ pub struct EngineConfig {
 pub const ESCALATED_OUTPUT_TOKENS: u32 = 64_000;
 /// Times one turn may continue a reply cut off by `max_tokens`.
 const MAX_CONTINUATIONS: u32 = 3;
+/// Reasoning-only cut-offs in a row, with no tool call between them, that get [`ACT_PROMPT`]. A
+/// tool call resets the count; past it the model is not making progress and the turn may end.
+const MAX_REASONING_CUTOFFS: u32 = 3;
 const CONTINUE_PROMPT: &str = "<system-reminder>\nYour reply was cut off by the output token limit. Continue \
                                exactly where it stopped: no apology, no recap, and do not repeat what you already \
                                wrote.\n</system-reminder>";
@@ -1794,6 +1797,7 @@ impl Engine {
         let mut compacted_for_length = false;
         let mut last_text: Option<String> = None;
         let mut continuations = 0;
+        let mut reasoning_cutoffs = 0;
         let mut continuing = false;
         let mut budget_warned = false;
         let mut attempt_reminded = false;
@@ -2022,22 +2026,26 @@ impl Engine {
                         json!({"from": self.cfg.max_output_tokens, "to": ESCALATED_OUTPUT_TOKENS}),
                     );
                 }
-                if tool_uses.is_empty() && continuations < MAX_CONTINUATIONS {
+                if tool_uses.is_empty() && reply_has_text && continuations < MAX_CONTINUATIONS {
                     continuations += 1;
-                    if reply_has_text {
-                        continuing = true;
-                        self.push_user(Message::user_text(CONTINUE_PROMPT), true, None, true);
-                    } else {
-                        // All reasoning, nothing to continue: the next reply is a fresh step, not the
-                        // rest of this one, so `continuing` stays false.
-                        self.system_event("act_reminder", json!({}));
-                        self.push_user(Message::user_text(ACT_PROMPT), true, None, true);
-                    }
+                    continuing = true;
+                    self.push_user(Message::user_text(CONTINUE_PROMPT), true, None, true);
+                    continue;
+                }
+                // All reasoning, nothing to continue: the next reply is a fresh step, not the rest of
+                // this one, so `continuing` stays false. Counted per stretch without a tool call, not
+                // per run: a long task can hit this many times, each time after real work.
+                if tool_uses.is_empty() && !reply_has_text && reasoning_cutoffs < MAX_REASONING_CUTOFFS {
+                    reasoning_cutoffs += 1;
+                    self.system_event("act_reminder", json!({}));
+                    self.push_user(Message::user_text(ACT_PROMPT), true, None, true);
                     continue;
                 }
             }
 
             if !tool_uses.is_empty() {
+                // The model acted: a later reasoning-only cut-off starts a new stretch.
+                reasoning_cutoffs = 0;
                 turn.tool_calls += tool_uses.len() as u32;
                 let results = crate::exec::run_tools(&self.shared, &tool_uses, &cancel, self.mode_str()).await;
                 if self.verifying() {
