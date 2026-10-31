@@ -918,6 +918,9 @@ For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
   - plan with TodoWrite and finish every step;
   - when improving something by trial, keep the best tested version in place
     (try new ones on a copy) and put it back if a change made things worse;
+    note each attempt's result, and after three attempts in a row at one idea
+    that don't beat the best, switch to a substantially different idea (going
+    back to a dropped idea counts as another attempt at it);
   - check the work before finishing;
   - write large files in parts;
   - a message without a tool call ends the run (after waiting for commands

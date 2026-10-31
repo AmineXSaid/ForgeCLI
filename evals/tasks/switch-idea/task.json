@@ -1,0 +1,7 @@
+{
+  "instruction": "`python3 bench.py` must report PASS: no more than 4 keys from keys.txt may share a bucket of the hash table in hashmap.py. Make it pass without changing bench.py or keys.txt.",
+  "check": "python3 \"$KODACT_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "long-horizon",
+  "tags": ["python", "optimization", "approach"],
+  "timeout_secs": 900
+}

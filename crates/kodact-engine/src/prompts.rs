@@ -208,14 +208,22 @@ mod tests {
         }
     }
 
+    /// winning-avg-corewars (231fd6b): an imp-based warrior lost 0-100 in seven tries (replies 44
+    /// to 79), including after the model wrote "imps are useless" at reply 58, while the parameter
+    /// sweeps that moved stone from 59 to 75 wins got less of the time. The score is in free-form
+    /// output, so the switch is the model's call, made on its own measured results.
     #[test]
     fn autonomous_section_is_added_only_when_asked() {
         let (b, _) = build_system(&SystemPromptOptions::default(), &env());
         assert!(!b[0].text.contains("Running unattended"));
+        assert!(!b[0].text.contains("three attempts in a row at one idea"), "unattended runs only");
         let (b, _) = build_system(&SystemPromptOptions { autonomous: true, ..Default::default() }, &env());
         assert!(b[0].text.contains("# Running unattended"));
         assert!(b[0].text.contains("Make a real attempt"));
         assert!(b[0].text.contains("keep the best version you have tested"));
+        assert!(b[0].text.contains("Note each attempt's result"));
+        assert!(b[0].text.contains("three attempts in a row at one idea haven't beaten your best"));
+        assert!(b[0].text.contains("substantially different one (going back to an idea you set aside counts"));
     }
 
     #[test]
