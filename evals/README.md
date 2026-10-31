@@ -40,6 +40,7 @@ and stderr.
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |
 | stop-at-target | long-horizon | Meet a stated target (pack the items into at most 33 bins), then write the result to bins.txt. The optimum (31) is reachable but not asked for: turns and minutes show whether the agent stops once the target is met, and the bins.txt step catches stopping before the task is done |
+| switch-idea | long-horizon | Bring a hash table's fullest bucket to at most 4 keys. The keys are anagrams and the hash sums character codes, so no table size helps (24 at any size) and only a different hash does: turns show how long the agent varies one idea before changing it |
 | fix-in-steps | recovery | One test command that stops at the first failure, three independent bugs: it fails three different ways before it passes. A fix-and-test cycle is progress, so the loop guard must stay quiet (`loop_guards`) |
 | log-needle | context | A 330 KB log with one error line in the middle; the fix is one setting |
 | env-default | context | Find one bug among many files from a vague report |
