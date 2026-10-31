@@ -152,6 +152,9 @@ pub struct RunRecord {
     /// Times the verification loop reminded the model to run checks.
     #[serde(default)]
     pub verify_reminders: u64,
+    /// Times the loop guard warned the model it was repeating itself.
+    #[serde(default)]
+    pub loop_guards: u64,
     pub agent_error: bool,
     pub stop_reason: Option<String>,
     pub timed_out: bool,
@@ -173,6 +176,12 @@ pub struct Summary {
     pub false_finish_rate: f64,
     /// Tool errors per tool call.
     pub invalid_call_rate: f64,
+    /// Forge's own reminders per run: each is either needed or a false positive, so a change
+    /// that cuts them must keep the pass rate.
+    #[serde(default)]
+    pub verify_reminders_per_run: f64,
+    #[serde(default)]
+    pub loop_guards_per_run: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +215,8 @@ pub fn summarize(runs: &[RunRecord]) -> Summary {
             .then(|| errored.iter().filter(|r| r.passed).count() as f64 / errored.len() as f64),
         false_finish_rate: runs.iter().filter(|r| r.false_finish).count() as f64 / n,
         invalid_call_rate: if calls == 0 { 0.0 } else { errors as f64 / calls as f64 },
+        verify_reminders_per_run: runs.iter().map(|r| r.verify_reminders as f64).sum::<f64>() / n,
+        loop_guards_per_run: runs.iter().map(|r| r.loop_guards as f64).sum::<f64>() / n,
     }
 }
 
@@ -318,6 +329,7 @@ pub struct StreamFacts {
     pub tool_calls: u64,
     pub tool_errors: u64,
     pub verify_reminders: u64,
+    pub loop_guards: u64,
     pub api_error: bool,
     pub is_error: bool,
     pub stop_reason: Option<String>,
@@ -343,6 +355,7 @@ pub fn parse_stream(lines: &[Value]) -> StreamFacts {
                 }
             }
             Some("system") if v["subtype"] == "verification" => f.verify_reminders += 1,
+            Some("system") if v["subtype"] == "loop_guard" => f.loop_guards += 1,
             Some("system") if v["subtype"] == "model_fallback" || v["subtype"] == "api_retry" => f.api_error = true,
             Some("result") => {
                 f.saw_result = true;
@@ -471,6 +484,7 @@ pub async fn run_task(task: &Task, run: u32, opts: &RunOptions) -> anyhow::Resul
         tool_calls: facts.tool_calls,
         tool_errors: facts.tool_errors,
         verify_reminders: facts.verify_reminders,
+        loop_guards: facts.loop_guards,
         agent_error,
         stop_reason: facts.stop_reason,
         timed_out,
@@ -500,6 +514,7 @@ pub async fn run_suite(tasks: &[Task], opts: &RunOptions) -> Report {
                     tool_calls: 0,
                     tool_errors: 0,
                     verify_reminders: 0,
+                    loop_guards: 0,
                     agent_error: true,
                     stop_reason: None,
                     timed_out: false,
@@ -543,7 +558,8 @@ pub fn render_markdown(r: &Report) -> String {
     let mut out = format!(
         "# forge-eval: {}\n\n{} runs · args: `{}`\n\n| Metric | Value |\n| --- | --- |\n\
          | Pass rate | {} |\n| Cost per task | ${:.4} |\n| Cost per passed task | {} |\n| Turns per task | {:.1} |\n\
-         | Wall time per task | {:.1}s |\n| Recovery rate | {} |\n| False-finish rate | {} |\n| Invalid-call rate | {} |\n\n",
+         | Wall time per task | {:.1}s |\n| Recovery rate | {} |\n| False-finish rate | {} |\n| Invalid-call rate | {} |\n\
+         | Verification reminders per task | {:.2} |\n| Loop warnings per task | {:.2} |\n\n",
         r.label,
         s.runs,
         r.args.join(" "),
@@ -555,6 +571,8 @@ pub fn render_markdown(r: &Report) -> String {
         opt_pct(s.recovery_rate),
         pct(s.false_finish_rate),
         pct(s.invalid_call_rate),
+        s.verify_reminders_per_run,
+        s.loop_guards_per_run,
     );
     out.push_str("## By pillar\n\n| Pillar | Runs | Pass | False finish | Turns |\n| --- | --- | --- | --- | --- |\n");
     for (p, s) in &r.by_pillar {
@@ -566,10 +584,10 @@ pub fn render_markdown(r: &Report) -> String {
             s.mean_turns
         ));
     }
-    out.push_str("\n## Runs\n\n| Task | Run | Pass | False finish | Turns | Cost | Tool errors | Time |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("\n## Runs\n\n| Task | Run | Pass | False finish | Turns | Cost | Tool errors | Time | Reminders (verify/loop) |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for x in &r.runs {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | ${:.4} | {}/{} | {:.1}s |\n",
+            "| {} | {} | {} | {} | {} | ${:.4} | {}/{} | {:.1}s | {}/{} |\n",
             x.task,
             x.run,
             if x.passed { "yes" } else { "no" },
@@ -578,7 +596,9 @@ pub fn render_markdown(r: &Report) -> String {
             x.cost_usd,
             x.tool_errors,
             x.tool_calls,
-            x.wall_secs
+            x.wall_secs,
+            x.verify_reminders,
+            x.loop_guards
         ));
     }
     out
@@ -630,6 +650,18 @@ pub fn render_compare(a: &Report, b: &Report) -> String {
         pct(x.invalid_call_rate),
         pct(y.invalid_call_rate),
         &delta(x.invalid_call_rate, y.invalid_call_rate, false),
+    ));
+    out.push_str(&row(
+        "Verification reminders per task",
+        format!("{:.2}", x.verify_reminders_per_run),
+        format!("{:.2}", y.verify_reminders_per_run),
+        &delta(x.verify_reminders_per_run, y.verify_reminders_per_run, false),
+    ));
+    out.push_str(&row(
+        "Loop warnings per task",
+        format!("{:.2}", x.loop_guards_per_run),
+        format!("{:.2}", y.loop_guards_per_run),
+        &delta(x.loop_guards_per_run, y.loop_guards_per_run, false),
     ));
     out.push_str(&row(
         "Recovery rate",
@@ -685,6 +717,7 @@ mod tests {
             tool_calls: 10,
             tool_errors: if had_error { 2 } else { 0 },
             verify_reminders: 0,
+            loop_guards: 0,
             agent_error: false,
             stop_reason: Some("end_turn".into()),
             timed_out: false,
@@ -718,10 +751,11 @@ mod tests {
             json!({"type": "assistant", "message": {"content": [{"type": "tool_use"}, {"type": "tool_use"}]}}),
             json!({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": true}, {"type": "tool_result"}]}}),
             json!({"type": "system", "subtype": "verification", "kind": "unchecked"}),
+            json!({"type": "system", "subtype": "loop_guard", "kind": "repeated_failure", "after_changes": true}),
             json!({"type": "result", "subtype": "success", "is_error": false, "total_cost_usd": 0.05, "num_turns": 3, "stop_reason": "end_turn"}),
         ];
         let f = parse_stream(&lines);
-        assert_eq!(f.verify_reminders, 1);
+        assert_eq!((f.verify_reminders, f.loop_guards), (1, 1));
         assert_eq!((f.tool_calls, f.tool_errors, f.turns), (2, 1, 3));
         assert!(f.saw_result && !f.is_error && !f.api_error);
         assert_eq!(f.cost_usd, 0.05);

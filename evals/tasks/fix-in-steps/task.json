@@ -1,0 +1,7 @@
+{
+  "instruction": "`python3 run_tests.py` fails. Fix textstats.py so that it passes. Do not change run_tests.py.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "recovery",
+  "tags": ["python", "bugfix", "loop-guard"],
+  "timeout_secs": 600
+}
