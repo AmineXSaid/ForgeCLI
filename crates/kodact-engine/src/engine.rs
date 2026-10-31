@@ -1240,6 +1240,8 @@ impl Engine {
             if !ids.is_empty() {
                 self.shared.transcript.append_system("microcompact", json!({"toolUseIds": ids}));
                 self.shared.tool_ctx.files.forget_views(&ids);
+                // The cleared results are gone from the model's view: re-running one isn't a loop.
+                self.guard.forget_results();
                 self.state.microcompacted.extend(ids);
             }
         }
@@ -1348,7 +1350,7 @@ impl Engine {
         }
         self.state.context_tokens = kodact_compact::estimate_tokens(&self.state.messages);
         self.state.counted = self.state.messages.len();
-        self.shared.tool_ctx.files.forget_all_views();
+        self.forget_seen_results();
         Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
     }
 
@@ -1395,7 +1397,7 @@ impl Engine {
         self.state.uuids.truncate(index);
         self.state.context_tokens = kodact_compact::estimate_tokens(&self.state.messages);
         self.state.counted = self.state.messages.len();
-        self.shared.tool_ctx.files.forget_all_views();
+        self.forget_seen_results();
         self.shared.transcript.set_leaf(self.state.uuids.last().cloned());
         self.shared.transcript.append_system("rewind", json!({"to": to}));
         self.settle_after_rewrite();
@@ -1525,7 +1527,7 @@ impl Engine {
         self.state.messages = messages;
         self.state.context_tokens = kodact_compact::estimate_tokens(&self.state.messages);
         self.state.counted = self.state.messages.len();
-        self.shared.tool_ctx.files.forget_all_views();
+        self.forget_seen_results();
         self.settle_after_rewrite();
         Ok(CompactInfo { trigger: "partial".into(), pre_tokens, summary })
     }
@@ -1542,7 +1544,7 @@ impl Engine {
         self.state.context_tokens = 0;
         self.state.counted = 0;
         self.shared.tool_ctx.todos.lock().unwrap().clear();
-        self.shared.tool_ctx.files.forget_all_views();
+        self.forget_seen_results();
         self.handle.forget_skills();
         self.reattach_context = self.session_context.is_some();
     }
@@ -2362,6 +2364,14 @@ impl Engine {
 
     fn verifying(&self) -> bool {
         self.cfg.verify.is_some() && !self.cfg.is_subagent
+    }
+
+    /// The conversation was rewritten (compaction, rewind, `/clear`): the model no longer sees
+    /// earlier tool results. Forget them where KodAct tracks them, so re-reading a file is neither
+    /// refused as unread-before-write nor called a loop by the guard.
+    fn forget_seen_results(&mut self) {
+        self.shared.tool_ctx.files.forget_all_views();
+        self.guard = Default::default();
     }
 
     /// The verification loop's view of the files: the worktree's files in a git repository,

@@ -113,6 +113,16 @@ impl LoopGuard {
     }
 }
 
+impl LoopGuard {
+    /// Forget the results counted so far, after a microcompaction cleared old tool results from
+    /// the model's view: running one of those calls again is not a loop. Failures, edits and the
+    /// error streak are kept.
+    pub fn forget_results(&mut self) {
+        self.results.clear();
+        self.fired.retain(|id| !id.starts_with("same:"));
+    }
+}
+
 /// The (file, old, new) replacements an edit call made.
 fn edits_of(tool: &str, input: &Value) -> Vec<(String, String, String)> {
     let file = input.get("file_path").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -160,6 +170,23 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(g.observe("TodoWrite", &todo, "ok", false), None);
         }
+    }
+
+    #[test]
+    fn results_are_forgotten_after_a_microcompaction() {
+        let mut g = LoopGuard::default();
+        let read = json!({"file_path": "/app/warriors/stone.red"});
+        assert_eq!(g.observe("Read", &read, "x", false), None);
+        assert_eq!(g.observe("Read", &read, "x", false), None);
+        g.forget_results();
+        assert_eq!(g.observe("Read", &read, "x", false), None, "the model can't see the earlier reads");
+        assert_eq!(g.observe("Read", &read, "x", false), None);
+        assert!(matches!(g.observe("Read", &read, "x", false), Some(Stuck::NoProgress { count: 3, .. })));
+        let make = json!({"command": "make"});
+        g.observe("Bash", &make, "err", true);
+        g.observe("Bash", &make, "err", true);
+        g.forget_results();
+        assert!(matches!(g.observe("Bash", &make, "err", true), Some(Stuck::RepeatedFailure { .. })), "failures stay");
     }
 
     #[test]

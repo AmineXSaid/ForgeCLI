@@ -825,6 +825,42 @@ async fn verify_sees_a_shell_rewrite_after_the_last_check_outside_git() {
 }
 
 #[tokio::test]
+async fn loop_guard_forgets_results_the_model_lost_to_compaction() {
+    // winning-avg-corewars (231fd6b): right after a compaction the model re-read the opponents'
+    // files it had read before, and the guard called that a loop. It can't use a result it no
+    // longer sees, so a compaction starts the count again.
+    let h = Harness::new(vec![]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    std::fs::write(h.cwd().join("stone.red"), ";redcode\nadd #4, 3\n").unwrap();
+    let big = h.cwd().join("big.txt");
+    std::fs::write(&big, "line of text\n".repeat(1500)).unwrap();
+    let cat = json!({"command": "cat stone.red"});
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    h.provider.push(MockTurn::tool("Bash", cat.clone()).with_usage(usage(2_000)));
+    h.provider.push(MockTurn::tool("Bash", cat.clone()).with_usage(usage(2_000)));
+    h.provider.push(MockTurn::tool("Read", json!({"file_path": big})).with_usage(usage(9_000)));
+    h.provider.push(MockTurn::text("<analysis>a</analysis><summary>Read stone.red and big.txt.</summary>"));
+    h.provider.push(MockTurn::tool("Bash", cat.clone()));
+    h.provider.push(MockTurn::text("done"));
+    let r = e.submit(prompt("study the opponents")).await;
+    assert_eq!(r.result.as_deref(), Some("done"));
+    let t = h.transcript_text();
+    assert!(t.contains(r#""subtype":"compact_boundary""#), "compacted");
+    assert!(!t.contains(r#""subtype":"loop_guard""#), "a re-read after compaction is not a loop");
+
+    // The same three reads with nothing lost in between still are.
+    let h = Harness::new(vec![]);
+    std::fs::create_dir_all(h.cwd()).unwrap();
+    std::fs::write(h.cwd().join("stone.red"), ";redcode\nadd #4, 3\n").unwrap();
+    for _ in 0..3 {
+        h.provider.push(MockTurn::tool("Bash", cat.clone()));
+    }
+    h.provider.push(MockTurn::text("done"));
+    h.engine().submit(prompt("study the opponents")).await;
+    assert!(h.transcript_text().contains(r#""kind":"no_progress""#));
+}
+
+#[tokio::test]
 async fn loop_guard_reminds_after_repeated_failures() {
     let h = Harness::new(vec![]);
     for _ in 0..3 {

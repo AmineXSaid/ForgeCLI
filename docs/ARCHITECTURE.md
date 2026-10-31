@@ -392,7 +392,9 @@ patterns:
   file;
 - 5 failed calls in a row.
 
-Denied calls are not counted.
+Denied calls are not counted. What the model can no longer see is forgotten:
+a compaction, a rewind or `/clear` resets the guard, and a microcompaction
+clears the same-result counts, so re-reading after one isn't called a loop.
 
 **Truncated output:**
 - A tool input that isn't valid JSON when its block stops (the `max_tokens`
@@ -424,6 +426,7 @@ Tests:
 - `builtin::edit_failures_point_at_the_nearest_text`;
 - `stuck::*`;
 - `engine::loop_guard_reminds_after_repeated_failures`;
+- `engine::loop_guard_forgets_results_the_model_lost_to_compaction`;
 - `engine::max_tokens_continues_text_and_answers_cut_off_calls`;
 - `engine::a_reply_cut_off_while_reasoning_is_asked_to_act`;
 - `accumulate::invalid_tool_json_is_marked_truncated`.
