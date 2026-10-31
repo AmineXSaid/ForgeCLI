@@ -1,0 +1,7 @@
+{
+  "instruction": "`python3 check.py` fails: pack.py must pack the items in items.txt into at most 33 bins of capacity 100. Make it pass, then write the number of bins your packing uses to bins.txt.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "long-horizon",
+  "tags": ["python", "optimization", "target"],
+  "timeout_secs": 900
+}
