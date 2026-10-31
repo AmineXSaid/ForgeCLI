@@ -800,8 +800,11 @@ async fn verify_ignores_a_commit_after_a_passing_check() {
 
 #[tokio::test]
 async fn verify_sees_a_shell_rewrite_after_the_last_check_outside_git() {
-    // winning-avg-corewars (22f2cd7): the warrior was edited and tested, then rewritten with
-    // `cat > my_warrior.red <<EOF` and never run again. /app is not a git repository.
+    // A file written this turn, checked, then changed by a shell command and never run again,
+    // outside a git repository (like /app in Terminal-Bench). None of the 47 distinct collected
+    // runs ends this way, so this reminder has no false positive there: in corewars 22f2cd7 the
+    // `cat > my_warrior.red <<EOF` rewrite was run against pmars in the same command, which is
+    // a check.
     let h = Harness::new(vec![]);
     let cwd = h.cwd();
     std::fs::create_dir_all(&cwd).unwrap();
@@ -822,6 +825,18 @@ async fn verify_sees_a_shell_rewrite_after_the_last_check_outside_git() {
     assert_eq!(r.num_turns, 5);
     let n = h.provider.requests().len();
     assert!(last_user_text(&h.provider.requests()[n - 1]).contains("through shell commands"));
+
+    // corewars 22f2cd7, as it happened: the rewrite and the battles in one command. That's a check.
+    std::fs::write(cwd.join("run.py"), "import sys\nprint(sys.argv[1], sys.argv[2], 'Results: 0 100 0')\n").unwrap();
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": warrior, "content": ";redcode-94\nmov 0, 1\n"})));
+    h.provider.push(MockTurn::tool(
+        "Bash",
+        json!({"command": "cat > my_warrior.red <<'EOF'\n;redcode-94\n;name Chasm\nstart spl 1, imp1\nEOF\n\
+                for o in stone paper; do python3 run.py my_warrior.red $o; done"}),
+    ));
+    h.provider.push(MockTurn::text("rewrote and ran it"));
+    let r = e.submit(prompt("try an imp swarm")).await;
+    assert_eq!(r.num_turns, 3, "no reminder: the rewrite was run");
 }
 
 #[tokio::test]
