@@ -194,6 +194,14 @@ const ACT_PROMPT: &str = "<system-reminder>\nYour reply reached the output token
                           reasoning, before you answered or took any action. Do not restart the analysis. Act on \
                           what you have now: take the next concrete step (run a command, make an edit, or give your \
                           answer), then continue from its result.\n</system-reminder>";
+/// For a reply that ended normally with no text and no tool call (only reasoning, or nothing).
+/// Taken as the end of the turn, it leaves the work undone and the person with an empty answer:
+/// seen on Terminal-Bench gpt2-codegolf, where such a reply ended unattended runs that had only
+/// started (06eba3b, ce92502).
+const EMPTY_REPLY_PROMPT: &str = "<system-reminder>\nYour reply ended without an answer or an action: it had \
+                                  no text and no tool call. Do not restart the analysis. Act on what you have now: \
+                                  take the next concrete step (run a command, make an edit, or give your answer), \
+                                  then continue from its result.\n</system-reminder>";
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -1971,6 +1979,8 @@ impl Engine {
             let next_step = announced_next_step(&text);
             // Read before `text` moves into `last_text`: a cut-off reply with no text was all reasoning.
             let reply_has_text = !text.is_empty();
+            // The rest of an answer cut off by `max_tokens`: its text so far is in `last_text`.
+            let was_continuation = continuing;
             if continuing {
                 // A reply continued after `max_tokens` is one answer.
                 last_text = Some(format!("{}{text}", last_text.take().unwrap_or_default()));
@@ -2038,7 +2048,7 @@ impl Engine {
                 // per run: a long task can hit this many times, each time after real work.
                 if tool_uses.is_empty() && !reply_has_text && reasoning_cutoffs < MAX_REASONING_CUTOFFS {
                     reasoning_cutoffs += 1;
-                    self.system_event("act_reminder", json!({}));
+                    self.system_event("act_reminder", json!({"kind": "reasoning_cutoff"}));
                     self.push_user(Message::user_text(ACT_PROMPT), true, None, true);
                     continue;
                 }
@@ -2192,6 +2202,20 @@ impl Engine {
                     self.push_user(Message::user_text(text), true, None, true);
                     continue;
                 }
+            }
+
+            // A reply that ended with no text and no tool call answers nothing, whatever ended it: ask
+            // for the next step or the answer instead of ending the turn. Same budget as the
+            // reasoning cut-offs: three in a row with no tool call between them end the turn.
+            if !reply_has_text
+                && !was_continuation
+                && stop_reason != Some(StopReason::Refusal)
+                && reasoning_cutoffs < MAX_REASONING_CUTOFFS
+            {
+                reasoning_cutoffs += 1;
+                self.system_event("act_reminder", json!({"kind": "empty_reply"}));
+                self.push_user(Message::user_text(EMPTY_REPLY_PROMPT), true, None, true);
+                continue;
             }
 
             // Stop / SubagentStop hook (contract C11: exit 2 makes the model keep going).
