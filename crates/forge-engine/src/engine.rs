@@ -203,6 +203,11 @@ const EMPTY_REPLY_PROMPT: &str = "<system-reminder>\nYour reply ended without an
                                   take the next concrete step (run a command, make an edit, or give your answer), \
                                   then continue from its result.\n</system-reminder>";
 
+/// Added to the second summary attempt when the first returned no summary and the conversation
+/// no longer fits (the case where a failure would end the run).
+const SUMMARY_RETRY: &str = "Your previous attempt returned no summary. Write the summary now, from what you \
+                             already know; do not analyze further.";
+
 impl Default for EngineConfig {
     fn default() -> Self {
         EngineConfig {
@@ -1326,13 +1331,23 @@ impl Engine {
         let msg = match outcome {
             StreamOutcome::Done(m) => m,
             StreamOutcome::Interrupted(_) => return Err("interrupted".into()),
-            StreamOutcome::Failed(e) => return Err(e.to_string()),
+            StreamOutcome::Failed(e) => {
+                let reason = e.to_string();
+                self.record_compact_failure(trigger, &reason, None);
+                return Err(reason);
+            }
         };
         self.record_usage(model, &msg.usage.clone(), turn);
         let summary = forge_compact::extract_summary(&msg.to_message().text());
         if summary.is_empty() {
+            self.record_compact_failure(trigger, "empty_summary", Some(&msg));
             return Err("the model returned an empty summary".into());
         }
+        Ok(self.install_summary(trigger, summary, continue_work))
+    }
+
+    /// Replace the conversation with `summary` (a full compaction).
+    fn install_summary(&mut self, trigger: &str, summary: String, continue_work: bool) -> CompactInfo {
         let pre_tokens = self.state.context_tokens;
         self.shared.transcript.append_compact_boundary(json!({"trigger": trigger, "preTokens": pre_tokens}));
         self.emit(EngineEvent::System {
@@ -1359,7 +1374,86 @@ impl Engine {
         self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
         self.state.counted = self.state.messages.len();
         self.forget_seen_results();
-        Ok(CompactInfo { trigger: trigger.into(), pre_tokens, summary })
+        CompactInfo { trigger: trigger.into(), pre_tokens, summary }
+    }
+
+    /// A summary attempt that failed, recorded as `system/compact_failed`: why, and what the reply
+    /// looked like. The attempt isn't part of the conversation, so without this a failure can't be
+    /// told apart afterwards (a reply that reasoned until its limit and wrote nothing, or an error).
+    fn record_compact_failure(&self, trigger: &str, reason: &str, reply: Option<&ApiMessage>) {
+        let mut data = json!({"trigger": trigger, "reason": reason});
+        if let Some(m) = reply {
+            let msg = m.to_message();
+            let reasoned = msg
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }));
+            data["stop_reason"] = json!(m.stop_reason);
+            data["output_tokens"] = json!(m.usage.output_tokens);
+            data["reasoning_only"] = json!(reasoned && msg.text().trim().is_empty());
+        }
+        self.system_event("compact_failed", data);
+    }
+
+    /// Compaction without the model, for when it returned no summary twice and the conversation no
+    /// longer fits: a note of what Forge itself knows (the person's requests, the files changed,
+    /// the task list, the last thing the model said) stands in for the model's summary. Less
+    /// detail, but the run goes on instead of ending.
+    fn compact_without_model(&mut self, trigger: &str, continue_work: bool) -> CompactInfo {
+        let clip = |t: &str| {
+            let t = t.trim();
+            if t.chars().count() > 2000 {
+                format!("{}…", t.chars().take(2000).collect::<String>())
+            } else {
+                t.to_string()
+            }
+        };
+        let points = self.prompt_points();
+        let mut note = String::from(
+            "The conversation could not be summarized, so this note was written without the model: earlier \
+             messages are gone. Re-read any file you need before you change it.\n",
+        );
+        if !points.is_empty() {
+            note.push_str("\nThe person's requests, oldest first:\n");
+            for p in &points {
+                note.push_str(&format!("- {}\n", clip(&p.text)));
+            }
+        }
+        let changed = points.first().map(|p| p.changed_files.clone()).unwrap_or_default();
+        if !changed.is_empty() {
+            note.push_str("\nFiles changed in this session:\n");
+            for f in &changed {
+                note.push_str(&format!("- {}\n", f.display()));
+            }
+        }
+        let todos: Vec<String> = self
+            .shared
+            .tool_ctx
+            .todos
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|t| {
+                let status = t.get("status").and_then(Value::as_str).unwrap_or("pending");
+                let content = t.get("content").and_then(Value::as_str).unwrap_or("");
+                (!content.is_empty()).then(|| format!("[{status}] {content}"))
+            })
+            .collect();
+        if !todos.is_empty() {
+            note.push_str("\nTask list:\n");
+            for t in &todos {
+                note.push_str(&format!("- {t}\n"));
+            }
+        }
+        let last = self.state.messages.iter().rev().find_map(|m| {
+            let t = m.text();
+            (m.role == forge_types::Role::Assistant && !t.trim().is_empty()).then_some(t)
+        });
+        if let Some(t) = last {
+            note.push_str(&format!("\nThe last thing you wrote before this:\n{}\n", clip(&t)));
+        }
+        self.system_event("compact_fallback", json!({"trigger": trigger}));
+        self.install_summary(trigger, note, continue_work)
     }
 
     /// The person's prompts, oldest first: user messages with text that are
@@ -1493,11 +1587,16 @@ impl Engine {
         let msg = match self.stream_inner(req, &cancel, false).await {
             StreamOutcome::Done(m) => m,
             StreamOutcome::Interrupted(_) => return Err("interrupted".into()),
-            StreamOutcome::Failed(e) => return Err(e.to_string()),
+            StreamOutcome::Failed(e) => {
+                let reason = e.to_string();
+                self.record_compact_failure("partial", &reason, None);
+                return Err(reason);
+            }
         };
         self.record_usage(&model, &msg.usage.clone(), &mut TurnAcc::default());
         let summary = forge_compact::extract_summary(&msg.to_message().text());
         if summary.is_empty() {
+            self.record_compact_failure("partial", "empty_summary", Some(&msg));
             return Err("the model returned an empty summary".into());
         }
         let pre_tokens = forge_compact::estimate_tokens(&self.state.messages);
@@ -1900,7 +1999,18 @@ impl Engine {
                         NoticeLevel::Warning,
                         "The conversation no longer fits the context window; compacting.",
                     );
-                    match self.compact_inner(None, "auto", true, &model, &cancel, &mut turn).await {
+                    // Here a failed summary would end the run: it gets a second, corrected try,
+                    // then a compaction that doesn't need the model (seen on password-recovery,
+                    // 4e06b66: one summary came back empty, the next attempt worked).
+                    let mut compacted = self.compact_inner(None, "auto", true, &model, &cancel, &mut turn).await;
+                    if matches!(&compacted, Err(err) if err != "interrupted") {
+                        compacted =
+                            self.compact_inner(Some(SUMMARY_RETRY), "auto", true, &model, &cancel, &mut turn).await;
+                    }
+                    if matches!(&compacted, Err(err) if err != "interrupted") {
+                        compacted = Ok(self.compact_without_model("auto", true));
+                    }
+                    match compacted {
                         Ok(_) => continue,
                         Err(err) => {
                             let text = format!("API Error: {e} (compaction failed: {err})");

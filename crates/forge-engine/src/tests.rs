@@ -672,6 +672,59 @@ async fn prompt_too_long_compacts_and_retries() {
     assert!(last.messages[0].text().contains("Continue the work"), "mid-turn compaction tells the model to continue");
 }
 
+#[tokio::test]
+async fn an_empty_summary_is_recorded_and_retried_when_the_conversation_no_longer_fits() {
+    use forge_types::StopReason;
+    let thinking = |t: &str| ContentBlock::Thinking { thinking: t.into(), signature: String::new() };
+    let too_long = || MockTurn::HttpError {
+        status: 400,
+        kind: "invalid_request_error".into(),
+        message: "prompt is too long: 1000001 tokens > 1000000 maximum".into(),
+    };
+    // password-recovery (4e06b66): a summary came back empty, reasoning only; the next attempt
+    // worked. When the conversation no longer fits, the first failure would end the run.
+    let h = Harness::new(vec![
+        MockTurn::text("ok").with_usage(usage(100)),
+        too_long(),
+        MockTurn::blocks(vec![thinking("the ZIP has two fragments...")], StopReason::MaxTokens),
+        MockTurn::text("<summary>compressed</summary>"),
+        MockTurn::text("answered after compaction"),
+    ]);
+    let mut e = h.engine();
+    e.submit(prompt("one")).await;
+    let r = e.submit(prompt("two")).await;
+    assert_eq!(r.result.as_deref(), Some("answered after compaction"));
+    let t = h.transcript_text();
+    assert!(t.contains(r#""subtype":"compact_failed""#), "the failure is recorded");
+    assert!(t.contains(r#""stop_reason":"max_tokens""#) && t.contains(r#""reasoning_only":true"#), "with why");
+    let retry = &h.provider.requests()[3];
+    assert!(last_user_text(retry).contains("returned no summary"), "the second try says what went wrong");
+    assert!(!t.contains("compact_fallback"));
+
+    // Both attempts empty: compact without the model, and the run goes on.
+    let h = Harness::new(vec![
+        MockTurn::text("ok").with_usage(usage(100)),
+        too_long(),
+        MockTurn::blocks(vec![thinking("analysis")], StopReason::MaxTokens),
+        MockTurn::blocks(vec![thinking("more analysis")], StopReason::EndTurn),
+        MockTurn::text("answered after the fallback"),
+    ]);
+    let mut e = h.engine();
+    e.submit(prompt("recover the password from /app/varsea")).await;
+    let r = e.submit(prompt("two")).await;
+    assert_eq!(r.result.as_deref(), Some("answered after the fallback"));
+    let t = h.transcript_text();
+    assert_eq!(t.matches(r#""subtype":"compact_failed""#).count(), 2);
+    assert!(t.contains(r#""subtype":"compact_fallback""#));
+    let after = h.provider.requests().last().unwrap().clone();
+    let note = after.messages[0].text();
+    assert!(
+        note.contains("could not be summarized") && note.contains("recover the password from /app/varsea"),
+        "{note}"
+    );
+    assert!(note.contains("Continue the work"), "the model is told to go on");
+}
+
 fn verifying(commands: &[&str]) -> EngineConfig {
     EngineConfig {
         verify: Some(crate::verify::VerifyConfig {

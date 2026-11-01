@@ -240,9 +240,26 @@ passes the instructions to the summary prompt. It doesn't micro-compact first.
 messages stay in the JSONL ahead of the boundary, so `--resume` loads only
 what follows it.
 
+**When the summary fails:**
+- Every failed attempt emits `system/compact_failed` with `{trigger, reason}`,
+  and for a reply that came back without a summary, its `stop_reason`,
+  `output_tokens` and `reasoning_only` (the reply had reasoning but no text).
+  The attempt isn't part of the conversation, so this is the only record of
+  why it failed.
+- After a failed auto-compaction the conversation goes on unchanged; the next
+  request finds it still over the threshold and tries again.
+- When a request fails because the conversation no longer fits, a failed
+  summary would end the run. There it is tried a second time, with a note that
+  the first attempt returned no summary. If that fails too, Forge compacts
+  without the model: the summary is replaced by a note of what it knows itself
+  (the person's requests, the files changed this session, the task list, the
+  last thing the model wrote), with `system/compact_fallback`. The run goes on
+  with less detail instead of ending.
+
 Tests: `compact::c9_micro_clears_only_eligible_results`,
 `compact::c9_micro_is_sticky_across_requests`,
-`compact::c9_auto_triggers_at_threshold`.
+`compact::c9_auto_triggers_at_threshold`,
+`engine::an_empty_summary_is_recorded_and_retried_when_the_conversation_no_longer_fits`.
 
 ### C10. Worktrees
 
