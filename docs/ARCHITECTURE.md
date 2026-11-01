@@ -431,6 +431,12 @@ clears the same-result counts, so re-reading after one isn't called a loop.
   resets the count, so a long task gets one each time it stalls after real
   work, while three stalls in a row with no tool call let the turn end. These
   don't use up the 3 text continuations.
+- A reply that ends normally with no text and no tool call (only reasoning, or
+  nothing) doesn't end the turn either: it answers nothing. After the other
+  end-of-turn reminders and before the Stop hook, it gets the same request to
+  act or answer (`system/act_reminder` with `kind: empty_reply`; the
+  cut-off's is `kind: reasoning_cutoff`), from the same budget of 3 in a row
+  without a tool call.
 - After the first `max_tokens` stop, the turn's output cap rises to 64,000
   (bounded by the model), unless the user set `KODACT_MAX_OUTPUT_TOKENS`, and
   `system/output_limit` is emitted.
@@ -443,6 +449,7 @@ Tests:
 - `engine::loop_guard_tells_when_changes_did_not_affect_a_failure`;
 - `engine::max_tokens_continues_text_and_answers_cut_off_calls`;
 - `engine::a_reply_cut_off_while_reasoning_is_asked_to_act`;
+- `engine::an_empty_reply_is_asked_to_act_instead_of_ending_the_turn`;
 - `accumulate::invalid_tool_json_is_marked_truncated`.
 
 ### C14. Dangerous commands and injected instructions

@@ -1027,6 +1027,40 @@ async fn a_reply_cut_off_while_reasoning_is_asked_to_act() {
 }
 
 #[tokio::test]
+async fn an_empty_reply_is_asked_to_act_instead_of_ending_the_turn() {
+    use kodact_types::StopReason;
+    let thinking = |t: &str| ContentBlock::Thinking { thinking: t.into(), signature: String::new() };
+    // gpt2-codegolf (06eba3b, ce92502): after a few tool calls the model ended a reply with only
+    // reasoning, no text and no tool call, and that ended the unattended run with nothing done.
+    let h = Harness::new(vec![
+        MockTurn::tool("Bash", json!({"command": "ls"})),
+        MockTurn::blocks(vec![thinking("python3 is missing, so install it first")], StopReason::EndTurn),
+        MockTurn::text("Installed python3 and wrote gpt2.c."),
+    ]);
+    let mut e = h.engine();
+    let r = e.submit(prompt("write gpt2.c")).await;
+    assert_eq!(r.result.as_deref(), Some("Installed python3 and wrote gpt2.c."));
+    let asked = last_user_text(&h.provider.requests()[2]);
+    assert!(asked.contains("without an answer or an action") && !asked.contains("output token limit"), "{asked}");
+    assert!(h.transcript_text().contains(r#""kind":"empty_reply""#));
+
+    // The same budget as the reasoning cut-offs: three in a row without a tool call, then the
+    // turn may end.
+    let empty = || MockTurn::blocks(vec![thinking("still thinking")], StopReason::EndTurn);
+    let h = Harness::new(vec![empty(), empty(), empty(), empty()]);
+    let mut e = h.engine();
+    let r = e.submit(prompt("stuck")).await;
+    assert_eq!(r.num_turns, 4);
+    assert_eq!(h.transcript_text().matches(r#""kind":"empty_reply""#).count(), 3);
+
+    // A reply with an answer ends the turn as before.
+    let h = Harness::new(vec![MockTurn::blocks(vec![thinking("easy"), ContentBlock::text("16")], StopReason::EndTurn)]);
+    let mut e = h.engine();
+    assert_eq!(e.submit(prompt("how many primes?")).await.result.as_deref(), Some("16"));
+    assert!(!h.transcript_text().contains("act_reminder"));
+}
+
+#[tokio::test]
 async fn invalid_tool_json_is_repaired_or_explained() {
     use kodact_types::StopReason;
     let marked = |raw: &str| json!({ kodact_api::TRUNCATED_INPUT: "incomplete JSON (x)", kodact_api::RAW_INPUT: raw });
