@@ -148,3 +148,18 @@ def test_forge_reminders_are_counted_per_trial_and_job(tmp_path):
     # Per job: 3 reminders over 2 trials; 40 minutes of agent time for the 1 task solved.
     cmp = report.comparison([job])
     assert "| 40m00s | 1.5 (loop_guard 1.0, verification 0.5) |" in cmp, cmp
+
+
+def test_compactions_and_failed_summaries_are_counted(tmp_path):
+    # Shaped like path-tracing-reverse 9ef0955: seven empty summaries before one compaction worked,
+    # then a second compaction; the other trial never compacted.
+    failed = {"subtype": "compact_failed", "trigger": "auto", "reason": "empty_summary", "stop_reason": "max_tokens"}
+    events = [failed] * 7 + [{"subtype": "compact_boundary"}] * 2
+    job = make_job(tmp_path, [("path-tracing-reverse", 0.0, 1800, events), ("fix-git", 1.0, 600, [])])
+    trial = next(t for t in job.trials if t.task == "path-tracing-reverse")
+    assert trial.compactions() == (2, 7, 0)
+    assert "| 2/7/0 |" in trial.row()
+    other = next(t for t in job.trials if t.task == "fix-git")
+    assert other.compaction_cell() == ""
+    assert "compactions (done/failed/note)" in job.report()
+    assert "| 1.0/3.5 |" in report.comparison([job])

@@ -155,6 +155,15 @@ pub struct RunRecord {
     /// Times the loop guard warned the model it was repeating itself.
     #[serde(default)]
     pub loop_guards: u64,
+    /// Compactions of the conversation (`compact_boundary`).
+    #[serde(default)]
+    pub compactions: u64,
+    /// Summary attempts that failed (`compact_failed`); each costs a model call.
+    #[serde(default)]
+    pub compact_failures: u64,
+    /// Compactions done with Forge's own note after two failed summaries (`compact_fallback`).
+    #[serde(default)]
+    pub compact_fallbacks: u64,
     pub agent_error: bool,
     pub stop_reason: Option<String>,
     pub timed_out: bool,
@@ -182,6 +191,11 @@ pub struct Summary {
     pub verify_reminders_per_run: f64,
     #[serde(default)]
     pub loop_guards_per_run: f64,
+    /// Compactions per run, and failed summary attempts per run (each a model call for nothing).
+    #[serde(default)]
+    pub compactions_per_run: f64,
+    #[serde(default)]
+    pub compact_failures_per_run: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +231,8 @@ pub fn summarize(runs: &[RunRecord]) -> Summary {
         invalid_call_rate: if calls == 0 { 0.0 } else { errors as f64 / calls as f64 },
         verify_reminders_per_run: runs.iter().map(|r| r.verify_reminders as f64).sum::<f64>() / n,
         loop_guards_per_run: runs.iter().map(|r| r.loop_guards as f64).sum::<f64>() / n,
+        compactions_per_run: runs.iter().map(|r| r.compactions as f64).sum::<f64>() / n,
+        compact_failures_per_run: runs.iter().map(|r| r.compact_failures as f64).sum::<f64>() / n,
     }
 }
 
@@ -330,6 +346,9 @@ pub struct StreamFacts {
     pub tool_errors: u64,
     pub verify_reminders: u64,
     pub loop_guards: u64,
+    pub compactions: u64,
+    pub compact_failures: u64,
+    pub compact_fallbacks: u64,
     pub api_error: bool,
     pub is_error: bool,
     pub stop_reason: Option<String>,
@@ -356,6 +375,9 @@ pub fn parse_stream(lines: &[Value]) -> StreamFacts {
             }
             Some("system") if v["subtype"] == "verification" => f.verify_reminders += 1,
             Some("system") if v["subtype"] == "loop_guard" => f.loop_guards += 1,
+            Some("system") if v["subtype"] == "compact_boundary" => f.compactions += 1,
+            Some("system") if v["subtype"] == "compact_failed" => f.compact_failures += 1,
+            Some("system") if v["subtype"] == "compact_fallback" => f.compact_fallbacks += 1,
             Some("system") if v["subtype"] == "model_fallback" || v["subtype"] == "api_retry" => f.api_error = true,
             Some("result") => {
                 f.saw_result = true;
@@ -485,6 +507,9 @@ pub async fn run_task(task: &Task, run: u32, opts: &RunOptions) -> anyhow::Resul
         tool_errors: facts.tool_errors,
         verify_reminders: facts.verify_reminders,
         loop_guards: facts.loop_guards,
+        compactions: facts.compactions,
+        compact_failures: facts.compact_failures,
+        compact_fallbacks: facts.compact_fallbacks,
         agent_error,
         stop_reason: facts.stop_reason,
         timed_out,
@@ -515,6 +540,9 @@ pub async fn run_suite(tasks: &[Task], opts: &RunOptions) -> Report {
                     tool_errors: 0,
                     verify_reminders: 0,
                     loop_guards: 0,
+                    compactions: 0,
+                    compact_failures: 0,
+                    compact_fallbacks: 0,
                     agent_error: true,
                     stop_reason: None,
                     timed_out: false,
@@ -559,7 +587,8 @@ pub fn render_markdown(r: &Report) -> String {
         "# forge-eval: {}\n\n{} runs · args: `{}`\n\n| Metric | Value |\n| --- | --- |\n\
          | Pass rate | {} |\n| Cost per task | ${:.4} |\n| Cost per passed task | {} |\n| Turns per task | {:.1} |\n\
          | Wall time per task | {:.1}s |\n| Recovery rate | {} |\n| False-finish rate | {} |\n| Invalid-call rate | {} |\n\
-         | Verification reminders per task | {:.2} |\n| Loop warnings per task | {:.2} |\n\n",
+         | Verification reminders per task | {:.2} |\n| Loop warnings per task | {:.2} |\n\
+         | Compactions per task | {:.2} |\n| Failed summaries per task | {:.2} |\n\n",
         r.label,
         s.runs,
         r.args.join(" "),
@@ -573,6 +602,8 @@ pub fn render_markdown(r: &Report) -> String {
         pct(s.invalid_call_rate),
         s.verify_reminders_per_run,
         s.loop_guards_per_run,
+        s.compactions_per_run,
+        s.compact_failures_per_run,
     );
     out.push_str("## By pillar\n\n| Pillar | Runs | Pass | False finish | Turns |\n| --- | --- | --- | --- | --- |\n");
     for (p, s) in &r.by_pillar {
@@ -584,10 +615,10 @@ pub fn render_markdown(r: &Report) -> String {
             s.mean_turns
         ));
     }
-    out.push_str("\n## Runs\n\n| Task | Run | Pass | False finish | Turns | Cost | Tool errors | Time | Reminders (verify/loop) |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("\n## Runs\n\n| Task | Run | Pass | False finish | Turns | Cost | Tool errors | Time | Reminders (verify/loop) | Compactions (done/failed/note) |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for x in &r.runs {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | ${:.4} | {}/{} | {:.1}s | {}/{} |\n",
+            "| {} | {} | {} | {} | {} | ${:.4} | {}/{} | {:.1}s | {}/{} | {}/{}/{} |\n",
             x.task,
             x.run,
             if x.passed { "yes" } else { "no" },
@@ -598,7 +629,10 @@ pub fn render_markdown(r: &Report) -> String {
             x.tool_calls,
             x.wall_secs,
             x.verify_reminders,
-            x.loop_guards
+            x.loop_guards,
+            x.compactions,
+            x.compact_failures,
+            x.compact_fallbacks
         ));
     }
     out
@@ -664,6 +698,18 @@ pub fn render_compare(a: &Report, b: &Report) -> String {
         &delta(x.loop_guards_per_run, y.loop_guards_per_run, false),
     ));
     out.push_str(&row(
+        "Compactions per task",
+        format!("{:.2}", x.compactions_per_run),
+        format!("{:.2}", y.compactions_per_run),
+        &delta(x.compactions_per_run, y.compactions_per_run, false),
+    ));
+    out.push_str(&row(
+        "Failed summaries per task",
+        format!("{:.2}", x.compact_failures_per_run),
+        format!("{:.2}", y.compact_failures_per_run),
+        &delta(x.compact_failures_per_run, y.compact_failures_per_run, false),
+    ));
+    out.push_str(&row(
         "Recovery rate",
         opt_pct(x.recovery_rate),
         opt_pct(y.recovery_rate),
@@ -718,6 +764,9 @@ mod tests {
             tool_errors: if had_error { 2 } else { 0 },
             verify_reminders: 0,
             loop_guards: 0,
+            compactions: 0,
+            compact_failures: 0,
+            compact_fallbacks: 0,
             agent_error: false,
             stop_reason: Some("end_turn".into()),
             timed_out: false,
@@ -752,10 +801,15 @@ mod tests {
             json!({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": true}, {"type": "tool_result"}]}}),
             json!({"type": "system", "subtype": "verification", "kind": "unchecked"}),
             json!({"type": "system", "subtype": "loop_guard", "kind": "repeated_failure", "after_changes": true}),
+            json!({"type": "system", "subtype": "compact_failed", "trigger": "auto", "reason": "empty_summary"}),
+            json!({"type": "system", "subtype": "compact_failed", "trigger": "auto", "reason": "empty_summary"}),
+            json!({"type": "system", "subtype": "compact_fallback", "trigger": "auto"}),
+            json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "auto"}}),
             json!({"type": "result", "subtype": "success", "is_error": false, "total_cost_usd": 0.05, "num_turns": 3, "stop_reason": "end_turn"}),
         ];
         let f = parse_stream(&lines);
         assert_eq!((f.verify_reminders, f.loop_guards), (1, 1));
+        assert_eq!((f.compactions, f.compact_failures, f.compact_fallbacks), (1, 2, 1));
         assert_eq!((f.tool_calls, f.tool_errors, f.turns), (2, 1, 3));
         assert!(f.saw_result && !f.is_error && !f.api_error);
         assert_eq!(f.cost_usd, 0.05);

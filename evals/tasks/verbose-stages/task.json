@@ -1,0 +1,8 @@
+{
+  "instruction": "./build.sh fails. Fix the pipeline so that it passes. Do not change build.sh or pipeline/runner.py.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "context",
+  "tags": ["python", "long-output", "compaction"],
+  "timeout_secs": 900,
+  "args": ["--autocompact", "100k"]
+}

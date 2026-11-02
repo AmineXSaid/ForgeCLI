@@ -366,8 +366,17 @@ class Trial:
         return (
             f"| {self.task} | {reward} | {self.verdict} | {self.turns if self.turns is not None else ''} | "
             f"{fmt_s(self.agent_s)}{limit} | {tok} | {calls}/{errs} | {len(self.retries)} | {self.reminder_cell()} | "
-            f"{finish} |"
+            f"{self.compaction_cell()} | {finish} |"
         )
+
+    def compactions(self) -> tuple[int, int, int]:
+        """Compactions done, summary attempts that failed, and notes written without the model."""
+        return tuple(self.system.get(k, 0) for k in ("compact_boundary", "compact_failed", "compact_fallback"))
+
+    def compaction_cell(self) -> str:
+        """`2/7/0`: two compactions, seven failed summaries, no note without the model; empty if none."""
+        c = self.compactions()
+        return "/".join(map(str, c)) if any(c) else ""
 
     def reminder_cell(self) -> str:
         """Forge's reminders by subtype: `verification 1, loop_guard 2`."""
@@ -550,8 +559,8 @@ class Job:
             "## Trials",
             "",
             "| task | reward | verdict | turns | agent time | tokens in/out | tool calls/errors | API retries "
-            "| Forge reminders | finish |",
-            "|---|---|---|---|---|---|---|---|---|---|",
+            "| Forge reminders | compactions (done/failed/note) | finish |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
         ]
         out += [t.row() for t in self.trials]
         errors, kinds, unknown, system, reminders = Counter(), Counter(), Counter(), Counter(), Counter()
@@ -615,13 +624,22 @@ def reminders_per_trial(job: Job) -> str:
     return f"{sum(by.values()) / n:.1f} ({parts})"
 
 
+def compactions_per_trial(job: Job) -> str:
+    """Compactions and failed summary attempts per trial: `0.3/0.5`. Each failed one is a model call
+    that bought nothing, so fewer is better as long as the pass rate holds."""
+    n = len(job.trials)
+    done = sum(t.compactions()[0] for t in job.trials)
+    failed = sum(t.compactions()[1] for t in job.trials)
+    return f"{done / n:.1f}/{failed / n:.1f}" if n else "0"
+
+
 def comparison(jobs: list[Job]) -> str:
     tasks = sorted({t.task for j in jobs for t in j.trials})
     out = ["# Comparison", ""]
     out += [
         "| job | harness | model | passed | valid trials | parallel | agent time per pass | Forge reminders per trial "
-        "| verdicts |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| compactions/failed summaries per trial | verdicts |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for j in jobs:
         p, n = j.score()
@@ -631,7 +649,7 @@ def comparison(jobs: list[Job]) -> str:
         per_pass = fmt_s(sum(t.agent_s or 0 for t in j.trials) / p) if p else "–"
         out.append(
             f"| {j.name} | {j.harness} | {j.model} | {p}/{n} | {valid} | {j.concurrency} | {per_pass} | "
-            f"{reminders_per_trial(j)} | {v} |"
+            f"{reminders_per_trial(j)} | {compactions_per_trial(j)} | {v} |"
         )
     out += ["", "| task | " + " | ".join(f"{j.harness} ({i + 1})" for i, j in enumerate(jobs)) + " |"]
     out.append("|---|" + "---|" * len(jobs))
