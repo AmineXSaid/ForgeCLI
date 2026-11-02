@@ -203,10 +203,12 @@ const EMPTY_REPLY_PROMPT: &str = "<system-reminder>\nYour reply ended without an
                                   take the next concrete step (run a command, make an edit, or give your answer), \
                                   then continue from its result.\n</system-reminder>";
 
-/// Added to the second summary attempt when the first returned no summary and the conversation
-/// no longer fits (the case where a failure would end the run).
+/// Added to the second summary attempt when the first returned no summary.
 const SUMMARY_RETRY: &str = "Your previous attempt returned no summary. Write the summary now, from what you \
                              already know; do not analyze further.";
+
+/// What `compact_inner` returns when the model's reply held no summary.
+const EMPTY_SUMMARY: &str = "the model returned an empty summary";
 
 impl Default for EngineConfig {
     fn default() -> Self {
@@ -824,10 +826,10 @@ impl Engine {
             let system: usize = self.system.iter().map(|b| b.text.len()).sum();
             let tools: usize =
                 self.shared.tools.specs().iter().map(|t| t.description.len() + t.input_schema.to_string().len()).sum();
-            return forge_compact::estimate_tokens(msgs) + ((system + tools) / 4) as u64;
+            return self.estimate_sent(msgs) + ((system + tools) / 4) as u64;
         }
         let from = self.state.counted.min(msgs.len());
-        self.state.context_tokens + forge_compact::estimate_tokens(&msgs[from..])
+        self.state.context_tokens + self.estimate_sent(&msgs[from..])
     }
 
     /// The window compaction is measured against, for `model`.
@@ -1195,15 +1197,43 @@ impl Engine {
         crate::snapshot::sends_fast(&self.handle.runtime(), model, self.shared.provider.name())
     }
 
+    /// Take the conversation's size from a reply in it, which is pushed right after: what its
+    /// request held, plus what the next request carries of the reply. Its reasoning counts only
+    /// when the provider sends reasoning back. Over chat completions it is gone after the reply,
+    /// and counting it compacted conversations at a quarter of the window (regex-chess, 9ef0955:
+    /// 24k tokens in the request plus a 32k reply that was all reasoning, counted as 56k).
+    fn measure_context(&mut self, model: &str, reply: &ApiMessage) {
+        let u = &reply.usage;
+        let input = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+        // A server that reports no input tokens reports no usable size: 0 makes
+        // `projected_context_tokens` estimate the whole request instead.
+        self.state.context_tokens = if input == 0 {
+            0
+        } else if self.shared.provider.resends_reasoning(model) {
+            input + u.output_tokens
+        } else {
+            // The reply's text and calls, as their share of its output (by characters). With no
+            // reasoning in it, that's all of the output, as before.
+            let msg = [reply.to_message()];
+            let all = forge_compact::estimate_sent_tokens(&msg, true);
+            let sent = forge_compact::estimate_sent_tokens(&msg, false);
+            let carried =
+                if all == 0 { u.output_tokens } else { (u.output_tokens as u128 * sent as u128 / all as u128) as u64 };
+            input + carried
+        };
+        self.state.counted = self.state.messages.len() + 1;
+    }
+
+    /// Estimate `msgs` as a request carries them: without reasoning when the provider leaves it out.
+    fn estimate_sent(&self, msgs: &[Message]) -> u64 {
+        forge_compact::estimate_sent_tokens(msgs, self.shared.provider.resends_reasoning(&self.handle.model()))
+    }
+
+    /// Count a request's tokens and cost toward the session. The conversation's size is
+    /// [`Self::measure_context`]'s: a summary or a side question isn't the conversation.
     fn record_usage(&mut self, model: &str, usage: &Usage, turn: &mut TurnAcc) {
         turn.usage.add(usage);
         self.state.total_usage.add(usage);
-        // A server that reports no input tokens reports no usable size: 0 makes
-        // `projected_context_tokens` estimate the whole request instead.
-        let input = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-        self.state.context_tokens = if input == 0 { 0 } else { usage.context_tokens() };
-        // The reply this usage belongs to is pushed right after.
-        self.state.counted = self.state.messages.len() + 1;
         let pricing = self.pricing_for(model);
         if pricing.is_none() && (usage.input_tokens > 0 || usage.output_tokens > 0) {
             self.state.unpriced.insert(model.to_string());
@@ -1262,7 +1292,7 @@ impl Engine {
             && used >= forge_compact::autocompact_threshold(window, max_out)
             && !self.state.messages.is_empty()
         {
-            if let Err(e) = self.compact_inner(None, "auto", continue_work, model, cancel, turn).await {
+            if let Err(e) = self.compact_for_room(false, continue_work, model, cancel, turn).await {
                 self.notice(NoticeLevel::Warning, format!("Automatic compaction failed: {e}"));
             }
         }
@@ -1275,6 +1305,32 @@ impl Engine {
         let model = self.handle.model();
         let mut turn = TurnAcc::default();
         self.compact_inner(instructions, "manual", false, &model, &cancel, &mut turn).await
+    }
+
+    /// Compact to make room: the conversation is nearly full, or (`overflowed`) no longer fits.
+    /// A failed summary is never sent again unchanged: it gets one corrected try, then Forge's
+    /// own note stands in. An automatic attempt used to be repeated, the same, before every later
+    /// request (path-tracing-reverse, 9ef0955: seven empty summaries in a row, 140k tokens, about
+    /// half of the run's 30 minutes). Nearly full, only an empty summary gets this (an API error
+    /// may pass, and the conversation still fits); once it no longer fits, any failure but an
+    /// interruption does, since the run can't go on without it.
+    async fn compact_for_room(
+        &mut self,
+        overflowed: bool,
+        continue_work: bool,
+        model: &str,
+        cancel: &CancellationToken,
+        turn: &mut TurnAcc,
+    ) -> Result<CompactInfo, String> {
+        let again = |r: &Result<CompactInfo, String>| matches!(r, Err(e) if e != "interrupted" && (overflowed || e == EMPTY_SUMMARY));
+        let mut compacted = self.compact_inner(None, "auto", continue_work, model, cancel, turn).await;
+        if again(&compacted) {
+            compacted = self.compact_inner(Some(SUMMARY_RETRY), "auto", continue_work, model, cancel, turn).await;
+        }
+        if again(&compacted) {
+            compacted = Ok(self.compact_without_model("auto", continue_work));
+        }
+        compacted
     }
 
     async fn compact_inner(
@@ -1324,7 +1380,10 @@ impl Engine {
             }
             oc
         });
-        req.max_tokens = req.max_tokens.min(20_000);
+        // The summary gets a reply's whole output budget: a model that reasons spends its
+        // reasoning from the same budget before writing the summary. At 20k, path-tracing-reverse
+        // (9ef0955) reasoned to the limit and wrote nothing seven times in a row, and five of the
+        // eight summaries that did come back that run used 18k to 20k.
         let t0 = Instant::now();
         let outcome = self.stream_inner(req, cancel, false).await;
         turn.api_ms += t0.elapsed().as_millis() as u64;
@@ -1341,14 +1400,14 @@ impl Engine {
         let summary = forge_compact::extract_summary(&msg.to_message().text());
         if summary.is_empty() {
             self.record_compact_failure(trigger, "empty_summary", Some(&msg));
-            return Err("the model returned an empty summary".into());
+            return Err(EMPTY_SUMMARY.into());
         }
         Ok(self.install_summary(trigger, summary, continue_work))
     }
 
     /// Replace the conversation with `summary` (a full compaction).
     fn install_summary(&mut self, trigger: &str, summary: String, continue_work: bool) -> CompactInfo {
-        let pre_tokens = self.state.context_tokens;
+        let pre_tokens = self.projected_context_tokens();
         self.shared.transcript.append_compact_boundary(json!({"trigger": trigger, "preTokens": pre_tokens}));
         self.emit(EngineEvent::System {
             subtype: "compact_boundary".into(),
@@ -1395,15 +1454,15 @@ impl Engine {
         self.system_event("compact_failed", data);
     }
 
-    /// Compaction without the model, for when it returned no summary twice and the conversation no
-    /// longer fits: a note of what Forge itself knows (the person's requests, the files changed,
-    /// the task list, the last thing the model said) stands in for the model's summary. Less
-    /// detail, but the run goes on instead of ending.
+    /// Compaction without the model, for when two summary attempts failed: a note of what Forge
+    /// itself knows (the person's requests, the files changed, the task list, the last thing the
+    /// model said) stands in for the model's summary. Less detail, but the run goes on, instead of
+    /// ending or paying for another attempt before every request.
     fn compact_without_model(&mut self, trigger: &str, continue_work: bool) -> CompactInfo {
-        let clip = |t: &str| {
+        let clip = |t: &str, max: usize| {
             let t = t.trim();
-            if t.chars().count() > 2000 {
-                format!("{}…", t.chars().take(2000).collect::<String>())
+            if t.chars().count() > max {
+                format!("{}…", t.chars().take(max).collect::<String>())
             } else {
                 t.to_string()
             }
@@ -1414,9 +1473,31 @@ impl Engine {
              messages are gone. Re-read any file you need before you change it.\n",
         );
         if !points.is_empty() {
+            // Each request whole up to 8,000 characters (a task's description often runs to
+            // several thousand), 24,000 in all: the first request, then the latest ones.
+            let texts: Vec<String> = points.iter().map(|p| clip(&p.text, 8_000)).collect();
+            let mut keep = vec![false; texts.len()];
+            keep[0] = true;
+            let mut size = texts[0].len();
+            for i in (1..texts.len()).rev() {
+                if size + texts[i].len() > 24_000 {
+                    break;
+                }
+                keep[i] = true;
+                size += texts[i].len();
+            }
             note.push_str("\nThe person's requests, oldest first:\n");
-            for p in &points {
-                note.push_str(&format!("- {}\n", clip(&p.text)));
+            let mut left_out = 0;
+            for (t, kept) in texts.iter().zip(&keep) {
+                if !kept {
+                    left_out += 1;
+                    continue;
+                }
+                if left_out > 0 {
+                    note.push_str(&format!("- ({left_out} earlier requests left out)\n"));
+                    left_out = 0;
+                }
+                note.push_str(&format!("- {t}\n"));
             }
         }
         let changed = points.first().map(|p| p.changed_files.clone()).unwrap_or_default();
@@ -1450,7 +1531,7 @@ impl Engine {
             (m.role == forge_types::Role::Assistant && !t.trim().is_empty()).then_some(t)
         });
         if let Some(t) = last {
-            note.push_str(&format!("\nThe last thing you wrote before this:\n{}\n", clip(&t)));
+            note.push_str(&format!("\nThe last thing you wrote before this:\n{}\n", clip(&t, 2_000)));
         }
         self.system_event("compact_fallback", json!({"trigger": trigger}));
         self.install_summary(trigger, note, continue_work)
@@ -1497,7 +1578,7 @@ impl Engine {
         let to = self.state.uuids.get(index).cloned();
         self.state.messages.truncate(index);
         self.state.uuids.truncate(index);
-        self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.context_tokens = self.estimate_sent(&self.state.messages);
         self.state.counted = self.state.messages.len();
         self.forget_seen_results();
         self.shared.transcript.set_leaf(self.state.uuids.last().cloned());
@@ -1583,7 +1664,7 @@ impl Engine {
             }
             oc
         });
-        req.max_tokens = req.max_tokens.min(20_000);
+        // A reply's whole output budget, as for a full compaction.
         let msg = match self.stream_inner(req, &cancel, false).await {
             StreamOutcome::Done(m) => m,
             StreamOutcome::Interrupted(_) => return Err("interrupted".into()),
@@ -1597,9 +1678,9 @@ impl Engine {
         let summary = forge_compact::extract_summary(&msg.to_message().text());
         if summary.is_empty() {
             self.record_compact_failure("partial", "empty_summary", Some(&msg));
-            return Err("the model returned an empty summary".into());
+            return Err(EMPTY_SUMMARY.into());
         }
-        let pre_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        let pre_tokens = self.estimate_sent(&self.state.messages);
         let which = if to == len { "from this point on" } else { "before this point" };
         let note = Message::user_text(format!(
             "<system-reminder>\nThe conversation {which} was summarized at the user's request.\n</system-reminder>\n\n{summary}"
@@ -1631,7 +1712,7 @@ impl Engine {
         messages.extend(am);
         self.state.uuids = uuids;
         self.state.messages = messages;
-        self.state.context_tokens = forge_compact::estimate_tokens(&self.state.messages);
+        self.state.context_tokens = self.estimate_sent(&self.state.messages);
         self.state.counted = self.state.messages.len();
         self.forget_seen_results();
         self.settle_after_rewrite();
@@ -1711,9 +1792,7 @@ impl Engine {
     /// Count a request made beside the conversation (a goal check, a title)
     /// toward the session's cost, without changing the context size.
     pub fn record_side_usage(&mut self, model: &str, usage: &Usage) {
-        let (context, counted) = (self.state.context_tokens, self.state.counted);
         self.record_usage(model, usage, &mut TurnAcc::default());
-        (self.state.context_tokens, self.state.counted) = (context, counted);
     }
 
     /// ride along. The request keeps the conversation's system prompt and
@@ -1733,9 +1812,7 @@ impl Engine {
             ApiError::Cancelled => "interrupted".to_string(),
             e => e.describe(),
         })?;
-        let (context, counted) = (self.state.context_tokens, self.state.counted);
         self.record_usage(&model, &msg.usage, &mut TurnAcc::default());
-        (self.state.context_tokens, self.state.counted) = (context, counted);
         let text = msg.to_message().text();
         if text.trim().is_empty() {
             return Err("the model gave no answer".into());
@@ -1999,17 +2076,9 @@ impl Engine {
                         NoticeLevel::Warning,
                         "The conversation no longer fits the context window; compacting.",
                     );
-                    // Here a failed summary would end the run: it gets a second, corrected try,
-                    // then a compaction that doesn't need the model (seen on password-recovery,
-                    // 4e06b66: one summary came back empty, the next attempt worked).
-                    let mut compacted = self.compact_inner(None, "auto", true, &model, &cancel, &mut turn).await;
-                    if matches!(&compacted, Err(err) if err != "interrupted") {
-                        compacted =
-                            self.compact_inner(Some(SUMMARY_RETRY), "auto", true, &model, &cancel, &mut turn).await;
-                    }
-                    if matches!(&compacted, Err(err) if err != "interrupted") {
-                        compacted = Ok(self.compact_without_model("auto", true));
-                    }
+                    // Here a failed summary would end the run (password-recovery, 4e06b66: one
+                    // came back empty, the next attempt worked).
+                    let compacted = self.compact_for_room(true, true, &model, &cancel, &mut turn).await;
                     match compacted {
                         Ok(_) => continue,
                         Err(err) => {
@@ -2085,6 +2154,7 @@ impl Engine {
             // Each run of failures gets the full retry budget.
             api_retries = 0;
             self.record_usage(&model, &msg.usage.clone(), &mut turn);
+            self.measure_context(&model, &msg);
             let text = msg.to_message().text();
             let next_step = announced_next_step(&text);
             // Read before `text` moves into `last_text`: a cut-off reply with no text was all reasoning.

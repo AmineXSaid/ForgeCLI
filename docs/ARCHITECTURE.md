@@ -209,8 +209,8 @@ ForgeCLI shrinks context in three ways.
     BashOutput, WebFetch, MCP read tools);
   - older than the 3 most recent user turns;
   - larger than 8,000 characters.
-- **When it runs:** when the last request's context tokens exceed 50% of the
-  auto-compact threshold.
+- **When it runs:** when the next request's context (see "The size" below)
+  exceeds 50% of the auto-compact threshold.
 - **What it does:**
   - each eligible result's content is replaced with `[Old tool result cleared
     to save context. Re-run the tool if you need it again.]`;
@@ -224,11 +224,20 @@ ForgeCLI shrinks context in three ways.
 **Auto-compact** summarizes the conversation.
 - **The window** is `--autocompact <tokens>` (100k–1M), or `autoCompactWindow`
   in settings, or the model's context window.
-- **When it runs:** when the last request's context tokens reach
+- **When it runs:** when the next request's context reaches
   `window − min(max_output, 32,000) − 13,000`.
+- **The size** of the next request is the last reply's reported input, plus
+  what the next request carries of that reply, plus an estimate for the
+  messages added since. The reply's reasoning counts only when the provider
+  sends reasoning back (the Messages API, Gemini). Chat completions leave it
+  out, so there it counts the reply's text and tool calls, not its output
+  tokens: a reply that reasoned 32k tokens and wrote a short call adds the
+  call. Summary requests and side questions count toward cost, not toward
+  the conversation's size.
 - **What it does:**
   1. runs `PreCompact` hooks with `trigger: "auto"`;
-  2. asks the model for a structured summary, with no tools;
+  2. asks the model for a structured summary, with no tools and a reply's
+     whole output budget (a model that reasons spends it before the summary);
   3. starts a new message chain: a compact-boundary `system` entry, then a user
      message holding the summary, then the most recent user turn if one is
      still pending.
@@ -246,20 +255,29 @@ what follows it.
   `output_tokens` and `reasoning_only` (the reply had reasoning but no text).
   The attempt isn't part of the conversation, so this is the only record of
   why it failed.
-- After a failed auto-compaction the conversation goes on unchanged; the next
-  request finds it still over the threshold and tries again.
-- When a request fails because the conversation no longer fits, a failed
-  summary would end the run. There it is tried a second time, with a note that
-  the first attempt returned no summary. If that fails too, Forge compacts
-  without the model: the summary is replaced by a note of what it knows itself
-  (the person's requests, the files changed this session, the task list, the
-  last thing the model wrote), with `system/compact_fallback`. The run goes on
-  with less detail instead of ending.
+- A summary that came back empty is never sent again unchanged. It is tried a
+  second time at once, with a note that the first attempt returned no
+  summary. If that fails too, Forge compacts without the model: the summary is
+  replaced by a note of what it knows itself (the person's requests, the
+  files changed this session, the task list, the last thing the model wrote),
+  with `system/compact_fallback`. The note keeps each request whole up to
+  8,000 characters, and the first and the latest ones within 24,000.
+- Auto-compaction does this for an empty summary. An API error leaves the
+  conversation unchanged, and the next request tries again.
+- When a request fails because the conversation no longer fits, any failure
+  but an interruption gets the second try and then the note, since the run
+  can't go on without compacting.
 
 Tests: `compact::c9_micro_clears_only_eligible_results`,
 `compact::c9_micro_is_sticky_across_requests`,
 `compact::c9_auto_triggers_at_threshold`,
-`engine::an_empty_summary_is_recorded_and_retried_when_the_conversation_no_longer_fits`.
+`engine::reasoning_the_provider_does_not_send_back_is_not_counted_as_context`,
+`engine::a_summary_request_does_not_change_the_measured_context`,
+`engine::a_summary_gets_a_whole_replys_output_budget`,
+`engine::an_empty_automatic_summary_is_not_sent_again_before_every_request`,
+`engine::the_note_without_the_model_keeps_the_first_and_latest_requests`,
+`engine::an_empty_summary_is_recorded_and_retried_when_the_conversation_no_longer_fits`,
+`openai::resends_reasoning_says_what_the_request_carries`.
 
 ### C10. Worktrees
 
