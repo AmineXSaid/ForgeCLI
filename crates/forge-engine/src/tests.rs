@@ -1797,6 +1797,39 @@ async fn the_turn_waits_for_commands_that_outlived_their_timeout() {
     assert!(t.contains(r#""subtype":"background_wait""#) && t.contains(r#""subtype":"background_exit""#));
 }
 
+/// pypi-server (9ef0955): the model started the package server with `run_in_background`, checked
+/// it from a fresh venv and finished. The session ended right after, which stopped the server, and
+/// the grader found nothing on the port. An unattended turn that ends with background commands
+/// still running is now told, once, that they will be stopped.
+#[tokio::test]
+async fn an_unattended_run_is_told_its_background_commands_will_be_stopped() {
+    let script = || {
+        vec![
+            MockTurn::tool("Bash", json!({"command": "sleep 30", "run_in_background": true})),
+            MockTurn::text("The package server is running on port 8080."),
+            MockTurn::text("It was only for the check; it can stop."),
+        ]
+    };
+    let unattended = EngineConfig { autonomous: true, ..Default::default() };
+    let h = Harness::new(script());
+    let mut e = h.engine_with(unattended, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("serve the package on port 8080")).await;
+    assert_eq!(r.result.as_deref(), Some("It was only for the check; it can stop."));
+    let told = last_user_text(&h.provider.requests()[2]);
+    assert!(told.contains("`sleep 30` (bash_1)") && told.contains("stopped when the session ends"), "{told}");
+    assert!(told.contains("nohup"), "{told}");
+    assert_eq!(h.transcript_text().matches(r#""subtype":"background_reminder""#).count(), 1, "once");
+    e.end_session("test").await;
+
+    // With someone there, the session goes on after the turn: nothing is said.
+    let h = Harness::new(script());
+    let mut e = h.engine();
+    let r = e.submit(prompt("serve the package on port 8080")).await;
+    assert_eq!(r.result.as_deref(), Some("The package server is running on port 8080."));
+    assert!(!h.transcript_text().contains("background_reminder"));
+    e.end_session("test").await;
+}
+
 #[tokio::test]
 async fn a_check_that_finishes_in_the_background_counts() {
     let h = Harness::new(vec![]);

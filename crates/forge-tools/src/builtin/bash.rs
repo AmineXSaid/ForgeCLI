@@ -85,7 +85,9 @@ const BASE_DESCRIPTION: &str = "Run a shell command in a persistent working dire
        output so far, and you are told when it exits. Don't start it again.\n\
      - Output beyond 30,000 characters is truncated in the middle.\n\
      - Use `run_in_background` for processes that keep running (servers, watchers) and read their \
-       output later with BashOutput. You are told when one exits.\n\
+       output later with BashOutput. You are told when one exits. Background commands are stopped when \
+       the session ends; to leave a service running after that, start it detached \
+       (`nohup <command> > <log> 2>&1 &`).\n\
      - Prefer the dedicated tools for reading (Read), searching (Grep, Glob) and editing (Edit, Write) \
        files instead of cat, grep, find, sed or echo redirection.\n\
      - Chain dependent commands with `&&`; independent commands can be separate calls.";

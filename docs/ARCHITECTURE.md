@@ -993,6 +993,14 @@ For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
   completed gets a reminder listing them (`todo_reminder`).
 - Each of the two fires at most twice a turn, not for sub-agents or a refusal
   stop reason; the model may still end afterwards.
+- **Background reminder:** a turn that would end while commands started with
+  `run_in_background` still run gets one reminder listing them: they are
+  stopped when the session ends, right after an unattended turn, so a service
+  the task needs must be started again detached (`nohup <command> > <log>
+  2>&1 &`). `system` event `background_reminder` with the shell ids. Commands a
+  Bash call moved to the background at its timeout aren't listed (the turn
+  waits for those, C22). Once a turn, not for sub-agents or a refusal. The
+  Bash tool's description says the same for every session.
 - **Verification:** `verification.maxReminders` defaults to 2 instead of 1. A
   setting still wins.
 - **API retries:** a model call that fails for a reason a retry can fix (HTTP
@@ -1008,6 +1016,7 @@ Tests:
 - `engine::unattended_runs_attempt_before_giving_up`;
 - `engine::unattended_runs_retry_failed_model_calls`, `engine::api_retries_stop_at_their_limits`;
 - `engine::unattended_runs_finish_announced_steps_and_open_todos`, `engine::announced_next_steps_are_recognised`;
+- `engine::an_unattended_run_is_told_its_background_commands_will_be_stopped`;
 - `prompts::autonomous_section_is_added_only_when_asked`;
 - `core::unattended_runs_get_a_second_verification_reminder`;
 - `e2e::autonomous_runs_have_no_question_tools_and_attempt_first`.
