@@ -1261,6 +1261,52 @@ async fn a_reply_cut_off_while_reasoning_is_asked_to_act() {
     assert_eq!(act(&h), 3);
 }
 
+/// write-compressor (9ef0955), over chat completions: three replies in a row were cut off while
+/// reasoning, and each began the same analysis of the decoder again, since that reasoning isn't
+/// sent back: "do not restart the analysis" was about an analysis the model no longer had. The
+/// reminder now carries how the reasoning began and where it stopped. Where reasoning is sent
+/// back, the reminder is as before.
+#[tokio::test]
+async fn a_reply_that_was_all_reasoning_gets_it_back_where_it_is_not_kept() {
+    use forge_types::StopReason;
+    let start = "This is a range coder with an adaptive model.";
+    let end = "So the top digit stable rule is always safe.";
+    let reasoning = format!("{start} {}{end}", "Let me trace get_bit once more. ".repeat(1_000));
+    let thought = |r: &str| ContentBlock::Thinking { thinking: r.into(), signature: String::new() };
+    let script = |stop| vec![MockTurn::blocks(vec![thought(&reasoning)], stop), MockTurn::text("wrote data.comp")];
+
+    // Cut off at the limit, or ended with only reasoning: either way it comes back.
+    for stop in [StopReason::MaxTokens, StopReason::EndTurn] {
+        let h = Harness::new(script(stop));
+        h.provider.set_resends_reasoning(false);
+        let mut e = h.engine();
+        let r = e.submit(prompt("write data.comp")).await;
+        assert_eq!(r.result.as_deref(), Some("wrote data.comp"));
+        let asked = last_user_text(&h.provider.requests()[1]);
+        assert!(asked.contains(start) && asked.contains(end), "{stop:?}: how it began and where it stopped");
+        assert!(asked.contains("characters in between left out") && asked.len() < 10_000, "{}", asked.len());
+        assert!(h.transcript_text().contains(r#""reasoning_chars":8000"#));
+    }
+
+    // Short reasoning comes back whole.
+    let h = Harness::new(vec![
+        MockTurn::blocks(vec![thought("use LZ77, then range-code the tokens")], StopReason::MaxTokens),
+        MockTurn::text("ok"),
+    ]);
+    h.provider.set_resends_reasoning(false);
+    let mut e = h.engine();
+    e.submit(prompt("go")).await;
+    let asked = last_user_text(&h.provider.requests()[1]);
+    assert!(asked.contains("<reasoning>\nuse LZ77, then range-code the tokens\n</reasoning>"), "{asked}");
+
+    // Sent back (the Messages API): the reminder is as before.
+    let h = Harness::new(script(StopReason::MaxTokens));
+    let mut e = h.engine();
+    e.submit(prompt("write data.comp")).await;
+    let asked = last_user_text(&h.provider.requests()[1]);
+    assert!(!asked.contains(end) && asked.contains("Do not restart the analysis"), "{asked}");
+}
+
 #[tokio::test]
 async fn an_empty_reply_is_asked_to_act_instead_of_ending_the_turn() {
     use forge_types::StopReason;

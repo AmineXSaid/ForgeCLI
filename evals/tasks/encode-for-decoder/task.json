@@ -1,0 +1,7 @@
+{
+  "instruction": "decode.py reads the FZ1 format. Write encode.py so that `python3 encode.py IN OUT` writes an FZ1 file that decode.py decodes back to IN exactly, for any input. Then use it to write data.fz from data.txt; data.fz must be at most 40% of the size of data.txt. Do not change decode.py.",
+  "check": "python3 \"$FORGE_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "recovery",
+  "tags": ["python", "analysis", "reasoning"],
+  "timeout_secs": 900
+}

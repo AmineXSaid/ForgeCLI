@@ -472,6 +472,12 @@ clears the same-result counts, so re-reading after one isn't called a loop.
   act or answer (`system/act_reminder` with `kind: empty_reply`; the
   cut-off's is `kind: reasoning_cutoff`), from the same budget of 3 in a row
   without a tool call.
+- Where the provider doesn't send reasoning back (chat completions, except to
+  Gemini), the model no longer has that reply's reasoning in the next request,
+  so "act on what you have" would ask for what it lost. There the reminder
+  carries the reasoning: whole up to 8,000 characters, otherwise its first
+  2,000 and its last 6,000 (how it began and where it stopped). The event's
+  `reasoning_chars` says how much it carried (0 where reasoning is sent back).
 - After the first `max_tokens` stop, the turn's output cap rises to 64,000
   (bounded by the model), unless the user set `FORGE_MAX_OUTPUT_TOKENS`, and
   `system/output_limit` is emitted.
@@ -485,6 +491,7 @@ Tests:
 - `engine::max_tokens_continues_text_and_answers_cut_off_calls`;
 - `engine::a_reply_cut_off_while_reasoning_is_asked_to_act`;
 - `engine::an_empty_reply_is_asked_to_act_instead_of_ending_the_turn`;
+- `engine::a_reply_that_was_all_reasoning_gets_it_back_where_it_is_not_kept`;
 - `accumulate::invalid_tool_json_is_marked_truncated`.
 
 ### C14. Dangerous commands and injected instructions

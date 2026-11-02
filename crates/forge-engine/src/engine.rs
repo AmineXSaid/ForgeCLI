@@ -194,6 +194,14 @@ const ACT_PROMPT: &str = "<system-reminder>\nYour reply reached the output token
                           reasoning, before you answered or took any action. Do not restart the analysis. Act on \
                           what you have now: take the next concrete step (run a command, make an edit, or give your \
                           answer), then continue from its result.\n</system-reminder>";
+/// What happened, as the two reminders above and below say it.
+const ACT_CUTOFF: &str = "Your reply reached the output token limit while you were still reasoning, before you \
+                          answered or took any action.";
+const EMPTY_REPLY: &str = "Your reply ended without an answer or an action: it had no text and no tool call.";
+/// How much of a reply's reasoning an act reminder hands back, where the provider doesn't keep it:
+/// how it began (the reading of the task) and where it stopped (the latest step).
+const REASONING_HEAD: usize = 2_000;
+const REASONING_TAIL: usize = 6_000;
 /// For a reply that ended normally with no text and no tool call (only reasoning, or nothing).
 /// Taken as the end of the turn, it leaves the work undone and the person with an empty answer:
 /// seen on Terminal-Bench gpt2-codegolf, where such a reply ended unattended runs that had only
@@ -2171,6 +2179,9 @@ impl Engine {
             self.settle_invalid_tool_inputs(&mut msg.content, stop_reason);
             let tool_uses: Vec<(String, String, Value)> =
                 msg.to_message().tool_uses().map(|(a, b, c)| (a.to_string(), b.to_string(), c.clone())).collect();
+            // A reply that was all reasoning: what an act reminder hands back where it isn't kept.
+            let reasoning =
+                if tool_uses.is_empty() && !reply_has_text { reasoning_of(&msg.content) } else { String::new() };
             self.push_assistant(msg);
             self.publish_turn(started, &turn);
 
@@ -2228,8 +2239,9 @@ impl Engine {
                 // per run: a long task can hit this many times, each time after real work.
                 if tool_uses.is_empty() && !reply_has_text && reasoning_cutoffs < MAX_REASONING_CUTOFFS {
                     reasoning_cutoffs += 1;
-                    self.system_event("act_reminder", json!({"kind": "reasoning_cutoff"}));
-                    self.push_user(Message::user_text(ACT_PROMPT), true, None, true);
+                    let (text, kept) = self.act_reminder(ACT_PROMPT, ACT_CUTOFF, &model, &reasoning);
+                    self.system_event("act_reminder", json!({"kind": "reasoning_cutoff", "reasoning_chars": kept}));
+                    self.push_user(Message::user_text(text), true, None, true);
                     continue;
                 }
             }
@@ -2393,8 +2405,9 @@ impl Engine {
                 && reasoning_cutoffs < MAX_REASONING_CUTOFFS
             {
                 reasoning_cutoffs += 1;
-                self.system_event("act_reminder", json!({"kind": "empty_reply"}));
-                self.push_user(Message::user_text(EMPTY_REPLY_PROMPT), true, None, true);
+                let (text, kept) = self.act_reminder(EMPTY_REPLY_PROMPT, EMPTY_REPLY, &model, &reasoning);
+                self.system_event("act_reminder", json!({"kind": "empty_reply", "reasoning_chars": kept}));
+                self.push_user(Message::user_text(text), true, None, true);
                 continue;
             }
 
@@ -2572,6 +2585,40 @@ impl Engine {
         (!notes.is_empty()).then(|| notes.join("\n"))
     }
 
+    /// The reminder after a reply that was all reasoning, and how many characters of that
+    /// reasoning it hands back. A provider that sends reasoning back keeps it in the next request,
+    /// and `plain` applies. One that doesn't (chat completions) drops it, and "do not restart the
+    /// analysis" asks for what the model no longer has: write-compressor (9ef0955) began the same
+    /// analysis of the decoder again in three cut-off replies in a row and wrote nothing. There,
+    /// the reminder carries how the reasoning began and where it stopped.
+    fn act_reminder(&self, plain: &str, what: &str, model: &str, reasoning: &str) -> (String, usize) {
+        let reasoning = reasoning.trim();
+        if reasoning.is_empty() || self.shared.provider.resends_reasoning(model) {
+            return (plain.to_string(), 0);
+        }
+        let n = reasoning.chars().count();
+        let (shown, kept) = if n <= REASONING_HEAD + REASONING_TAIL {
+            (format!("Here it is:\n\n<reasoning>\n{reasoning}\n</reasoning>"), n)
+        } else {
+            let head: String = reasoning.chars().take(REASONING_HEAD).collect();
+            let tail: String = reasoning.chars().skip(n - REASONING_TAIL).collect();
+            let gap = n - REASONING_HEAD - REASONING_TAIL;
+            (
+                format!(
+                    "Here is how it began and where it stopped ({gap} characters in between left out):\n\n\
+                     <reasoning_start>\n{head}\n</reasoning_start>\n\n<reasoning_end>\n{tail}\n</reasoning_end>"
+                ),
+                REASONING_HEAD + REASONING_TAIL,
+            )
+        };
+        let text = format!(
+            "<system-reminder>\n{what} Your reasoning is not kept from one reply to the next. {shown}\n\n\
+             Go on from where it stopped instead of starting over, and act now: take the next concrete step \
+             (run a command, make an edit, or give your answer), then continue from its result.\n</system-reminder>"
+        );
+        (text, kept)
+    }
+
     fn verifying(&self) -> bool {
         self.cfg.verify.is_some() && !self.cfg.is_subagent
     }
@@ -2723,6 +2770,18 @@ impl Engine {
         .await;
         self.shared.tool_ctx.shells.kill_all();
     }
+}
+
+/// The reasoning a reply's content holds, in order.
+fn reasoning_of(content: &[ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Two names for one model: equal, or the same once aliases resolve, or one
