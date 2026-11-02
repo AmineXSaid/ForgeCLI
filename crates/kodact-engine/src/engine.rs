@@ -1998,6 +1998,7 @@ impl Engine {
         let mut next_step_reminders = 0u32;
         let mut todo_reminders = 0u32;
         let mut background_waits = 0u32;
+        let mut background_reminded = false;
         let mut api_retries = 0u32;
 
         loop {
@@ -2412,6 +2413,21 @@ impl Engine {
                 continue;
             }
 
+            // Unattended: what still runs in the background is stopped when the session ends,
+            // right after this turn, so a service the task needs would be gone before anything
+            // checks it (pypi-server, 9ef0955). Said once, with what is still running.
+            if self.cfg.autonomous
+                && !self.cfg.is_subagent
+                && !background_reminded
+                && stop_reason != Some(StopReason::Refusal)
+            {
+                if let Some(text) = self.background_reminder() {
+                    background_reminded = true;
+                    self.push_user(Message::user_text(text), true, None, true);
+                    continue;
+                }
+            }
+
             // Stop / SubagentStop hook (contract C11: exit 2 makes the model keep going).
             let stop_event = if self.cfg.is_subagent { HookEvent::SubagentStop } else { HookEvent::Stop };
             let o = self
@@ -2584,6 +2600,46 @@ impl Engine {
                 .flatten()
                 .collect();
         (!notes.is_empty()).then(|| notes.join("\n"))
+    }
+
+    /// Commands started in the background that still run as an unattended turn ends, as a
+    /// reminder that they will be stopped (`None` when there are none). Commands a Bash call moved
+    /// to the background at its timeout aren't listed: the turn waits for those.
+    fn background_reminder(&self) -> Option<String> {
+        let running: Vec<_> = self
+            .shared
+            .tool_ctx
+            .shells
+            .list()
+            .into_iter()
+            .filter(|sh| sh.status() == kodact_tools::shells::ShellStatus::Running && !sh.is_awaited())
+            .collect();
+        if running.is_empty() {
+            return None;
+        }
+        let ids: Vec<&str> = running.iter().map(|sh| sh.id()).collect();
+        self.system_event("background_reminder", json!({"shells": ids}));
+        let list = running
+            .iter()
+            .take(5)
+            .map(|sh| {
+                let c = sh.command.trim();
+                let c = if c.chars().count() > 200 {
+                    format!("{}…", c.chars().take(200).collect::<String>())
+                } else {
+                    c.to_string()
+                };
+                format!("`{c}` ({})", sh.id())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "<system-reminder>\nStill running in the background: {list}. Background commands are stopped when the \
+             session ends, which in an unattended run is right after you finish. If one of them must keep running \
+             after that (a server or service the task needs), stop it with KillShell and start it again detached \
+             from the session, for example `nohup <command> > /tmp/<name>.log 2>&1 &`, then check that it answers. \
+             If none needs to keep running, finish.\n</system-reminder>"
+        ))
     }
 
     /// The reminder after a reply that was all reasoning, and how many characters of that

@@ -1,0 +1,2 @@
+2.4: startup 30% faster; persistent cache.
+2.3: fixed the CSV export of empty tables.

@@ -1,0 +1,8 @@
+{
+  "instruction": "Serve the files in site/ over HTTP on a free local port, for the checker that fetches site/index.html and site/notes.txt from it. Write the port number to port.txt and the server's process ID to server.pid.",
+  "check": "python3 \"$KODACT_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "long-horizon",
+  "tags": ["shell", "service", "background"],
+  "timeout_secs": 600,
+  "args": ["--autonomous"]
+}

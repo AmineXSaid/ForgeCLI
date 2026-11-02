@@ -153,7 +153,15 @@ def short_exception(message: str) -> str:
 
 # KodAct's own reminders (`system` events). Each is either needed or a false positive, so a change
 # that makes fewer of them is only better if the pass rate holds.
-REMINDERS = ("verification", "loop_guard", "act_reminder", "attempt_reminder", "next_step_reminder", "todo_reminder")
+REMINDERS = (
+    "verification",
+    "loop_guard",
+    "act_reminder",
+    "attempt_reminder",
+    "next_step_reminder",
+    "todo_reminder",
+    "background_reminder",
+)
 
 
 def reminder_label(ev: dict) -> str:
