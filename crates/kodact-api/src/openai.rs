@@ -798,6 +798,11 @@ impl Provider for OpenAiProvider {
         "openai"
     }
 
+    /// `push_message` sends reasoning back only to Gemini models (as `reasoning_content`).
+    fn resends_reasoning(&self, model: &str) -> bool {
+        gemini_rules::is_gemini(model)
+    }
+
     fn origin(&self) -> Option<crate::auth::Origin> {
         Some(self.config.origin())
     }
@@ -1435,6 +1440,49 @@ mod tests {
         let mut b = json!({"max_tokens": 64, "stream": true});
         apply_refused(&mut b, &["max_tokens".into(), "max_completion_tokens".into()]);
         assert_eq!(b, json!({"stream": true}));
+    }
+
+    /// The engine sizes the next request by `resends_reasoning`, so it must say what the
+    /// request writer does with an earlier reply's reasoning.
+    #[test]
+    fn resends_reasoning_says_what_the_request_carries() {
+        let provider = OpenAiProvider::new(OpenAiConfig {
+            base_url: "http://127.0.0.1:9/v1".into(),
+            api_key: None,
+            extra_headers: vec![],
+            max_retries: 0,
+            timeout: Duration::from_secs(1),
+            url_from: None,
+            key_helper: None,
+        })
+        .unwrap();
+        for model in ["quick-thinking", "deepseek-reasoner", "gemini-2.5-pro"] {
+            let req = MessagesRequest {
+                model: model.into(),
+                max_tokens: 1000,
+                messages: vec![
+                    Message::user_text("hi"),
+                    Message::assistant(vec![
+                        ContentBlock::Thinking { thinking: "the reasoning so far".into(), signature: String::new() },
+                        ContentBlock::text("ok"),
+                    ]),
+                    Message::user_text("go on"),
+                ],
+                system: vec![],
+                tools: vec![],
+                tool_choice: None,
+                thinking: None,
+                temperature: None,
+                metadata: None,
+                output_config: None,
+                speed: None,
+                stream: true,
+                betas: vec![],
+            };
+            let carried = to_chat_request(&req).to_string().contains("the reasoning so far");
+            assert_eq!(carried, provider.resends_reasoning(model), "{model}");
+        }
+        assert!(!provider.resends_reasoning("quick-thinking") && provider.resends_reasoning("gemini-2.5-pro"));
     }
 }
 

@@ -1,6 +1,7 @@
 //! A scripted provider for tests: each request pops the next [`MockTurn`].
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -101,6 +102,8 @@ pub struct MockProvider {
     requests: Arc<Mutex<Vec<MessagesRequest>>>,
     /// What `list_models` answers (`None`: the endpoint doesn't list models).
     models: Mutex<Option<Vec<String>>>,
+    /// What `resends_reasoning` answers (`false`: like chat completions).
+    resends_reasoning: AtomicBool,
 }
 
 impl MockProvider {
@@ -110,12 +113,18 @@ impl MockProvider {
             responder: None,
             requests: Default::default(),
             models: Mutex::new(None),
+            resends_reasoning: AtomicBool::new(true),
         }
     }
 
     /// Make `list_models` answer with these ids, as an endpoint that lists its models would.
     pub fn set_models(&self, ids: &[&str]) {
         *self.models.lock().unwrap() = Some(ids.iter().map(|s| s.to_string()).collect());
+    }
+
+    /// Answer `resends_reasoning` as an endpoint that keeps (`true`) or drops earlier reasoning.
+    pub fn set_resends_reasoning(&self, on: bool) {
+        self.resends_reasoning.store(on, Ordering::Relaxed);
     }
 
     /// Answer each request with a function of it (used when the queue is empty).
@@ -125,6 +134,7 @@ impl MockProvider {
             responder: Some(Box::new(f)),
             requests: Default::default(),
             models: Mutex::new(None),
+            resends_reasoning: AtomicBool::new(true),
         }
     }
 
@@ -223,6 +233,10 @@ pub fn events_for(msg: &ApiMessage) -> Vec<StreamEvent> {
 impl Provider for MockProvider {
     fn name(&self) -> &str {
         "mock"
+    }
+
+    fn resends_reasoning(&self, _model: &str) -> bool {
+        self.resends_reasoning.load(Ordering::Relaxed)
     }
 
     async fn list_models(&self) -> Option<Result<Vec<String>, ApiError>> {

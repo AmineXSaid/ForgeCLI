@@ -238,6 +238,13 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// Does a request send the model's earlier reasoning back to it? Then a reply's reasoning
+    /// takes room in the next request. The Messages API and Gemini send it back; chat
+    /// completions don't (except to Gemini), so there the reasoning is gone after its reply.
+    fn resends_reasoning(&self, _model: &str) -> bool {
+        true
+    }
+
     /// The models this endpoint offers, for `/model`. `None`: it doesn't
     /// list them (any model id can still be set by hand).
     /// `kodact doctor --probe`: one authenticated request that changes nothing

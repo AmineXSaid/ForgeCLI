@@ -72,6 +72,12 @@ pub fn micro_candidates(messages: &[Message], already: &HashSet<String>) -> Vec<
 
 /// Rough token estimate for text that has not been through the API yet.
 pub fn estimate_tokens(messages: &[Message]) -> u64 {
+    estimate_sent_tokens(messages, true)
+}
+
+/// The same estimate, for a request that sends earlier reasoning back (`with_reasoning`) or
+/// leaves it out (chat completions).
+pub fn estimate_sent_tokens(messages: &[Message], with_reasoning: bool) -> u64 {
     let chars: usize = messages
         .iter()
         .flat_map(|m| m.content.iter())
@@ -79,6 +85,7 @@ pub fn estimate_tokens(messages: &[Message]) -> u64 {
             ContentBlock::Text { text, .. } => text.len(),
             ContentBlock::ToolResult { content, .. } => content.to_text().len(),
             ContentBlock::ToolUse { input, .. } => input.to_string().len(),
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } if !with_reasoning => 0,
             ContentBlock::Thinking { thinking, .. } => thinking.len(),
             ContentBlock::Image { .. } | ContentBlock::Document { .. } => 6_000,
             _ => 200,
@@ -163,6 +170,17 @@ mod tests {
             }]),
             Message::user(vec![ContentBlock::tool_result(id, "x".repeat(size), false)]),
         ]
+    }
+
+    #[test]
+    fn reasoning_is_estimated_only_where_it_is_sent() {
+        let m = Message::assistant(vec![
+            ContentBlock::Thinking { thinking: "x".repeat(4_000), signature: String::new() },
+            ContentBlock::RedactedThinking { data: "z".into() },
+            ContentBlock::text("y".repeat(400)),
+        ]);
+        assert_eq!(estimate_tokens(std::slice::from_ref(&m)), (4_000 + 200 + 400) / 4);
+        assert_eq!(estimate_sent_tokens(&[m], false), 100);
     }
 
     #[test]

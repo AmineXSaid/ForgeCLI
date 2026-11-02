@@ -179,6 +179,10 @@ impl Provider for LimitedProvider {
         self.inner.name()
     }
 
+    fn resends_reasoning(&self, model: &str) -> bool {
+        self.inner.resends_reasoning(model)
+    }
+
     async fn stream(&self, request: MessagesRequest, cancel: CancellationToken) -> Result<EventStream, ApiError> {
         let mut attempt = 0;
         loop {

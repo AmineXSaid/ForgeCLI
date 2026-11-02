@@ -612,6 +612,102 @@ async fn context_is_estimated_when_the_server_reports_no_usage() {
     assert!(e.projected_context_tokens() > 0, "estimated from the conversation, the system prompt and tools");
 }
 
+/// regex-chess (9ef0955), over chat completions: a 24k-token request, then a reply that reasoned
+/// 32k tokens and wrote nothing. That reasoning isn't sent back, yet it was counted (56k, over the
+/// 55k threshold of a 100k window), so the conversation was summarized at a quarter of the window,
+/// for a summary call of about 20k tokens. Only what the next request carries counts; where the
+/// provider does send reasoning back (the Messages API), it still counts.
+#[tokio::test]
+async fn reasoning_the_provider_does_not_send_back_is_not_counted_as_context() {
+    use kodact_types::StopReason;
+    let reply = || {
+        MockTurn::blocks(
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "which squares can the knight reach from here? ".repeat(1_000),
+                    signature: String::new(),
+                },
+                ContentBlock::text("noted"),
+            ],
+            StopReason::EndTurn,
+        )
+        // Window 60k: compaction at 15k. 5k sent, 12k generated, nearly all of it reasoning.
+        .with_usage(kodact_types::Usage { input_tokens: 5_000, output_tokens: 12_000, ..Default::default() })
+    };
+
+    let h = Harness::new(vec![reply(), MockTurn::text("second answer")]);
+    h.provider.set_resends_reasoning(false);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    assert!(e.projected_context_tokens() < 5_100, "{}", e.projected_context_tokens());
+    let r = e.submit(prompt("second")).await;
+    assert_eq!(r.result.as_deref(), Some("second answer"));
+    let reqs = h.provider.requests();
+    assert_eq!(reqs.len(), 2, "no summary request");
+    assert!(!h.transcript_text().contains("compact_boundary"));
+
+    let h = Harness::new(vec![reply(), MockTurn::text("<summary>s</summary>"), MockTurn::text("second answer")]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    assert_eq!(e.projected_context_tokens(), 17_000);
+    e.submit(prompt("second")).await;
+    assert_eq!(
+        h.provider.requests()[1].tool_choice,
+        Some(json!({"type": "none"})),
+        "summarized: the reasoning is sent"
+    );
+}
+
+/// A summary request is not the conversation: its size (the whole conversation plus the summary
+/// it wrote) used to become the conversation's after a failed attempt, and the size reported
+/// before a compaction.
+#[tokio::test]
+async fn a_summary_request_does_not_change_the_measured_context() {
+    let h = Harness::new(vec![
+        MockTurn::text("first answer").with_usage(usage(20_000)),
+        MockTurn::text("<summary>The user asked about X.</summary>").with_usage(kodact_types::Usage {
+            input_tokens: 20_500,
+            output_tokens: 19_000,
+            ..Default::default()
+        }),
+        MockTurn::text("second answer"),
+    ]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    e.submit(prompt("second")).await;
+    let boundary = h
+        .sink
+        .take()
+        .into_iter()
+        .find_map(|ev| match ev {
+            EngineEvent::System { subtype, data } if subtype == "compact_boundary" => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    let pre = boundary["compact_metadata"]["pre_tokens"].as_u64().unwrap();
+    assert!((20_010..20_100).contains(&pre), "the conversation before it, not 39.5k: {pre}");
+    assert_eq!(e.state.total_usage.output_tokens, 10 + 19_000 + 20, "the summary still counts toward the cost");
+}
+
+/// path-tracing-reverse (9ef0955): capped at 20k tokens, the summary reasoned to the limit and
+/// wrote nothing seven times in a row, and five of the eight that came back that run used 18k to
+/// 20k. A model that reasons pays for it from the same budget, so a summary gets a reply's.
+#[tokio::test]
+async fn a_summary_gets_a_whole_replys_output_budget() {
+    let h = Harness::new(vec![
+        MockTurn::text("first answer").with_usage(usage(20_000)),
+        MockTurn::text("<summary>s</summary>"),
+        MockTurn::text("second answer"),
+    ]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    e.submit(prompt("second")).await;
+    let reqs = h.provider.requests();
+    assert_eq!(reqs[1].tool_choice, Some(json!({"type": "none"})), "the summary request");
+    assert_eq!(reqs[1].max_tokens, reqs[0].max_tokens);
+    assert!(reqs[1].max_tokens > 20_000, "{}", reqs[1].max_tokens);
+}
+
 #[tokio::test]
 async fn c9_auto_triggers_at_threshold() {
     let h = Harness::new(vec![
@@ -723,6 +819,92 @@ async fn an_empty_summary_is_recorded_and_retried_when_the_conversation_no_longe
         "{note}"
     );
     assert!(note.contains("Continue the work"), "the model is told to go on");
+}
+
+/// path-tracing-reverse (9ef0955): an automatic summary that came back empty was sent again, the
+/// same, before each of the next six requests (140k tokens, about half the run's 30 minutes). Now
+/// it gets one corrected try, then KodAct's own note, and the conversation is compacted either way.
+#[tokio::test]
+async fn an_empty_automatic_summary_is_not_sent_again_before_every_request() {
+    use kodact_types::StopReason;
+    let thinking = |t: &str| ContentBlock::Thinking { thinking: t.into(), signature: String::new() };
+    let task = format!("Reverse-engineer the renderer in /app. {}", "Every detail matters. ".repeat(200));
+    let h = Harness::new(vec![
+        MockTurn::text("first answer").with_usage(usage(20_000)),
+        MockTurn::blocks(vec![thinking("the camera sits at...")], StopReason::MaxTokens),
+        MockTurn::blocks(vec![thinking("more of the same")], StopReason::MaxTokens),
+        MockTurn::text("second answer"),
+        MockTurn::text("third answer"),
+    ]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt(&task)).await;
+    let r = e.submit(prompt("second")).await;
+    assert_eq!(r.result.as_deref(), Some("second answer"));
+    e.submit(prompt("third")).await;
+    let reqs = h.provider.requests();
+    assert_eq!(reqs.len(), 5, "two summary attempts in all, not one before each request");
+    assert!(last_user_text(&reqs[2]).contains("returned no summary"), "the second try says what went wrong");
+    let t = h.transcript_text();
+    assert_eq!(t.matches(r#""subtype":"compact_failed""#).count(), 2);
+    assert!(t.contains(r#""subtype":"compact_fallback""#));
+    let note = reqs[3].messages[0].text();
+    assert!(note.contains("could not be summarized"), "{note}");
+    assert!(note.contains(task.trim()), "the task is kept whole ({} chars), not clipped", task.len());
+    assert!(!note.contains("Continue the work"), "compacted before a new prompt: the prompt follows");
+
+    // The corrected try works: no fallback.
+    let h = Harness::new(vec![
+        MockTurn::text("first answer").with_usage(usage(20_000)),
+        MockTurn::blocks(vec![thinking("the camera sits at...")], StopReason::MaxTokens),
+        MockTurn::text("<summary>The renderer is a path tracer.</summary>"),
+        MockTurn::text("second answer"),
+    ]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    e.submit(prompt("second")).await;
+    let t = h.transcript_text();
+    assert_eq!(t.matches(r#""subtype":"compact_failed""#).count(), 1);
+    assert!(!t.contains("compact_fallback"));
+    assert!(h.provider.requests()[3].messages[0].text().contains("The renderer is a path tracer."));
+
+    // An API error while the conversation still fits: no second try and no note, as before.
+    let h = Harness::new(vec![
+        MockTurn::text("first answer").with_usage(usage(20_000)),
+        MockTurn::http_error(400, "invalid_request_error"),
+        MockTurn::text("second answer"),
+    ]);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    let r = e.submit(prompt("second")).await;
+    assert_eq!(r.result.as_deref(), Some("second answer"));
+    assert_eq!(h.provider.requests().len(), 3);
+    assert!(!h.transcript_text().contains("compact_fallback"));
+}
+
+/// The note KodAct writes when the model can't summarize keeps the first request and the latest
+/// ones within its budget, and says how many it left out.
+#[tokio::test]
+async fn the_note_without_the_model_keeps_the_first_and_latest_requests() {
+    use kodact_types::StopReason;
+    let thinking = || ContentBlock::Thinking { thinking: "...".into(), signature: String::new() };
+    let h = Harness::new(vec![]);
+    for i in 0..12 {
+        let u = if i == 11 { usage(20_000) } else { usage(100) };
+        h.provider.push(MockTurn::text(&format!("answer {i}")).with_usage(u));
+    }
+    h.provider.push(MockTurn::blocks(vec![thinking()], StopReason::MaxTokens));
+    h.provider.push(MockTurn::blocks(vec![thinking()], StopReason::MaxTokens));
+    h.provider.push(MockTurn::text("last answer"));
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    for i in 0..12 {
+        e.submit(prompt(&format!("request {i}: {}", "x".repeat(3_000)))).await;
+    }
+    e.submit(prompt("final request")).await;
+    let note = h.provider.requests().last().unwrap().messages[0].text();
+    assert!(note.contains("request 0:"), "the first request");
+    assert!(note.contains("request 11:"), "the latest one");
+    assert!(!note.contains("request 2:"), "the middle ones are left out");
+    assert!(note.contains("earlier requests left out"), "{}", &note[..300.min(note.len())]);
 }
 
 fn verifying(commands: &[&str]) -> EngineConfig {
