@@ -466,6 +466,11 @@ clears the same-result counts, so re-reading after one isn't called a loop.
   resets the count, so a long task gets one each time it stalls after real
   work, while three stalls in a row with no tool call let the turn end. These
   don't use up the 3 text continuations.
+- A turn that ends that way, with no answer (its last reply had no text and
+  no tool call, and the reminders to act are used up), ends as an error, not
+  a success: `error_during_execution`, `is_error: true`, no `result`, and
+  `errors` holding "The model stopped without an answer: …". In print mode the
+  exit code is 1, so a script doesn't take an empty run for finished work.
 - A reply that ends normally with no text and no tool call (only reasoning, or
   nothing) doesn't end the turn either: it answers nothing. After the other
   end-of-turn reminders and before the Stop hook, it gets the same request to

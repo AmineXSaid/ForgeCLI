@@ -163,3 +163,20 @@ def test_compactions_and_failed_summaries_are_counted(tmp_path):
     assert other.compaction_cell() == ""
     assert "compactions (done/failed/note)" in job.report()
     assert "| 1.0/3.5 |" in report.comparison([job])
+
+
+def test_a_run_with_no_answer_is_its_own_verdict(tmp_path):
+    # Shaped like write-compressor 9ef0955: the last replies were all reasoning, so KodAct ends the
+    # run as an error instead of a success; it is told apart from a false success and a crash.
+    job = make_job(tmp_path, [("write-compressor", 0.0, 891, [])])
+    trial = job.trials[0]
+    end = {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "stop_reason": "max_tokens",
+        "num_turns": 5,
+        "errors": ["The model stopped without an answer: its last replies had only reasoning, with no text and no tool call."],
+    }
+    (trial.path / "agent" / "kodact.jsonl").write_text(json.dumps(end) + "\n")
+    assert report.Trial(trial.path).verdict == "no answer"

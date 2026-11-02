@@ -215,6 +215,10 @@ const EMPTY_REPLY_PROMPT: &str = "<system-reminder>\nYour reply ended without an
 const SUMMARY_RETRY: &str = "Your previous attempt returned no summary. Write the summary now, from what you \
                              already know; do not analyze further.";
 
+/// The error of a turn that ended with no answer (its last replies were all reasoning).
+const NO_ANSWER: &str = "The model stopped without an answer: its last replies had only reasoning, with no \
+                         text and no tool call.";
+
 /// What `compact_inner` returns when the model's reply held no summary.
 const EMPTY_SUMMARY: &str = "the model returned an empty summary";
 
@@ -2468,6 +2472,21 @@ impl Engine {
                 Some(StopReason::PauseTurn) => "pause_turn",
                 Some(StopReason::Other) => "other",
             };
+            // Ended with no answer: the last replies were all reasoning, and the reminders to act
+            // are used up. "Success" would tell a script the work was done (write-compressor,
+            // 9ef0955: four replies cut off while reasoning, nothing written, reported as success).
+            if !reply_has_text && !was_continuation && stop_reason != Some(StopReason::Refusal) {
+                self.notice(NoticeLevel::Error, NO_ANSWER);
+                turn.errors.push(NO_ANSWER.into());
+                return self.finish(
+                    started,
+                    turn,
+                    ResultSubtype::ErrorDuringExecution,
+                    None,
+                    Some(reason.into()),
+                    None,
+                );
+            }
             return self.finish(started, turn, ResultSubtype::Success, last_text, Some(reason.into()), None);
         }
     }

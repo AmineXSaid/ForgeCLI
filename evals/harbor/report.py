@@ -349,6 +349,9 @@ class Trial:
             # The tests could not judge the agent's work: they failed to fetch what they need,
             # or ran out of time (often the same thing on a slow proxy). Not the agent failing.
             return "verifier error"
+        if any("stopped without an answer" in e for e in self.errors):
+            # KodAct ended the run as an error: the last replies were all reasoning.
+            return "no answer"
         if REFUSAL.search(text[-1500:]) and sum(self.tools.values()) <= 3:
             return "refused"
         if GIVE_UP.search(text[-1500:]) and sum(self.tools.values()) <= 6:

@@ -1254,11 +1254,15 @@ async fn a_reply_cut_off_while_reasoning_is_asked_to_act() {
     assert_eq!(act(&h), 4, "a tool call starts a new stretch");
 
     // Three in a row without a tool call: the model isn't making progress, the fourth ends the turn.
+    // With no answer, as an error: write-compressor (9ef0955) ended so, nothing written, and was
+    // reported as a success.
     let h = Harness::new((0..4).map(|_| MockTurn::blocks(vec![thinking("plan")], StopReason::MaxTokens)).collect());
     let mut e = h.engine();
     let r = e.submit(prompt("stuck")).await;
     assert_eq!((r.num_turns, r.stop_reason.as_deref()), (4, Some("max_tokens")));
     assert_eq!(act(&h), 3);
+    assert!(r.is_error && r.subtype == ResultSubtype::ErrorDuringExecution && r.result.is_none());
+    assert!(r.errors[0].contains("stopped without an answer"), "{:?}", r.errors);
 }
 
 /// write-compressor (9ef0955), over chat completions: three replies in a row were cut off while
@@ -1333,6 +1337,7 @@ async fn an_empty_reply_is_asked_to_act_instead_of_ending_the_turn() {
     let r = e.submit(prompt("stuck")).await;
     assert_eq!(r.num_turns, 4);
     assert_eq!(h.transcript_text().matches(r#""kind":"empty_reply""#).count(), 3);
+    assert!(r.is_error && r.errors[0].contains("stopped without an answer"), "no answer is an error: {r:?}");
 
     // A reply with an answer ends the turn as before.
     let h = Harness::new(vec![MockTurn::blocks(vec![thinking("easy"), ContentBlock::text("16")], StopReason::EndTurn)]);

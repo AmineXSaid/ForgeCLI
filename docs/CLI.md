@@ -331,7 +331,10 @@ Measures the harness; see `evals/README.md`. `run` writes `report.json` and
  "errors": [], "structured_output": null, "uuid": "uuid", "exit_code": 0}
 ```
 
-`exit_code` appears in `json` mode only.
+`exit_code` appears in `json` mode only. A turn whose last replies held only
+reasoning (no text, no tool call), with the reminders to act used up, ends as
+`error_during_execution` with "The model stopped without an answer: …" in
+`errors` and exit code 1.
 
 **Error before a run** (`json` and `stream-json`):
 
