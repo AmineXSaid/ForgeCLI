@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KodAct Logbook</title>
+<meta name="claude:viewport-fit-sides" content="cover">
 <meta name="description" content="An interactive mock of KodAct's terminal UI in the Logbook design: a working log with a margin rail, state at a glance, signed approvals.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -49,14 +50,15 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; }
+html, body { margin: 0; height: 100%; }
 body {
   background: var(--page);
   color: var(--page-ink);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  min-height: 100vh;
   display: flex;
   flex-direction: column;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 ::selection { background: var(--focus); color: var(--control); }
 
@@ -65,7 +67,8 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px 28px;
-  padding: 18px 28px 14px;
+  padding-block: 18px 14px;
+  padding-inline: 12px;
 }
 .bar h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
 .bar p { margin: 0; color: var(--page-ink-2); font-size: 14px; max-width: 62ch; }
@@ -90,7 +93,7 @@ body {
 button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .window:focus-within { border-color: var(--page-ink-2); }
 
-main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min-height: 0; }
+main { flex: 1; display: flex; flex-direction: column; padding-block: 0 22px; padding-inline: 12px; min-height: 0; }
 .window {
   flex: 1;
   display: flex;
@@ -133,6 +136,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
   --orange: #e8883e; --orange-dim: #8e5a33; --red: #ec6b5e; --green: #8fc28c;
   --kw: #c7a6ee; --str: #a3cfa6; --fn: #8fc0d8; --num: #dcbf86; --cold: #3a373d;
   --cell-font: 14px;
+  --cell-h: 18px; /* whole pixels, so filled rows meet without seams */
   position: relative;
   flex: 1;
   min-height: 0;
@@ -145,13 +149,13 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
 .screen {
   font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--cell-font);
-  line-height: 1.3;
+  line-height: var(--cell-h);
   font-variant-ligatures: none;
   white-space: pre;
   user-select: text;
 }
 .screen ::selection { background: var(--sel); color: var(--ink); }
-.ln { height: 1.3em; overflow: hidden; }
+.ln { height: var(--cell-h); overflow: hidden; }
 .ln[data-entry] { cursor: pointer; }
 .ln[data-entry]:hover { background: var(--band); }
 .ln.flash { background: var(--sel); }
@@ -162,12 +166,14 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .c-ink { color: var(--ink); } .c-ink2 { color: var(--ink2); } .c-ink3 { color: var(--ink3); }
-.c-or { color: var(--orange); } .c-ord { color: var(--orange-dim); }
+.c-or { color: var(--orange); }
 .c-red { color: var(--red); } .c-grn { color: var(--green); } .c-rule { color: var(--rule); }
 .c-kw { color: var(--kw); } .c-str { color: var(--str); } .c-fn { color: var(--fn); } .c-num { color: var(--num); }
 .c-gnd { color: var(--ground); }
 .b-band { background: var(--band); } .b-sel { background: var(--sel); } .b-or { background: var(--orange); }
 .b-ink { background: var(--ink); }
+/* Filled cells are drawn as blocks a whole row tall, the way terminals draw ▀ ▄ █ and panels. */
+.px, .band { display: inline-block; height: var(--cell-h); vertical-align: top; }
 .b { font-weight: 700; } .i { font-style: italic; } .u { text-decoration: underline; text-underline-offset: 3px; }
 .s { text-decoration: line-through; text-decoration-color: var(--ink3); }
 .act { cursor: pointer; }
@@ -176,27 +182,26 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
 
 .breathe { animation: breathe 1600ms ease-in-out infinite; }
 @keyframes breathe { 0%, 100% { color: var(--orange); } 50% { color: var(--orange-dim); } }
+/* The cube in the mark heats from cold metal to orange once, when a session opens. */
 .ignite { animation: ignite 900ms cubic-bezier(.16, 1, .3, 1) both; }
-@keyframes ignite { from { color: var(--cold); } to { color: var(--c); } }
-.ignite-bg { animation: ignite-bg 900ms cubic-bezier(.16, 1, .3, 1) both; }
-@keyframes ignite-bg { from { color: var(--cold); background-color: var(--cold); } to { color: var(--c); background-color: var(--cb); } }
+@keyframes ignite { from { filter: grayscale(1) brightness(.45); } to { filter: none; } }
 .caret { animation: caret 1060ms steps(1, end) infinite; }
 @keyframes caret { 0%, 55% { background: var(--ink); color: var(--ground); } 56%, 100% { background: transparent; color: var(--ink); } }
 
 /* No colour: state rides on glyphs, words and attributes. */
 .term.nocolor .c-or, .term.nocolor .breathe { font-weight: 700; animation: none; }
-.term.nocolor .c-ink3 { opacity: .72; }
+.term.nocolor .c-ink3 { opacity: .72; } /* SGR 2, faint */
 .term.nocolor .b-or { background: var(--ink); }
-.term.dimmed .c-ink3 { opacity: .78; }
+.term.dimmed .c-ink3 { opacity: .6; } /* 16 colours on a dark ground: white with SGR 2, faint */
 
 @media (prefers-reduced-motion: reduce) {
-  .breathe, .ignite, .ignite-bg, .caret { animation: none !important; }
+  .breathe, .ignite, .caret { animation: none !important; }
   .caret { background: var(--ink); color: var(--ground); }
 }
 @media (max-width: 720px) {
-  .bar { padding: 14px 16px 10px; }
-  main { padding: 0 16px 14px; }
-  .term { --cell-font: 12px; padding: 4px 6px; }
+  .bar { padding-block: 14px 10px; padding-inline: 0; }
+  main { padding-block: 0 14px; padding-inline: 0; }
+  .term { --cell-font: 12px; --cell-h: 16px; padding: 4px 6px; }
   .window { min-height: 520px; border-radius: 8px; }
 }
 </style>
@@ -240,7 +245,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
       <textarea class="kb" id="kb" aria-label="Terminal input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
     </div>
   </div>
-  <p class="hint">Try <kbd>Enter</kbd> to run the prompt, <kbd>y</kbd> to sign the approval, <kbd>Ctrl F</kbd> to filter the log, <kbd>#13</kbd> then <kbd>Enter</kbd> to jump, <kbd>/</kbd> for commands, <kbd>?</kbd> for keys. Click an entry to open it.</p>
+  <p class="hint">Try <kbd>y</kbd> to sign the waiting approval, <kbd>Ctrl F</kbd> to filter the log, <kbd>#11</kbd> then <kbd>Enter</kbd> to jump, <kbd>/</kbd> for commands, <kbd>?</kbd> for keys. Click an entry to open it. Play the session replays it from the start.</p>
 </main>
 <div class="sr" id="live" aria-live="polite"></div>
 
@@ -288,13 +293,14 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
   /* ---------- state ---------- */
   const DEMO = 'How do we fix ACME-103?';
   const S = {
-    theme: matchMedia('(prefers-color-scheme: light)').matches ? 'paper' : 'graphite',
+    theme: ({ light: 'paper', dark: 'graphite' })[document.documentElement.dataset.theme] || (matchMedia('(prefers-color-scheme: light)').matches ? 'paper' : 'graphite'),
     depth: '24', width: 'full',
     entries: [], nextId: 1,
-    input: DEMO, menu: 0, overlay: null, filter: 'all', scroll: 0, flash: null,
+    input: '', menu: 0, overlay: null, filter: 'all', scroll: 0, flash: null,
     phase: 'idle', live: null, liveSince: 0, approval: null,
     clock: [14, 30], ctx: 31, cost: 0.12, edits: 0, mode: 'default',
-    running: false, igniteAt: performance.now(), sessionStart: '13:58', doneIn: null,
+    running: false, igniteAt: performance.now(), sessionStart: '13:58', turnStart: [14, 30], doneIn: null,
+    quiet: false, // set while the page fast-forwards to where it opens
   };
   const T0 = performance.now();
 
@@ -308,43 +314,100 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
   const sg = (t, c = 'c-ink') => ({ t, c });
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const len = (segs) => segs.reduce((n, s) => n + [...s.t].length, 0);
+  // One span around several: a filled panel row is a single block, so no seams show inside it.
+  const group = (kids, c) => ({ t: kids.map((k) => k.t).join(''), c, kids });
+  // Segments that wrap as one unit, such as a key label and what the key does.
+  const unit = (u, segs) => segs.map((s) => ({ ...s, unit: u }));
   function fit(segs, w) {
     const out = []; let n = 0;
     for (const s of segs) {
       const ch = [...s.t];
       if (n + ch.length <= w) { out.push(s); n += ch.length; continue; }
       const room = w - n;
-      if (room > 1) out.push({ ...s, t: ch.slice(0, room - 1).join('') + '…' });
-      else if (room === 1) out.push({ ...s, t: '…' });
+      const { kids, ...flat } = s; // a cut group is drawn as plain text
+      if (room > 1) out.push({ ...flat, t: ch.slice(0, room - 1).join('') + '…' });
+      else if (room === 1) out.push({ ...flat, t: '…' });
       n = w; break;
     }
     if (n < w) out.push(sg(' '.repeat(w - n)));
     return out;
   }
-  // Word wrap with a hanging indent for continuation rows.
+  // The first k characters of segs, and the rest.
+  function cut(segs, k) {
+    const a = [], b = []; let n = 0;
+    for (const s of segs) {
+      const ch = [...s.t];
+      if (n >= k) { b.push(s); continue; }
+      if (n + ch.length <= k) { a.push(s); n += ch.length; continue; }
+      a.push({ ...s, t: ch.slice(0, k - n).join('') }); b.push({ ...s, t: ch.slice(k - n).join('') }); n = k;
+    }
+    return [a, b];
+  }
+  // Word wrap. Rows break only at spaces: a word may span segments ("HTTPS_PROXY" then ","), and a
+  // unit never breaks. Continuation rows start with `hang`: a number of spaces, or segments (a quote bar).
   function wrap(segs, w, hang = 0) {
-    const toks = [];
-    for (const s of segs) for (const p of s.t.split(/( +)/)) if (p) toks.push({ ...s, t: p });
+    const hangSegs = typeof hang === 'number' ? (hang ? [sg(' '.repeat(hang))] : []) : hang;
+    const hangN = len(hangSegs) < w ? len(hangSegs) : 0;
+    const words = []; let word = null;
+    for (const s of segs) {
+      if (s.unit) {
+        if (!word || word.unit !== s.unit) { word = { segs: [], n: 0, unit: s.unit }; words.push(word); }
+        word.segs.push(s); word.n += [...s.t].length; continue;
+      }
+      for (const p of s.t.split(/( +)/)) {
+        if (!p) continue;
+        if (p[0] === ' ') { words.push({ space: true, segs: [{ ...s, t: p }], n: p.length }); word = null; continue; }
+        if (!word || word.unit) { word = { segs: [], n: 0 }; words.push(word); }
+        word.segs.push({ ...s, t: p }); word.n += [...p].length;
+      }
+    }
     const lines = []; let cur = []; let n = 0;
-    const start = () => (lines.length ? hang : 0);
-    for (let tok of toks) {
-      const space = /^ +$/.test(tok.t);
-      if (space && n === start() && lines.length) continue;
-      let tl = [...tok.t].length;
-      if (n + tl > w && !space && n > start()) {
-        lines.push(cur); cur = hang ? [sg(' '.repeat(hang))] : []; n = hang;
+    const start = () => (lines.length ? hangN : 0);
+    const next = () => { lines.push(cur); cur = hangN ? [...hangSegs] : []; n = hangN; };
+    for (const wd of words) {
+      if (wd.space) {
+        if ((n === start() && lines.length) || n + wd.n > w) continue;
+        cur.push(...wd.segs); n += wd.n; continue;
       }
-      if (space && n + tl > w) continue;
-      while (n + tl > w) { // a word longer than the row
-        const ch = [...tok.t]; const room = Math.max(1, w - n);
-        cur.push({ ...tok, t: ch.slice(0, room).join('') }); lines.push(cur);
-        cur = hang ? [sg(' '.repeat(hang))] : []; n = hang;
-        tok = { ...tok, t: ch.slice(room).join('') }; tl = [...tok.t].length;
+      if (n + wd.n > w && n > start()) next();
+      let rest = wd.segs, rl = wd.n;
+      while (n + rl > w) { // a word longer than the row
+        const room = Math.max(1, w - n);
+        const [a, b] = cut(rest, room);
+        cur.push(...a); next(); rest = b; rl -= room;
       }
-      cur.push(tok); n += tl;
+      cur.push(...rest); n += rl;
     }
     if (cur.length || !lines.length) lines.push(cur);
     return lines;
+  }
+  // Code wraps where a reader expects (before a dot, after a bracket, a comma or a space). A continued
+  // row starts with a dim ↪ and sits four columns past its line's own indent.
+  function wrapCode(segs, w) {
+    const cells = [];
+    for (const s of segs) for (const ch of s.t) cells.push([ch, s.c]);
+    const lead = Math.max(0, cells.findIndex(([ch]) => ch !== ' '));
+    const regroup = (cs) => cs.reduce((out, [ch, c]) => {
+      const last = out[out.length - 1];
+      if (last && last.c === c) last.t += ch; else out.push(sg(ch, c));
+      return out;
+    }, []);
+    const out = []; let i = 0;
+    do {
+      const head = out.length ? [sg('↪', 'c-ink3'), sg(' '.repeat(lead + 4))] : [sg(' ')];
+      if (out.length) while (i < cells.length && cells[i][0] === ' ') i++;
+      const room = Math.max(8, w - len(head));
+      let end = Math.min(cells.length, i + room);
+      if (end < cells.length) {
+        for (let j = end; j > i + room / 3; j--) {
+          const prev = cells[j - 1][0];
+          if (cells[j][0] === '.' || prev === '(' || prev === ',' || prev === ' ') { end = j; break; }
+        }
+      }
+      out.push([...head, ...regroup(cells.slice(i, end))]);
+      i = end;
+    } while (i < cells.length);
+    return out;
   }
 
   /* ---------- the session ---------- */
@@ -392,7 +455,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     screen.appendChild(probe);
     cw = probe.getBoundingClientRect().width / 100;
     probe.remove();
-    lh = parseFloat(getComputedStyle(screen).fontSize) * 1.3;
+    lh = parseFloat(getComputedStyle(screen).lineHeight);
     const box = term.getBoundingClientRect();
     const cs = getComputedStyle(term);
     const iw = box.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
@@ -405,14 +468,14 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     const want = S.width === 'full' ? '' : `${Math.ceil(c * cw + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + 2)}px`;
     if (win.style.maxWidth !== want) win.style.maxWidth = want;
   }
+  // The rail's columns: time (dropped first when narrow) │ mark, actor, text … #n.
   function geom() {
-    const showTime = cols >= 70, showActor = cols >= 54, showRight = cols >= 58;
-    const timeW = showTime ? 6 : 0;
-    const railCol = timeW;
-    const actorW = showActor ? 7 : 0;
+    const showTime = cols >= 70;
+    const railCol = showTime ? 6 : 0;
+    const actorW = 7;
     const textCol = railCol + 4 + actorW;
-    const rightW = showRight ? 10 : 0;
-    return { showTime, showActor, showRight, railCol, textCol, rightW, textW: Math.max(12, cols - textCol - rightW) };
+    const rightW = 7; // two spaces, up to #999, and the right margin the header and status line keep
+    return { showTime, railCol, actorW, textCol, rightW, textW: Math.max(12, cols - textCol - rightW) };
   }
   const phase = (period, since = T0) => `animation-delay:-${Math.round((performance.now() - since) % period)}ms`;
 
@@ -440,27 +503,25 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     const [g, gc] = MARKS[e.kind];
     const lines = [];
     const liveNow = S.live === e.id;
-    let right = e.right ? sg(e.right, 'c-ink3') : sg(`#${e.id}`, 'c-ink3');
-    if (liveNow && S.phase === 'need') right = sg('needs you', 'c-or b');
-    else if (liveNow) right = sg(`${Math.max(0, Math.floor((performance.now() - S.liveSince) / 1000))}s`, 'c-ord');
-    else if (e.signed) right = sg(`#${e.id}`, 'c-ink3');
-    const head = [sg(' '), sg(g, gc), sg(' ')];
-    if (G.showActor) head.push(sg((e.actor || '').padEnd(G.textCol - G.railCol - 4 - 0), e.kind === 'you' ? 'c-ink b' : 'c-ink2'));
-    const body = G.showActor ? e.text : [sg(`${e.actor} `, 'c-ink2'), ...e.text];
-    const wrapped = wrap(body, G.textW - 1, 0);
+    // Every entry keeps its number. Whether it is live or waiting is told once, by the orange rail
+    // cell and the status line, not again here.
+    const num = sg(`#${e.id}`, 'c-ink3');
+    const head = [sg(' '), sg(g, gc), sg(' '), sg((e.actor || '').padEnd(G.actorW), e.kind === 'you' ? 'c-ink b' : 'c-ink2')];
+    const wrapped = wrap(e.text, G.textW - 1, 0);
     wrapped.forEach((w, i) => {
       const segs = [...prefix(e, G, i === 0), ...(i === 0 ? head : [sg(' '.repeat(G.textCol - G.railCol - 1))]), ...fit(w, G.textW)];
-      if (G.showRight) segs.push(...fit(i === 0 ? [sg(' '.repeat(Math.max(0, G.rightW - [...right.t].length))), right] : [], G.rightW));
+      segs.push(...(i === 0 ? [sg(' '.repeat(G.rightW - 1 - len([num]))), num, sg(' ')] : [sg(' '.repeat(G.rightW))]));
       lines.push({ segs, entry: e.detail ? e.id : null });
     });
-    const showDetail = e.detail && (e.open || e.always || (liveNow && S.phase === 'need'));
+    const detail = typeof e.detail === 'function' ? e.detail() : e.detail;
+    const showDetail = detail && (e.open || e.always || (liveNow && S.phase === 'need'));
     if (showDetail) {
-      for (const d of e.detail) {
+      for (const d of detail) {
         const ind = d.indent || 0;
         const width = G.textW + G.rightW - ind - 1;
-        const w = wrap(d.segs, width, d.hang || 0);
-        for (const row of w) {
-          const content = d.bg ? fit(row, width).map((x) => ({ ...x, c: `${x.c || ''} ${d.bg}` })) : row;
+        const rowsOut = d.code ? wrapCode(d.code, width) : wrap(d.segs, width, d.hang || 0);
+        for (const row of rowsOut) {
+          const content = d.bg ? [group(fit(row, width), `band ${d.bg}`)] : row;
           const segs = [...prefix(e, G, false), sg(' '.repeat(G.textCol - G.railCol - 1 + ind)), ...content];
           lines.push({ segs, entry: e.always ? null : e.id, act: d.act });
         }
@@ -469,38 +530,96 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     return lines;
   }
 
+  // The keys, in the words the keys panel uses, on fixed columns: what you type on the left, how you
+  // move on the right. Keys are set flush right against what they do, so both columns line up.
+  const KEYS = [
+    [['Enter', 'send'], ['Ctrl F', 'filter']],
+    [['/', 'commands'], ['#n', 'jump']],
+    [['@', 'files'], ['?', 'keys']],
+    [['!', 'shell'], ['Shift Tab', 'mode']],
+  ];
+  function keyGrid() {
+    const kw = [0, 1].map((c) => Math.max(...KEYS.map((row) => row[c][0].length)));
+    const lw = Math.max(...KEYS.map((row) => row[0][1].length));
+    return KEYS.map((row) => row.flatMap(([k, l], c) => [
+      sg(' '.repeat(kw[c] - k.length)), sg(k, 'c-ink b'), sg(' '), sg(c ? l : l.padEnd(lw + 4), 'c-ink3'),
+    ]));
+  }
+  // The pixel mark, painted cell by cell: each ▀ ▄ █ is a block with a top and a bottom half, as a
+  // terminal draws it, so no font seams show between cells or rows.
+  function logoRow(row, ign) {
+    const paper = S.theme === 'paper';
+    const col = (h) => h && tone(paper ? (LOGO_PAPER[h] || h) : h);
+    const cells = [];
+    for (const [t, f, b] of row) for (const ch of t) {
+      const fc = col(f), bc = col(b);
+      const [top, bot] = ch === '█' ? [fc, fc] : ch === '▀' ? [fc, bc] : ch === '▄' ? [bc, fc] : [null, null];
+      cells.push({ top: top || null, bot: bot || null, spark: SPARK.has(f) || SPARK.has(b) });
+    }
+    const segs = [];
+    for (let i = 0; i < cells.length;) {
+      let j = i;
+      const a = cells[i];
+      while (j < cells.length && cells[j].top === a.top && cells[j].bot === a.bot && cells[j].spark === a.spark) j++;
+      const t = ' '.repeat(j - i);
+      if (!a.top && !a.bot) segs.push(sg(t));
+      else {
+        const bg = a.top === a.bot ? a.top : `linear-gradient(${a.top || 'transparent'} 50%, ${a.bot || 'transparent'} 50%)`;
+        const lit = a.spark && ign;
+        segs.push({ t, c: lit ? 'px ignite' : 'px', style: `background:${bg}${lit ? `;animation-delay:-${Math.round(performance.now() - S.igniteAt)}ms` : ''}` });
+      }
+      i = j;
+    }
+    return segs;
+  }
+  const SAMPLE = 'A sample session; its data is made up.';
   function welcomeLines() {
     const out = [];
-    const paper = S.theme === 'paper';
     const ign = performance.now() - S.igniteAt < 950;
     const textCol = [
-      [sg('KodAct', 'c-ink b'), sg('  0.1', 'c-ink3')],
+      [sg('KodAct', 'c-ink b'), sg(' 0.1', 'c-ink3'), sg(`   session 4 · started ${S.sessionStart}`, 'c-ink2')],
       [],
-      [sg(`session 4 · started ${S.sessionStart}`, 'c-ink2')],
+      ...keyGrid(),
       [],
-      [sg('⏎', 'c-ink b'), sg(' send   ', 'c-ink3'), sg('/', 'c-ink b'), sg(' commands   ', 'c-ink3'), sg('@', 'c-ink b'), sg(' files   ', 'c-ink3'), sg('!', 'c-ink b'), sg(' shell', 'c-ink3')],
-      [sg('^F', 'c-ink b'), sg(' filter   ', 'c-ink3'), sg('#n', 'c-ink b'), sg(' jump   ', 'c-ink3'), sg('?', 'c-ink b'), sg(' keys    ', 'c-ink3'), sg('⇧⇥', 'c-ink b'), sg(' mode', 'c-ink3')],
-      [],
-      [sg('Press ', 'c-ink3'), sg('Enter', 'c-or'), sg(' to send the request below; this session is a sample.', 'c-ink3')],
+      [sg(SAMPLE, 'c-ink3')],
     ];
-    const side = cols >= 64;
+    const side = cols >= 2 + 14 + 4 + Math.max(...textCol.map(len)) + 1;
     out.push({ segs: [] });
     LOGO.forEach((row, r) => {
-      const segs = [sg('  ')];
-      for (const [t, f, b] of row) {
-        if (!f) { segs.push(sg(t)); continue; }
-        const fc = paper ? (LOGO_PAPER[f] || f) : f;
-        const bc = b ? (paper ? (LOGO_PAPER[b] || b) : b) : null;
-        const sp = SPARK.has(f) || (b && SPARK.has(b));
-        segs.push({ t, c: '', style: `color:${tone(fc)};${bc ? `background:${tone(bc)};` : ''}${sp && ign ? `--c:${tone(fc)};--cb:${bc ? tone(bc) : 'transparent'};animation-delay:-${Math.round(performance.now() - S.igniteAt)}ms` : ''}`, cls: sp && ign ? (bc ? 'ignite-bg' : 'ignite') : '' });
-      }
-      const pad = 14 - row.reduce((n, [t]) => n + [...t].length, 0);
-      if (side) { segs.push(sg(' '.repeat(Math.max(0, pad) + 4))); segs.push(...(textCol[r] || [])); }
+      const segs = [sg('  '), ...logoRow(row, ign)];
+      if (side) segs.push(sg(' '.repeat(14 - len(segs) + 2 + 4)), ...(textCol[r] || []));
       out.push({ segs });
     });
-    if (!side) for (const t of textCol) for (const w of wrap(t, cols - 3, 0)) out.push({ segs: [sg('  '), ...w] });
+    if (!side) {
+      out.push({ segs: [] });
+      for (const t of textCol) for (const w of wrap(t, cols - 3, 0)) out.push({ segs: [sg('  '), ...w] });
+    }
     out.push({ segs: [] });
     return out;
+  }
+  // Once the log no longer fits under the welcome, the welcome folds to one line at the head of the
+  // log, rather than be cut through the mark. Its facts drop whole when the row is narrow.
+  function foldedWelcome() {
+    const parts = [[sg('KodAct', 'c-ink b'), sg(' 0.1', 'c-ink3')], [sg(` · session 4 · started ${S.sessionStart}`, 'c-ink3')], [sg(` · ${SAMPLE}`, 'c-ink3')]];
+    const segs = [sg('  ')];
+    for (const p of parts) { if (len(segs) + len(p) > cols - 1) break; segs.push(...p); }
+    return [{ segs }, { segs: [] }];
+  }
+  // The log as rows: the welcome (whole or folded), then each entry shown by the filter.
+  function logLines(G, viewH) {
+    const f = FILTERS.find((x) => x[0] === S.filter)[2];
+    const body = [];
+    for (const e of S.entries) {
+      if (f && !f.includes(e.kind)) continue;
+      body.push(...entryLines(e, G).map((l) => ({ ...l, id: e.id })));
+    }
+    if (f) {
+      if (!body.length) body.push({ segs: [sg('  nothing of this kind in the log yet', 'c-ink3')] });
+      return { lines: [{ segs: [] }, ...body], folded: false };
+    }
+    const full = welcomeLines();
+    if (full.length + body.length <= viewH) return { lines: [...full, ...body], folded: false };
+    return { lines: [...foldedWelcome(), ...body], folded: true };
   }
 
   // Map a design colour through the active colour depth.
@@ -520,21 +639,23 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
   /* ---------- markdown answer, set as a log entry ---------- */
   function answerDetail() {
     const k = (t) => sg(t, 'c-kw'), f = (t) => sg(t, 'c-fn'), st = (t) => sg(t, 'c-str'), p = (t) => sg(t, 'c-ink2'), n = (t) => sg(t, 'c-num');
-    const ic = (t) => sg(t, 'c-or');
-    const codeRow = (...segs) => ({ segs: [sg(' '), ...segs], bg: 'b-band', indent: 0, hang: 6 });
+    // Inline code has its own colour; with no colour, it keeps its backticks, dim.
+    const ic = (t, x = '') => (S.depth === 'none' ? [sg('`', 'c-ink3'), sg(t, `c-ink ${x}`), sg('`', 'c-ink3')] : [sg(t, `c-fn ${x}`)]);
+    const codeRow = (...segs) => ({ code: segs, bg: 'b-band' });
+    const bar = [sg('▎ ', 'c-ink3')];
     return [
       { segs: [] },
       { segs: [sg('ACME-103 is fixed on fix/proxy-login', 'c-ink b')] },
       { segs: [sg('────────────────────────────────────', 'c-rule')] },
-      { segs: [sg('The login client ignored '), sg('HTTPS_PROXY', 'c-fn'), sg(', and once it used the proxy it rejected the certificate the proxy re-signs.')] },
+      { segs: [sg('The login client ignored '), ...ic('HTTPS_PROXY'), sg(', and once it used the proxy it rejected the certificate the proxy re-signs.')] },
       { segs: [] },
       { segs: [sg('1. ', 'c-ink3'), sg('Proxy settings are read at startup', 'c-ink b')], hang: 3 },
-      { segs: [sg('   • ', 'c-ink3'), sg('from '), sg('HTTPS_PROXY', 'c-fn'), sg(' and '), sg('NO_PROXY', 'c-fn'), sg(', the way curl reads them, so every tool on the machine shares one setting')], hang: 5 },
-      { segs: [sg('   • ', 'c-ink3'), sg('from '), sg('settings.json', 'c-fn'), sg(' when the variables are missing')], hang: 5 },
+      { segs: [sg('   • ', 'c-ink3'), sg('from '), ...ic('HTTPS_PROXY'), sg(' and '), ...ic('NO_PROXY'), sg(', the way curl reads them, so every tool on the machine shares one setting')], hang: 5 },
+      { segs: [sg('   • ', 'c-ink3'), sg('from '), ...ic('settings.json'), sg(' when the variables are missing')], hang: 5 },
       { segs: [sg('2. ', 'c-ink3'), sg('The client trusts the proxy\'s CA bundle', 'c-ink b')], hang: 3 },
-      { segs: [sg('3. ', 'c-ink3'), sg('Hosts in ', 'c-ink b'), sg('NO_PROXY', 'c-fn b'), sg(' keep a direct connection', 'c-ink b')], hang: 3 },
+      { segs: [sg('3. ', 'c-ink3'), sg('Hosts in ', 'c-ink b'), ...ic('NO_PROXY', 'b'), sg(' keep a direct connection', 'c-ink b')], hang: 3 },
       { segs: [] },
-      { segs: [sg('▎ ', 'c-ink3'), sg('The lint failure on #43 is separate: ', 'c-ink2 i'), sg('cargo clippy', 'c-fn'), sg(' flags an unused import in ', 'c-ink2 i'), sg('src/login/mod.rs', 'c-fn'), sg('.', 'c-ink2 i')], hang: 2 },
+      { segs: [...bar, sg('The lint failure on #43 is separate: ', 'c-ink2 i'), ...ic('cargo clippy'), sg(' flags an unused import in ', 'c-ink2 i'), ...ic('src/login/mod.rs'), sg('.', 'c-ink2 i')], hang: bar },
       { segs: [] },
       { segs: [sg(' rust', 'c-ink3'), sg(' · src/login/tls.rs', 'c-ink3')], bg: 'b-band' },
       codeRow(k('pub fn '), f('client'), p('(cfg: &'), f('Settings'), p(') -> '), f('Result'), p('<'), f('Client'), p('> {')),
@@ -542,7 +663,12 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
       codeRow(p('    '), f('Client::builder'), p('().'), f('proxy'), p('(proxy).'), f('add_root'), p('('), f('ca_bundle'), p('()?).'), f('timeout'), p('('), n('30'), p(').'), f('build'), p('()')),
       codeRow(p('}')),
       { segs: [] },
-      { segs: [sg('☑ ', 'c-grn'), sg('reproduce the timeout', 'c-ink2'), sg('   ☑ ', 'c-grn'), sg('fix', 'c-ink2'), sg('   ☑ ', 'c-grn'), sg('14 tests pass', 'c-ink2'), sg('   ☐ ', 'c-ink3'), sg('mark #43 ready for review')], hang: 0 },
+      { segs: [ // each task wraps whole
+        ...unit('t1', [sg('☑ ', 'c-grn'), sg('reproduce the timeout', 'c-ink2')]), sg('   '),
+        ...unit('t2', [sg('☑ ', 'c-grn'), sg('fix', 'c-ink2')]), sg('   '),
+        ...unit('t3', [sg('☑ ', 'c-grn'), sg('14 tests pass', 'c-ink2')]), sg('   '),
+        ...unit('t4', [sg('☐ ', 'c-ink3'), sg('mark #43 ready for review')]),
+      ] },
       { segs: [] },
       { segs: [sg('Notes on the proxy setup are in '), sg('docs/network.md', 'c-ink u'), sg('.')] },
     ];
@@ -555,7 +681,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
       const f = FILTERS.find((x) => x[0] === S.filter);
       const total = S.entries.filter((x) => x.id).length;
       const shown = S.entries.filter((x) => x.id && f[2].includes(x.kind)).length;
-      right.push(sg('showing ', 'c-ink3'), sg(f[1], 'c-ink b'), sg(` · ${shown} of ${total} · `, 'c-ink3'), sg('^F', 'c-ink b'), sg(' next · ', 'c-ink3'), sg('Esc', 'c-ink b'), sg(' all   ', 'c-ink3'));
+      right.push(sg('showing ', 'c-ink3'), sg(f[1], 'c-ink b'), sg(` · ${shown} of ${total} · `, 'c-ink3'), sg('Ctrl F', 'c-ink b'), sg(' next · ', 'c-ink3'), sg('Esc', 'c-ink b'), sg(' all   ', 'c-ink3'));
     }
     right.push(sg(now() + ' ', 'c-ink3'));
     const parts = [[sg(' '), sg('▛', 'c-ink'), sg('◆', 'c-or'), sg(' KodAct', 'c-ink b')], [sg('   ~/shop', 'c-ink2')], [sg(' · fix/proxy-login', 'c-ink3')], [sg(' · deep-thinking', 'c-ink3')]];
@@ -583,7 +709,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
       [sg(`$${S.cost.toFixed(2)}`, 'c-ink3')],
       [sg(`${S.edits} edit${S.edits === 1 ? '' : 's'}`, 'c-ink3')],
       [sg('◌ ', 'c-ink2'), sg('bash_2 :8080', 'c-ink3')],
-      [sg(S.mode, S.mode === 'default' ? 'c-ink3' : 'c-or')],
+      [sg(S.mode, S.mode === 'default' ? 'c-ink3' : 'c-ink b')],
       [sg('? keys', 'c-ink3')],
     ];
     const left = stateSegs();
@@ -599,7 +725,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     return [...fit(left, cols - len(right)), ...right];
   }
   function promptLine() {
-    const segs = [sg(' ✎ ', S.approval ? 'c-ink3' : 'c-or')];
+    const segs = [sg(' ✎ ', S.approval ? 'c-ink3' : 'c-ink b')];
     if (S.approval && !S.input) {
       segs.push(sg('waiting for your answer above', 'c-ink3'));
       return fit(segs, cols);
@@ -625,7 +751,13 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     ['/theme', 'Graphite, paper or no colour'],
     ['/help', 'Keys and commands'],
   ];
+  // KodAct's built-in commands today (kodact-core BUILTINS), plus /filter, which this design adds.
+  const ALL_COMMANDS = ('add-dir advisor agents autocompact branch btw cd clear color compact config context copy debug diff '
+    + 'doctor effort exit export fast feedback filter focus goal help hooks import keybindings loop mcp memory model '
+    + 'output-style permissions plan plugin recap release-notes reload-plugins reload-skills rename resume rewind sandbox '
+    + 'skills status statusline subtask tasks terminal-setup theme usage').split(' ').map((c) => '/' + c);
   const menuItems = () => COMMANDS.filter(([c]) => c.startsWith(S.input.split(' ')[0]));
+  const menuMore = () => ALL_COMMANDS.filter((c) => c.startsWith(S.input.split(' ')[0])).length - menuItems().length;
 
   function keysOverlay(h) {
     const rows = [
@@ -643,34 +775,30 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
 
   let rowCache = [];
   function render() {
+    if (S.quiet) return;
     const G = geom();
     const R = rows;
-    const viewH = R - 4;
-    // Log lines.
-    let lines = [];
-    if (S.filter === 'all') lines.push(...welcomeLines());
-    const f = FILTERS.find((x) => x[0] === S.filter)[2];
-    for (const e of S.entries) {
-      if (f && !f.includes(e.kind)) continue;
-      lines.push(...entryLines(e, G).map((l) => ({ ...l, id: e.id })));
-    }
-    if (f && !lines.length) lines.push({ segs: [sg('  nothing of this kind in the log yet', 'c-ink3')] });
-    if (f) lines.unshift({ segs: [] });
-    // Viewport.
+    const viewH = R - 5; // header, its rule, the bottom rule, prompt and status take the other five
+    const { lines, folded } = logLines(G, viewH);
+    // Viewport. A fresh log starts at the top; a longer one sits on the prompt, newest last.
     const maxScroll = Math.max(0, lines.length - viewH);
     S.scroll = Math.max(0, Math.min(S.scroll, maxScroll));
     const startAt = Math.max(0, lines.length - viewH - S.scroll);
     let view = lines.slice(startAt, startAt + viewH);
-    while (view.length < viewH) view.push({ segs: [] });
+    const gap = Array.from({ length: viewH - view.length }, () => ({ segs: [] }));
+    view = folded ? [...gap, ...view] : [...view, ...gap];
     if (S.overlay === 'keys') view = keysOverlay(viewH);
     // Command menu above the prompt.
     if (S.input.startsWith('/') && !S.overlay) {
       const items = menuItems();
       S.menu = Math.min(S.menu, Math.max(0, items.length - 1));
-      const menu = items.length ? items.map(([c, d], i) => ({
-        segs: fit([sg(i === S.menu ? ' › ' : '   ', 'c-or'), sg(c.padEnd(11), i === S.menu ? 'c-ink b' : 'c-ink'), sg(d, i === S.menu ? 'c-ink2' : 'c-ink3')], cols),
+      const more = menuMore();
+      const menu = items.map(([c, d], i) => ({
+        segs: fit([sg(i === S.menu ? ' › ' : '   ', 'c-ink b'), sg(c.padEnd(11), i === S.menu ? 'c-ink b' : 'c-ink'), sg(d, i === S.menu ? 'c-ink2' : 'c-ink3')], cols),
         bg: i === S.menu ? 'b-sel' : null, act: `cmd:${c}`,
-      })) : [{ segs: [sg('   no command starts with ' + S.input, 'c-ink3')] }];
+      }));
+      if (more > 0) menu.push({ segs: [sg(`   ${more} more ${more === 1 ? 'command' : 'commands'}${items.length ? ' · keep typing to narrow' : ', not in this mock'}`, 'c-ink3')] });
+      if (!menu.length) menu.push({ segs: [sg('   no command starts with ' + S.input, 'c-ink3')] });
       view = [...view.slice(0, Math.max(0, viewH - menu.length - 1)), { segs: [sg('─'.repeat(cols), 'c-rule')] }, ...menu].slice(-viewH);
     }
     const below = S.scroll;
@@ -691,12 +819,12 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
       rowCache = [];
       for (let i = 0; i < all.length; i++) { const d = document.createElement('div'); d.className = 'ln'; screen.appendChild(d); rowCache.push(''); }
     }
+    const span = (s) => {
+      const inner = s.kids ? s.kids.map(span).join('') : esc(s.t);
+      return `<span${s.c ? ` class="${s.c}"` : ''}${s.style ? ` style="${s.style}"` : ''}>${inner}</span>`;
+    };
     all.forEach((row, i) => {
-      const segs = fit(row.segs, cols);
-      const html = segs.map((s) => {
-        const cls = [s.c, s.cls].filter(Boolean).join(' ');
-        return `<span${cls ? ` class="${cls}"` : ''}${s.style ? ` style="${s.style}"` : ''}>${esc(s.t)}</span>`;
-      }).join('');
+      const html = fit(row.segs, cols).map(span).join('');
       const key = `${row.bg || ''}|${row.entry || ''}|${row.act || ''}|${S.flash === row.id ? 1 : 0}|${html}`;
       if (rowCache[i] === key) return;
       rowCache[i] = key;
@@ -734,24 +862,47 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     if (ph === 'tool') say(`KodAct is running ${tool}.`);
     if (ph === 'need') say(`KodAct needs your approval: ${tool}. Press y to sign, a to always allow, n to refuse.`);
   }
-  async function step(entry, ph, tool, ms, done) {
-    const e = add(entry); tick(); setLive(e, ph, tool); S.scroll = 0; render();
-    await sleep(ms);
-    if (done) done(e);
-    S.live = null; render();
-    return e;
-  }
   const run = (cmd, rest) => [sg(cmd, 'c-ink2'), ...(rest ? [sg(`  ${rest}`, 'c-ink3')] : [])];
+  const chip = (k, c) => ({ t: ` ${k} `, c: `${c} b chip` });
+  // Turn length by the session clock, as the real status line reports it.
+  function took(a, b) {
+    const m = (b[0] * 60 + b[1]) - (a[0] * 60 + a[1]);
+    return m < 1 ? 'under a minute' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  }
+  const CANCELLED = Symbol('cancelled');
+  let gen = 0; // bumped to stop a session in progress
 
-  async function demo(prompt) {
+  // Plays the sample turn. With fast set, it jumps straight to the approval: the page opens on a
+  // session in progress that is waiting for you.
+  async function demo(prompt, fast = false) {
     if (S.running) return;
-    S.running = true; S.filter = 'all'; S.overlay = null;
-    const t0 = performance.now();
+    const g = ++gen;
+    const wait = async (ms) => { if (!fast) await sleep(ms); if (g !== gen) throw CANCELLED; };
+    async function step(entry, ph, tool, ms, done) {
+      const e = add(entry); tick(); setLive(e, ph, tool); S.scroll = 0; render();
+      await wait(ms);
+      if (done) done(e);
+      S.live = null; render();
+      return e;
+    }
+    S.running = true; S.filter = 'all'; S.overlay = null; S.quiet = fast;
+    try {
+      await session(prompt, wait, step, () => { fast = false; S.quiet = false; }, g);
+    } catch (err) {
+      if (err !== CANCELLED) throw err;
+    } finally {
+      if (g === gen) S.running = false;
+      S.quiet = false;
+    }
+  }
+
+  async function session(prompt, wait, step, live_, g) {
+    S.turnStart = [...S.clock];
     add({ kind: 'you', actor: 'you', text: [sg(prompt)] });
     S.input = ''; S.scroll = 0; render();
     const think = add({ kind: 'say', actor: 'kodact', text: [sg('thinking', 'c-ink3 i')] });
     setLive(think, 'thinking'); render();
-    await sleep(1400);
+    await wait(1400);
     think.text = [sg("I'll read the issue and its pull request first.")];
     S.live = null; S.cost = 0.13; render();
 
@@ -774,7 +925,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
         { segs: [sg('43  + ', 'c-grn'), sg('let builder = builder.proxy(proxy);', 'c-ink')] },
       ];
     });
-    const test1 = await step({ kind: 'run', actor: 'bash', text: run('cargo test login') }, 'tool', 'bash', 1500, (e) => {
+    await step({ kind: 'run', actor: 'bash', text: run('cargo test login') }, 'tool', 'bash', 1500, (e) => {
       e.kind = 'fail';
       e.text = [sg('cargo test login', 'c-ink2'), sg('  → ', 'c-ink3'), sg('1 failed', 'c-red b'), sg(': proxy_ca_is_trusted', 'c-ink2')];
       e.detail = [
@@ -785,9 +936,8 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
       ];
       e.open = true;
     });
-    void test1;
     const why = add({ kind: 'say', actor: 'kodact', text: [sg('thinking', 'c-ink3 i')] });
-    setLive(why, 'thinking'); render(); await sleep(1200);
+    setLive(why, 'thinking'); render(); await wait(1200);
     why.text = [sg('The corporate proxy re-signs TLS, so the client must trust its CA as well.')];
     S.live = null; S.ctx = 39; S.cost = 0.16; render();
     await step({ kind: 'change', actor: 'edit', text: [sg('src/login/tls.rs', 'c-ink'), sg('  +9', 'c-grn')] }, 'tool', 'edit', 600, (e) => {
@@ -805,11 +955,17 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
         { segs: [sg('key   ', 'c-ink3'), sg('ACME-103', 'c-ink')] },
         { segs: [sg('body  ', 'c-ink3'), sg('Fixed on fix/proxy-login: the client reads HTTPS_PROXY and trusts the proxy CA. PR #43 is still a draft; its lint check fails on an unused import.', 'c-ink')], hang: 6 },
         { segs: [] },
-        { segs: [{ t: ' y ', c: 'c-gnd b-or b chip' }, sg(' sign   ', 'c-ink2'), { t: ' a ', c: 'c-ink b-sel b chip' }, sg(' always for jira.add_comment   ', 'c-ink2'), { t: ' n ', c: 'c-ink b-sel b chip' }, sg(' refuse and say why', 'c-ink2')], act: 'approve' },
+        { segs: [
+          ...unit(1, [chip('y', 'c-gnd b-or'), sg(' sign', 'c-ink2')]), sg('   '),
+          ...unit(2, [chip('a', 'c-ink b-sel'), sg(' always for jira.add_comment', 'c-ink2')]), sg('   '),
+          ...unit(3, [chip('n', 'c-ink b-sel'), sg(' refuse and say why', 'c-ink2')]),
+        ], act: 'approve' },
       ],
     });
+    live_(); // the page opens here
     S.approval = ask; setLive(ask, 'need', 'jira.add_comment'); S.scroll = 0; render();
     const choice = await new Promise((r) => { S.resolve = r; });
+    if (g !== gen) throw CANCELLED;
     S.approval = null; S.resolve = null;
     if (choice === 'n') {
       ask.kind = 'rewound';
@@ -821,16 +977,16 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
       ask.detail = [{ segs: [sg('comment posted · 4 on the issue', 'c-ink3')] }, ...ask.detail.slice(1, 2)];
     }
     S.live = null; render();
-    await sleep(400);
+    await wait(400);
     const ans = add({ kind: 'say', actor: 'kodact', text: [sg('thinking', 'c-ink3 i')] });
-    setLive(ans, 'thinking'); render(); await sleep(1100);
+    setLive(ans, 'thinking'); render(); await wait(1100);
     tick(); ans.t = now();
     ans.text = [sg('Done. Here is what changed and why.', 'c-ink')];
-    ans.detail = answerDetail(); ans.always = true;
+    ans.detail = answerDetail; ans.always = true; // set at each render, so it follows the colour depth
     S.ctx = 41; S.cost = 0.18;
-    S.live = null; S.phase = 'done'; S.doneIn = `${Math.round((performance.now() - t0) / 1000)}s`;
-    say('KodAct is done. Two files changed; one comment signed.');
-    S.running = false; S.scroll = 0; render();
+    S.live = null; S.phase = 'done'; S.doneIn = took(S.turnStart, S.clock);
+    say(`KodAct is done in ${S.doneIn}. Two files changed; the comment was ${choice === 'n' ? 'refused' : 'signed'}.`);
+    S.scroll = 0; render();
   }
 
   /* ---------- commands, filter, jump ---------- */
@@ -861,13 +1017,10 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     S.filter = 'all'; S.overlay = null; e.open = true;
     render();
     // Find its first line and scroll so it sits a third of the way down.
-    const G = geom();
-    let lines = 0; const total = [];
-    for (const l of welcomeLines()) total.push(null);
-    for (const x of S.entries) for (const l of entryLines(x, G)) total.push(x.id);
-    lines = total.indexOf(n);
-    const viewH = rows - 4;
-    S.scroll = Math.max(0, total.length - lines - Math.floor(viewH * 2 / 3));
+    const viewH = rows - 5;
+    const { lines } = logLines(geom(), viewH);
+    const at = lines.findIndex((l) => l.id === n);
+    S.scroll = Math.max(0, lines.length - at - Math.floor(viewH * 2 / 3));
     S.flash = n; render();
     setTimeout(() => { S.flash = null; render(); }, 1400);
   }
@@ -883,7 +1036,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     if (t === DEMO) { demo(t); return; }
     S.input = '';
     add({ kind: 'you', actor: 'you', text: [sg(t)] });
-    note('This mock plays one sample session. Try Ctrl F, #13, / or ?, or replay it from the bar above.');
+    note('This mock plays one sample session. Try Ctrl F, #11, / or ?, or replay it from the bar above.');
     render();
   }
   function key(e) {
@@ -953,11 +1106,14 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     document.querySelectorAll('[data-width]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
     measure(); rowCache = []; render();
   }));
+  // Replays from the start of the log (13:58), stopping the session on screen wherever it is.
   document.getElementById('play').addEventListener('click', () => {
-    if (S.running) return;
+    const g = ++gen;
+    if (S.resolve) S.resolve(null);
+    S.running = false; S.approval = null; S.resolve = null; S.live = null; S.doneIn = null;
     history(); S.phase = 'idle'; S.ctx = 31; S.cost = 0.12; S.edits = 0; S.filter = 'all'; S.overlay = null; S.scroll = 0;
-    S.igniteAt = performance.now(); render(); kb.focus();
-    setTimeout(() => demo(DEMO), 700);
+    S.input = DEMO; S.igniteAt = performance.now(); render(); kb.focus();
+    setTimeout(() => { if (g === gen) demo(DEMO); }, 700);
   });
 
   /* ---------- start ---------- */
@@ -965,6 +1121,7 @@ main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min
     history();
     applyPalette();
     measure();
+    demo(DEMO, true); // opens on the session in progress, paused where it needs you
     render();
     setInterval(() => { if (S.live || S.phase === 'tool' || S.phase === 'thinking') render(); }, 1000);
     setTimeout(render, 1000); // settle the ignition into static colour
