@@ -117,18 +117,18 @@ pub fn mark(t: &Theme, small: bool) -> Vec<Line<'static>> {
     }
 }
 
-/// The logo at text size, for one-line places: `▛◆`.
+/// Forge at text size, for one-line places: a voxel cube two cells wide,
+/// drawn in half blocks so its pixels are square: the copper top over the
+/// lit face and the shaded one, as the logo's cube. Without colour, `■`.
 pub fn mark_inline(t: &Theme) -> Vec<Span<'static>> {
-    let (f, cube) = if t.color {
-        let ink = |c| mark_ink(c, t.light).map(|(hex, ansi)| palette::ink(hex, t.depth, ansi));
-        (
-            ink('F').map(|c| Style::default().fg(c)).unwrap_or_default(),
-            ink('T').map(|c| Style::default().fg(c)).unwrap_or_default(),
-        )
-    } else {
-        (Style::default(), Style::default())
-    };
-    vec![Span::styled("▛", f), Span::styled("◆", cube)]
+    let ink = |c| mark_ink(c, t.light).map(|(hex, ansi)| palette::ink(hex, t.depth, ansi));
+    match (t.color, ink('T'), ink('L'), ink('S')) {
+        (true, Some(top), Some(lit), Some(shade)) => vec![
+            Span::styled("▀", Style::default().fg(top).bg(lit)),
+            Span::styled("▀", Style::default().fg(top).bg(shade)),
+        ],
+        _ => vec![Span::raw("■")],
+    }
 }
 
 /// Art beside text, top-aligned, with a two-column margin and a three-column gap.
@@ -516,6 +516,16 @@ mod tests {
         {
             assert!(text.contains(want), "{want}\n{text}");
         }
+    }
+
+    #[test]
+    fn the_inline_mark_is_a_small_cube() {
+        let m = mark_inline(&DARK);
+        assert_eq!(plain(&[Line::from(m.clone())]), ["▀▀"]);
+        let copper = Some(Color::Rgb(0xe2, 0x89, 0x5b));
+        assert!(m.iter().all(|s| s.style.fg == copper), "a copper top");
+        assert_ne!(m[0].style.bg, m[1].style.bg, "a lit face and a shaded one");
+        assert_eq!(plain(&[Line::from(mark_inline(&Theme { color: false, ..DARK }))]), ["■"]);
     }
 
     #[test]
