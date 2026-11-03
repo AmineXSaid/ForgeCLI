@@ -200,11 +200,15 @@ impl Theme {
     }
 }
 
-/// Markdown, one line at a time: code fences, headings, `**bold**`, `` `code` ``
-/// and tables. Table rows are held until the table ends, so its columns line up.
+/// Markdown, one line at a time, so streamed text is drawn as it arrives:
+/// headings by level, bullet, numbered and task lists (nested by indent),
+/// quotes, rules, tables (held until they end, so their columns line up),
+/// fenced code with its language and highlighting, and inline bold, italic,
+/// strikethrough, `code` and links.
 #[derive(Debug, Clone, Default)]
 pub struct Markdown {
-    in_fence: bool,
+    /// The open code fence: its marker (```` ``` ```` or `~~~`) and language.
+    fence: Option<(String, String)>,
     table: Vec<String>,
 }
 
@@ -229,11 +233,59 @@ fn is_separator(cells: &[String]) -> bool {
         })
 }
 
+/// A list item's marker: (indent in columns, the marker, the text after it).
+enum Item<'a> {
+    Bullet(usize, &'a str),
+    Task(usize, bool, &'a str),
+    Number(usize, &'a str, &'a str),
+}
+
+fn indent_of(s: &str) -> (usize, &str) {
+    let mut cols = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            ' ' => cols += 1,
+            '\t' => cols += 4,
+            _ => return (cols, &s[i..]),
+        }
+    }
+    (cols, "")
+}
+
+fn list_item(raw: &str) -> Option<Item<'_>> {
+    let (cols, rest) = indent_of(raw);
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    if matches!(first, '-' | '*' | '+') && rest[1..].starts_with(' ') {
+        let body = rest[2..].trim_start();
+        for (mark, done) in [("[ ] ", false), ("[x] ", true), ("[X] ", true)] {
+            if let Some(b) = body.strip_prefix(mark) {
+                return Some(Item::Task(cols, done, b));
+            }
+        }
+        return Some(Item::Bullet(cols, body));
+    }
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    if (1..=3).contains(&digits) {
+        let after = &rest[digits..];
+        if (after.starts_with(". ") || after.starts_with(") ")) && !after[2..].trim().is_empty() {
+            return Some(Item::Number(cols, &rest[..digits], after[2..].trim_start()));
+        }
+    }
+    None
+}
+
+/// `---`, `***` or `___`, three or more, spaces allowed between.
+fn is_rule(t: &str) -> bool {
+    let s: String = t.chars().filter(|c| *c != ' ').collect();
+    s.len() >= 3 && ["-", "*", "_"].iter().any(|m| s.chars().all(|c| c.to_string() == *m))
+}
+
 impl Markdown {
-    /// The lines `raw` becomes: none while a table or a fence marker is being
-    /// read, the finished table when a table ends, else one line.
+    /// The lines `raw` becomes: none while a table is being read, the
+    /// finished table when a table ends, else one line.
     pub fn push(&mut self, raw: &str, t: &Theme) -> Vec<Line<'static>> {
-        if !self.in_fence && is_table_row(raw) {
+        if self.fence.is_none() && is_table_row(raw) {
             self.table.push(raw.to_string());
             return vec![];
         }
@@ -251,6 +303,12 @@ impl Markdown {
         }
         let rows: Vec<Vec<String>> = std::mem::take(&mut self.table).iter().map(|r| cells(r)).collect();
         let n = rows.iter().map(Vec::len).max().unwrap_or(0);
+        // Right-aligned columns: `--:` in the separator row.
+        let right: Vec<bool> = rows
+            .iter()
+            .find(|r| is_separator(r))
+            .map(|r| (0..n).map(|i| r.get(i).is_some_and(|c| c.ends_with(':') && !c.starts_with(':'))).collect())
+            .unwrap_or_else(|| vec![false; n]);
         let mut widths = vec![0usize; n];
         for r in rows.iter().filter(|r| !is_separator(r)) {
             for (i, c) in r.iter().enumerate() {
@@ -258,12 +316,12 @@ impl Markdown {
                 widths[i] = widths[i].max(width(&plain));
             }
         }
-        let bar = || Span::styled(" │ ", t.dim());
+        let bar = || Span::styled(" │ ", t.hairline());
         let mut out = vec![];
         for (ri, r) in rows.iter().enumerate() {
             if is_separator(r) {
                 let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
-                out.push(Line::from(Span::styled(rule.join("─┼─"), t.dim())));
+                out.push(Line::from(Span::styled(rule.join("─┼─"), t.hairline())));
                 continue;
             }
             let header = ri == 0 && rows.get(1).is_some_and(|r| is_separator(r));
@@ -280,9 +338,15 @@ impl Markdown {
                     }
                 }
                 let used: usize = cell.iter().map(|s| width(&s.content)).sum();
-                spans.extend(cell);
-                if i + 1 < widths.len() {
-                    spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+                let gap = Span::raw(" ".repeat(w.saturating_sub(used)));
+                if right[i] {
+                    spans.push(gap);
+                    spans.extend(cell);
+                } else {
+                    spans.extend(cell);
+                    if i + 1 < widths.len() {
+                        spans.push(gap);
+                    }
                 }
             }
             out.push(Line::from(spans));
@@ -290,70 +354,536 @@ impl Markdown {
         out
     }
 
-    /// One line, or none for a fence marker (code shows as indented, coloured
-    /// lines; the backticks aren't drawn).
+    /// One line. A code fence opens with its language on a gutter line and
+    /// closes with the gutter's foot; code inside is highlighted.
     pub fn line(&mut self, raw: &str, t: &Theme) -> Option<Line<'static>> {
+        let gutter = |s: &'static str| Span::styled(s, t.hairline());
         let trimmed = raw.trim_start();
-        if trimmed.starts_with("```") {
-            self.in_fence = !self.in_fence;
-            return None;
+        if let Some((marker, lang)) = self.fence.clone() {
+            if trimmed.starts_with(marker.as_str())
+                && trimmed.trim_start_matches(marker.chars().next().unwrap()).trim().is_empty()
+            {
+                self.fence = None;
+                return Some(Line::from(gutter("╰─")));
+            }
+            let mut spans = vec![gutter("│ ")];
+            spans.extend(highlight(raw, &lang, t));
+            return Some(Line::from(spans));
         }
-        if self.in_fence {
-            return Some(Line::from(Span::styled(format!("  {raw}"), t.code())));
+        for marker in ["```", "~~~"] {
+            if let Some(rest) = trimmed.strip_prefix(marker) {
+                let ch = marker.chars().next().unwrap();
+                let run = marker.len() + rest.chars().take_while(|c| *c == ch).count();
+                let lang = rest.trim_start_matches(ch).split_whitespace().next().unwrap_or("").to_lowercase();
+                self.fence = Some((ch.to_string().repeat(run), lang.clone()));
+                let label = if lang.is_empty() { String::new() } else { format!(" {lang}") };
+                return Some(Line::from(vec![gutter("╭─"), Span::styled(label, t.subtle())]));
+            }
         }
-        if let Some(rest) = trimmed.strip_prefix('#') {
-            let text = rest.trim_start_matches('#').trim();
-            return Some(Line::from(Span::styled(text.to_string(), t.bold())));
+        // Headings: `#` to `######` and a space.
+        let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
+            let text = trimmed[hashes..].trim().trim_end_matches('#').trim_end();
+            let style = match hashes {
+                1 => t.brand_strong().add_modifier(Modifier::BOLD),
+                2 => t.accent().add_modifier(Modifier::BOLD),
+                _ => t.bold(),
+            };
+            let spans =
+                inline(text, t).into_iter().map(|s| Span::styled(s.content, s.style.patch(style))).collect::<Vec<_>>();
+            return Some(Line::from(spans));
+        }
+        if is_rule(trimmed) && !trimmed.is_empty() {
+            return Some(Line::from(Span::styled("─".repeat(40), t.hairline())));
+        }
+        // Quotes, nested: a bar per level, the text quieter.
+        if trimmed.starts_with('>') {
+            let mut rest = trimmed;
+            let mut depth = 0;
+            while let Some(r) = rest.strip_prefix('>') {
+                depth += 1;
+                rest = r.trim_start();
+            }
+            let mut spans: Vec<Span<'static>> = (0..depth).map(|_| Span::styled("│ ", t.hairline())).collect();
+            let quiet = t.dim().add_modifier(Modifier::ITALIC);
+            spans.extend(inline(rest, t).into_iter().map(|s| Span::styled(s.content, quiet.patch(s.style))));
+            return Some(Line::from(spans));
+        }
+        if let Some(item) = list_item(raw) {
+            let pad = |cols: usize| " ".repeat(cols.div_ceil(2) * 2);
+            let mut spans = vec![];
+            match item {
+                Item::Bullet(cols, text) => {
+                    let level = cols / 2;
+                    let (glyph, st) = match level % 3 {
+                        0 => ("• ", t.accent()),
+                        1 => ("◦ ", t.dim()),
+                        _ => ("▪ ", t.subtle()),
+                    };
+                    spans.push(Span::raw(pad(cols)));
+                    spans.push(Span::styled(glyph, st));
+                    spans.extend(inline(text, t));
+                }
+                Item::Task(cols, done, text) => {
+                    spans.push(Span::raw(pad(cols)));
+                    if done {
+                        spans.push(Span::styled("✓ ", t.success()));
+                        let quiet = t.dim().add_modifier(Modifier::CROSSED_OUT);
+                        spans
+                            .extend(inline(text, t).into_iter().map(|s| Span::styled(s.content, quiet.patch(s.style))));
+                    } else {
+                        spans.push(Span::styled("○ ", t.subtle()));
+                        spans.extend(inline(text, t));
+                    }
+                }
+                Item::Number(cols, n, text) => {
+                    spans.push(Span::raw(pad(cols)));
+                    spans.push(Span::styled(format!("{n}. "), t.accent()));
+                    spans.extend(inline(text, t));
+                }
+            }
+            return Some(Line::from(spans));
         }
         Some(Line::from(inline(raw, t)))
     }
 
     pub fn reset(&mut self) {
-        self.in_fence = false;
+        self.fence = None;
         self.table.clear();
     }
 }
 
-/// `**bold**` and `` `code` `` inside a line.
+/// Inline markdown: `**bold**`, `__bold__`, `*italic*`, `_italic_`,
+/// `~~strike~~`, `` `code` ``, `[text](url)`, `<https://…>` and bare links,
+/// and `\` escapes. Emphasis nests (`**bold `code`**`).
 pub fn inline(s: &str, t: &Theme) -> Vec<Span<'static>> {
-    let mut spans = vec![];
-    let mut plain = String::new();
-    let mut rest = s;
-    while !rest.is_empty() {
-        let (marker, style) = if rest.starts_with("**") {
-            ("**", t.bold())
-        } else if rest.starts_with('`') {
-            ("`", t.code())
-        } else {
-            let c = rest.chars().next().unwrap();
-            plain.push(c);
-            rest = &rest[c.len_utf8()..];
-            continue;
-        };
-        let body = &rest[marker.len()..];
-        match body.find(marker) {
-            Some(end) if end > 0 => {
-                if !plain.is_empty() {
-                    spans.push(Span::raw(std::mem::take(&mut plain)));
-                }
-                // Without colour, code keeps its backticks: nothing else sets it apart.
-                let text = match marker {
-                    "`" if !t.color => format!("`{}`", &body[..end]),
-                    _ => body[..end].to_string(),
-                };
-                spans.push(Span::styled(text, style));
-                rest = &body[end + marker.len()..];
-            }
-            _ => {
-                plain.push_str(marker);
-                rest = body;
-            }
+    let mut out = vec![];
+    inline_into(s, Style::default(), t, &mut out);
+    // Neighbours in one style become one span.
+    let mut merged: Vec<Span<'static>> = vec![];
+    for sp in out {
+        match merged.last_mut() {
+            Some(m) if m.style == sp.style => m.content.to_mut().push_str(&sp.content),
+            _ => merged.push(sp),
         }
     }
-    if !plain.is_empty() || spans.is_empty() {
-        spans.push(Span::raw(plain));
+    if merged.is_empty() {
+        merged.push(Span::raw(String::new()));
     }
-    spans
+    merged
+}
+
+fn link_style(t: &Theme) -> Style {
+    t.info().add_modifier(Modifier::UNDERLINED)
+}
+
+fn inline_into(s: &str, base: Style, t: &Theme, out: &mut Vec<Span<'static>>) {
+    let mut plain = String::new();
+    let flush = |plain: &mut String, out: &mut Vec<Span<'static>>| {
+        if !plain.is_empty() {
+            out.push(Span::styled(std::mem::take(plain), base));
+        }
+    };
+    let mut i = 0;
+    let prev_alnum = |i: usize| s[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric());
+    while i < s.len() {
+        let rest = &s[i..];
+        // Escapes.
+        if let Some(r) = rest.strip_prefix('\\') {
+            if let Some(c) = r.chars().next().filter(|c| c.is_ascii_punctuation()) {
+                plain.push(c);
+                i += 1 + c.len_utf8();
+                continue;
+            }
+        }
+        // Code: a run of backticks, closed by the same run.
+        if rest.starts_with('`') {
+            let n = rest.chars().take_while(|c| *c == '`').count();
+            let fence = &rest[..n];
+            if let Some(end) = rest[n..].find(fence) {
+                let body = rest[n..n + end].trim();
+                if !body.is_empty() {
+                    flush(&mut plain, out);
+                    // Without colour, code keeps its backticks: nothing else sets it apart.
+                    let text = if t.color { body.to_string() } else { format!("`{body}`") };
+                    out.push(Span::styled(text, base.patch(t.code())));
+                    i += n + end + n;
+                    continue;
+                }
+            }
+            plain.push_str(fence);
+            i += n;
+            continue;
+        }
+        // Links: [text](url).
+        if rest.starts_with('[') {
+            if let Some(close) = rest.find("](") {
+                if let Some(end) = rest[close + 2..].find(')') {
+                    let text = &rest[1..close];
+                    let url = &rest[close + 2..close + 2 + end];
+                    if !text.is_empty() && !url.contains(' ') {
+                        flush(&mut plain, out);
+                        inline_into(text, base.patch(link_style(t)), t, out);
+                        if url != text && !url.starts_with('#') {
+                            out.push(Span::styled(format!(" ({url})"), base.patch(t.subtle())));
+                        }
+                        i += close + 2 + end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        // Links: <https://…> and bare ones.
+        if rest.starts_with("<http") {
+            if let Some(end) = rest.find('>') {
+                flush(&mut plain, out);
+                out.push(Span::styled(rest[1..end].to_string(), base.patch(link_style(t))));
+                i += end + 1;
+                continue;
+            }
+        }
+        if (rest.starts_with("https://") || rest.starts_with("http://")) && !prev_alnum(i) {
+            let end = rest.find(|c: char| c.is_whitespace() || c == ')' || c == '>').unwrap_or(rest.len());
+            let url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+            flush(&mut plain, out);
+            out.push(Span::styled(url.to_string(), base.patch(link_style(t))));
+            i += url.len();
+            continue;
+        }
+        // Emphasis.
+        let delims: [(&str, Modifier); 5] = [
+            ("**", Modifier::BOLD),
+            ("__", Modifier::BOLD),
+            ("~~", Modifier::CROSSED_OUT),
+            ("*", Modifier::ITALIC),
+            ("_", Modifier::ITALIC),
+        ];
+        let mut matched = false;
+        for (d, m) in delims {
+            if !rest.starts_with(d) {
+                continue;
+            }
+            let after = &rest[d.len()..];
+            // Opens only before text, and `_` only at a word's start (snake_case stays).
+            if after.starts_with(' ') || after.is_empty() || (d.starts_with('_') && prev_alnum(i)) {
+                break;
+            }
+            let mut from = 0;
+            let close = loop {
+                match after[from..].find(d) {
+                    Some(p) => {
+                        let at = from + p;
+                        let before_ok = !after[..at].ends_with(' ');
+                        let next_ok = !d.starts_with('_')
+                            || !after[at + d.len()..].chars().next().is_some_and(char::is_alphanumeric);
+                        // `*` must not close on the first `*` of a `**`.
+                        let single_star_ok =
+                            d != "*" || !after[at..].starts_with("**") || after[at + 1..].starts_with("**");
+                        if at > 0 && before_ok && next_ok && single_star_ok {
+                            break Some(at);
+                        }
+                        from = at + d.len();
+                    }
+                    None => break None,
+                }
+            };
+            if let Some(end) = close {
+                flush(&mut plain, out);
+                inline_into(&after[..end], base.add_modifier(m), t, out);
+                i += d.len() + end + d.len();
+                matched = true;
+            }
+            break;
+        }
+        if matched {
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
+        plain.push(c);
+        i += c.len_utf8();
+    }
+    flush(&mut plain, out);
+}
+
+/// Which keywords and comment marker a fence's language uses.
+fn lang_family(lang: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
+    const RUST: &[&str] = &[
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
+        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self",
+        "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "Some",
+        "None", "Ok", "Err",
+    ];
+    const PY: &[&str] = &[
+        "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except",
+        "False", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "None", "not", "or", "pass",
+        "raise", "return", "self", "True", "try", "while", "with", "yield",
+    ];
+    const JS: &[&str] = &[
+        "async",
+        "await",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "enum",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "from",
+        "function",
+        "if",
+        "implements",
+        "import",
+        "in",
+        "instanceof",
+        "interface",
+        "let",
+        "new",
+        "null",
+        "of",
+        "private",
+        "public",
+        "readonly",
+        "return",
+        "static",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "type",
+        "typeof",
+        "undefined",
+        "var",
+        "void",
+        "while",
+        "yield",
+    ];
+    const GO: &[&str] = &[
+        "break",
+        "case",
+        "chan",
+        "const",
+        "continue",
+        "default",
+        "defer",
+        "else",
+        "false",
+        "for",
+        "func",
+        "go",
+        "if",
+        "import",
+        "interface",
+        "map",
+        "nil",
+        "package",
+        "range",
+        "return",
+        "select",
+        "struct",
+        "switch",
+        "true",
+        "type",
+        "var",
+    ];
+    const C: &[&str] = &[
+        "auto",
+        "bool",
+        "break",
+        "case",
+        "char",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "delete",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "float",
+        "for",
+        "if",
+        "include",
+        "int",
+        "long",
+        "namespace",
+        "new",
+        "nullptr",
+        "private",
+        "public",
+        "return",
+        "short",
+        "sizeof",
+        "static",
+        "struct",
+        "switch",
+        "template",
+        "this",
+        "true",
+        "typedef",
+        "unsigned",
+        "using",
+        "void",
+        "while",
+        "final",
+        "import",
+        "package",
+        "extends",
+        "implements",
+        "interface",
+        "throws",
+        "fun",
+        "val",
+        "var",
+        "func",
+        "let",
+        "guard",
+        "override",
+        "protocol",
+    ];
+    const SH: &[&str] = &[
+        "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if", "in", "local", "return",
+        "then", "while", "until", "set", "unset", "source", "sudo", "cd", "echo",
+    ];
+    const SQL: &[&str] = &[
+        "select", "from", "where", "and", "or", "not", "insert", "into", "values", "update", "set", "delete", "create",
+        "table", "drop", "alter", "join", "left", "right", "inner", "outer", "on", "group", "by", "order", "limit",
+        "as", "null", "is", "in", "primary", "key", "index", "having", "distinct", "count", "union",
+    ];
+    const DATA: &[&str] = &["true", "false", "null", "yes", "no", "on", "off"];
+    const SLASH: &[&str] = &["//"];
+    const HASH: &[&str] = &["#"];
+    const DASH: &[&str] = &["--"];
+    const NONE: &[&str] = &[];
+    Some(match lang {
+        "rust" | "rs" => (RUST, SLASH),
+        "python" | "py" | "python3" => (PY, HASH),
+        "js" | "javascript" | "jsx" | "ts" | "typescript" | "tsx" | "mjs" | "cjs" => (JS, SLASH),
+        "go" | "golang" => (GO, SLASH),
+        "c" | "h" | "cpp" | "c++" | "cc" | "hpp" | "java" | "kotlin" | "kt" | "swift" | "cs" | "csharp" | "scala"
+        | "dart" | "php" => (C, SLASH),
+        "sh" | "bash" | "zsh" | "shell" | "console" | "fish" | "ps1" | "powershell" => (SH, HASH),
+        "sql" | "postgres" | "mysql" | "sqlite" => (SQL, DASH),
+        "json" | "jsonc" => (DATA, NONE),
+        "yaml" | "yml" | "toml" | "ini" | "dockerfile" | "make" | "makefile" | "ruby" | "rb" | "r" | "perl" | "nix" => {
+            (DATA, HASH)
+        }
+        "lua" | "haskell" | "hs" => (DATA, DASH),
+        _ => return None,
+    })
+}
+
+/// One line of code, coloured by token: keywords, strings, numbers,
+/// comments and type names. A diff colours its added and removed lines.
+pub fn highlight(line: &str, lang: &str, t: &Theme) -> Vec<Span<'static>> {
+    let text = t.role(palette::CODE_TEXT);
+    if lang == "diff" || lang == "patch" {
+        let st = match line.chars().next() {
+            Some('+') if !line.starts_with("+++") => t.added(),
+            Some('-') if !line.starts_with("---") => t.removed(),
+            Some('@') => t.info(),
+            _ => text,
+        };
+        return vec![Span::styled(line.to_string(), st)];
+    }
+    let Some((keywords, comments)) = lang_family(lang) else {
+        return vec![Span::styled(line.to_string(), text)];
+    };
+    let sql = keywords.contains(&"select");
+    let (kw, string, num, comment, ty) = (
+        t.role(palette::CODE_KEYWORD),
+        t.role(palette::CODE_STRING),
+        t.role(palette::CODE_NUMBER),
+        t.role(palette::CODE_COMMENT).add_modifier(Modifier::ITALIC),
+        t.role(palette::CODE_TYPE),
+    );
+    let mut out: Vec<Span<'static>> = vec![];
+    let push = |out: &mut Vec<Span<'static>>, s: &str, st: Style| match out.last_mut() {
+        Some(l) if l.style == st => l.content.to_mut().push_str(s),
+        _ => out.push(Span::styled(s.to_string(), st)),
+    };
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let mut k = 0;
+    while k < chars.len() {
+        let (i, c) = chars[k];
+        let rest = &line[i..];
+        if let Some(m) = comments.iter().find(|m| rest.starts_with(**m)) {
+            // `#` starts a comment only at a word boundary (not `$#`, `a#b`).
+            let ok = *m != "#" || i == 0 || line[..i].ends_with([' ', '\t']);
+            if ok {
+                push(&mut out, rest, comment);
+                break;
+            }
+        }
+        if c == '"' || c == '\'' || (c == '`' && keywords.contains(&"function")) {
+            // In Rust, `'a` is a lifetime, not a string.
+            let lifetime = c == '\''
+                && keywords.contains(&"fn")
+                && !rest[1..].chars().nth(1).is_some_and(|n| n == '\'')
+                && !rest[1..].starts_with('\\');
+            if !lifetime {
+                let mut j = k + 1;
+                while j < chars.len() && chars[j].1 != c {
+                    if chars[j].1 == '\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                let end = chars.get(j + 1).map(|x| x.0).unwrap_or(line.len());
+                push(&mut out, &line[i..end], string);
+                k = j + 1;
+                continue;
+            }
+        }
+        if c.is_ascii_digit() && !line[..i].chars().next_back().is_some_and(|p| p.is_alphanumeric() || p == '_') {
+            let mut j = k;
+            while j < chars.len() && (chars[j].1.is_ascii_alphanumeric() || chars[j].1 == '.' || chars[j].1 == '_') {
+                j += 1;
+            }
+            let end = chars.get(j).map(|x| x.0).unwrap_or(line.len());
+            push(&mut out, &line[i..end], num);
+            k = j;
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' {
+            let mut j = k;
+            while j < chars.len() && (chars[j].1.is_alphanumeric() || chars[j].1 == '_') {
+                j += 1;
+            }
+            let end = chars.get(j).map(|x| x.0).unwrap_or(line.len());
+            let word = &line[i..end];
+            let is_kw = if sql { keywords.contains(&word.to_lowercase().as_str()) } else { keywords.contains(&word) };
+            let st = if is_kw {
+                kw
+            } else if word.chars().next().is_some_and(char::is_uppercase) && word.chars().any(char::is_lowercase) {
+                ty
+            } else {
+                text
+            };
+            push(&mut out, word, st);
+            k = j;
+            continue;
+        }
+        let mut buf = [0u8; 4];
+        push(&mut out, c.encode_utf8(&mut buf), text);
+        k += 1;
+    }
+    if out.is_empty() {
+        out.push(Span::styled(String::new(), text));
+    }
+    out
 }
 
 /// Display width of a string.
@@ -369,15 +899,18 @@ fn hanging_indent(cells: &[(char, Style)], max: usize) -> usize {
     let text: String = cells.iter().map(|(c, _)| *c).collect();
     let lead = text.len() - text.trim_start_matches(' ').len();
     let rest = &text[lead..];
-    let marker = ["● ", "└ ", "❯ ", "▲ ", "✕ ", "· ", "• ", "› ", "↳ ", "- ", "* ", "> ", "‖ ", "» "]
-        .iter()
-        .find(|m| rest.starts_with(**m))
-        .map(|m| m.chars().count())
-        .or_else(|| {
-            let digits = rest.chars().take_while(char::is_ascii_digit).count();
-            (digits > 0 && digits < 4 && rest[digits..].starts_with(". ")).then_some(digits + 2)
-        })
-        .unwrap_or(0);
+    let marker = [
+        "● ", "└ ", "❯ ", "▲ ", "✕ ", "· ", "• ", "◦ ", "▪ ", "✓ ", "○ ", "│ ", "› ", "↳ ", "- ", "* ", "> ", "‖ ",
+        "» ",
+    ]
+    .iter()
+    .find(|m| rest.starts_with(**m))
+    .map(|m| m.chars().count())
+    .or_else(|| {
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        (digits > 0 && digits < 4 && rest[digits..].starts_with(". ")).then_some(digits + 2)
+    })
+    .unwrap_or(0);
     // Spaces after the marker belong to it too (`↳  text`).
     let after = rest.chars().skip(marker).take_while(|c| *c == ' ').count();
     let start = lead + marker + if marker > 0 { after } else { 0 };
@@ -505,11 +1038,78 @@ mod tests {
         let mono = Theme { color: false, ..T };
         let l = Markdown::default().line("Run `cargo test` and **check** it", &mono).unwrap();
         assert_eq!(plain(&l), "Run `cargo test` and check it", "without colour, code keeps its backticks");
-        assert!(md.line("```rust", &T).is_none(), "fence markers aren't drawn");
-        assert_eq!(plain(&md.line("# not a heading", &T).unwrap()), "  # not a heading");
-        md.line("```", &T);
+        assert_eq!(plain(&md.line("```rust", &T).unwrap()), "╭─ rust", "a fence opens with its language");
+        assert_eq!(plain(&md.line("# not a heading", &T).unwrap()), "│ # not a heading");
+        assert_eq!(plain(&md.line("```", &T).unwrap()), "╰─");
         assert_eq!(plain(&md.line("# heading", &T).unwrap()), "heading");
         assert_eq!(plain(&md.line("a ` lone backtick", &T).unwrap()), "a ` lone backtick");
+    }
+
+    fn one(raw: &str) -> String {
+        plain(&Markdown::default().line(raw, &T).unwrap())
+    }
+
+    #[test]
+    fn every_kind_of_block_is_drawn() {
+        // Headings by level, in brand colour at the top two.
+        let h1 = Markdown::default().line("# Title #", &T).unwrap();
+        assert_eq!(plain(&h1), "Title");
+        assert!(h1.spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(h1.spans[0].style.fg, T.brand_strong().fg);
+        assert_eq!(Markdown::default().line("## Plan", &T).unwrap().spans[0].style.fg, T.accent().fg);
+        assert_eq!(one("#hashtag"), "#hashtag", "no space, no heading");
+        // Lists: bullets by level, numbers, tasks.
+        assert_eq!(one("- one"), "• one");
+        assert_eq!(one("* one"), "• one");
+        assert_eq!(one("  - two"), "  ◦ two");
+        assert_eq!(one("    + three"), "    ▪ three");
+        assert_eq!(one("3. third"), "3. third");
+        assert_eq!(one("12) twelfth"), "12. twelfth");
+        assert_eq!(one("- [ ] todo"), "○ todo");
+        assert_eq!(one("- [x] done"), "✓ done");
+        assert!(Markdown::default().line("- [x] done", &T).unwrap().spans[2]
+            .style
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT));
+        // Quotes, nested, and rules.
+        assert_eq!(one("> said"), "│ said");
+        assert_eq!(one(">> twice"), "│ │ twice");
+        assert_eq!(one("---"), "─".repeat(40));
+        assert_eq!(one("* * *"), "─".repeat(40));
+        // Code: a gutter, the language, highlighting, and `~~~` fences too.
+        let mut md = Markdown::default();
+        assert_eq!(plain(&md.line("~~~python", &T).unwrap()), "╭─ python");
+        let l = md.line("def f(x): return \"hi\"  # note", &T).unwrap();
+        assert_eq!(plain(&l), "│ def f(x): return \"hi\"  # note");
+        let style_of = |w: &str| l.spans.iter().find(|s| s.content.contains(w)).map(|s| s.style).unwrap();
+        assert_eq!(style_of("def").fg, T.role(palette::CODE_KEYWORD).fg);
+        assert_eq!(style_of("\"hi\"").fg, T.role(palette::CODE_STRING).fg);
+        assert!(style_of("# note").add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(plain(&md.line("```", &T).unwrap()), "│ ```", "a ~~~ fence closes only with ~~~");
+        assert_eq!(plain(&md.line("~~~", &T).unwrap()), "╰─");
+        assert_eq!(one("plain"), "plain", "the fence closed");
+    }
+
+    #[test]
+    fn inline_styles_links_and_escapes() {
+        let spans = |s: &str| inline(s, &T);
+        let text = |s: &str| spans(s).iter().map(|x| x.content.to_string()).collect::<String>();
+        assert_eq!(text("an *italic* and _also_ word"), "an italic and also word");
+        assert!(spans("an *italic*")[1].style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(text("snake_case_name stays"), "snake_case_name stays");
+        assert_eq!(text("2 * 3 * 4"), "2 * 3 * 4", "a lone star is not emphasis");
+        assert_eq!(text("~~gone~~ now"), "gone now");
+        assert!(spans("~~gone~~")[0].style.add_modifier.contains(Modifier::CROSSED_OUT));
+        assert_eq!(text("**bold `code`**"), "bold code");
+        let nested = spans("**bold `code`**");
+        assert!(nested[1].style.add_modifier.contains(Modifier::BOLD) && nested[1].style.fg == T.code().fg);
+        assert_eq!(text("see [the docs](https://x.dev/a) now"), "see the docs (https://x.dev/a) now");
+        assert!(spans("[docs](https://x.dev)")[0].style.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(text("at https://x.dev/a."), "at https://x.dev/a.");
+        assert_eq!(spans("at https://x.dev/a.")[1].content, "https://x.dev/a");
+        assert_eq!(text("<https://x.dev>"), "https://x.dev");
+        assert_eq!(text("\\*not italic\\*"), "*not italic*");
+        assert_eq!(text("``a `b` c``"), "a `b` c");
     }
 
     #[test]
@@ -522,6 +1122,12 @@ mod tests {
         assert_eq!(out, ["Check      │ Result", "───────────┼──────────", "cargo test │ 12 passed", "After."]);
         assert!(md.push("| a | b |", &T).is_empty());
         assert_eq!(md.finish(&T).len(), 1, "a table at the end of a message is drawn by finish");
+        // `--:` aligns a column right.
+        for r in ["| Name | Cost |", "| --- | ---: |", "| a | 1 |", "| bb | 100 |"] {
+            md.push(r, &T);
+        }
+        let out: Vec<String> = md.finish(&T).iter().map(plain).collect();
+        assert_eq!(out[2], "a    │    1");
     }
 
     #[test]

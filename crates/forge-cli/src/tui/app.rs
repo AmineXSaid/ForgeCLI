@@ -2047,7 +2047,11 @@ mod tests {
             event: StreamEvent::ContentBlockStop { index: 0 },
             parent_tool_use_id: None,
         }));
-        assert_eq!(texts(&a.take_pending())[2..], ["  - step one", "    ls"], "fences aren't drawn; code is indented");
+        assert_eq!(
+            texts(&a.take_pending())[2..],
+            ["  • step one", "  ╭─ sh", "  │ ls"],
+            "lists get bullets; code gets a gutter"
+        );
         // The complete message adds its tool call, not its text again.
         let msg = ApiMessage {
             id: "m".into(),

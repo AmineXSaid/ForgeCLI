@@ -1,5 +1,5 @@
-//! Forge's colours in the terminal: the Pajamas palette Forge for VS Code
-//! draws with, one value per role for a dark and for a light background.
+//! Forge's colours in the terminal: the ember palette (warm ink, paper and
+//! copper), one value per role for a dark and for a light background.
 //! A role is drawn in 24-bit colour where the terminal has it, else as the
 //! nearest of xterm's 256 colours, else as one of the 16 ANSI colours.
 
@@ -91,41 +91,56 @@ impl Role {
     }
 }
 
-// The roles, each from a Forge token (`src/webview/src/styles/forge-tokens.css`
-// in Forge for VS Code) and its Pajamas stop.
+// The roles: Forge's ember. Warm ink and paper for text and surfaces, copper
+// for the brand and for what needs the person, and colour elsewhere only
+// where it means something (done, failed, added, removed, code).
 
-/// The brand: the prompt mark, the spinner, selections, the keys. Forge
-/// Desktop's copper (its `mark_top` and link), as the logo's cube top.
-pub const BRAND: Role = role(0xe2895b, 0x93401c, Color::LightYellow, Color::Yellow);
-/// The brand a step brighter, for emphasis: the wordmark.
-pub const BRAND_STRONG: Role = role(0xeb9d74, 0x86391a, Color::LightYellow, Color::Yellow);
-/// `--forge-text-muted`: secondary text.
-pub const MUTED: Role = role(0xa5a3a3, 0x646163, Color::Gray, Color::DarkGray);
-/// `--forge-text-subtle`: placeholders, hints.
-pub const SUBTLE: Role = role(0x8a8888, 0x747273, Color::DarkGray, Color::DarkGray);
-/// `--forge-hairline`: rules between parts.
-pub const HAIRLINE: Role = role(0x4d4b4e, 0xc1bfbe, Color::DarkGray, Color::Gray);
-/// `--forge-accent` as text: links, paths, what is running.
-pub const INFO: Role = role(0x63a6e9, 0x2f68b4, Color::LightBlue, Color::Blue);
-/// `--forge-success`: done.
-pub const SUCCESS: Role = role(0x52b87a, 0x108548, Color::LightGreen, Color::Green);
-/// `--forge-warning`: needs you.
-pub const WARNING: Role = role(0xd99530, 0xab6100, Color::LightYellow, Color::Yellow);
-/// `--forge-danger`: failed.
-pub const DANGER: Role = role(0xec5941, 0xdd2b0e, Color::LightRed, Color::Red);
+/// The brand: the prompt mark, the spinner, selections, the keys, headings.
+pub const BRAND: Role = role(0xe2895b, 0xb4532a, Color::LightYellow, Color::Yellow);
+/// The brand a step brighter, for emphasis: the wordmark, the shimmer's peak.
+pub const BRAND_STRONG: Role = role(0xf3b694, 0x9a4420, Color::LightYellow, Color::Yellow);
+/// Secondary text.
+pub const MUTED: Role = role(0xb1a9a1, 0x5b534b, Color::Gray, Color::DarkGray);
+/// Placeholders, hints, details.
+pub const SUBTLE: Role = role(0x7b736b, 0x8d847a, Color::DarkGray, Color::DarkGray);
+/// Rules, gutters and box edges.
+pub const HAIRLINE: Role = role(0x3a3530, 0xcfc4b6, Color::DarkGray, Color::Gray);
+/// Links and paths.
+pub const INFO: Role = role(0x9db8cf, 0x3a6285, Color::LightBlue, Color::Blue);
+/// Done.
+pub const SUCCESS: Role = role(0x86b58f, 0x3d7a4d, Color::LightGreen, Color::Green);
+/// Needs a look.
+pub const WARNING: Role = role(0xe0b060, 0x93601a, Color::LightYellow, Color::Yellow);
+/// Failed.
+pub const DANGER: Role = role(0xe27a68, 0xb4473a, Color::LightRed, Color::Red);
 /// A diff's added line.
-pub const ADDED: Role = role(0x52b87a, 0x2f7549, Color::LightGreen, Color::Green);
+pub const ADDED: Role = role(0x86b58f, 0x3d7a4d, Color::LightGreen, Color::Green);
 /// A diff's removed line.
-pub const REMOVED: Role = role(0xf6806d, 0xc02f12, Color::LightRed, Color::Red);
-/// Inline code (`--forge-code-variable`).
-pub const CODE: Role = role(0xcbbbf2, 0x6a4fb4, Color::LightMagenta, Color::Magenta);
-/// The person's prompt: a raised surface (`--forge-surface-raised`).
-pub const PROMPT_BG: Role = role(0x2d2c32, 0xecebea, Color::DarkGray, Color::Gray);
+pub const REMOVED: Role = role(0xe27a68, 0xb4473a, Color::LightRed, Color::Red);
+/// Inline code.
+pub const CODE: Role = role(0xe9c9a8, 0x7c4a22, Color::LightMagenta, Color::Magenta);
+/// The person's prompt: a raised surface.
+pub const PROMPT_BG: Role = role(0x1e1b18, 0xece5dc, Color::DarkGray, Color::Gray);
 /// Text on [`PROMPT_BG`].
-pub const PROMPT_FG: Role = role(0xececef, 0x18171d, Color::White, Color::Black);
-/// The working shimmer's resting and brightest tones.
-pub const SHIMMER_BASE: Role = role(0x8f8e93, 0x6f6e72, Color::Gray, Color::DarkGray);
-pub const SHIMMER_PEAK: Role = role(0xf4f0ff, 0x18171d, Color::White, Color::Black);
+pub const PROMPT_FG: Role = role(0xede8e3, 0x1f1b17, Color::White, Color::Black);
+/// The working shimmer's resting and brightest tones: warm grey up to copper.
+pub const SHIMMER_BASE: Role = role(0x8a8178, 0x8d847a, Color::Gray, Color::DarkGray);
+pub const SHIMMER_PEAK: Role = role(0xf3b694, 0xb4532a, Color::White, Color::Black);
+
+// Code blocks: one quiet text colour and a few token colours, all warm.
+
+/// Plain code.
+pub const CODE_TEXT: Role = role(0xcfc7bf, 0x3a342e, Color::Gray, Color::DarkGray);
+/// Keywords: `fn`, `def`, `const`, `if`.
+pub const CODE_KEYWORD: Role = role(0xd9a07c, 0xa4481f, Color::LightYellow, Color::Yellow);
+/// String literals.
+pub const CODE_STRING: Role = role(0xaec596, 0x4a7a3c, Color::LightGreen, Color::Green);
+/// Numbers and constants.
+pub const CODE_NUMBER: Role = role(0xe3bd85, 0x93601a, Color::LightMagenta, Color::Magenta);
+/// Comments.
+pub const CODE_COMMENT: Role = role(0x7b736b, 0x8d847a, Color::DarkGray, Color::DarkGray);
+/// Type names.
+pub const CODE_TYPE: Role = role(0xe9c9a8, 0x7c4a22, Color::LightCyan, Color::Cyan);
 
 pub const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
@@ -206,7 +221,7 @@ mod tests {
     #[test]
     fn roles_differ_for_light_and_dark_backgrounds() {
         assert_eq!(BRAND.color(Depth::True, false), Color::Rgb(0xe2, 0x89, 0x5b));
-        assert_eq!(BRAND.color(Depth::True, true), Color::Rgb(0x93, 0x40, 0x1c));
+        assert_eq!(BRAND.color(Depth::True, true), Color::Rgb(0xb4, 0x53, 0x2a));
         assert_eq!(BRAND.color(Depth::Ansi16, false), Color::LightYellow);
         assert!(matches!(BRAND.color(Depth::Ansi256, false), Color::Indexed(_)));
     }

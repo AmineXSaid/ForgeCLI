@@ -275,12 +275,31 @@ with `{"text", "cwd"}`:
 - **Assistant text** streams into `app.live`. Each complete line moves to
   scrollback. The first line of a text block gets `• `, the others two
   spaces.
-- **Markdown**, one line at a time (`text::Markdown::push`):
-  - headings and `**bold**` are bold;
-  - `` `code` `` uses the code style;
-  - fence markers aren't drawn; fenced lines are indented and coloured as code;
+- **Markdown**, one line at a time (`text::Markdown::push`), so streamed
+  text is drawn as it arrives:
+  - headings `#` to `######` (a space after the hashes): level 1 bold in the
+    bright brand colour, level 2 bold in the brand colour, the rest bold;
+  - bullets `-`, `*`, `+` as `•`, `◦`, `▪` by indent level; numbered items
+    (`1.` or `1)`) with the number in the brand colour; tasks `- [ ]` as `○`
+    and `- [x]` as a green `✓` with the text struck through;
+  - quotes `>` (nested `>>`) as a `│` per level, the text dim and italic;
+    rules (`---`, `***`, `___`) as a hairline;
+  - code fences (```` ``` ```` or `~~~`, closed only by the same run) open
+    with `╭─ lang`, put each line after a `│ ` gutter and close with `╰─`.
+    Lines are highlighted by token (keywords, strings, numbers, comments,
+    type names) for Rust, Python, JS/TS, Go, C-family, shell, SQL and data
+    formats; a `diff` fence colours `+` and `-` lines; other languages keep
+    one quiet code colour;
+  - inline: `**bold**`/`__bold__`, `*italic*`/`_italic_` (not inside
+    `snake_case`), `~~strike~~`, `` `code` `` (any backtick run), links
+    `[text](url)` underlined with the URL after them, `<https://…>` and
+    bare URLs underlined, `\` escapes; emphasis nests;
   - table rows are held until the table ends, then drawn with aligned
-    columns, `│` between cells, a `─┼─` rule and a bold header.
+    columns (`--:` aligns right), `│` between cells, a `─┼─` rule and a
+    bold header.
+- **Colours** (`palette.rs`): Forge's ember. Warm ink and paper for text and
+  surfaces, copper for the brand and for what needs the person; green, red
+  and amber only where they mean done, failed or a warning.
 - **Wrapping** (`text::wrap`): a wrapped row continues under the text, past
   the line's indent and its marker (`• `, `› `, `↳ `, `- `, `1. `).
 - **Tool calls**: `› Name(main argument)` (`app::summarize`). Their results
