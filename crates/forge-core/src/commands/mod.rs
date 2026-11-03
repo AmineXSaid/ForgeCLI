@@ -299,6 +299,21 @@ builtins! {
 }
 
 /// The built-in called `name` (or one of its aliases).
+/// The newest other conversations in the session's directory, for the
+/// front screen: (title or first prompt, how long ago), at most `n`.
+pub fn recent_sessions(d: &crate::Driver, n: usize) -> Vec<(String, String)> {
+    switching::sessions(d)
+        .into_iter()
+        .filter(|s| s.message_count > 0)
+        .take(n)
+        .map(|s| {
+            let what = s.title.clone().unwrap_or_else(|| s.first_prompt.lines().next().unwrap_or("").to_string());
+            (what.trim().to_string(), switching::age(s.modified))
+        })
+        .filter(|(what, _)| !what.is_empty())
+        .collect()
+}
+
 pub fn lookup(name: &str) -> Option<&'static CommandSpec> {
     BUILTINS.iter().find(|c| c.name == name || c.aliases.contains(&name))
 }

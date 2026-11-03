@@ -433,7 +433,7 @@ fn meter(t: &text::Theme, pct: u8) -> Vec<Span<'static>> {
 
 fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     let (left, left_style) = status_left(app, now);
-    // Forge's cube leads the line; on a very narrow terminal it gives way to the hint.
+    // Forge's hammer leads the line; on a very narrow terminal it gives way to the hint.
     let mark = if w >= 30 { super::brand::mark_inline(&app.theme) } else { vec![] };
     let mark_w: usize = mark.iter().map(|s| text_width(&s.content)).sum();
     let lead = 2 + if mark_w > 0 { mark_w + 2 } else { 0 };
@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(rows[0], format!("╭{}╮", "─".repeat(58)));
         assert_eq!(rows[1], format!("│ ❯ {PLACEHOLDER:<54} │"));
         assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
-        assert_eq!(rows[3], "  ▀▀  ? for shortcuts            opus · ━─────── 12% · $0.25");
+        assert_eq!(rows[3], "  ▀▀▀  ? for shortcuts           opus · ━─────── 12% · $0.25");
         assert_eq!(v.cursor, Some((4, 1)));
         // The placeholder is quiet; the prompt marker is Forge's copper.
         assert_eq!(buf[(6, 1)].fg, crate::tui::palette::SUBTLE.color(Default::default(), false));
@@ -782,7 +782,7 @@ mod tests {
                 "│ Enter or y·a·n to answer · Esc to    │",
                 "│ deny                                 │",
                 "╰──────────────────────────────────────╯",
-                "  ■  ? for shortcuts  opus · 12% contex…",
+                "  ▀█▀  ? for shortcuts  opus · 12% cont…",
             ]
         );
         assert_eq!(v.cursor, None, "no cursor while a dialog is open");
@@ -834,13 +834,13 @@ mod tests {
         let mut a = app(true);
         a.status.mode = "plan".into();
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
-        assert!(rows.last().unwrap().starts_with("  ▀▀  ‖ plan mode on (shift+tab to cycle)"));
+        assert!(rows.last().unwrap().starts_with("  ▀▀▀  ‖ plan mode on (shift+tab to cycle)"));
         a.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
-        assert!(rows.last().unwrap().starts_with("  ▀▀  Press Ctrl-C again to exit"));
+        assert!(rows.last().unwrap().starts_with("  ▀▀▀  Press Ctrl-C again to exit"));
         let later = Instant::now() + HINT_FOR;
         let (rows, _) = draw(&live_view_at(&a, 70, 10, later), 70);
-        assert!(rows.last().unwrap().starts_with("  ▀▀  ‖ plan mode"));
+        assert!(rows.last().unwrap().starts_with("  ▀▀▀  ‖ plan mode"));
     }
 
     #[test]
@@ -1094,6 +1094,6 @@ mod tests {
         let mut a = app(false);
         a.on_event(UiEvent::StatusLine(Some("main · 3 files".into())));
         let (rows, _) = draw(&live_view(&a, 40, 10), 40);
-        assert_eq!(rows.last().unwrap(), "  ■  ? for shortcuts      main · 3 files");
+        assert_eq!(rows.last().unwrap(), "  ▀█▀  ? for shortcuts    main · 3 files");
     }
 }
