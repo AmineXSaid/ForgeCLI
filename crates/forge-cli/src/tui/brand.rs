@@ -1,98 +1,78 @@
 //! Forge's mark in the terminal: the F-and-cube logo, drawn as a pixel sprite
 //! in half blocks (each cell is two pixels stacked, so the pixels come out
 //! square), and the two screens it heads: the welcome banner and the
-//! first-run card. The sprite is Forge for VS Code's (`terminalBrand.ts`);
-//! its inks are Forge Desktop's ember: ink, warm grey and copper.
+//! first-run card. The F with a cube for its lower arm, flat, in paper (or
+//! ink), warm grey and Forge's copper.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::palette::{self, Depth};
+use super::palette;
 use super::text::{width, Theme};
 
-/// The logo, one character per pixel, lit from the top left; `.` is empty.
-///
-/// `O` outline, `H` the F's lit edge, `F` the F, `D` its shaded edge, `T` the
-/// cube's top, `G` a glint on it, `L` the cube's lit face, `S` its shaded
-/// face, `E` the edge between them.
+/// The logo, one character per pixel; `.` is empty. Flat, in four inks: `F`
+/// the F, and the cube that is its lower arm, `T` its copper top, `L` its
+/// lit face and `S` its shaded one. No outline and no highlights: at sixteen
+/// pixels they read as noise, and a flat mark stays crisp in any terminal.
 pub const MARK: [&str; 16] = [
-    "OOOOOOOOOOOOOOOO",
-    "OHHHHHHHHHHHHHHO",
-    "OHFFFFFFFFFFFFDO",
-    "OHFFFFFFFFFFFFDO",
-    "OHFFFDDDDDDDDDDO",
-    "OHFFDOOOOOOOOOOO",
-    "OHFFDO....OO....",
-    "OHFFDO..OOTTOO..",
-    "OHFFDOOOTTGTTTOO",
-    "OHFFDOLLTTTTTSSO",
-    "OHFFDOLLLLTSSSSO",
-    "OHFFDOLLLLESSSSO",
-    "OHFFDOLLLLESSSSO",
-    "OHFFDOOLLLESSSOO",
-    "ODDDDO.OOLESOO..",
-    "OOOOOO...OOO....",
+    "FFFFFFFFFFFFFFFF",
+    "FFFFFFFFFFFFFFFF",
+    "FFFFFFFFFFFFFFFF",
+    "FFFFFFFFFFFFFFFF",
+    "FFFF............",
+    "FFFF............",
+    "FFFF.....TTTT...",
+    "FFFF...TTTTTTTT.",
+    "FFFF..TTTTTTTTTT",
+    "FFFF..LLLTTTTSSS",
+    "FFFF..LLLLTTSSSS",
+    "FFFF..LLLLLSSSSS",
+    "FFFF..LLLLLSSSSS",
+    "FFFF..LLLLLSSSSS",
+    "FFFF...LLLLSSSS.",
+    "FFFF.....LLSS...",
 ];
 
 /// The 12-pixel cut, for narrow terminals.
 pub const MARK_SMALL: [&str; 12] = [
-    "OOOOOOOOOOOO",
-    "OHHHHHHHHHHO",
-    "OHFFFFFFFFDO",
-    "OHFFDDDDDDDO",
-    "OHFDOOOOOOOO",
-    "OHFDO..OO...",
-    "OHFDO.OTTO..",
-    "OHFDOOTGTTOO",
-    "OHFDOLLTTSSO",
-    "OHFDOLLLESSO",
-    "ODDDOOLLESOO",
-    "OOOOO.OOOO..",
+    "FFFFFFFFFFFF",
+    "FFFFFFFFFFFF",
+    "FFF.........",
+    "FFF.........",
+    "FFF....TT...",
+    "FFF..TTTTTT.",
+    "FFF.TTTTTTTT",
+    "FFF.LLTTTTSS",
+    "FFF.LLLTTSSS",
+    "FFF.LLLLSSSS",
+    "FFF.LLLLSSSS",
+    "FFF..LLLSSS.",
 ];
 
 /// The logo's inks for a light or dark background: hex, and the ANSI colour
-/// for 16-colour terminals. Forge's ember: the F in ink (paper on a dark
-/// background), the cube as Forge Desktop's mark, a copper top over an ink
-/// (paper) face and a warm grey one, so the faces part by lightness.
+/// for 16-colour terminals. The F in paper (ink on a light background), the
+/// cube's top in Forge's copper, its faces apart by lightness.
 fn mark_ink(c: char, light: bool) -> Option<(u32, Color)> {
     Some(match (c, light) {
-        ('O', _) => (0x1e1e1e, Color::Reset),
-        ('H', true) => (0x5a554f, Color::DarkGray),
-        ('F', true) => (0x2b2825, Color::Black),
-        ('D', true) => (0x1e1e1e, Color::Black),
-        ('T', true) => (0x93401c, Color::Yellow),
-        ('G', true) => (0xb4532a, Color::Yellow),
-        ('L', true) => (0x1e1e1e, Color::Black),
-        ('S', true) => (0x8b857e, Color::DarkGray),
-        ('E', true) => (0x5a554f, Color::DarkGray),
-        ('H', false) => (0xf5f2f0, Color::White),
-        ('F', false) => (0xd9d1cb, Color::White),
-        ('D', false) => (0xa8a29b, Color::Gray),
+        ('F', false) => (0xefe9e4, Color::White),
         ('T', false) => (0xe2895b, Color::LightYellow),
-        ('G', false) => (0xf3b694, Color::LightYellow),
-        ('L', false) => (0xf0e9e5, Color::White),
-        ('S', false) => (0x7d776f, Color::DarkGray),
-        ('E', false) => (0x5a554f, Color::DarkGray),
+        ('L', false) => (0xc4bbb3, Color::Gray),
+        ('S', false) => (0x6f6963, Color::DarkGray),
+        ('F', true) => (0x2b2825, Color::Black),
+        ('T', true) => (0xb4532a, Color::Yellow),
+        ('L', true) => (0x5a544e, Color::DarkGray),
+        ('S', true) => (0xa59e97, Color::Gray),
         _ => return None,
     })
 }
 
-/// A sprite in half blocks. The outline is drawn only where it reads: on a
-/// light background, in 256 or 24-bit colour. Without colour the shape is
-/// drawn in the terminal's own colour.
+/// A sprite in half blocks. Without colour the shape is drawn in the
+/// terminal's own colour.
 fn sprite(rows: &[&str], ink: fn(char, bool) -> Option<(u32, Color)>, t: &Theme) -> Vec<Line<'static>> {
-    let outline = t.color && t.light && t.depth != Depth::Ansi16;
     let color_of = |c: Option<char>| -> Option<Color> {
-        let c = c?;
-        if c == 'O' && !outline {
-            return None;
-        }
-        let (hex, ansi) = ink(c, t.light)?;
+        let (hex, ansi) = ink(c?, t.light)?;
         if !t.color {
             return Some(Color::Reset);
-        }
-        if t.depth == Depth::Ansi16 && ansi == Color::Reset {
-            return None;
         }
         Some(palette::ink(hex, t.depth, ansi))
     };
@@ -265,7 +245,15 @@ pub fn welcome(t: &Theme, w: &Welcome, cols: usize) -> Vec<Line<'static>> {
         // A narrow pane (a side terminal): the whole logo still, its text
         // kept to the room beside it, the keys two to a line.
         let r = room(16);
-        let text = vec![Line::default(), title, runs_in(r), cwd_in(r), Line::default(), keys_of(t, &KEYS[..2], 2), keys_of(t, &KEYS[2..], 2)];
+        let text = vec![
+            Line::default(),
+            title,
+            runs_in(r),
+            cwd_in(r),
+            Line::default(),
+            keys_of(t, &KEYS[..2], 2),
+            keys_of(t, &KEYS[2..], 2),
+        ];
         out.extend(beside(mark(t, false), 16, text));
     } else if cols >= 12 + 5 + 24 {
         // Narrower: the small logo.
@@ -444,6 +432,7 @@ fn sgr(c: Color, bg: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::palette::Depth;
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect()
@@ -460,13 +449,16 @@ mod tests {
         assert_eq!(m.len(), 8);
         assert!(m.iter().all(|l| l.spans.iter().map(|s| width(&s.content)).sum::<usize>() <= 16));
         assert_eq!(mark(&DARK, true).len(), 6);
-        // The F's top bar is a full row in the F's paper on a dark background.
-        let top = &m[1];
-        assert!(top.spans.iter().any(|s| s.style.fg == Some(Color::Rgb(0xd9, 0xd1, 0xcb))), "{top:?}");
+        // The F's top bar is two solid rows in paper on a dark background.
+        let paper = Some(Color::Rgb(0xef, 0xe9, 0xe4));
+        for top in &m[..2] {
+            assert_eq!(top.spans.len(), 1, "{top:?}");
+            assert_eq!((top.spans[0].content.as_ref(), top.spans[0].style.fg), ("████████████████", paper));
+        }
         // On a light one the F is ink, and the cube's top is copper.
         let light = mark(&Theme { light: true, ..DARK }, false);
-        assert!(light[1].spans.iter().any(|s| s.style.fg == Some(Color::Rgb(0x2b, 0x28, 0x25))), "{light:?}");
-        let copper = Some(Color::Rgb(0x93, 0x40, 0x1c));
+        assert!(light[0].spans.iter().any(|s| s.style.fg == Some(Color::Rgb(0x2b, 0x28, 0x25))), "{light:?}");
+        let copper = Some(Color::Rgb(0xb4, 0x53, 0x2a));
         assert!(light.iter().flat_map(|l| &l.spans).any(|s| s.style.fg == copper || s.style.bg == copper));
     }
 
@@ -474,7 +466,8 @@ mod tests {
     fn without_colour_the_mark_keeps_its_shape() {
         let mono = Theme { color: false, ..DARK };
         let m = plain(&mark(&mono, false));
-        assert!(m[1].starts_with(" ▀▀▀▀") || m[1].starts_with(" ███"), "{m:?}");
+        assert_eq!(m[1], "████████████████", "{m:?}");
+        assert_eq!(m[2].trim_end(), "████", "{m:?}");
         assert!(mark(&mono, false)
             .iter()
             .all(|l| l.spans.iter().all(|s| s.style.fg.is_none() && s.style.bg.is_none())));
