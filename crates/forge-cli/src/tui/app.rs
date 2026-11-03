@@ -256,6 +256,8 @@ pub struct App {
     streamed: bool,
     /// The usage the current request reported so far (its start, then its deltas).
     request_usage: forge_types::Usage,
+    /// When the open question was asked: the wait shown is the person's, not the turn's.
+    pub asked_at: Option<Instant>,
     /// The last line already written to the terminal is blank.
     printed_blank: bool,
     pub dialog: Option<Dialog>,
@@ -302,7 +304,7 @@ fn check_mark(t: &Theme, line: &str) -> Option<(&'static str, Style)> {
 }
 
 /// How a tool result is shown: a one-line summary that says what happened
-/// (`Read 120 lines`, `Updated src/a.rs: 2 added, 1 removed`), then, for edits,
+/// under its header (`120 lines`, `2 additions, 1 removal`), then, for edits,
 /// the changed lines with their numbers; for commands, the first lines of output.
 pub fn result_lines(
     t: &Theme,
@@ -329,18 +331,15 @@ pub fn result_lines(
             let msg = if text.contains("is unchanged since you last read") {
                 "Unchanged since the last read".to_string()
             } else if n < total {
-                format!("Read {n} of {total} lines")
+                format!("{n} of {total} lines")
             } else {
-                format!("Read {n} {}", if n == 1 { "line" } else { "lines" })
+                format!("{n} {}", if n == 1 { "line" } else { "lines" })
             };
             one(msg, t.dim())
         }
-        ("Read", Some(v)) => one(format!("Read {}", v["type"].as_str().unwrap_or("file")), t.dim()),
+        ("Read", Some(v)) => one(format!("{} file", v["type"].as_str().unwrap_or("a")), t.dim()),
         ("Edit" | "MultiEdit" | "Write", Some(v)) if v.get("structuredPatch").is_some() => {
             let hunks = v["structuredPatch"].as_array().cloned().unwrap_or_default();
-            let path = v["filePath"].as_str().unwrap_or("");
-            let name =
-                std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let lines: Vec<String> = hunks
                 .iter()
                 .flat_map(|h| h["lines"].as_array().cloned().unwrap_or_default())
@@ -350,11 +349,10 @@ pub fn result_lines(
             let removed = lines.iter().filter(|l| l.starts_with('-')).count();
             if tool == "Write" && hunks.is_empty() {
                 let n = v["content"].as_str().map(|c| c.lines().count()).unwrap_or(0);
-                return one(format!("Wrote {n} lines to {name}"), t.dim());
+                return one(format!("{n} lines, a new file"), t.dim());
             }
             let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
-            let mut out =
-                one(format!("Updated {name}: {}, {}", plural(added, "addition"), plural(removed, "removal")), t.dim());
+            let mut out = one(format!("{}, {}", plural(added, "addition"), plural(removed, "removal")), t.dim());
             let mut shown = 0;
             for h in &hunks {
                 let (mut old, mut new) = (h["oldStart"].as_u64().unwrap_or(1), h["newStart"].as_u64().unwrap_or(1));
@@ -425,25 +423,62 @@ pub fn result_lines(
 #[derive(Debug, Clone)]
 pub struct Running {
     pub id: String,
-    /// The header without its dot: the tool's name and what it works on.
+    /// The header without its dot, while it runs: `Running cargo test`.
     pub header: Vec<Span<'static>>,
+    /// The call, for the header once it is done: `Ran cargo test`.
+    pub name: String,
+    pub input: Value,
     pub since: Instant,
 }
 
-/// A tool call's header, as Forge's chat writes it: the name, then what it
-/// works on: a path in link colour, a command after a `$`, else quieter text.
-pub fn tool_header(t: &Theme, name: &str, input: &Value) -> Vec<Span<'static>> {
+/// What a tool call does, as a verb: past tense once it is done (`Ran`,
+/// `Edited`), present while it runs (`Running`, `Editing`).
+pub fn tool_verb(name: &str, done: bool) -> &'static str {
+    let (past, now) = match name {
+        "Bash" | "BashOutput" => ("Ran", "Running"),
+        "Read" | "NotebookRead" => ("Read", "Reading"),
+        "Edit" | "MultiEdit" | "NotebookEdit" => ("Edited", "Editing"),
+        "Write" => ("Wrote", "Writing"),
+        "Grep" => ("Searched", "Searching"),
+        "Glob" | "LS" => ("Listed", "Listing"),
+        "WebFetch" => ("Fetched", "Fetching"),
+        "WebSearch" => ("Searched the web", "Searching the web"),
+        "Task" => ("Delegated", "Delegating"),
+        "TodoWrite" => ("Updated the plan", "Updating the plan"),
+        "Skill" => ("Used skill", "Using skill"),
+        _ => ("Called", "Calling"),
+    };
+    if done {
+        past
+    } else {
+        now
+    }
+}
+
+/// A tool's name as people read it: `mcp__jira__add_comment` is `jira.add_comment`.
+pub fn tool_display_name(name: &str) -> String {
+    match name.strip_prefix("mcp__").and_then(|r| r.split_once("__")) {
+        Some((server, tool)) => format!("{server}.{tool}"),
+        None => name.to_string(),
+    }
+}
+
+/// A tool call's header: a verb, then what it works on: a path in link
+/// colour, a command as written, an outside tool by its name.
+pub fn tool_header(t: &Theme, name: &str, input: &Value, done: bool) -> Vec<Span<'static>> {
     let arg = summarize(name, input);
-    let mut spans = vec![Span::styled(name.to_string(), t.bold())];
+    let mut spans = vec![Span::styled(tool_verb(name, done).to_string(), t.bold())];
+    let builtin = tool_verb(name, true) != "Called";
+    if !builtin {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(tool_display_name(name), t.info()));
+    }
     if arg.is_empty() {
         return spans;
     }
     spans.push(Span::raw(" "));
     match name {
-        "Bash" => {
-            spans.push(Span::styled("$ ", t.accent()));
-            spans.push(Span::raw(arg));
-        }
+        "Bash" => spans.push(Span::raw(arg)),
         "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "LS" | "Glob" | "Grep" | "WebFetch" => {
             spans.push(Span::styled(arg, t.info()));
         }
@@ -481,17 +516,16 @@ pub fn summarize(tool: &str, input: &Value) -> String {
 /// The label of the "always" option for a permission suggestion.
 fn rule_text(s: &Suggestion) -> Option<String> {
     match s {
-        Suggestion::AddRules { rules, .. } => Some(format!(
-            "Yes, and don't ask again for {}",
-            rules.iter().map(|r| r.to_rule_string()).collect::<Vec<_>>().join(", ")
-        )),
+        Suggestion::AddRules { rules, .. } => {
+            Some(format!("Always allow {}", rules.iter().map(|r| r.to_rule_string()).collect::<Vec<_>>().join(", ")))
+        }
         Suggestion::AddDirectories { directories, .. } => {
-            Some(format!("Yes, and allow {} for this session", directories.join(", ")))
+            Some(format!("Allow {} for this session", directories.join(", ")))
         }
         Suggestion::SetMode { mode, .. } if mode == "acceptEdits" => {
-            Some("Yes, and allow all edits this session (shift+tab)".into())
+            Some("Allow all edits this session (shift+tab)".into())
         }
-        Suggestion::SetMode { mode, .. } => Some(format!("Yes, and switch to {mode} mode")),
+        Suggestion::SetMode { mode, .. } => Some(format!("Allow, and switch to {mode} mode")),
     }
 }
 
@@ -549,6 +583,7 @@ impl App {
             first_line: true,
             streamed: false,
             request_usage: Default::default(),
+            asked_at: None,
             printed_blank: false,
             dialog: None,
             commands: vec![],
@@ -569,6 +604,11 @@ impl App {
             focus: false,
             held: None,
         }
+    }
+
+    /// The tokens the last request held in context.
+    pub fn context_tokens(&self) -> u64 {
+        self.request_usage.context_tokens()
     }
 
     // ---- scrollback ----
@@ -670,7 +710,7 @@ impl App {
     fn commit_tool(&mut self, r: Running, dot: Style) {
         self.gap();
         let mut spans = vec![Span::styled(format!("{} ", glyphs::TOOL), dot)];
-        spans.extend(r.header);
+        spans.extend(tool_header(&self.theme, &r.name, &r.input, true));
         self.pending.push(Line::from(spans));
     }
 
@@ -828,7 +868,9 @@ impl App {
                             self.calls.insert(id.clone(), (name.clone(), input.clone()));
                             self.running.push(Running {
                                 id: id.clone(),
-                                header: tool_header(&self.theme, name, input),
+                                header: tool_header(&self.theme, name, input, false),
+                                name: name.clone(),
+                                input: input.clone(),
                                 since: Instant::now(),
                             });
                             self.activity = format!("Running {name}");
@@ -942,9 +984,11 @@ impl App {
             _ => DialogKind::Permission { always: prompt.suggestions.first().and_then(rule_text) },
         };
         self.dialog = Some(Dialog { prompt: Some(prompt), reply: Some(reply), kind, selected: 0, typing: None });
+        self.asked_at = Some(Instant::now());
     }
 
     fn answer(&mut self, a: PermissionAnswer) {
+        self.asked_at = None;
         if let Some(mut d) = self.dialog.take() {
             if let Some(tx) = d.reply.take() {
                 let _ = tx.send(a);
@@ -970,11 +1014,11 @@ impl App {
         let Some(d) = &self.dialog else { return vec![] };
         match &d.kind {
             DialogKind::Permission { always } => {
-                let mut v = vec![("Yes".to_string(), String::new())];
+                let mut v = vec![("Allow once".to_string(), "y".to_string())];
                 if let Some(r) = always {
-                    v.push((r.clone(), String::new()));
+                    v.push((r.clone(), "a".to_string()));
                 }
-                v.push(("No, and tell Forge what to do instead".to_string(), "esc".to_string()));
+                v.push(("Deny, and tell Forge what to do".to_string(), "n".to_string()));
                 v
             }
             DialogKind::Plan => vec![
@@ -1046,6 +1090,20 @@ impl App {
                     if let Some(d) = p.input["description"].as_str().filter(|d| !d.trim().is_empty()) {
                         body.push(format!("  {d}"));
                     }
+                } else if tool_verb(&p.tool_name, true) == "Called" {
+                    // An outside tool: everything it will be sent, so nothing is approved unseen.
+                    let fields = p.input.as_object().cloned().unwrap_or_default();
+                    let pad = fields.keys().map(|k| k.chars().count()).max().unwrap_or(0).min(16);
+                    for (k, v) in fields.iter().take(16) {
+                        let v = match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        for (i, l) in v.lines().enumerate().take(12) {
+                            let key = if i == 0 { k.as_str() } else { "" };
+                            body.push(format!("  {key:<pad$}  {l}"));
+                        }
+                    }
                 } else if !arg.is_empty() {
                     body.push(format!("  {arg}"));
                 }
@@ -1054,7 +1112,7 @@ impl App {
                 if !p.reason.is_empty() && p.reason != "this tool requires permission" {
                     body.push(p.reason.clone());
                 }
-                (format!("Allow {}?", p.tool_name), body)
+                (format!("Approve {}?", tool_display_name(&p.tool_name)), body)
             }
             DialogKind::Plan => ("Go ahead with this plan?".into(), vec![]),
             DialogKind::Viewer { screen, .. } => (screen.title.clone(), vec![]),
@@ -1124,6 +1182,18 @@ impl App {
                 _ => {}
             }
             return vec![];
+        }
+        if let DialogKind::Permission { always } = &d.kind {
+            let pick = match key.code {
+                KeyCode::Char('y') => Some(0),
+                KeyCode::Char('a') if always.is_some() => Some(1),
+                KeyCode::Char('n') => Some(n.saturating_sub(1)),
+                _ => None,
+            };
+            if let Some(i) = pick.filter(|_| !key.modifiers.contains(KeyModifiers::CONTROL)) {
+                d.selected = i;
+                return self.choose(i);
+            }
         }
         match key.code {
             KeyCode::Up => d.selected = d.selected.checked_sub(1).unwrap_or(n.saturating_sub(1)),
@@ -1961,7 +2031,7 @@ mod tests {
         // /context typed mid-turn comes back as a screen while the question is open.
         let screen = forge_core::commands::screens::Screen { title: "Context".into(), rows: vec![] };
         a.on_event(UiEvent::Screen(screen));
-        assert_eq!(a.dialog_text().0, "Allow Bash?", "the question stays");
+        assert_eq!(a.dialog_text().0, "Approve Bash?", "the question stays");
         assert!(rx.try_recv().is_err(), "and isn't answered");
         a.on_key(key(KeyCode::Char('1')));
         assert!(matches!(rx.try_recv(), Ok(PermissionAnswer::Allow { .. })));
@@ -2080,7 +2150,7 @@ mod tests {
         // The call waits in the live region with a turning dot until it answers.
         assert!(texts(&a.take_pending()).is_empty());
         assert_eq!(a.running.len(), 1);
-        assert_eq!(texts(&[Line::from(a.running[0].header.clone())]), ["Bash $ cargo test"]);
+        assert_eq!(texts(&[Line::from(a.running[0].header.clone())]), ["Running cargo test"]);
         a.on_event(UiEvent::Engine(EngineEvent::User {
             message: forge_types::Message::user(vec![ContentBlock::tool_result("t1", "ok\n2 passed", false)]),
             uuid: "u2".into(),
@@ -2090,7 +2160,7 @@ mod tests {
         }));
         assert_eq!(
             texts(&a.take_pending()),
-            ["", "● Bash $ cargo test", "  └ ok", "    2 passed"],
+            ["", "● Ran cargo test", "  └ ok", "    2 passed"],
             "the header goes out with its result; a command shows its first lines"
         );
         assert!(a.running.is_empty());
@@ -2102,24 +2172,17 @@ mod tests {
         let t = Theme { color: false, light: false, accent: None, depth: Default::default() };
         let read =
             json!({"type": "text", "file": {"filePath": "/p/a.rs", "numLines": 40, "startLine": 1, "totalLines": 120}});
-        assert_eq!(
-            texts(&result_lines(&t, "Read", "     1\tfn main", false, Some(&read))),
-            ["  └ Read 40 of 120 lines"]
-        );
+        assert_eq!(texts(&result_lines(&t, "Read", "     1\tfn main", false, Some(&read))), ["  └ 40 of 120 lines"]);
         let edit = json!({"filePath": "/p/src/calc.py", "structuredPatch": [{
             "oldStart": 1, "oldLines": 3, "newStart": 1, "newLines": 3,
             "lines": [" def add(a, b):", "-    return a - b", "+    return a + b", ""]
         }]});
         assert_eq!(
             texts(&result_lines(&t, "Edit", "The file was updated", false, Some(&edit))),
-            [
-                "  └ Updated calc.py: 1 addition, 1 removal",
-                "       2 -     return a - b",
-                "       2 +     return a + b"
-            ]
+            ["  └ 1 addition, 1 removal", "       2 -     return a - b", "       2 +     return a + b"]
         );
         let write = json!({"type": "create", "filePath": "/p/new.txt", "content": "a\nb\n", "structuredPatch": []});
-        assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  └ Wrote 2 lines to new.txt"]);
+        assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  └ 2 lines, a new file"]);
         assert_eq!(texts(&result_lines(&t, "Bash", "", false, None)), ["  └ (no output)"]);
         let long = (1..=6).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         assert_eq!(
@@ -2146,7 +2209,7 @@ mod tests {
             reply: tx,
         });
         let (title, body) = a.dialog_text();
-        assert_eq!(title, "Allow Edit?");
+        assert_eq!(title, "Approve Edit?");
         assert_eq!(body, ["  src/calc.py", "  - return a - b", "  + return a + b"], "no generic reason line");
         assert!(a.waiting_for_answer());
     }
@@ -2223,8 +2286,8 @@ mod tests {
             destination: "localSettings".into(),
         }];
         a.on_event(UiEvent::Ask { prompt: p, reply: tx });
-        assert_eq!(a.dialog_text().0, "Allow Bash?");
-        assert_eq!(a.dialog_options()[1].0, "Yes, and don't ask again for Bash(npm test)");
+        assert_eq!(a.dialog_text().0, "Approve Bash?");
+        assert_eq!(a.dialog_options()[1].0, "Always allow Bash(npm test)");
         a.on_key(key(KeyCode::Char('2')));
         match rx.try_recv().unwrap() {
             PermissionAnswer::Allow { updated_permissions, .. } => assert_eq!(updated_permissions.len(), 1),
@@ -2236,6 +2299,24 @@ mod tests {
         a.on_event(UiEvent::Ask { prompt: prompt("Write", json!({"file_path": "a.txt"})), reply: tx });
         a.on_key(key(KeyCode::Esc));
         assert!(matches!(rx.try_recv().unwrap(), PermissionAnswer::Deny { interrupt: true, .. }));
+
+        // An outside tool shows everything it will be sent; y, a and n answer.
+        let (tx, mut rx) = oneshot::channel();
+        let input = json!({"issue": "ACME-103", "body": "Fixed.\nTests pass."});
+        a.on_event(UiEvent::Ask { prompt: prompt("mcp__jira__add_comment", input.clone()), reply: tx });
+        let (title, body) = a.dialog_text();
+        assert_eq!(title, "Approve jira.add_comment?");
+        assert!(body.iter().any(|l| l.trim_start().starts_with("issue") && l.ends_with("ACME-103")), "{body:?}");
+        assert!(body.iter().any(|l| l.trim() == "Tests pass."), "every line of every argument: {body:?}");
+        a.on_key(key(KeyCode::Char('n')));
+        assert!(matches!(rx.try_recv().unwrap(), PermissionAnswer::Deny { .. }));
+        let (tx, mut rx) = oneshot::channel();
+        a.on_event(UiEvent::Ask { prompt: prompt("mcp__jira__add_comment", input.clone()), reply: tx });
+        a.on_key(key(KeyCode::Char('y')));
+        assert!(matches!(rx.try_recv().unwrap(), PermissionAnswer::Allow { .. }));
+        let header = |done| texts(&[Line::from(tool_header(&a.theme, "mcp__jira__add_comment", &input, done))]);
+        assert!(header(true)[0].starts_with("Called jira.add_comment "), "{:?}", header(true));
+        assert!(header(false)[0].starts_with("Calling jira.add_comment "));
 
         // Two questions: a pick, then a typed answer.
         let (tx, mut rx) = oneshot::channel();

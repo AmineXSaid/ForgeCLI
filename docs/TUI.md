@@ -302,14 +302,29 @@ with `{"text", "cwd"}`:
   and amber only where they mean done, failed or a warning.
 - **Wrapping** (`text::wrap`): a wrapped row continues under the text, past
   the line's indent and its marker (`• `, `› `, `↳ `, `- `, `1. `).
-- **Tool calls**: `› Name(main argument)` (`app::summarize`). Their results
-  (`app::result_lines`), red on error:
-  - Read: `Read 40 lines` or `Read 40 of 120 lines`;
-  - Edit, MultiEdit, Write: `Updated calc.py: 1 addition, 1 removal`, then the
-    changed lines with their numbers, `-` red and `+` green (at most 16);
-    a new file: `Wrote 12 lines to new.txt`;
+- **Tool calls**: a dot, a verb and what the call works on (`app::tool_header`):
+  `Running cargo test` with a turning copper dot while it runs, then
+  `● Ran cargo test`, green when it worked and red when it failed. Verbs:
+  Ran, Read, Edited, Wrote, Searched, Listed, Fetched, Searched the web,
+  Delegated, Updated the plan, Used skill; any other tool is `Called`, with
+  an MCP tool named `server.tool`. Their results (`app::result_lines`), under
+  a `└`, red on error:
+  - Read: `40 lines` or `40 of 120 lines`;
+  - Edit, MultiEdit, Write: `1 addition, 1 removal`, then the changed lines
+    with their numbers, `-` red and `+` green (at most 16); a new file:
+    `12 lines, a new file`;
   - Bash: the first 3 output lines, then `… +N lines`, or `(no output)`;
   - anything else: `first line (+N lines)`.
+- **Approvals**: a box titled `◆ Approve <tool>?`. A command shows its lines
+  and description, an edit its change, and any other tool every argument it
+  will be sent (each line of each value). Choices: `Allow once` (y), the
+  suggested `Always allow …` (a), `Deny, and tell Forge what to do` (n);
+  also ↑↓ and Enter, or 1 to 3. While it is open the working line says
+  `◆ Waiting for your answer (Ns …)`, timed from when the question was
+  asked, not from the turn's start.
+- **The input** sits in a rounded box; the status line under it shows the
+  model, the context meter and the cost, or for a model with no price the
+  tokens in context.
 - Events of sub-agents (those with a `parent_tool_use_id`) are not shown.
 - **Your prompts**: `> text`, in the user style.
 - **Local command output**: `  ↳  ` on the first line, then indented.

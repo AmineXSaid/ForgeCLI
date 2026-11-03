@@ -107,13 +107,29 @@ fn status_right(app: &App) -> String {
         Some(p) => parts.push(format!("{p}% context")),
         None => {}
     }
-    parts.push(match (s.cost_unknown, s.cost > 0.0) {
-        (false, _) => format!("${:.2}", s.cost),
-        // Part of the spend has no known price: show what is known as a lower bound.
-        (true, true) => format!("${:.2}+", s.cost),
-        (true, false) => "cost ?".into(),
-    });
+    parts.extend(spend(app));
     parts.join(" · ")
+}
+
+/// What the session has spent: its cost, or, for a model with no known
+/// price, the tokens in context (nothing before the first request).
+fn spend(app: &App) -> Option<String> {
+    let s = &app.status;
+    match (s.cost_unknown, s.cost > 0.0) {
+        (false, _) => Some(format!("${:.2}", s.cost)),
+        // Part of the spend has no known price: show what is known as a lower bound.
+        (true, true) => Some(format!("${:.2}+", s.cost)),
+        (true, false) => Some(app.context_tokens()).filter(|n| *n > 0).map(tokens),
+    }
+}
+
+/// A token count as people read it: `950 tokens`, `15.5k tokens`, `1.2M tokens`.
+fn tokens(n: u64) -> String {
+    match n {
+        0..=999 => format!("{n} tokens"),
+        1_000..=999_999 => format!("{:.1}k tokens", n as f64 / 1000.0).replace(".0k", "k"),
+        _ => format!("{:.1}M tokens", n as f64 / 1_000_000.0).replace(".0M", "M"),
+    }
 }
 
 /// A rounded box around `body` rows, `w` columns wide.
@@ -283,8 +299,16 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
         rows.push(Line::from(spans));
     }
     rows.push(Line::default());
-    rows.push(Line::from(Span::styled("Enter to select · Esc to cancel", t.dim())));
-    boxed(Line::from(Span::styled(title, t.bold())), rows, w, t.accent())
+    let permission = app.dialog_options().first().is_some_and(|(_, k)| k == "y");
+    let hint =
+        if permission { "Enter or y·a·n to answer · Esc to deny" } else { "Enter to select · Esc to cancel" };
+    rows.push(Line::from(Span::styled(hint, t.dim())));
+    let title = if permission {
+        Line::from(vec![Span::styled("◆ ", t.accent()), Span::styled(title, t.bold())])
+    } else {
+        Line::from(Span::styled(title, t.bold()))
+    };
+    boxed(title, rows, w, t.accent())
 }
 
 /// The input box's rows and the cursor's (column, row) inside them.
@@ -443,9 +467,10 @@ fn status_right_spans(app: &App, room: usize) -> Vec<Span<'static>> {
     out.extend(meter(&t, pct));
     let label = if pct == 0 && s.context_used { " <1%".to_string() } else { format!(" {pct}%") };
     out.push(Span::styled(label, t.dim()));
-    out.push(sep());
-    let cost = plain.rsplit(" · ").next().unwrap_or("").to_string();
-    out.push(Span::styled(cost, t.dim()));
+    if let Some(cost) = spend(app) {
+        out.push(sep());
+        out.push(Span::styled(cost, t.dim()));
+    }
     let w: usize = out.iter().map(|s| text_width(&s.content)).sum();
     if w > room {
         return vec![Span::styled(fit(&plain, room), t.dim())];
@@ -470,7 +495,7 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     let mut spinner = vec![];
     for r in &app.running {
         let face = glyphs::RUNNING[(now.duration_since(r.since).as_millis() / RUNNING_STEP.as_millis()) as usize % 4];
-        let mut spans = vec![Span::styled(format!("{face} "), t.info())];
+        let mut spans = vec![Span::styled(format!("{face} "), t.accent())];
         spans.extend(r.header.iter().cloned());
         spinner.push(Line::default());
         spinner.extend(text::wrap(vec![Line::from(spans)], w as u16).into_iter().take(2));
@@ -480,10 +505,13 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         let frame = SPINNER[(since.as_millis() / SPINNER_STEP.as_millis()) as usize % SPINNER.len()];
         let mut line = vec![Span::styled(format!("{frame} "), t.accent())];
         if app.waiting_for_answer() {
-            // Needs you: amber, as Forge's status colours say it.
+            // Needs you: the brand colour, and how long you have been asked, not the turn's time.
+            let waited = app.asked_at.map(|a| now.saturating_duration_since(a)).unwrap_or_default().as_secs();
+            line[0] = Span::styled("◆ ", t.accent());
+            line.push(Span::styled("Waiting for your answer", Style::default()));
             line.push(Span::styled(
-                fit(&format!("Waiting for your answer… ({}s)", since.as_secs()), w - 2),
-                t.warning(),
+                fit(&format!(" ({waited}s · ↑↓ to choose, Enter to answer)"), w.saturating_sub(25)),
+                t.subtle(),
             ));
         } else {
             let verb = match app.activity.as_str() {
@@ -508,8 +536,24 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         .map(|q| Line::from(Span::styled(fit(&format!("  ⏎ {}", q.replace('\n', " ")), w), t.dim())))
         .collect();
     // 5. The input box (hidden while a dialog is open).
-    let rule = Line::from(Span::styled("─".repeat(w), t.hairline()));
-    let (input_rows, cursor) = if app.dialog.is_none() { input(app, w) } else { (vec![], (0, 0)) };
+    // The input sits in a rounded box; its rows are padded to the box's inside.
+    let border = if app.editor.is_empty() { t.hairline() } else { t.subtle() };
+    let inner = w.saturating_sub(4).max(1);
+    let top = Line::from(Span::styled(format!("╭{}╮", "─".repeat(w.saturating_sub(2))), border));
+    let bottom = Line::from(Span::styled(format!("╰{}╯", "─".repeat(w.saturating_sub(2))), border));
+    let (input_rows, cursor) = if app.dialog.is_none() { input(app, inner) } else { (vec![], (0, 0)) };
+    let input_rows: Vec<Line<'static>> = input_rows
+        .into_iter()
+        .map(|row| {
+            let used: usize = row.spans.iter().map(|s| text_width(&s.content)).sum();
+            let mut spans = vec![Span::styled("│ ", border)];
+            spans.extend(row.spans);
+            spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+            spans.push(Span::styled(" │", border));
+            Line::from(spans)
+        })
+        .collect();
+    let cursor = (cursor.0 + 2, cursor.1);
     // Ctrl+R: what is being searched for, above the input.
     let search: Vec<Line<'static>> = app
         .search
@@ -548,10 +592,10 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     lines.extend(search);
     let mut cur = None;
     if !input_rows.is_empty() {
-        lines.push(rule.clone());
+        lines.push(top);
         cur = Some((cursor.0, (lines.len() as u16) + cursor.1));
         lines.extend(input_rows);
-        lines.push(rule);
+        lines.push(bottom);
     }
     lines.extend(menu);
     lines.push(status);
@@ -592,11 +636,16 @@ mod tests {
             context_used: true,
             window: 200_000,
         }));
-        assert_eq!(status_right(&a), "local · 3% context · cost ?");
+        assert_eq!(status_right(&a), "local · 3% context", "no price and nothing used yet: nothing to show");
         a.status.context_pct = Some(0);
-        assert_eq!(status_right(&a), "local · <1% context · cost ?");
+        assert_eq!(status_right(&a), "local · <1% context");
         a.status.context_used = false;
-        assert_eq!(status_right(&a), "local · 0% context · cost ?");
+        assert_eq!(status_right(&a), "local · 0% context");
+        // A model with no price shows the tokens it used.
+        assert_eq!(tokens(950), "950 tokens");
+        assert_eq!(tokens(15_500), "15.5k tokens");
+        assert_eq!(tokens(2_000), "2k tokens");
+        assert_eq!(tokens(1_200_000), "1.2M tokens");
     }
 
     fn app(color: bool) -> App {
@@ -642,14 +691,14 @@ mod tests {
         let a = app(true);
         let v = live_view(&a, 60, 20);
         let (rows, buf) = draw(&v, 60);
-        assert_eq!(rows[0], "─".repeat(60));
-        assert_eq!(rows[1], format!("❯ {PLACEHOLDER}"));
-        assert_eq!(rows[2], "─".repeat(60));
+        assert_eq!(rows[0], format!("╭{}╮", "─".repeat(58)));
+        assert_eq!(rows[1], format!("│ ❯ {PLACEHOLDER:<54} │"));
+        assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
         assert_eq!(rows[3], "  ▛◆ ? for shortcuts             opus · ━─────── 12% · $0.25");
-        assert_eq!(v.cursor, Some((2, 1)));
-        // The placeholder is quiet; the prompt marker is Forge's brand purple.
-        assert_eq!(buf[(4, 1)].fg, crate::tui::palette::SUBTLE.color(Default::default(), false));
-        assert_eq!(buf[(0, 1)].fg, crate::tui::palette::BRAND.color(Default::default(), false));
+        assert_eq!(v.cursor, Some((4, 1)));
+        // The placeholder is quiet; the prompt marker is Forge's copper.
+        assert_eq!(buf[(6, 1)].fg, crate::tui::palette::SUBTLE.color(Default::default(), false));
+        assert_eq!(buf[(2, 1)].fg, crate::tui::palette::BRAND.color(Default::default(), false));
     }
 
     #[test]
@@ -668,13 +717,13 @@ mod tests {
         assert_eq!(rows[1], "");
         assert_eq!(rows[2], "⠦ Forging… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
         assert_eq!(rows[3], "  ⏎ next");
-        assert_eq!(rows[5], "❯ ab");
-        assert_eq!(v.cursor, Some((4, 5)));
+        assert!(rows[5].starts_with("│ ❯ ab ") && rows[5].ends_with('│'), "{}", rows[5]);
+        assert_eq!(v.cursor, Some((6, 5)));
         // Too short a screen drops the answer line first, then queued messages, never the input.
         let v = live_view_at(&a, 50, 6, start);
         let (rows, _) = draw(&v, 50);
         assert!(rows.iter().all(|r| !r.contains("partial")), "{rows:?}");
-        assert!(rows.iter().any(|r| r == "❯ ab"), "{rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with("│ ❯ ab")), "{rows:?}");
         assert_eq!(v.lines.len(), 6);
     }
 
@@ -685,7 +734,7 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let v = live_view(&a, 60, 20);
         let (rows, buf) = draw(&v, 60);
-        assert_eq!(rows[1], "❯ /c");
+        assert!(rows[1].starts_with("│ ❯ /c "), "{}", rows[1]);
         assert_eq!(rows[3], "  /clear [name]            Start a new conversation");
         assert_eq!(rows[4], "  /compact [instructions]  Summarize");
         // The selected row is highlighted.
@@ -719,14 +768,15 @@ mod tests {
             rows,
             [
                 "╭──────────────────────────────────────╮",
-                "│ Allow Bash?                          │",
+                "│ ◆ Approve Bash?                      │",
                 "│   rm -rf build                       │",
                 "│                                      │",
-                "│ ❯ 1. Yes                             │",
-                "│   2. No, and tell Forge what to do   │",
-                "│      instead  esc                    │",
+                "│ ❯ 1. Allow once  y                   │",
+                "│   2. Deny, and tell Forge what to    │",
+                "│      do  n                           │",
                 "│                                      │",
-                "│ Enter to select · Esc to cancel      │",
+                "│ Enter or y·a·n to answer · Esc to    │",
+                "│ deny                                 │",
                 "╰──────────────────────────────────────╯",
                 "  ▛◆ ? for shortcuts  opus · 12% contex…",
             ]
@@ -760,15 +810,15 @@ mod tests {
         typed(&mut a, "abcdefghijklmnopqrstuvwxyz");
         let v = live_view(&a, 20, 20);
         let (rows, _) = draw(&v, 20);
-        assert_eq!(rows[1], "❯ abcdefghijklmnopqr");
-        assert_eq!(rows[2], "  stuvwxyz");
-        assert_eq!(v.cursor, Some((10, 2)));
+        assert_eq!(rows[1], "│ ❯ abcdefghijklmn │");
+        assert_eq!(rows[2], "│   opqrstuvwxyz   │");
+        assert_eq!(v.cursor, Some((16, 2)));
         assert!(v.lines.iter().all(|l| text::width(&text::plain(l)) <= 20));
         // Moving left goes back across the wrap.
         for _ in 0..9 {
             a.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         }
-        assert_eq!(live_view(&a, 20, 20).cursor, Some((19, 1)));
+        assert_eq!(live_view(&a, 20, 20).cursor, Some((7, 2)));
         // A dialog stays boxed at 20 columns.
         ask(&mut a, "Write", json!({"file_path": "/a/very/long/path/to/a/file.rs"}));
         let v = live_view(&a, 20, 40);
@@ -819,7 +869,7 @@ mod tests {
         typed(&mut a, "car");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: car");
-        assert_eq!(rows[2], "❯ cargo test");
+        assert!(rows[2].starts_with("│ ❯ cargo test "), "{}", rows[2]);
         typed(&mut a, "zz");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: carzz (no match)");
@@ -1002,14 +1052,18 @@ mod tests {
         let since = a.running[0].since;
         let face = |at: Instant| {
             let (rows, buf) = draw(&live_view_at(&a, 60, 20, at), 60);
-            let y = rows.iter().position(|r| r.contains("Read src/a.rs")).expect("the call shows while it runs");
+            let y = rows.iter().position(|r| r.contains("Reading src/a.rs")).expect("the call shows while it runs");
             (rows[y].chars().next().unwrap(), buf[(0, y as u16)].fg)
         };
         let (first, color) = face(since);
         let (later, _) = face(since + Duration::from_millis(250));
         assert_ne!(first, later, "the dot turns");
         assert!(glyphs::RUNNING.contains(&first.to_string().as_str()));
-        assert_eq!(color, crate::tui::palette::INFO.color(Default::default(), false), "running is blue, as in Forge");
+        assert_eq!(
+            color,
+            crate::tui::palette::BRAND.color(Default::default(), false),
+            "running is copper, as the spinner"
+        );
     }
 
     #[test]
