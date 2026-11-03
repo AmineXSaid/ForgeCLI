@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KodAct Logbook</title>
+<meta name="description" content="An interactive mock of KodAct's terminal UI in the Logbook design: a working log with a margin rail, state at a glance, signed approvals.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --page: #e8e4dd;
+  --page-ink: #1f1c18;
+  --page-ink-2: #57514a;
+  --page-line: #cfc8bc;
+  --control: #f4f1eb;
+  --control-on: #1f1c18;
+  --control-on-ink: #f4f1eb;
+  --focus: #a14b0c;
+  --frame: #cfc8bc;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0c0b0d;
+    --page-ink: #ece7df;
+    --page-ink-2: #a79f95;
+    --page-line: #2a282e;
+    --control: #18171b;
+    --control-on: #ece7df;
+    --control-on-ink: #141317;
+    --focus: #e8883e;
+    --frame: #2a282e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #0c0b0d;
+  --page-ink: #ece7df;
+  --page-ink-2: #a79f95;
+  --page-line: #2a282e;
+  --control: #18171b;
+  --control-on: #ece7df;
+  --control-on-ink: #141317;
+  --focus: #e8883e;
+  --frame: #2a282e;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--page);
+  color: var(--page-ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+::selection { background: var(--focus); color: var(--control); }
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 28px;
+  padding: 18px 28px 14px;
+}
+.bar h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.bar p { margin: 0; color: var(--page-ink-2); font-size: 14px; max-width: 62ch; }
+.titles { flex: 1 1 340px; display: grid; gap: 2px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.group { display: flex; align-items: center; gap: 8px; }
+.group > span { font-size: 13px; color: var(--page-ink-2); }
+.seg { display: inline-flex; border: 1px solid var(--page-line); border-radius: 7px; overflow: hidden; }
+.seg button, .play {
+  font: 500 13px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--page-ink);
+  background: var(--control);
+  border: 0;
+  padding: 8px 11px;
+  cursor: pointer;
+  transition: background-color 160ms cubic-bezier(.2,.8,.2,1), color 160ms cubic-bezier(.2,.8,.2,1);
+}
+.seg button + button { border-left: 1px solid var(--page-line); }
+.seg button:hover, .play:hover { background: color-mix(in srgb, var(--control) 70%, var(--page-ink) 8%); }
+.seg button[aria-pressed="true"] { background: var(--control-on); color: var(--control-on-ink); }
+.play { border: 1px solid var(--page-line); border-radius: 7px; }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.window:focus-within { border-color: var(--page-ink-2); }
+
+main { flex: 1; display: flex; flex-direction: column; padding: 0 28px 22px; min-height: 0; }
+.window {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 460px;
+  max-height: 900px;
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  border: 1px solid var(--frame);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 18px 50px -24px rgb(0 0 0 / .45);
+}
+.chrome {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 12px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--page-ink-2);
+  background: var(--control);
+  border-bottom: 1px solid var(--frame);
+}
+.hint { margin: 12px auto 0; max-width: 1280px; width: 100%; color: var(--page-ink-2); font-size: 13.5px; }
+.hint kbd {
+  font: 12px/1 "JetBrains Mono", ui-monospace, monospace;
+  border: 1px solid var(--page-line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 2px 5px;
+  color: var(--page-ink);
+  background: var(--control);
+}
+
+/* The terminal: a character grid. */
+.term {
+  --ground: #141317; --band: #1c1b20; --sel: #25232a; --rule: #2f2d34;
+  --ink: #ece7df; --ink2: #b9b2a8; --ink3: #8c857c;
+  --orange: #e8883e; --orange-dim: #8e5a33; --red: #ec6b5e; --green: #8fc28c;
+  --kw: #c7a6ee; --str: #a3cfa6; --fn: #8fc0d8; --num: #dcbf86; --cold: #3a373d;
+  --cell-font: 14px;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--ground);
+  color: var(--ink);
+  cursor: text;
+  overflow: hidden;
+  padding: 6px 10px;
+}
+.screen {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--cell-font);
+  line-height: 1.3;
+  font-variant-ligatures: none;
+  white-space: pre;
+  user-select: text;
+}
+.screen ::selection { background: var(--sel); color: var(--ink); }
+.ln { height: 1.3em; overflow: hidden; }
+.ln[data-entry] { cursor: pointer; }
+.ln[data-entry]:hover { background: var(--band); }
+.ln.flash { background: var(--sel); }
+.kb {
+  position: absolute; left: 0; bottom: 0; width: 1px; height: 1px;
+  opacity: 0; border: 0; padding: 0; resize: none; font-size: 16px;
+}
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.c-ink { color: var(--ink); } .c-ink2 { color: var(--ink2); } .c-ink3 { color: var(--ink3); }
+.c-or { color: var(--orange); } .c-ord { color: var(--orange-dim); }
+.c-red { color: var(--red); } .c-grn { color: var(--green); } .c-rule { color: var(--rule); }
+.c-kw { color: var(--kw); } .c-str { color: var(--str); } .c-fn { color: var(--fn); } .c-num { color: var(--num); }
+.c-gnd { color: var(--ground); }
+.b-band { background: var(--band); } .b-sel { background: var(--sel); } .b-or { background: var(--orange); }
+.b-ink { background: var(--ink); }
+.b { font-weight: 700; } .i { font-style: italic; } .u { text-decoration: underline; text-underline-offset: 3px; }
+.s { text-decoration: line-through; text-decoration-color: var(--ink3); }
+.act { cursor: pointer; }
+.act:hover { background: var(--sel); }
+.chip:hover { filter: brightness(1.12); }
+
+.breathe { animation: breathe 1600ms ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { color: var(--orange); } 50% { color: var(--orange-dim); } }
+.ignite { animation: ignite 900ms cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes ignite { from { color: var(--cold); } to { color: var(--c); } }
+.ignite-bg { animation: ignite-bg 900ms cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes ignite-bg { from { color: var(--cold); background-color: var(--cold); } to { color: var(--c); background-color: var(--cb); } }
+.caret { animation: caret 1060ms steps(1, end) infinite; }
+@keyframes caret { 0%, 55% { background: var(--ink); color: var(--ground); } 56%, 100% { background: transparent; color: var(--ink); } }
+
+/* No colour: state rides on glyphs, words and attributes. */
+.term.nocolor .c-or, .term.nocolor .breathe { font-weight: 700; animation: none; }
+.term.nocolor .c-ink3 { opacity: .72; }
+.term.nocolor .b-or { background: var(--ink); }
+.term.dimmed .c-ink3 { opacity: .78; }
+
+@media (prefers-reduced-motion: reduce) {
+  .breathe, .ignite, .ignite-bg, .caret { animation: none !important; }
+  .caret { background: var(--ink); color: var(--ground); }
+}
+@media (max-width: 720px) {
+  .bar { padding: 14px 16px 10px; }
+  main { padding: 0 16px 14px; }
+  .term { --cell-font: 12px; padding: 4px 6px; }
+  .window { min-height: 520px; border-radius: 8px; }
+}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="titles">
+    <h1>KodAct Logbook</h1>
+    <p>An interactive mock of KodAct's terminal UI. Everything inside the window is a character grid with ANSI colour, so the real terminal UI can draw it. The session is synthetic.</p>
+  </div>
+  <div class="controls" aria-label="Mock settings">
+    <button class="play" id="play" type="button">Play the session</button>
+    <div class="group"><span id="lbl-theme">Terminal</span>
+      <div class="seg" role="group" aria-labelledby="lbl-theme">
+        <button type="button" data-theme-set="graphite" aria-pressed="true">Graphite</button>
+        <button type="button" data-theme-set="paper" aria-pressed="false">Paper</button>
+      </div>
+    </div>
+    <div class="group"><span id="lbl-depth">Colour</span>
+      <div class="seg" role="group" aria-labelledby="lbl-depth">
+        <button type="button" data-depth="24" aria-pressed="true">24-bit</button>
+        <button type="button" data-depth="256" aria-pressed="false">256</button>
+        <button type="button" data-depth="16" aria-pressed="false">16</button>
+        <button type="button" data-depth="none" aria-pressed="false">None</button>
+      </div>
+    </div>
+    <div class="group"><span id="lbl-width">Width</span>
+      <div class="seg" role="group" aria-labelledby="lbl-width">
+        <button type="button" data-width="full" aria-pressed="true">Full</button>
+        <button type="button" data-width="80" aria-pressed="false">80 col</button>
+        <button type="button" data-width="50" aria-pressed="false">50 col</button>
+      </div>
+    </div>
+  </div>
+</header>
+<main>
+  <div class="window" id="window">
+    <div class="chrome" aria-hidden="true">kodact — ~/shop</div>
+    <div class="term" id="term" tabindex="0" role="application" aria-roledescription="terminal" aria-label="KodAct terminal. Type a request and press Enter.">
+      <div class="screen" id="screen" aria-hidden="true"></div>
+      <textarea class="kb" id="kb" aria-label="Terminal input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    </div>
+  </div>
+  <p class="hint">Try <kbd>Enter</kbd> to run the prompt, <kbd>y</kbd> to sign the approval, <kbd>Ctrl F</kbd> to filter the log, <kbd>#13</kbd> then <kbd>Enter</kbd> to jump, <kbd>/</kbd> for commands, <kbd>?</kbd> for keys. Click an entry to open it.</p>
+</main>
+<div class="sr" id="live" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ---------- the pixel F, cell for cell from KodAct's current UI ---------- */
+  const LOGO = [
+    [['▄▄▄▄▄▄▄▄▄▄▄▄▄▄', '#f5f2f0', null]],
+    [['█', '#f5f2f0', null], ['████████████', '#d9d1cb', null], ['█', '#a8a29b', null]],
+    [['█', '#f5f2f0', null], ['██', '#d9d1cb', null], ['▀', '#d9d1cb', '#a8a29b'], ['▀▀▀▀▀▀▀▀▀▀', '#a8a29b', null]],
+    [['█', '#f5f2f0', null], ['██', '#d9d1cb', null], ['█', '#a8a29b', null], ['     ', null, null], ['▄▄', '#e2895b', null]],
+    [['█', '#f5f2f0', null], ['██', '#d9d1cb', null], ['█', '#a8a29b', null], [' ', null, null], ['▄▄', '#f0e9e5', null], ['██', '#e2895b', null], ['▀', '#f3b694', '#e2895b'], ['██', '#e2895b', null], ['▀', '#e2895b', '#7d776f'], ['▄', '#7d776f', null]],
+    [['█', '#f5f2f0', null], ['██', '#d9d1cb', null], ['█', '#a8a29b', null], [' ', null, null], ['████', '#f0e9e5', null], ['▀', '#e2895b', '#5a554f'], ['████', '#7d776f', null]],
+    [['█', '#f5f2f0', null], ['██', '#d9d1cb', null], ['█', '#a8a29b', null], [' ', null, null], ['▀███', '#f0e9e5', null], ['█', '#5a554f', null], ['███▀', '#7d776f', null]],
+    [['▀▀▀▀', '#a8a29b', null], ['    ', null, null], ['▀', '#f0e9e5', null], ['▀', '#5a554f', null], ['▀', '#7d776f', null]],
+  ];
+  const SPARK = new Set(['#e2895b', '#f3b694']);
+  const LOGO_PAPER = { '#f5f2f0': '#2b2723', '#d9d1cb': '#4a443d', '#a8a29b': '#756e65', '#7d776f': '#958e84', '#5a554f': '#b2aa9e', '#f0e9e5': '#3a352f', '#e2895b': '#c8692c', '#f3b694': '#e2895b' };
+
+  /* ---------- palettes ---------- */
+  const THEMES = {
+    graphite: { ground: '#141317', band: '#1c1b20', sel: '#25232a', rule: '#2f2d34', ink: '#ece7df', ink2: '#b9b2a8', ink3: '#8c857c', orange: '#e8883e', orangeDim: '#8e5a33', red: '#ec6b5e', green: '#8fc28c', kw: '#c7a6ee', str: '#a3cfa6', fn: '#8fc0d8', num: '#dcbf86', cold: '#3a373d' },
+    paper: { ground: '#f5f2ec', band: '#ebe6dd', sel: '#e0d9cc', rule: '#d6cfc3', ink: '#1f1c18', ink2: '#57514a', ink3: '#625b52', orange: '#a14b0c', orangeDim: '#c98a5a', red: '#b13427', green: '#33702f', kw: '#7438ad', str: '#33702f', fn: '#1f6286', num: '#7d5c12', cold: '#d6cfc3' },
+  };
+  // A 16-colour terminal (Tango, a common default): attention becomes yellow on dark, blue on light.
+  const ANSI16 = {
+    graphite: { ground: '#141317', band: '#141317', sel: '#2e3436', rule: '#555753', ink: '#eeeeec', ink2: '#d3d7cf', ink3: '#d3d7cf', orange: '#fce94f', orangeDim: '#c4a000', red: '#ef2929', green: '#8ae234', kw: '#ad7fa8', str: '#8ae234', fn: '#729fcf', num: '#fce94f', cold: '#555753' },
+    paper: { ground: '#f5f2ec', band: '#f5f2ec', sel: '#d3d7cf', rule: '#d3d7cf', ink: '#2e3436', ink2: '#2e3436', ink3: '#555753', orange: '#3465a4', orangeDim: '#729fcf', red: '#cc0000', green: '#4e9a06', kw: '#75507b', str: '#4e9a06', fn: '#06989a', num: '#2e3436', cold: '#d3d7cf' },
+  };
+  const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const hex = (c) => '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
+  const LEVELS = [0, 95, 135, 175, 215, 255];
+  function xterm256(h) {
+    const c = rgb(h);
+    const near = (v) => LEVELS.reduce((a, l) => (Math.abs(l - v) < Math.abs(a - v) ? l : a), 0);
+    const cube = c.map(near);
+    const g = Math.max(0, Math.min(23, Math.round(((c[0] + c[1] + c[2]) / 3 - 8) / 10)));
+    const gray = [8 + 10 * g, 8 + 10 * g, 8 + 10 * g];
+    const d = (a) => a.reduce((s, v, i) => s + (v - c[i]) ** 2, 0);
+    return hex(d(cube) <= d(gray) ? cube : gray);
+  }
+
+  /* ---------- state ---------- */
+  const DEMO = 'How do we fix ACME-103?';
+  const S = {
+    theme: matchMedia('(prefers-color-scheme: light)').matches ? 'paper' : 'graphite',
+    depth: '24', width: 'full',
+    entries: [], nextId: 1,
+    input: DEMO, menu: 0, overlay: null, filter: 'all', scroll: 0, flash: null,
+    phase: 'idle', live: null, liveSince: 0, approval: null,
+    clock: [14, 30], ctx: 31, cost: 0.12, edits: 0, mode: 'default',
+    running: false, igniteAt: performance.now(), sessionStart: '13:58', doneIn: null,
+  };
+  const T0 = performance.now();
+
+  const term = document.getElementById('term');
+  const screen = document.getElementById('screen');
+  const kb = document.getElementById('kb');
+  const live = document.getElementById('live');
+  const win = document.getElementById('window');
+
+  /* ---------- segments ---------- */
+  const sg = (t, c = 'c-ink') => ({ t, c });
+  const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const len = (segs) => segs.reduce((n, s) => n + [...s.t].length, 0);
+  function fit(segs, w) {
+    const out = []; let n = 0;
+    for (const s of segs) {
+      const ch = [...s.t];
+      if (n + ch.length <= w) { out.push(s); n += ch.length; continue; }
+      const room = w - n;
+      if (room > 1) out.push({ ...s, t: ch.slice(0, room - 1).join('') + '…' });
+      else if (room === 1) out.push({ ...s, t: '…' });
+      n = w; break;
+    }
+    if (n < w) out.push(sg(' '.repeat(w - n)));
+    return out;
+  }
+  // Word wrap with a hanging indent for continuation rows.
+  function wrap(segs, w, hang = 0) {
+    const toks = [];
+    for (const s of segs) for (const p of s.t.split(/( +)/)) if (p) toks.push({ ...s, t: p });
+    const lines = []; let cur = []; let n = 0;
+    const start = () => (lines.length ? hang : 0);
+    for (let tok of toks) {
+      const space = /^ +$/.test(tok.t);
+      if (space && n === start() && lines.length) continue;
+      let tl = [...tok.t].length;
+      if (n + tl > w && !space && n > start()) {
+        lines.push(cur); cur = hang ? [sg(' '.repeat(hang))] : []; n = hang;
+      }
+      if (space && n + tl > w) continue;
+      while (n + tl > w) { // a word longer than the row
+        const ch = [...tok.t]; const room = Math.max(1, w - n);
+        cur.push({ ...tok, t: ch.slice(0, room).join('') }); lines.push(cur);
+        cur = hang ? [sg(' '.repeat(hang))] : []; n = hang;
+        tok = { ...tok, t: ch.slice(room).join('') }; tl = [...tok.t].length;
+      }
+      cur.push(tok); n += tl;
+    }
+    if (cur.length || !lines.length) lines.push(cur);
+    return lines;
+  }
+
+  /* ---------- the session ---------- */
+  const MARKS = {
+    you: ['✎', 'c-ink b'], say: ['›', 'c-ink3'], read: ['·', 'c-ink3'], run: ['▸', 'c-ink2'],
+    change: ['•', 'c-ink'], fail: ['✗', 'c-red b'], need: ['●', 'c-or'], rewound: ['↺', 'c-ink3'],
+    note: ['◇', 'c-ink3'], bg: ['◌', 'c-ink2'],
+  };
+  const FILTERS = [
+    ['all', 'all entries', null],
+    ['change', '• changes', ['change']],
+    ['fail', '✗ failures', ['fail']],
+    ['need', '● needs you', ['need']],
+    ['run', '▸ runs', ['run', 'bg']],
+  ];
+  const now = () => `${String(S.clock[0]).padStart(2, '0')}:${String(S.clock[1]).padStart(2, '0')}`;
+  const tick = (m = 1) => { S.clock[1] += m; while (S.clock[1] >= 60) { S.clock[1] -= 60; S.clock[0] += 1; } };
+
+  function add(e) { const x = { id: S.nextId++, t: now(), detail: null, open: false, ...e }; S.entries.push(x); return x; }
+
+  const code = (...parts) => parts.map(([t, c]) => sg(t, c));
+  function history() {
+    S.entries = []; S.nextId = 1; S.clock = [13, 58];
+    add({ kind: 'you', actor: 'you', text: [sg('start the dev server and check the login page')] });
+    add({ kind: 'bg', actor: 'bash', text: [sg('npm run dev', 'c-ink2'), sg('  → listening on :8080 · bash_2', 'c-ink3')],
+      detail: [{ segs: [sg('running in the background as bash_2 · started 13:58', 'c-ink3')] }] });
+    tick(1);
+    add({ kind: 'read', actor: 'read', text: [sg('src/login/page.tsx', 'c-ink2'), sg('  → 140 lines', 'c-ink3')] });
+    tick(3);
+    add({ kind: 'say', actor: 'kodact', text: [sg('The page loads. Sign-in hangs for 30 s, then fails with a timeout.')] });
+    tick(3);
+    add({ kind: 'rewound', actor: 'you', text: [sg('rewrite the login client from scratch', 'c-ink3 s'), sg('  rewound', 'c-ink3')],
+      detail: [{ segs: [sg('rewound at 14:06 with Esc Esc; nothing it changed was kept', 'c-ink3')] }] });
+    tick(14);
+    S.entries.push({ id: 0, kind: 'divider', text: 'context compacted at 55k · summary kept · earlier tool results folded' });
+    S.clock = [14, 30];
+  }
+
+  /* ---------- layout ---------- */
+  let cols = 100, rows = 32, cw = 8.4, lh = 18;
+  function measure() {
+    const probe = document.createElement('span');
+    probe.textContent = 'M'.repeat(100);
+    probe.style.visibility = 'hidden';
+    screen.appendChild(probe);
+    cw = probe.getBoundingClientRect().width / 100;
+    probe.remove();
+    lh = parseFloat(getComputedStyle(screen).fontSize) * 1.3;
+    const box = term.getBoundingClientRect();
+    const cs = getComputedStyle(term);
+    const iw = box.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const ih = box.height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    let c = Math.max(30, Math.floor(iw / cw));
+    if (S.width === '80') c = Math.min(c, 80);
+    if (S.width === '50') c = Math.min(c, 50);
+    cols = c;
+    rows = Math.max(14, Math.floor(ih / lh));
+    const want = S.width === 'full' ? '' : `${Math.ceil(c * cw + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + 2)}px`;
+    if (win.style.maxWidth !== want) win.style.maxWidth = want;
+  }
+  function geom() {
+    const showTime = cols >= 70, showActor = cols >= 54, showRight = cols >= 58;
+    const timeW = showTime ? 6 : 0;
+    const railCol = timeW;
+    const actorW = showActor ? 7 : 0;
+    const textCol = railCol + 4 + actorW;
+    const rightW = showRight ? 10 : 0;
+    return { showTime, showActor, showRight, railCol, textCol, rightW, textW: Math.max(12, cols - textCol - rightW) };
+  }
+  const phase = (period, since = T0) => `animation-delay:-${Math.round((performance.now() - since) % period)}ms`;
+
+  function rail(e, G) {
+    if (e && S.live === e.id) {
+      return S.phase === 'need'
+        ? { t: '┃', c: 'c-or' }
+        : { t: '┃', c: 'c-or breathe', style: phase(1600) };
+    }
+    return sg('│', 'c-rule');
+  }
+  function prefix(e, G, first) {
+    const out = [];
+    if (G.showTime) out.push(sg(first ? (e.t || '').padEnd(6) : '      ', 'c-ink3'));
+    out.push(rail(e, G));
+    return out;
+  }
+
+  function entryLines(e, G) {
+    if (e.kind === 'divider') {
+      const label = ` ${cols < 72 ? e.text.split(' · ').slice(0, 2).join(' · ') : e.text} `;
+      const side = Math.max(2, Math.floor((cols - label.length) / 2));
+      return [{ segs: [sg('─'.repeat(side), 'c-rule'), sg(label, 'c-ink3'), sg('─'.repeat(Math.max(0, cols - side - label.length)), 'c-rule')] }];
+    }
+    const [g, gc] = MARKS[e.kind];
+    const lines = [];
+    const liveNow = S.live === e.id;
+    let right = e.right ? sg(e.right, 'c-ink3') : sg(`#${e.id}`, 'c-ink3');
+    if (liveNow && S.phase === 'need') right = sg('needs you', 'c-or b');
+    else if (liveNow) right = sg(`${Math.max(0, Math.floor((performance.now() - S.liveSince) / 1000))}s`, 'c-ord');
+    else if (e.signed) right = sg(`#${e.id}`, 'c-ink3');
+    const head = [sg(' '), sg(g, gc), sg(' ')];
+    if (G.showActor) head.push(sg((e.actor || '').padEnd(G.textCol - G.railCol - 4 - 0), e.kind === 'you' ? 'c-ink b' : 'c-ink2'));
+    const body = G.showActor ? e.text : [sg(`${e.actor} `, 'c-ink2'), ...e.text];
+    const wrapped = wrap(body, G.textW - 1, 0);
+    wrapped.forEach((w, i) => {
+      const segs = [...prefix(e, G, i === 0), ...(i === 0 ? head : [sg(' '.repeat(G.textCol - G.railCol - 1))]), ...fit(w, G.textW)];
+      if (G.showRight) segs.push(...fit(i === 0 ? [sg(' '.repeat(Math.max(0, G.rightW - [...right.t].length))), right] : [], G.rightW));
+      lines.push({ segs, entry: e.detail ? e.id : null });
+    });
+    const showDetail = e.detail && (e.open || e.always || (liveNow && S.phase === 'need'));
+    if (showDetail) {
+      for (const d of e.detail) {
+        const ind = d.indent || 0;
+        const width = G.textW + G.rightW - ind - 1;
+        const w = wrap(d.segs, width, d.hang || 0);
+        for (const row of w) {
+          const content = d.bg ? fit(row, width).map((x) => ({ ...x, c: `${x.c || ''} ${d.bg}` })) : row;
+          const segs = [...prefix(e, G, false), sg(' '.repeat(G.textCol - G.railCol - 1 + ind)), ...content];
+          lines.push({ segs, entry: e.always ? null : e.id, act: d.act });
+        }
+      }
+    }
+    return lines;
+  }
+
+  function welcomeLines() {
+    const out = [];
+    const paper = S.theme === 'paper';
+    const ign = performance.now() - S.igniteAt < 950;
+    const textCol = [
+      [sg('KodAct', 'c-ink b'), sg('  0.1', 'c-ink3')],
+      [],
+      [sg(`session 4 · started ${S.sessionStart}`, 'c-ink2')],
+      [],
+      [sg('⏎', 'c-ink b'), sg(' send   ', 'c-ink3'), sg('/', 'c-ink b'), sg(' commands   ', 'c-ink3'), sg('@', 'c-ink b'), sg(' files   ', 'c-ink3'), sg('!', 'c-ink b'), sg(' shell', 'c-ink3')],
+      [sg('^F', 'c-ink b'), sg(' filter   ', 'c-ink3'), sg('#n', 'c-ink b'), sg(' jump   ', 'c-ink3'), sg('?', 'c-ink b'), sg(' keys    ', 'c-ink3'), sg('⇧⇥', 'c-ink b'), sg(' mode', 'c-ink3')],
+      [],
+      [sg('Press ', 'c-ink3'), sg('Enter', 'c-or'), sg(' to send the request below; this session is a sample.', 'c-ink3')],
+    ];
+    const side = cols >= 64;
+    out.push({ segs: [] });
+    LOGO.forEach((row, r) => {
+      const segs = [sg('  ')];
+      for (const [t, f, b] of row) {
+        if (!f) { segs.push(sg(t)); continue; }
+        const fc = paper ? (LOGO_PAPER[f] || f) : f;
+        const bc = b ? (paper ? (LOGO_PAPER[b] || b) : b) : null;
+        const sp = SPARK.has(f) || (b && SPARK.has(b));
+        segs.push({ t, c: '', style: `color:${tone(fc)};${bc ? `background:${tone(bc)};` : ''}${sp && ign ? `--c:${tone(fc)};--cb:${bc ? tone(bc) : 'transparent'};animation-delay:-${Math.round(performance.now() - S.igniteAt)}ms` : ''}`, cls: sp && ign ? (bc ? 'ignite-bg' : 'ignite') : '' });
+      }
+      const pad = 14 - row.reduce((n, [t]) => n + [...t].length, 0);
+      if (side) { segs.push(sg(' '.repeat(Math.max(0, pad) + 4))); segs.push(...(textCol[r] || [])); }
+      out.push({ segs });
+    });
+    if (!side) for (const t of textCol) for (const w of wrap(t, cols - 3, 0)) out.push({ segs: [sg('  '), ...w] });
+    out.push({ segs: [] });
+    return out;
+  }
+
+  // Map a design colour through the active colour depth.
+  function tone(h) {
+    if (S.depth === '256') return xterm256(h);
+    if (S.depth === '16') {
+      const [r, g, b] = rgb(h);
+      const lum = (r * 299 + g * 587 + b * 114) / 1000;
+      if (SPARK.has(h) || h === '#c8692c') return S.theme === 'paper' ? ANSI16.paper.orange : ANSI16.graphite.orange;
+      if (S.theme === 'paper') return lum < 90 ? '#2e3436' : lum < 160 ? '#555753' : '#d3d7cf';
+      return lum > 200 ? '#eeeeec' : lum > 140 ? '#d3d7cf' : '#555753';
+    }
+    if (S.depth === 'none') return THEMES[S.theme].ink;
+    return h;
+  }
+
+  /* ---------- markdown answer, set as a log entry ---------- */
+  function answerDetail() {
+    const k = (t) => sg(t, 'c-kw'), f = (t) => sg(t, 'c-fn'), st = (t) => sg(t, 'c-str'), p = (t) => sg(t, 'c-ink2'), n = (t) => sg(t, 'c-num');
+    const ic = (t) => sg(t, 'c-or');
+    const codeRow = (...segs) => ({ segs: [sg(' '), ...segs], bg: 'b-band', indent: 0, hang: 6 });
+    return [
+      { segs: [] },
+      { segs: [sg('ACME-103 is fixed on fix/proxy-login', 'c-ink b')] },
+      { segs: [sg('────────────────────────────────────', 'c-rule')] },
+      { segs: [sg('The login client ignored '), sg('HTTPS_PROXY', 'c-fn'), sg(', and once it used the proxy it rejected the certificate the proxy re-signs.')] },
+      { segs: [] },
+      { segs: [sg('1. ', 'c-ink3'), sg('Proxy settings are read at startup', 'c-ink b')], hang: 3 },
+      { segs: [sg('   • ', 'c-ink3'), sg('from '), sg('HTTPS_PROXY', 'c-fn'), sg(' and '), sg('NO_PROXY', 'c-fn'), sg(', the way curl reads them, so every tool on the machine shares one setting')], hang: 5 },
+      { segs: [sg('   • ', 'c-ink3'), sg('from '), sg('settings.json', 'c-fn'), sg(' when the variables are missing')], hang: 5 },
+      { segs: [sg('2. ', 'c-ink3'), sg('The client trusts the proxy\'s CA bundle', 'c-ink b')], hang: 3 },
+      { segs: [sg('3. ', 'c-ink3'), sg('Hosts in ', 'c-ink b'), sg('NO_PROXY', 'c-fn b'), sg(' keep a direct connection', 'c-ink b')], hang: 3 },
+      { segs: [] },
+      { segs: [sg('▎ ', 'c-ink3'), sg('The lint failure on #43 is separate: ', 'c-ink2 i'), sg('cargo clippy', 'c-fn'), sg(' flags an unused import in ', 'c-ink2 i'), sg('src/login/mod.rs', 'c-fn'), sg('.', 'c-ink2 i')], hang: 2 },
+      { segs: [] },
+      { segs: [sg(' rust', 'c-ink3'), sg(' · src/login/tls.rs', 'c-ink3')], bg: 'b-band' },
+      codeRow(k('pub fn '), f('client'), p('(cfg: &'), f('Settings'), p(') -> '), f('Result'), p('<'), f('Client'), p('> {')),
+      codeRow(p('    '), k('let '), sg('proxy '), p('= '), f('env::var'), p('('), st('"HTTPS_PROXY"'), p(').'), f('ok'), p('().'), f('or'), p('(cfg.proxy.'), f('clone'), p('());')),
+      codeRow(p('    '), f('Client::builder'), p('().'), f('proxy'), p('(proxy).'), f('add_root'), p('('), f('ca_bundle'), p('()?).'), f('timeout'), p('('), n('30'), p(').'), f('build'), p('()')),
+      codeRow(p('}')),
+      { segs: [] },
+      { segs: [sg('☑ ', 'c-grn'), sg('reproduce the timeout', 'c-ink2'), sg('   ☑ ', 'c-grn'), sg('fix', 'c-ink2'), sg('   ☑ ', 'c-grn'), sg('14 tests pass', 'c-ink2'), sg('   ☐ ', 'c-ink3'), sg('mark #43 ready for review')], hang: 0 },
+      { segs: [] },
+      { segs: [sg('Notes on the proxy setup are in '), sg('docs/network.md', 'c-ink u'), sg('.')] },
+    ];
+  }
+
+  /* ---------- screen ---------- */
+  function headerLine() {
+    const right = [];
+    if (S.filter !== 'all') {
+      const f = FILTERS.find((x) => x[0] === S.filter);
+      const total = S.entries.filter((x) => x.id).length;
+      const shown = S.entries.filter((x) => x.id && f[2].includes(x.kind)).length;
+      right.push(sg('showing ', 'c-ink3'), sg(f[1], 'c-ink b'), sg(` · ${shown} of ${total} · `, 'c-ink3'), sg('^F', 'c-ink b'), sg(' next · ', 'c-ink3'), sg('Esc', 'c-ink b'), sg(' all   ', 'c-ink3'));
+    }
+    right.push(sg(now() + ' ', 'c-ink3'));
+    const parts = [[sg(' '), sg('▛', 'c-ink'), sg('◆', 'c-or'), sg(' KodAct', 'c-ink b')], [sg('   ~/shop', 'c-ink2')], [sg(' · fix/proxy-login', 'c-ink3')], [sg(' · deep-thinking', 'c-ink3')]];
+    let room = cols - len(right) - 1;
+    const left = [];
+    for (const part of parts) { if (len(part) > room) break; left.push(...part); room -= len(part); }
+    if (len(right) + len(left) > cols) return fit([...left], cols);
+    return [...left, sg(' '.repeat(cols - len(left) - len(right))), ...right];
+  }
+  function stateSegs() {
+    const el = Math.max(0, Math.floor((performance.now() - S.liveSince) / 1000));
+    const dot = (c) => ({ t: '●', c, style: c.includes('breathe') ? phase(1600) : '' });
+    switch (S.phase) {
+      case 'thinking': return [sg(' '), dot('c-or breathe'), sg(' thinking', 'c-ink'), sg(` · ${el}s`, 'c-ink3')];
+      case 'tool': return [sg(' '), dot('c-or breathe'), sg(` running ${S.tool}`, 'c-ink'), sg(` · ${el}s`, 'c-ink3')];
+      case 'need': return [sg(' '), dot('c-or'), sg(' needs you', 'c-or b'), sg(` · ${S.tool}`, 'c-ink')];
+      case 'done': return [sg(' '), sg('✓', 'c-grn b'), sg(` done in ${S.doneIn}`, 'c-ink')];
+      default: return [sg(' '), sg('◇', 'c-ink3'), sg(' ready', 'c-ink2')];
+    }
+  }
+  function statusLine() {
+    const filled = Math.round((S.ctx / 100) * 8);
+    const items = [
+      [sg('━'.repeat(filled), S.ctx >= 70 ? 'c-or' : 'c-ink2'), sg('─'.repeat(8 - filled), 'c-rule'), sg(` ${S.ctx}%`, 'c-ink3')],
+      [sg(`$${S.cost.toFixed(2)}`, 'c-ink3')],
+      [sg(`${S.edits} edit${S.edits === 1 ? '' : 's'}`, 'c-ink3')],
+      [sg('◌ ', 'c-ink2'), sg('bash_2 :8080', 'c-ink3')],
+      [sg(S.mode, S.mode === 'default' ? 'c-ink3' : 'c-or')],
+      [sg('? keys', 'c-ink3')],
+    ];
+    const left = stateSegs();
+    const right = [];
+    let used = len(left) + 1;
+    for (const it of items) {
+      const w = len(it) + 3;
+      if (used + w > cols) break;
+      if (right.length) right.push(sg('   '));
+      right.push(...it); used += w;
+    }
+    right.push(sg(' '));
+    return [...fit(left, cols - len(right)), ...right];
+  }
+  function promptLine() {
+    const segs = [sg(' ✎ ', S.approval ? 'c-ink3' : 'c-or')];
+    if (S.approval && !S.input) {
+      segs.push(sg('waiting for your answer above', 'c-ink3'));
+      return fit(segs, cols);
+    }
+    if (!S.input) {
+      segs.push({ t: ' ', c: 'caret', style: phase(1060) }, sg('What shall we kodact today?', 'c-ink3'));
+      return fit(segs, cols);
+    }
+    const room = cols - 5;
+    const t = [...S.input];
+    const shown = t.length > room ? '…' + t.slice(t.length - room + 1).join('') : S.input;
+    segs.push(sg(shown, 'c-ink'), { t: ' ', c: 'caret', style: phase(1060) });
+    return fit(segs, cols);
+  }
+
+  const COMMANDS = [
+    ['/compact', 'Summarize the log to free context'],
+    ['/context', 'Show what fills the context'],
+    ['/filter', 'Show one kind of entry: changes, failures, needs you'],
+    ['/mcp', 'MCP servers and their tools'],
+    ['/model', 'Switch the model for this session'],
+    ['/rewind', 'Go back to an earlier prompt'],
+    ['/theme', 'Graphite, paper or no colour'],
+    ['/help', 'Keys and commands'],
+  ];
+  const menuItems = () => COMMANDS.filter(([c]) => c.startsWith(S.input.split(' ')[0]));
+
+  function keysOverlay(h) {
+    const rows = [
+      ['Enter', 'Send the request (queued while KodAct works)'], ['Esc', 'Interrupt; close a menu; back to all entries'],
+      ['Esc Esc', 'Rewind to an earlier prompt'], ['Ctrl F', 'Filter the log: changes, failures, needs you, runs'],
+      ['#n Enter', 'Jump to entry n'], ['Click', 'Open or fold an entry'], ['y / a / n', 'Sign, always allow, or refuse an approval'],
+      ['/', 'Commands'], ['@', 'Mention a file'], ['!', 'Run a shell command'], ['Shift Tab', 'Cycle mode: default, accept edits, plan'],
+      ['PgUp PgDn', 'Scroll the log; End returns to the newest'], ['Ctrl C', 'Clear the input; twice on an empty one: quit'],
+    ];
+    const out = [{ segs: [] }, { segs: [sg('   Keys', 'c-ink b'), sg('   Esc to close', 'c-ink3')] }, { segs: [sg('   ' + '─'.repeat(Math.min(56, cols - 6)), 'c-rule')] }];
+    for (const [k, d] of rows) out.push({ segs: [sg('   '), sg(k.padEnd(12), 'c-ink b'), sg(d, 'c-ink2')] });
+    while (out.length < h) out.push({ segs: [] });
+    return out.slice(0, h);
+  }
+
+  let rowCache = [];
+  function render() {
+    const G = geom();
+    const R = rows;
+    const viewH = R - 4;
+    // Log lines.
+    let lines = [];
+    if (S.filter === 'all') lines.push(...welcomeLines());
+    const f = FILTERS.find((x) => x[0] === S.filter)[2];
+    for (const e of S.entries) {
+      if (f && !f.includes(e.kind)) continue;
+      lines.push(...entryLines(e, G).map((l) => ({ ...l, id: e.id })));
+    }
+    if (f && !lines.length) lines.push({ segs: [sg('  nothing of this kind in the log yet', 'c-ink3')] });
+    if (f) lines.unshift({ segs: [] });
+    // Viewport.
+    const maxScroll = Math.max(0, lines.length - viewH);
+    S.scroll = Math.max(0, Math.min(S.scroll, maxScroll));
+    const startAt = Math.max(0, lines.length - viewH - S.scroll);
+    let view = lines.slice(startAt, startAt + viewH);
+    while (view.length < viewH) view.push({ segs: [] });
+    if (S.overlay === 'keys') view = keysOverlay(viewH);
+    // Command menu above the prompt.
+    if (S.input.startsWith('/') && !S.overlay) {
+      const items = menuItems();
+      S.menu = Math.min(S.menu, Math.max(0, items.length - 1));
+      const menu = items.length ? items.map(([c, d], i) => ({
+        segs: fit([sg(i === S.menu ? ' › ' : '   ', 'c-or'), sg(c.padEnd(11), i === S.menu ? 'c-ink b' : 'c-ink'), sg(d, i === S.menu ? 'c-ink2' : 'c-ink3')], cols),
+        bg: i === S.menu ? 'b-sel' : null, act: `cmd:${c}`,
+      })) : [{ segs: [sg('   no command starts with ' + S.input, 'c-ink3')] }];
+      view = [...view.slice(0, Math.max(0, viewH - menu.length - 1)), { segs: [sg('─'.repeat(cols), 'c-rule')] }, ...menu].slice(-viewH);
+    }
+    const below = S.scroll;
+    const ruleBottom = below
+      ? [sg('─'.repeat(Math.max(2, cols - 30)), 'c-rule'), sg(` ↓ ${below} newer lines · End `, 'c-ink3'), sg('─'.repeat(Math.max(0, 30 - ` ↓ ${below} newer lines · End `.length)), 'c-rule')]
+      : [sg('─'.repeat(cols), 'c-rule')];
+    const all = [
+      { segs: headerLine() },
+      { segs: [sg('─'.repeat(cols), 'c-rule')] },
+      ...view,
+      { segs: fit(ruleBottom, cols) },
+      { segs: promptLine() },
+      { segs: statusLine() },
+    ];
+    // Paint only rows that changed.
+    if (rowCache.length !== all.length || screen.childElementCount !== all.length) {
+      screen.textContent = '';
+      rowCache = [];
+      for (let i = 0; i < all.length; i++) { const d = document.createElement('div'); d.className = 'ln'; screen.appendChild(d); rowCache.push(''); }
+    }
+    all.forEach((row, i) => {
+      const segs = fit(row.segs, cols);
+      const html = segs.map((s) => {
+        const cls = [s.c, s.cls].filter(Boolean).join(' ');
+        return `<span${cls ? ` class="${cls}"` : ''}${s.style ? ` style="${s.style}"` : ''}>${esc(s.t)}</span>`;
+      }).join('');
+      const key = `${row.bg || ''}|${row.entry || ''}|${row.act || ''}|${S.flash === row.id ? 1 : 0}|${html}`;
+      if (rowCache[i] === key) return;
+      rowCache[i] = key;
+      const d = screen.children[i];
+      d.className = 'ln' + (row.bg ? ` ${row.bg}` : '') + (row.id && S.flash === row.id ? ' flash' : '') + (row.act ? ' act' : '');
+      if (row.entry) d.dataset.entry = row.entry; else delete d.dataset.entry;
+      if (row.act) d.dataset.act = row.act; else delete d.dataset.act;
+      d.innerHTML = html;
+    });
+  }
+
+  /* ---------- palette application ---------- */
+  function applyPalette() {
+    const base = S.depth === '16' ? ANSI16[S.theme] : THEMES[S.theme];
+    const map = {};
+    for (const [k, v] of Object.entries(base)) map[k] = S.depth === '256' ? xterm256(v) : v;
+    if (S.depth === 'none') {
+      const t = THEMES[S.theme];
+      for (const k of Object.keys(map)) map[k] = t.ink;
+      map.ground = t.ground; map.band = t.ground; map.sel = S.theme === 'paper' ? '#ddd6ca' : '#2a282e'; map.rule = t.ink3; map.cold = t.ground;
+    }
+    const css = { ground: map.ground, band: map.band, sel: map.sel, rule: map.rule, ink: map.ink, ink2: map.ink2, ink3: map.ink3, orange: map.orange, 'orange-dim': map.orangeDim, red: map.red, green: map.green, kw: map.kw, str: map.str, fn: map.fn, num: map.num, cold: map.cold };
+    for (const [k, v] of Object.entries(css)) term.style.setProperty(`--${k}`, v);
+    term.classList.toggle('nocolor', S.depth === 'none');
+    term.classList.toggle('dimmed', S.depth === '16');
+    rowCache = [];
+  }
+
+  /* ---------- the scripted session ---------- */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const say = (msg) => { live.textContent = msg; };
+  function setLive(e, ph, tool) {
+    S.live = e ? e.id : null; S.phase = ph; S.tool = tool || S.tool; S.liveSince = performance.now();
+    if (ph === 'thinking') say('KodAct is thinking.');
+    if (ph === 'tool') say(`KodAct is running ${tool}.`);
+    if (ph === 'need') say(`KodAct needs your approval: ${tool}. Press y to sign, a to always allow, n to refuse.`);
+  }
+  async function step(entry, ph, tool, ms, done) {
+    const e = add(entry); tick(); setLive(e, ph, tool); S.scroll = 0; render();
+    await sleep(ms);
+    if (done) done(e);
+    S.live = null; render();
+    return e;
+  }
+  const run = (cmd, rest) => [sg(cmd, 'c-ink2'), ...(rest ? [sg(`  ${rest}`, 'c-ink3')] : [])];
+
+  async function demo(prompt) {
+    if (S.running) return;
+    S.running = true; S.filter = 'all'; S.overlay = null;
+    const t0 = performance.now();
+    add({ kind: 'you', actor: 'you', text: [sg(prompt)] });
+    S.input = ''; S.scroll = 0; render();
+    const think = add({ kind: 'say', actor: 'kodact', text: [sg('thinking', 'c-ink3 i')] });
+    setLive(think, 'thinking'); render();
+    await sleep(1400);
+    think.text = [sg("I'll read the issue and its pull request first.")];
+    S.live = null; S.cost = 0.13; render();
+
+    await step({ kind: 'read', actor: 'jira', text: run('search_issues', 'key=ACME-103') }, 'tool', 'jira.search_issues', 900, (e) => {
+      e.text = run('search_issues', 'key=ACME-103 → 1 issue, In Progress, sara');
+      e.detail = [{ segs: [sg('ACME-103  ', 'c-ink b'), sg('Login times out behind the corporate proxy', 'c-ink2')] }, { segs: [sg('In Progress · High · sara · 3 comments', 'c-ink3')] }];
+    });
+    await step({ kind: 'read', actor: 'github', text: run('get_pull_request', 'acme/shop #43') }, 'tool', 'github.get_pull_request', 800, (e) => {
+      e.text = run('get_pull_request', 'acme/shop #43 → draft, lint failing');
+      e.detail = [{ segs: [sg('#43  ', 'c-ink b'), sg('Proxy-aware login client (ACME-103)', 'c-ink2')] }, { segs: [sg('draft · checks: lint failing · reviews: none yet · feat/proxy-login', 'c-ink3')] }];
+    });
+    await step({ kind: 'read', actor: 'read', text: run('src/login/client.rs') }, 'tool', 'read', 500, (e) => { e.text = run('src/login/client.rs', '→ 212 lines'); });
+    S.ctx = 35; S.cost = 0.14;
+    await step({ kind: 'change', actor: 'edit', text: [sg('src/login/client.rs', 'c-ink'), sg('  +12', 'c-grn'), sg(' −3', 'c-red')] }, 'tool', 'edit', 700, (e) => {
+      S.edits = 1;
+      e.detail = [
+        { segs: [sg('41    ', 'c-ink3'), sg('let builder = Client::builder();', 'c-ink2')] },
+        { segs: [sg('42  − ', 'c-red'), sg('let proxy = None;', 'c-ink3 s')] },
+        { segs: [sg('42  + ', 'c-grn'), sg('let proxy = env::var("HTTPS_PROXY").ok().or(cfg.proxy.clone());', 'c-ink')] },
+        { segs: [sg('43  + ', 'c-grn'), sg('let builder = builder.proxy(proxy);', 'c-ink')] },
+      ];
+    });
+    const test1 = await step({ kind: 'run', actor: 'bash', text: run('cargo test login') }, 'tool', 'bash', 1500, (e) => {
+      e.kind = 'fail';
+      e.text = [sg('cargo test login', 'c-ink2'), sg('  → ', 'c-ink3'), sg('1 failed', 'c-red b'), sg(': proxy_ca_is_trusted', 'c-ink2')];
+      e.detail = [
+        { segs: [sg('running 14 tests', 'c-ink3')] },
+        { segs: [sg('test tls::proxy_ca_is_trusted ... ', 'c-ink2'), sg('FAILED', 'c-red b')] },
+        { segs: [sg('  invalid peer certificate: UnknownIssuer', 'c-ink2')] },
+        { segs: [sg('test result: FAILED. 13 passed; 1 failed', 'c-ink3')] },
+      ];
+      e.open = true;
+    });
+    void test1;
+    const why = add({ kind: 'say', actor: 'kodact', text: [sg('thinking', 'c-ink3 i')] });
+    setLive(why, 'thinking'); render(); await sleep(1200);
+    why.text = [sg('The corporate proxy re-signs TLS, so the client must trust its CA as well.')];
+    S.live = null; S.ctx = 39; S.cost = 0.16; render();
+    await step({ kind: 'change', actor: 'edit', text: [sg('src/login/tls.rs', 'c-ink'), sg('  +9', 'c-grn')] }, 'tool', 'edit', 600, (e) => {
+      S.edits = 2;
+      e.detail = [{ segs: [sg('12  + ', 'c-grn'), sg('let bundle = ca_bundle()?; // the proxy CA, from SSL_CERT_FILE or the system store', 'c-ink')] }];
+    });
+    await step({ kind: 'run', actor: 'bash', text: run('cargo test login') }, 'tool', 'bash', 1300, (e) => {
+      e.text = [sg('cargo test login', 'c-ink2'), sg('  → ', 'c-ink3'), sg('14 passed', 'c-grn'), sg(' in 3.1s', 'c-ink3')];
+    });
+    // Needs you: the full arguments are in view before anything is written.
+    tick();
+    const ask = add({
+      kind: 'need', actor: 'jira', text: [sg('add_comment ', 'c-ink'), sg('ACME-103', 'c-ink2')],
+      detail: [
+        { segs: [sg('key   ', 'c-ink3'), sg('ACME-103', 'c-ink')] },
+        { segs: [sg('body  ', 'c-ink3'), sg('Fixed on fix/proxy-login: the client reads HTTPS_PROXY and trusts the proxy CA. PR #43 is still a draft; its lint check fails on an unused import.', 'c-ink')], hang: 6 },
+        { segs: [] },
+        { segs: [{ t: ' y ', c: 'c-gnd b-or b chip' }, sg(' sign   ', 'c-ink2'), { t: ' a ', c: 'c-ink b-sel b chip' }, sg(' always for jira.add_comment   ', 'c-ink2'), { t: ' n ', c: 'c-ink b-sel b chip' }, sg(' refuse and say why', 'c-ink2')], act: 'approve' },
+      ],
+    });
+    S.approval = ask; setLive(ask, 'need', 'jira.add_comment'); S.scroll = 0; render();
+    const choice = await new Promise((r) => { S.resolve = r; });
+    S.approval = null; S.resolve = null;
+    if (choice === 'n') {
+      ask.kind = 'rewound';
+      ask.text = [sg('add_comment ACME-103', 'c-ink3 s'), sg('  refused', 'c-ink3')];
+      ask.detail = [{ segs: [sg('refused by you at ' + now() + '; nothing was posted', 'c-ink3')] }];
+    } else {
+      ask.kind = 'change'; ask.signed = true;
+      ask.text = [sg('add_comment ', 'c-ink'), sg('ACME-103', 'c-ink2'), sg(`  signed by you ${now()}${choice === 'a' ? ', always' : ''}`, 'c-ink3')];
+      ask.detail = [{ segs: [sg('comment posted · 4 on the issue', 'c-ink3')] }, ...ask.detail.slice(1, 2)];
+    }
+    S.live = null; render();
+    await sleep(400);
+    const ans = add({ kind: 'say', actor: 'kodact', text: [sg('thinking', 'c-ink3 i')] });
+    setLive(ans, 'thinking'); render(); await sleep(1100);
+    tick(); ans.t = now();
+    ans.text = [sg('Done. Here is what changed and why.', 'c-ink')];
+    ans.detail = answerDetail(); ans.always = true;
+    S.ctx = 41; S.cost = 0.18;
+    S.live = null; S.phase = 'done'; S.doneIn = `${Math.round((performance.now() - t0) / 1000)}s`;
+    say('KodAct is done. Two files changed; one comment signed.');
+    S.running = false; S.scroll = 0; render();
+  }
+
+  /* ---------- commands, filter, jump ---------- */
+  function note(text) { add({ kind: 'note', actor: 'kodact', text: [sg(text, 'c-ink2')] }); S.scroll = 0; }
+  function command(c) {
+    S.input = '';
+    switch (c) {
+      case '/compact': S.entries.push({ id: 0, kind: 'divider', text: `context compacted at ${S.ctx}% · summary kept` }); S.ctx = 9; break;
+      case '/context': note(`context ${S.ctx}%: system and tools 7k · log 31k · tool results 13k`); break;
+      case '/filter': cycleFilter(); break;
+      case '/mcp': note('jira connected, 4 tools · github connected, 2 tools'); break;
+      case '/model': note('deep-thinking now · quick-thinking available (/model quick-thinking)'); break;
+      case '/rewind': note('Esc Esc opens the list of earlier prompts to go back to'); break;
+      case '/theme': setTheme(S.theme === 'graphite' ? 'paper' : 'graphite'); note(`theme ${S.theme}`); break;
+      case '/help': S.overlay = 'keys'; break;
+      default: note(`${c}: not in this mock`);
+    }
+    render();
+  }
+  function cycleFilter() {
+    const i = FILTERS.findIndex((x) => x[0] === S.filter);
+    S.filter = FILTERS[(i + 1) % FILTERS.length][0]; S.scroll = 0;
+    say(`Showing ${FILTERS.find((x) => x[0] === S.filter)[1]}.`);
+  }
+  function jump(n) {
+    const e = S.entries.find((x) => x.id === n);
+    if (!e) { note(`no entry #${n}`); return; }
+    S.filter = 'all'; S.overlay = null; e.open = true;
+    render();
+    // Find its first line and scroll so it sits a third of the way down.
+    const G = geom();
+    let lines = 0; const total = [];
+    for (const l of welcomeLines()) total.push(null);
+    for (const x of S.entries) for (const l of entryLines(x, G)) total.push(x.id);
+    lines = total.indexOf(n);
+    const viewH = rows - 4;
+    S.scroll = Math.max(0, total.length - lines - Math.floor(viewH * 2 / 3));
+    S.flash = n; render();
+    setTimeout(() => { S.flash = null; render(); }, 1400);
+  }
+
+  /* ---------- input ---------- */
+  function submit() {
+    const t = S.input.trim();
+    if (!t) return;
+    if (t.startsWith('/')) { const items = menuItems(); command(items[S.menu] ? items[S.menu][0] : t.split(' ')[0]); return; }
+    if (/^#\d+$/.test(t)) { S.input = ''; jump(parseInt(t.slice(1), 10)); return; }
+    if (t.startsWith('!')) { S.input = ''; add({ kind: 'run', actor: 'shell', text: [sg(t.slice(1).trim(), 'c-ink2'), sg('  → not run in this mock', 'c-ink3')] }); S.scroll = 0; render(); return; }
+    if (S.running) { S.input = ''; note('queued: ' + t); render(); return; }
+    if (t === DEMO) { demo(t); return; }
+    S.input = '';
+    add({ kind: 'you', actor: 'you', text: [sg(t)] });
+    note('This mock plays one sample session. Try Ctrl F, #13, / or ?, or replay it from the bar above.');
+    render();
+  }
+  function key(e) {
+    const k = e.key;
+    if (S.approval && !S.input && ['y', 'a', 'n'].includes(k.toLowerCase())) { e.preventDefault(); S.resolve(k.toLowerCase()); return; }
+    if (k === 'f' && e.ctrlKey) { e.preventDefault(); cycleFilter(); render(); return; }
+    if (k === 'Escape') {
+      e.preventDefault();
+      if (S.overlay) S.overlay = null; else if (S.input.startsWith('/')) S.input = ''; else if (S.filter !== 'all') S.filter = 'all'; else S.scroll = 0;
+      render(); return;
+    }
+    if (k === 'Tab' && e.shiftKey) { e.preventDefault(); S.mode = { default: 'accept edits', 'accept edits': 'plan', plan: 'default' }[S.mode]; render(); return; }
+    if (k === 'Enter' && !e.shiftKey) { e.preventDefault(); if (S.overlay) { S.overlay = null; render(); return; } submit(); return; }
+    if (k === 'Backspace') { e.preventDefault(); S.input = [...S.input].slice(0, -1).join(''); render(); return; }
+    if (k === 'ArrowDown' && S.input.startsWith('/')) { e.preventDefault(); S.menu++; render(); return; }
+    if (k === 'ArrowUp' && S.input.startsWith('/')) { e.preventDefault(); S.menu = Math.max(0, S.menu - 1); render(); return; }
+    if (k === 'PageUp') { e.preventDefault(); S.scroll += rows - 6; render(); return; }
+    if (k === 'PageDown') { e.preventDefault(); S.scroll = Math.max(0, S.scroll - (rows - 6)); render(); return; }
+    if (k === 'End') { e.preventDefault(); S.scroll = 0; render(); return; }
+    if (k === 'c' && e.ctrlKey) { e.preventDefault(); S.input = ''; render(); return; }
+    if (k === '?' && !S.input) { e.preventDefault(); S.overlay = S.overlay ? null : 'keys'; render(); return; }
+    if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault(); S.input += k; S.menu = 0; S.overlay = null; render();
+    }
+  }
+  kb.addEventListener('keydown', key);
+  kb.addEventListener('input', () => { // virtual keyboards
+    const v = kb.value; kb.value = '';
+    for (const ch of v) {
+      if (S.approval && !S.input && 'yanYAN'.includes(ch)) { S.resolve(ch.toLowerCase()); continue; }
+      S.input += ch;
+    }
+    render();
+  });
+  term.addEventListener('focus', () => kb.focus());
+  term.addEventListener('mousedown', (e) => { if (e.target === term || e.target.closest('.screen')) setTimeout(() => kb.focus(), 0); });
+  screen.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.ln');
+    if (!row) return;
+    if (row.dataset.act === 'approve' && S.approval) {
+      const chip = ev.target.closest('.chip');
+      if (chip) S.resolve(chip.textContent.trim());
+      return;
+    }
+    if (row.dataset.act && row.dataset.act.startsWith('cmd:')) { command(row.dataset.act.slice(4)); return; }
+    if (row.dataset.entry) {
+      const e = S.entries.find((x) => x.id === Number(row.dataset.entry));
+      if (e && !e.always) { e.open = !e.open; render(); }
+    }
+  });
+  term.addEventListener('wheel', (e) => { e.preventDefault(); S.scroll = Math.max(0, S.scroll - Math.sign(e.deltaY) * 3); render(); }, { passive: false });
+
+  /* ---------- mock bar ---------- */
+  function setTheme(t) {
+    S.theme = t;
+    document.querySelectorAll('[data-theme-set]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeSet === t)));
+    applyPalette(); render();
+  }
+  document.querySelectorAll('[data-theme-set]').forEach((b) => b.addEventListener('click', () => setTheme(b.dataset.themeSet)));
+  document.querySelectorAll('[data-depth]').forEach((b) => b.addEventListener('click', () => {
+    S.depth = b.dataset.depth;
+    document.querySelectorAll('[data-depth]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    applyPalette(); render();
+  }));
+  document.querySelectorAll('[data-width]').forEach((b) => b.addEventListener('click', () => {
+    S.width = b.dataset.width;
+    document.querySelectorAll('[data-width]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    measure(); rowCache = []; render();
+  }));
+  document.getElementById('play').addEventListener('click', () => {
+    if (S.running) return;
+    history(); S.phase = 'idle'; S.ctx = 31; S.cost = 0.12; S.edits = 0; S.filter = 'all'; S.overlay = null; S.scroll = 0;
+    S.igniteAt = performance.now(); render(); kb.focus();
+    setTimeout(() => demo(DEMO), 700);
+  });
+
+  /* ---------- start ---------- */
+  function start() {
+    history();
+    applyPalette();
+    measure();
+    render();
+    setInterval(() => { if (S.live || S.phase === 'tool' || S.phase === 'thinking') render(); }, 1000);
+    setTimeout(render, 1000); // settle the ignition into static colour
+    new ResizeObserver(() => { measure(); rowCache = []; render(); }).observe(term);
+  }
+  setTheme(S.theme);
+  (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(start);
+})();
+</script>
+</body>
+</html>
