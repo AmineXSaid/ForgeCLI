@@ -416,6 +416,7 @@ fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
         folder.push(Span::styled(format!("  [⎇ {b}]"), t.dim()));
     }
     above.push(at(m, Line::from(folder)));
+    above.push(Line::default());
     FrontPage { above, box_left: m, box_w: fw, top: true, ..Default::default() }
 }
 

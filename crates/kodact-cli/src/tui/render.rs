@@ -432,6 +432,122 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
     (rows, cursor)
 }
 
+/// What a permission mode is called on the frame style's panel, and its colour:
+/// building in lime, planning in teal, auto in violet, accepting edits in
+/// amber, bypassing permissions in red.
+fn mode_mark(app: &App) -> (&'static str, Style) {
+    let t = app.theme;
+    match app.status.mode.as_str() {
+        "acceptEdits" => ("Accept edits", t.warning()),
+        "plan" => ("Plan", t.teal()),
+        "auto" => ("Auto", t.violet()),
+        "dontAsk" => ("Don't ask", t.dim()),
+        "bypassPermissions" => ("Bypass", t.error()),
+        _ => ("Build", t.accent()),
+    }
+}
+
+/// The frame style's input, `bw` columns wide from column `left`: a raised
+/// panel, its left edge in the mode's colour, the text, then the mode, the
+/// model, where it runs and the context in use, with a row of padding above
+/// and below: one solid block, whatever the terminal's font. The cursor's
+/// (column, row) inside it.
+fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) {
+    let t = app.theme;
+    let margin = || Span::raw(" ".repeat(left));
+    let raised =
+        if t.color { Style::default().bg(palette::PROMPT_BG.color(t.depth, t.light)) } else { Style::default() };
+    let (mode, mode_st) = mode_mark(app);
+    let edge = if t.color { Span::styled("▎", mode_st.patch(raised)) } else { Span::styled("│", t.bold()) };
+    let inner = bw.saturating_sub(4).max(1);
+    let mut out = vec![];
+    let row = |spans: Vec<Span<'static>>, out: &mut Vec<Line<'static>>| {
+        let used: usize = spans.iter().map(|s| text_width(&s.content)).sum();
+        let mut line = vec![margin(), edge.clone(), Span::styled(" ", raised)];
+        line.extend(spans.into_iter().map(|s| Span::styled(s.content, raised.patch(s.style))));
+        line.push(Span::styled(" ".repeat((inner + 2).saturating_sub(used)), raised));
+        out.push(Line::from(line));
+    };
+    let (rows, cur) = input(app, inner);
+    if t.color {
+        row(vec![], &mut out);
+    }
+    let first = out.len() as u16;
+    for r in rows {
+        // The edge is the prompt: the marker gives way to two spaces.
+        let mut spans = r.spans;
+        if !spans.is_empty() {
+            spans[0] = Span::raw("  ");
+        }
+        row(spans, &mut out);
+    }
+    // The mode, the model and where it runs; the context in use on the right.
+    let s = &app.status;
+    let sep = || Span::raw("  ");
+    let mut meta = vec![Span::raw("  "), Span::styled(mode, mode_st.add_modifier(ratatui::style::Modifier::BOLD))];
+    if !s.model.is_empty() {
+        meta.extend([sep(), Span::raw(s.model.clone())]);
+    }
+    let endpoint = vec![sep(), Span::styled(app.endpoint.clone(), t.subtle())];
+    let mut right = vec![];
+    if let Some(pct) = s.context_pct.filter(|p| *p > 0 || s.context_used) {
+        right.extend(meter(&t, pct));
+        let label = if pct == 0 && s.context_used { " <1%".to_string() } else { format!(" {pct}%") };
+        right.push(Span::styled(label, t.dim()));
+    }
+    if let Some(cost) = spend(app).filter(|_| !right.is_empty()) {
+        right.push(Span::styled(format!(" · {cost}"), t.subtle()));
+    }
+    let w_of = |v: &[Span<'static>]| v.iter().map(|s| text_width(&s.content)).sum::<usize>();
+    let room = inner + 2;
+    if !app.endpoint.is_empty() && w_of(&meta) + w_of(&endpoint) + w_of(&right) + 4 <= room {
+        meta.extend(endpoint);
+    }
+    if w_of(&meta) + w_of(&right) + 2 > room {
+        right.clear();
+    }
+    if w_of(&meta) <= room {
+        let gap = room - w_of(&meta) - w_of(&right);
+        meta.push(Span::raw(" ".repeat(gap.saturating_sub(2))));
+        meta.extend(right);
+        row(meta, &mut out);
+    }
+    if t.color {
+        row(vec![], &mut out);
+    }
+    (out, (left as u16 + 2 + cur.0, first + cur.1))
+}
+
+/// The keys that help now, for the frame style's status line: while the model
+/// works, how to stop it; in a menu, how to choose; with nothing typed, the
+/// commands, files and modes; while typing, how to send.
+fn hints(app: &App, room: usize) -> Vec<Span<'static>> {
+    let t = app.theme;
+    let keys: &[(&str, &str)] = if app.busy {
+        &[("esc", "stop"), ("enter", "queue a message")]
+    } else if !app.menu().is_empty() || !app.file_menu().is_empty() {
+        &[("↑↓", "choose"), ("tab", "complete"), ("esc", "close")]
+    } else if app.editor.is_empty() {
+        &[("/", "commands"), ("@", "files"), ("shift+tab", "mode"), ("?", "keys")]
+    } else {
+        &[("enter", "send"), ("shift+enter", "new line")]
+    };
+    let mut out: Vec<Span<'static>> = vec![];
+    let mut used = 0;
+    for (i, (k, what)) in keys.iter().enumerate() {
+        let gap = if i == 0 { "" } else { "   " };
+        let w = text_width(gap) + text_width(k) + 1 + text_width(what);
+        if used + w > room {
+            break;
+        }
+        used += w;
+        out.push(Span::raw(gap));
+        out.push(Span::styled(k.to_string(), if t.color { Style::default() } else { t.bold() }));
+        out.push(Span::styled(format!(" {what}"), t.subtle()));
+    }
+    out
+}
+
 /// The `@` menu: matching paths.
 fn file_menu(app: &App, w: usize) -> Vec<Line<'static>> {
     let t = app.theme;
@@ -526,11 +642,17 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     let lead = 2;
     // The folder keeps its end and at most half the line, so the model and context stay in view.
     let folder = !app.status.cwd.is_empty() && left == super::short_path(&app.status.cwd);
-    let left = if folder { keep_end(&left, (w / 2).max(8)) } else { fit(&left, w.saturating_sub(lead)) };
+    let mut left = if folder { keep_end(&left, (w / 2).max(8)) } else { fit(&left, w.saturating_sub(lead)) };
+    if folder && app.look == super::look::Look::Frame && !app.branch.is_empty() {
+        left = format!("{left}  ⎇ {}", fit(&app.branch, 24));
+    }
     let room = w.saturating_sub(text_width(&left) + lead + 2);
     // The front screen shows the model under its input; the status line keeps the version.
     let right = if app.front && app.status_text.is_none() {
         vec![Span::styled(format!("v{}", kodact_core::VERSION), app.theme.subtle())]
+    } else if app.look == super::look::Look::Frame && app.status_text.is_none() && w >= 40 {
+        // The panel shows the model and the context; the line keeps the keys that help now.
+        hints(app, room)
     } else {
         status_right_spans(app, room)
     };
@@ -825,6 +947,8 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         }
     };
     let (top, bottom) = (edge('╭', '╮'), edge('╰', '╯'));
+    // The frame style: a raised panel instead of the box.
+    let panel = (app.look == Look::Frame && bw >= 40 && app.dialog.is_none()).then(|| panel(app, left, bw));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, inner) } else { (vec![], (0, 0)) };
     let input_rows: Vec<Line<'static>> = input_rows
         .into_iter()
@@ -843,7 +967,8 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         })
         .collect();
     let cursor = (cursor.0 + side as u16 + margin.len() as u16, cursor.1);
-    let under: Vec<Line<'static>> = if front && fb.is_some_and(|b| b.under) && !input_rows.is_empty() {
+    let under: Vec<Line<'static>> = if panel.is_none() && front && fb.is_some_and(|b| b.under) && !input_rows.is_empty()
+    {
         let mut parts = vec![Span::styled(mode_name(&app.status.mode), t.accent())];
         for p in [app.status.model.as_str(), app.endpoint.as_str()].into_iter().filter(|p| !p.is_empty()) {
             parts.push(Span::styled("  ·  ", t.hairline()));
@@ -877,7 +1002,11 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     let fixed = spinner.len()
         + search.len()
         + dialog.len()
-        + if input_rows.is_empty() { 0 } else { input_rows.len() + if open { 1 } else { 2 } }
+        + match &panel {
+            Some((rows, _)) => rows.len(),
+            None if input_rows.is_empty() => 0,
+            None => input_rows.len() + if open { 1 } else { 2 },
+        }
         + under.len()
         + menu.len()
         + 1;
@@ -898,7 +1027,10 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     lines.extend(queued);
     lines.extend(search);
     let mut cur = None;
-    if !input_rows.is_empty() {
+    if let Some((rows, c)) = panel {
+        cur = Some((c.0, lines.len() as u16 + c.1));
+        lines.extend(rows);
+    } else if !input_rows.is_empty() {
         lines.push(top);
         cur = Some((cursor.0, (lines.len() as u16) + cursor.1));
         lines.extend(input_rows);
@@ -1138,6 +1270,41 @@ mod tests {
     }
 
     #[test]
+    fn the_frame_style_draws_a_panel_in_the_mode_colour_with_helpful_keys() {
+        let mut a = app(true);
+        a.look = crate::tui::look::Look::Frame;
+        a.endpoint = "127.0.0.1:11434".into();
+        let view = live_view(&a, 80, 12);
+        let (rows, buf) = draw(&view, 80);
+        let n = rows.len();
+        // A row of padding, the text, the mode line, a row of padding; then the keys.
+        assert_eq!(rows[n - 5].trim_end(), "▎", "{rows:#?}");
+        assert!(rows[n - 4].starts_with("▎   What shall we build today?"), "{rows:#?}");
+        assert!(rows[n - 3].starts_with("▎   Build  opus  127.0.0.1:11434"), "{rows:#?}");
+        assert!(rows[n - 3].trim_end().ends_with("12% · $0.25"), "{rows:#?}");
+        assert_eq!(rows[n - 2].trim_end(), "▎");
+        // Every cell of the panel on the raised surface: no stripes.
+        let raised = Some(crate::tui::palette::PROMPT_BG.color(a.theme.depth, false));
+        for y in n - 5..n - 1 {
+            for x in 0..80u16 {
+                assert_eq!(Some(buf[(x, y as u16)].bg), raised, "({x}, {y})");
+            }
+        }
+        assert!(rows[n - 1].contains("/ commands   @ files   shift+tab mode"), "{rows:#?}");
+        assert_eq!(view.cursor, Some((4, (n - 4) as u16)), "the cursor at the text");
+        let edge = |buf: &ratatui::buffer::Buffer, y: usize| buf[(0, y as u16)].fg;
+        let build = edge(&buf, n - 4);
+        a.status.mode = "plan".into();
+        let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
+        assert!(rows[n - 3].starts_with("▎   Plan  opus"));
+        assert_ne!(edge(&buf, n - 4), build, "the edge takes the mode's colour");
+        assert_eq!(Some(edge(&buf, n - 4)), a.theme.teal().fg);
+        typed(&mut a, "fix it");
+        let (rows, _) = draw(&live_view(&a, 80, 12), 80);
+        assert!(rows.last().unwrap().contains("enter send   shift+enter new line"));
+    }
+
+    #[test]
     fn plan_mode_and_hints_show_in_the_status_line() {
         let mut a = app(true);
         a.status.mode = "plan".into();
@@ -1181,7 +1348,7 @@ mod tests {
         typed(&mut a, "car");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: car");
-        assert!(rows[2].starts_with("│ ❯ cargo test "), "{}", rows[2]);
+        assert!(rows[1].starts_with("│   cargo test"), "the frame style's panel: {}", rows[1]);
         typed(&mut a, "zz");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: carzz (no match)");
