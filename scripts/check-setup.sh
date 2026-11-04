@@ -3,12 +3,12 @@
 #
 #   scripts/check-setup.sh [DIR] [--force]
 #
-# DIR defaults to /tmp/forge-check. A non-empty DIR is left alone unless
+# DIR defaults to /tmp/kodact-check. A non-empty DIR is left alone unless
 # --force is given, which empties it first. Rerun with --force to reset
 # between parts of the checklist.
 set -eu
 
-dir=/tmp/forge-check
+dir=/tmp/kodact-check
 force=0
 for arg in "$@"; do
   case "$arg" in
@@ -39,8 +39,8 @@ mkdir -p "$dir"
 cd "$dir"
 
 git init -q
-git config user.email check@forge.invalid
-git config user.name "Forge check"
+git config user.email check@kodact.invalid
+git config user.name "KodAct check"
 
 # The pair most checks use: the committed add() is right...
 printf 'def add(a, b):\n    return a + b\n' > calc.py
@@ -50,10 +50,10 @@ printf 'from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n\nif
 printf '# Release notes\n\nThe parser ships on Friday; the CLI on Monday.\n' > notes.md
 printf 'the vault code is 4417\n' > secret.txt
 # A project hook, so the /hooks screen has something to list.
-mkdir -p .forge
-printf '%s\n' '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]}}' > .forge/settings.json
+mkdir -p .kodact
+printf '%s\n' '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]}}' > .kodact/settings.json
 printf 'secret.txt\nother-repo/\n' > .gitignore
-git add calc.py test_calc.py notes.md .forge/settings.json .gitignore
+git add calc.py test_calc.py notes.md .kodact/settings.json .gitignore
 git commit -qm "Start: add() works"
 
 # A branch with a planted bug, for /code-review.

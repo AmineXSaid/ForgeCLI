@@ -1,0 +1,28 @@
+[package]
+name = "kodact-engine"
+description = "The query loop: streaming turns, tool batches, permissions, hooks, interrupts, budgets and fallback."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kodact-types.workspace = true
+kodact-api.workspace = true
+kodact-permissions.workspace = true
+kodact-hooks.workspace = true
+kodact-tools.workspace = true
+kodact-session.workspace = true
+kodact-git.workspace = true
+kodact-compact.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "kodact-test-host"
+description = "Test support: a scripted Messages API server and a driver that runs `kodact` over stream-json like an IDE host."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+kodact-types.workspace = true
+kodact-api.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

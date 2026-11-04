@@ -1,5 +1,5 @@
-You are continuing work on **ForgeCLI**. It is a Rust-native agentic coding
-CLI (repo `AmineXSaid/ForgeCLI`) whose behavioural reference is the leading
+You are continuing work on **KodAct**. It is a Rust-native agentic coding
+CLI (repo `AmineXSaid/KodAct`) whose behavioural reference is the leading
 commercial terminal coding agent. This is prompt **4 of 4** in `docs/next/`.
 Work autonomously to the end of the list below. Don't ask me questions; make
 reasonable decisions and record them in the docs.
@@ -25,8 +25,8 @@ can without one.
 ## Read first
 - `docs/next/README.md`: the shared rules (they apply here in full).
 - `docs/CHECKLIST.md` (today: setup, 25 numbered checks, a "Terminal UI"
-  section), `docs/BASELINE.md`, `FORGE.md` (the `forge-eval` workflow),
-  `crates/forge-eval/` (`run`, `compare`, `validate`, `list`), `evals/tasks/`.
+  section), `docs/BASELINE.md`, `KODACT.md` (the `kodact-eval` workflow),
+  `crates/kodact-eval/` (`run`, `compare`, `validate`, `list`), `evals/tasks/`.
 - `CHANGELOG.md` and `docs/PARITY.md`, to list what has never been checked
   against the real API. Anything added since the checklist was written is in
   scope.
@@ -38,9 +38,9 @@ can without one.
 Add `scripts/check-setup.sh`. It:
 - creates the scratch repository the checklist uses (the `calc.py` and
   `test_calc.py` pair from today's setup, plus what new checks need: a file
-  for `@` attachments, a `.forge/settings.json` with a hook for the `/hooks`
+  for `@` attachments, a `.kodact/settings.json` with a hook for the `/hooks`
   screen, ...);
-- takes a target directory (default `/tmp/forge-check`) and refuses to touch a
+- takes a target directory (default `/tmp/kodact-check`) and refuses to touch a
   non-empty directory unless given `--force`;
 - uses POSIX `sh` and runs clean under `shellcheck` if it's available.
 
@@ -57,7 +57,7 @@ Add `scripts/check-setup.sh`. It:
     file out.
   - **Prompt 2:** `/usage` and `/btw` during a long turn, in the TUI and in a
     stream-json session (give a small `jq`/`printf` recipe that drives
-    `forge -p --input-format stream-json --output-format stream-json`).
+    `kodact -p --input-format stream-json --output-format stream-json`).
   - **Prompt 3:** each screen (`/diff`, `/context`, `/hooks`, `/agents`), a
     custom `keybindings.json`, and `/color` or `/focus` if they were built.
   - **Known gaps from the TUI work:**
@@ -75,26 +75,26 @@ Add `scripts/check-setup.sh`. It:
 
 ### 3. Make sure every command in the checklist is valid
 - Every flag and subcommand used must parse. Add a test in
-  `crates/forge-cli/tests/` that extracts each `forge ...` command line from
+  `crates/kodact-cli/tests/` that extracts each `kodact ...` command line from
   `docs/CHECKLIST.md` (inside backticks or fenced blocks) and runs it with
   `--help` swapped in, or parses its arguments through `clap` with
   `Cli::try_parse_from`, so a renamed flag breaks the build, not the manual
   run.
 - Every slash command used must be in `BUILTINS` or a bundled skill (another
   test).
-- Run the mock-friendly checks yourself against `forge_test_host::MockApi`
+- Run the mock-friendly checks yourself against `kodact_test_host::MockApi`
   where the checklist says what the output looks like. Fix the checklist
   wherever it's wrong.
 
 ### 4. A baseline how-to
 In `docs/BASELINE.md`, add "Recording the first real baseline":
-- the exact `forge-eval validate`, `forge-eval run ...` and
-  `forge-eval compare ...` commands;
+- the exact `kodact-eval validate`, `kodact-eval run ...` and
+  `kodact-eval compare ...` commands;
 - where results are written;
 - what to commit (and what never: keys, raw transcripts with secrets);
 - how to read the A/B report.
 
-Check every command against `forge-eval --help` and the code.
+Check every command against `kodact-eval --help` and the code.
 
 ### 5. Docs
 - `CHANGELOG.md`.

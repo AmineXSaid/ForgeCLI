@@ -1,4 +1,4 @@
-"""Ante as a Harbor installed agent (Harbor 0.24), modelled on forge_agent.py."""
+"""Ante as a Harbor installed agent (Harbor 0.24), modelled on kodact_agent.py."""
 
 import os
 import shlex
@@ -10,7 +10,7 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from forge_agent import REMOTE_CA, TRUST_CA, container_url, record_run, settings, task_time_limit
+from kodact_agent import REMOTE_CA, TRUST_CA, container_url, record_run, settings, task_time_limit
 
 ANTE_BIN = Path(os.environ.get("ANTE_BIN", str(Path.home() / ".ante/bin/ante")))
 REMOTE_BIN = "/usr/local/bin/ante"
@@ -42,10 +42,10 @@ class AnteAgent(BaseInstalledAgent):
                 await self.exec_as_root(
                     environment, command=f"printf '%s\\n' {shlex.quote(f'{ip} {host}')} >> /etc/hosts"
                 )
-        ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
+        ca = os.environ.get("KODACT_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():
-                raise RuntimeError(f"FORGE_HARBOR_CA_BUNDLE: {ca} not found")
+                raise RuntimeError(f"KODACT_HARBOR_CA_BUNDLE: {ca} not found")
             await environment.upload_file(Path(ca), REMOTE_CA)
             await self.exec_as_root(environment, command=TRUST_CA)
 

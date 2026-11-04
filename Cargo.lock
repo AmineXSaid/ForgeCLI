@@ -660,308 +660,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
-name = "forge-agents"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "forge-api",
- "forge-config",
- "forge-engine",
- "forge-hooks",
- "forge-permissions",
- "forge-platform",
- "forge-session",
- "forge-tools",
- "forge-types",
- "globset",
- "ignore",
- "regex",
- "serde",
- "serde_json",
- "shlex 1.3.0",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "forge-api"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "flate2",
- "forge-types",
- "futures",
- "lopdf",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "forge-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "clap",
- "clap_complete",
- "crossterm",
- "embed-resource",
- "forge-agents",
- "forge-api",
- "forge-config",
- "forge-core",
- "forge-engine",
- "forge-eval",
- "forge-git",
- "forge-mcp",
- "forge-permissions",
- "forge-platform",
- "forge-session",
- "forge-test-host",
- "forge-tools",
- "forge-types",
- "futures",
- "ignore",
- "ratatui",
- "serde_json",
- "shlex 1.3.0",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "unicode-width 0.2.0",
- "uuid",
-]
-
-[[package]]
-name = "forge-compact"
-version = "0.1.0"
-dependencies = [
- "forge-types",
- "serde_json",
-]
-
-[[package]]
-name = "forge-config"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "forge-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "forge-agents",
- "forge-api",
- "forge-config",
- "forge-engine",
- "forge-git",
- "forge-hooks",
- "forge-mcp",
- "forge-permissions",
- "forge-platform",
- "forge-session",
- "forge-tools",
- "forge-types",
- "serde_json",
- "shlex 1.3.0",
- "similar",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "forge-engine"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "forge-api",
- "forge-compact",
- "forge-git",
- "forge-hooks",
- "forge-permissions",
- "forge-session",
- "forge-tools",
- "forge-types",
- "futures",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "forge-eval"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "forge-platform",
- "futures",
- "serde",
- "serde_json",
- "shlex 1.3.0",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "forge-git"
-version = "0.1.0"
-dependencies = [
- "forge-platform",
- "tempfile",
-]
-
-[[package]]
-name = "forge-hooks"
-version = "0.1.0"
-dependencies = [
- "forge-platform",
- "futures",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "forge-mcp"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "forge-api",
- "forge-config",
- "forge-permissions",
- "forge-platform",
- "forge-tools",
- "forge-types",
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "forge-permissions"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "forge-platform",
- "globset",
- "regex",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "forge-platform"
-version = "0.1.0"
-dependencies = [
- "libc",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "forge-session"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "forge-types",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "forge-test-host"
-version = "0.1.0"
-dependencies = [
- "forge-api",
- "forge-types",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "forge-tools"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "forge-permissions",
- "forge-platform",
- "forge-types",
- "futures",
- "globset",
- "ignore",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "similar",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "forge-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1467,6 +1165,308 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kodact-agents"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "globset",
+ "ignore",
+ "kodact-api",
+ "kodact-config",
+ "kodact-engine",
+ "kodact-hooks",
+ "kodact-permissions",
+ "kodact-platform",
+ "kodact-session",
+ "kodact-tools",
+ "kodact-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "shlex 1.3.0",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "kodact-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "flate2",
+ "futures",
+ "kodact-types",
+ "lopdf",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "kodact-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "crossterm",
+ "embed-resource",
+ "futures",
+ "ignore",
+ "kodact-agents",
+ "kodact-api",
+ "kodact-config",
+ "kodact-core",
+ "kodact-engine",
+ "kodact-eval",
+ "kodact-git",
+ "kodact-mcp",
+ "kodact-permissions",
+ "kodact-platform",
+ "kodact-session",
+ "kodact-test-host",
+ "kodact-tools",
+ "kodact-types",
+ "ratatui",
+ "serde_json",
+ "shlex 1.3.0",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-width 0.2.0",
+ "uuid",
+]
+
+[[package]]
+name = "kodact-compact"
+version = "0.1.0"
+dependencies = [
+ "kodact-types",
+ "serde_json",
+]
+
+[[package]]
+name = "kodact-config"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "kodact-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "kodact-agents",
+ "kodact-api",
+ "kodact-config",
+ "kodact-engine",
+ "kodact-git",
+ "kodact-hooks",
+ "kodact-mcp",
+ "kodact-permissions",
+ "kodact-platform",
+ "kodact-session",
+ "kodact-tools",
+ "kodact-types",
+ "serde_json",
+ "shlex 1.3.0",
+ "similar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "kodact-engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "kodact-api",
+ "kodact-compact",
+ "kodact-git",
+ "kodact-hooks",
+ "kodact-permissions",
+ "kodact-session",
+ "kodact-tools",
+ "kodact-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "kodact-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures",
+ "kodact-platform",
+ "serde",
+ "serde_json",
+ "shlex 1.3.0",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "kodact-git"
+version = "0.1.0"
+dependencies = [
+ "kodact-platform",
+ "tempfile",
+]
+
+[[package]]
+name = "kodact-hooks"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "kodact-platform",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "kodact-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "kodact-api",
+ "kodact-config",
+ "kodact-permissions",
+ "kodact-platform",
+ "kodact-tools",
+ "kodact-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "kodact-permissions"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "globset",
+ "kodact-platform",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "kodact-platform"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "kodact-session"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "kodact-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "kodact-test-host"
+version = "0.1.0"
+dependencies = [
+ "kodact-api",
+ "kodact-types",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "kodact-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "globset",
+ "ignore",
+ "kodact-permissions",
+ "kodact-platform",
+ "kodact-types",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "kodact-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

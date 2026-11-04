@@ -7,7 +7,7 @@
     python3 evals/harbor/watch.py --thinking      # also show the model's reasoning
     python3 evals/harbor/watch.py --full          # everything: reasoning, tool input and output
 
-ForgeCLI's stream-json (forge.jsonl) is shown like a conversation: what the
+KodAct's stream-json (kodact.jsonl) is shown like a conversation: what the
 model says, one short line per tool call, failed tool calls, and how the run
 ended. Any other *.jsonl / *.stdout.txt / *.stderr.txt in a task's agent/
 folder (Ante, Forge Code, ...) is shown line by line as plain text. A task's
@@ -117,14 +117,14 @@ def render(event: dict) -> list[str]:
     if kind == "assistant":
         blocks = event.get("message", {}).get("content", [])
         if FULL:
-            out.append(f"{BOLD}❖ Forge{RESET}")
+            out.append(f"{BOLD}❖ KodAct{RESET}")
         for block in blocks:
             t = block.get("type")
             if t == "thinking" and block.get("thinking") and THINKING:
                 out += [f"{DIM}  ~ {line}{RESET}" for line in block["thinking"].strip().splitlines()[:TEXT_LINES]]
             elif t == "text" and block.get("text", "").strip():
                 if not FULL:
-                    out.append(f"{BOLD}❖ Forge{RESET}")
+                    out.append(f"{BOLD}❖ KodAct{RESET}")
                 lines = block["text"].strip().splitlines()
                 out += lines[:TEXT_LINES]
                 if len(lines) > TEXT_LINES:
@@ -198,7 +198,7 @@ def reward_line(path: Path) -> str:
 def newest_job() -> Path:
     jobs = [p for p in Path("jobs").glob("*") if p.is_dir()]
     if not jobs:
-        sys.exit("no jobs/ directory with runs here; cd to the ForgeCLI checkout or pass a job path")
+        sys.exit("no jobs/ directory with runs here; cd to the KodAct checkout or pass a job path")
     return max(jobs, key=lambda p: p.stat().st_mtime)
 
 

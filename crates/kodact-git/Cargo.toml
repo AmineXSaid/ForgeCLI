@@ -1,0 +1,12 @@
+[package]
+name = "kodact-git"
+description = "Git facts for the prompt and session metadata; worktrees."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kodact-platform.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

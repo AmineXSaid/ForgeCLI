@@ -2,12 +2,12 @@
 
 Captured with `evals/harbor/capture-prompts.sh` (files in `evals/harbor/prompts/`):
 the first request each one makes for the task "Reply with the single word: done.",
-in unattended mode (ForgeCLI `--autonomous`, Forge Code `-p`, Ante
+in unattended mode (KodAct `--autonomous`, Forge Code `-p`, Ante
 `--yolo --no-session-save --no-skills -p`).
 
-ForgeCLI's column is after changes 1-3 below (before: 1059 words, ~5.8k tokens).
+KodAct's column is after changes 1-3 below (before: 1059 words, ~5.8k tokens).
 
-| | ForgeCLI 0.1.0 (ULTRA01) | Forge Code 2.13.21 | Ante 0.2.9 |
+| | KodAct 0.1.0 (ULTRA01) | Forge Code 2.13.21 | Ante 0.2.9 |
 |---|---|---|---|
 | System prompt | 1280 words | 1659 words (2 system messages) | 951 words |
 | Added to the first user message | nothing | `<task>` tags and the date | agent types (143 words) and a `<folder-structure>` listing of the working directory |
@@ -22,11 +22,11 @@ ForgeCLI's column is after changes 1-3 below (before: 1059 words, ~5.8k tokens).
 | Reply length | one sentence (~25 words) between tool calls | "concise" | ≤25 words between tool calls, ≤100 at the end |
 
 Ante's tools: Agent, AskUser, Bash, Edit, Glob, Grep, Read, WebFetch, Write.
-ForgeCLI's: Bash, BashOutput, KillShell, Glob, Grep, LS, Read, Edit, MultiEdit,
+KodAct's: Bash, BashOutput, KillShell, Glob, Grep, LS, Read, Edit, MultiEdit,
 Write, NotebookEdit, TodoWrite, WebFetch, Skill, CronCreate, CronList,
 CronDelete, ScheduleWakeup, Task.
 
-## What Ante tells the model that ForgeCLI doesn't
+## What Ante tells the model that KodAct doesn't
 
 Ante's "Working defaults" and "Task discipline" read like lessons from
 benchmark tasks:
@@ -46,7 +46,7 @@ benchmark tasks:
 - carry the work through and don't end by offering to do what was asked;
 - write down what matters from tool results, since old results may be cleared.
 
-## Changes for ForgeCLI, judged by what they do in real use
+## Changes for KodAct, judged by what they do in real use
 
 1. **Long commands are not killed** (yes, done: contract C22). A Bash call that outlives its
    timeout goes to the background instead of being killed, returns its id
@@ -81,5 +81,5 @@ benchmark tasks:
 
 Measurement owed: each change against the reports of the 2026-10-09 subset
 jobs, on the same model and tasks. Ante runs without a todo tool; whether
-ForgeCLI's TodoWrite push helps is open — a run with `TodoWrite` removed
+KodAct's TodoWrite push helps is open — a run with `TodoWrite` removed
 would answer it.

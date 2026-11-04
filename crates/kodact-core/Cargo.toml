@@ -1,0 +1,34 @@
+[package]
+name = "kodact-core"
+description = "Composition root: builds a session (engine, tools, permissions, hooks, transcript) from flags and settings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kodact-platform.workspace = true
+kodact-types.workspace = true
+kodact-api.workspace = true
+kodact-config.workspace = true
+kodact-permissions.workspace = true
+kodact-hooks.workspace = true
+kodact-tools.workspace = true
+kodact-session.workspace = true
+kodact-git.workspace = true
+kodact-engine.workspace = true
+kodact-agents.workspace = true
+kodact-mcp.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+similar.workspace = true
+shlex.workspace = true
+chrono.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

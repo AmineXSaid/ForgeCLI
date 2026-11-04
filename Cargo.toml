@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.85"
-repository = "https://github.com/AmineXSaid/ForgeCLI"
+repository = "https://github.com/AmineXSaid/KodAct"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -38,23 +38,23 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
-forge-types = { path = "crates/forge-types" }
-forge-platform = { path = "crates/forge-platform" }
-forge-api = { path = "crates/forge-api" }
-forge-config = { path = "crates/forge-config" }
-forge-permissions = { path = "crates/forge-permissions" }
-forge-hooks = { path = "crates/forge-hooks" }
-forge-tools = { path = "crates/forge-tools" }
-forge-session = { path = "crates/forge-session" }
-forge-git = { path = "crates/forge-git" }
-forge-engine = { path = "crates/forge-engine" }
-forge-compact = { path = "crates/forge-compact" }
-forge-mcp = { path = "crates/forge-mcp" }
-forge-agents = { path = "crates/forge-agents" }
-forge-core = { path = "crates/forge-core" }
-forge-cli = { path = "crates/forge-cli" }
-forge-test-host = { path = "crates/forge-test-host" }
-forge-eval = { path = "crates/forge-eval" }
+kodact-types = { path = "crates/kodact-types" }
+kodact-platform = { path = "crates/kodact-platform" }
+kodact-api = { path = "crates/kodact-api" }
+kodact-config = { path = "crates/kodact-config" }
+kodact-permissions = { path = "crates/kodact-permissions" }
+kodact-hooks = { path = "crates/kodact-hooks" }
+kodact-tools = { path = "crates/kodact-tools" }
+kodact-session = { path = "crates/kodact-session" }
+kodact-git = { path = "crates/kodact-git" }
+kodact-engine = { path = "crates/kodact-engine" }
+kodact-compact = { path = "crates/kodact-compact" }
+kodact-mcp = { path = "crates/kodact-mcp" }
+kodact-agents = { path = "crates/kodact-agents" }
+kodact-core = { path = "crates/kodact-core" }
+kodact-cli = { path = "crates/kodact-cli" }
+kodact-test-host = { path = "crates/kodact-test-host" }
+kodact-eval = { path = "crates/kodact-eval" }
 
 [profile.release]
 lto = "thin"

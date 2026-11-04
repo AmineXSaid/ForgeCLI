@@ -45,4 +45,4 @@ jobs:
       - run: cargo clippy --workspace --all-targets
       # The crates that decide by OS; the runner image ships Git for Windows,
       # so Git Bash discovery and job-object kills run for real.
-      - run: cargo test -p forge-platform -p forge-permissions -p forge-tools
+      - run: cargo test -p kodact-platform -p kodact-permissions -p kodact-tools

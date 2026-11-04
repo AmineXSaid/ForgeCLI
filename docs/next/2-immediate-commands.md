@@ -1,5 +1,5 @@
-You are continuing work on **ForgeCLI**. It is a Rust-native agentic coding
-CLI (repo `AmineXSaid/ForgeCLI`) whose behavioural reference is the leading
+You are continuing work on **KodAct**. It is a Rust-native agentic coding
+CLI (repo `AmineXSaid/KodAct`) whose behavioural reference is the leading
 commercial terminal coding agent. This is prompt **2 of 4** in `docs/next/`.
 Work autonomously to the end of the list below. Don't ask me questions; make
 reasonable decisions and record them in the docs.
@@ -20,29 +20,29 @@ attaching file contents. If it doesn't, stop and report.
 - `docs/TUI.md` ("Session task", the key table), `docs/PARITY.md` (the `/btw`
   row says "Not yet runnable while a turn is busy").
 - The code:
-  - `crates/forge-core/src/commands/mod.rs`: `BUILTINS`. The commands with
+  - `crates/kodact-core/src/commands/mod.rs`: `BUILTINS`. The commands with
     `immediate: true` are `/btw`, `/context`, `/mcp`, `/status`, `/tasks`,
     `/usage` and the TUI's `/keybindings` and `/terminal-setup`.
-  - `crates/forge-core/src/commands/run.rs`: `status(d)`, `usage(d)`,
-    `tasks(d, args)`. `crates/forge-core/src/commands/session.rs`:
-    `context(d, args)`, `btw(d, args)`. `crates/forge-core/src/commands/mcp.rs`:
+  - `crates/kodact-core/src/commands/run.rs`: `status(d)`, `usage(d)`,
+    `tasks(d, args)`. `crates/kodact-core/src/commands/session.rs`:
+    `context(d, args)`, `btw(d, args)`. `crates/kodact-core/src/commands/mcp.rs`:
     `run`. All of them take `&Driver` or `&mut Driver` today.
-  - `crates/forge-core/src/driver.rs`: `Driver::input` holds `&mut self` for
+  - `crates/kodact-core/src/driver.rs`: `Driver::input` holds `&mut self` for
     the whole turn, and `Live` already shares the engine handle across session
     switches.
-  - `crates/forge-engine/src/engine.rs`:
+  - `crates/kodact-engine/src/engine.rs`:
     - `record_usage` and the tool-batch loop in `submit`: where state changes
       during a turn;
     - `EngineHandle`: runtime and permissions, already shared.
-  - `crates/forge-core/src/subtask.rs` (`Subtasks`) and
-    `crates/forge-core/src/schedule_tools.rs` (`SharedScheduler`, an
+  - `crates/kodact-core/src/subtask.rs` (`Subtasks`) and
+    `crates/kodact-core/src/schedule_tools.rs` (`SharedScheduler`, an
     `Arc<Mutex<_>>` already).
   - Front ends:
-    - `crates/forge-cli/src/tui/session.rs` (`run`: the `select!` loop);
-    - `crates/forge-cli/src/tui/app.rs` (`submit` queues while `busy`; it
+    - `crates/kodact-cli/src/tui/session.rs` (`run`: the `select!` loop);
+    - `crates/kodact-cli/src/tui/app.rs` (`submit` queues while `busy`; it
       already answers `/keybindings` and `/terminal-setup` itself);
-    - `crates/forge-cli/src/main.rs` (`run_print`: the stream-json input loop);
-    - `crates/forge-cli/src/host.rs` (`read_stdin`, `ControlContext`: the
+    - `crates/kodact-cli/src/main.rs` (`run_print`: the stream-json input loop);
+    - `crates/kodact-cli/src/host.rs` (`read_stdin`, `ControlContext`: the
       reader runs beside the turn).
 
 ## Today
@@ -53,7 +53,7 @@ the answer only after the turn ends.
 ## The work
 
 ### 1. A read-only session view
-Add `forge_core::view::SessionView`, cheap to clone (`Arc` inside), with
+Add `kodact_core::view::SessionView`, cheap to clone (`Arc` inside), with
 everything the immediate commands read:
 - session info (id, cwd, title, init facts, settings files, warnings);
 - the runtime (model, effort, fast mode, thinking);
@@ -83,7 +83,7 @@ Rewrite these command bodies to take `&SessionView` (plus their arguments):
 
 The idle path calls the same functions with a fresh view, so the text output
 doesn't change. Existing tests in `driver_tests.rs` and
-`crates/forge-cli/tests/commands.rs` must pass unchanged.
+`crates/kodact-cli/tests/commands.rs` must pass unchanged.
 
 Effects that need the driver are recorded on the view and applied by the
 driver when the turn ends:
@@ -127,7 +127,7 @@ manager serializes per server).
 - A TUI app test: `/usage` typed while busy is sent, not queued.
 - `/btw` mid-turn: answers, and its cost is in `/usage` after the turn.
 - `/mcp reconnect` mid-turn: the instructions refresh after the turn.
-- An end-to-end stream-json test in `crates/forge-cli/tests/e2e.rs`: a slow
+- An end-to-end stream-json test in `crates/kodact-cli/tests/e2e.rs`: a slow
   turn, then a `/status` user message. Its result line arrives before the
   turn's result.
 - No std lock guard across `.await` (clippy's `await_holding_lock` is a good

@@ -8,7 +8,7 @@ once with a short prompt. Every chat request is saved as request-<n>.json in --o
 the first one with tools also gives system.md (the system prompt as sent) and
 tools.json (each tool's name, description and parameters). The reply is a short
 "Done." so the agent ends at once. Stops after --max-requests requests (default 3)
-or on Ctrl-C. See capture-prompts.sh for ForgeCLI, Forge Code and Ante.
+or on Ctrl-C. See capture-prompts.sh for KodAct, Forge Code and Ante.
 """
 
 import argparse

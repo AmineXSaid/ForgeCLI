@@ -1,0 +1,164 @@
+//! Memory files: instructions loaded into every conversation.
+
+use std::path::{Path, PathBuf};
+
+use crate::{home, kodact_home};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryKind {
+    User,
+    Project,
+    Local,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryFile {
+    pub path: PathBuf,
+    pub kind: MemoryKind,
+    pub content: String,
+}
+
+const MAX_IMPORT_DEPTH: usize = 5;
+
+/// Expand `@path` imports (outside code fences) recursively.
+fn expand_imports(content: &str, dir: &Path, depth: usize, seen: &mut Vec<PathBuf>) -> String {
+    if depth >= MAX_IMPORT_DEPTH {
+        return content.to_string();
+    }
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in content.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        let t = line.trim();
+        if !in_fence && t.starts_with('@') && !t.contains(' ') && t.len() > 1 {
+            let raw = &t[1..];
+            let path = if let Some(rest) = raw.strip_prefix("~/") { home().join(rest) } else { dir.join(raw) };
+            if let Ok(canon) = path.canonicalize() {
+                if !seen.contains(&canon) {
+                    if let Ok(text) = std::fs::read_to_string(&canon) {
+                        seen.push(canon.clone());
+                        let parent = canon.parent().unwrap_or(dir).to_path_buf();
+                        out.push_str(&expand_imports(&text, &parent, depth + 1, seen));
+                        out.push('\n');
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn push(files: &mut Vec<MemoryFile>, path: PathBuf, kind: MemoryKind) {
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    if text.trim().is_empty() || files.iter().any(|f| f.path == path) {
+        return;
+    }
+    let dir = path.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let mut seen = vec![path.canonicalize().unwrap_or(path.clone())];
+    let content = expand_imports(&text, &dir, 0, &mut seen);
+    files.push(MemoryFile { path, kind, content });
+}
+
+/// Memory for a session in `cwd`: the user file, then project files from the
+/// filesystem root down to `cwd` (closer files later, so they read last and
+/// take precedence), with each directory's local file after its project file.
+/// A directory's `AGENTS.md` is read when it has no `KODACT.md`.
+pub fn load_memory(cwd: &Path) -> Vec<MemoryFile> {
+    let mut files = vec![];
+    push(&mut files, kodact_home().join("KODACT.md"), MemoryKind::User);
+    // ForgeCLI's, from before the rename, when there is no KODACT.md.
+    if !kodact_home().join("KODACT.md").exists() {
+        push(&mut files, kodact_home().join("FORGE.md"), MemoryKind::User);
+    }
+    let home = home();
+    let mut chain: Vec<&Path> = cwd.ancestors().take_while(|a| *a != home && a.parent().is_some()).collect();
+    chain.reverse();
+    for dir in chain {
+        let before = files.len();
+        for name in ["KODACT.md", ".kodact/KODACT.md"] {
+            push(&mut files, dir.join(name), MemoryKind::Project);
+        }
+        // ForgeCLI's instruction files, from before the rename, where KodAct's are missing.
+        if files.len() == before {
+            for name in ["FORGE.md", ".forge/FORGE.md"] {
+                push(&mut files, dir.join(name), MemoryKind::Project);
+            }
+        }
+        // AGENTS.md, the cross-tool convention, when the directory has no KODACT.md of its own.
+        if files.len() == before {
+            push(&mut files, dir.join("AGENTS.md"), MemoryKind::Project);
+        }
+        push(&mut files, dir.join("KODACT.local.md"), MemoryKind::Local);
+    }
+    files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovers_and_imports() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let sub = root.join("app/pkg");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("app/KODACT.md"), "top rules\n@docs/extra.md\n```\n@not-imported\n```\n").unwrap();
+        std::fs::create_dir_all(root.join("app/docs")).unwrap();
+        std::fs::write(root.join("app/docs/extra.md"), "imported text").unwrap();
+        std::fs::create_dir_all(sub.join(".kodact")).unwrap();
+        std::fs::write(sub.join(".kodact/KODACT.md"), "pkg rules").unwrap();
+        std::fs::write(sub.join("KODACT.local.md"), "mine").unwrap();
+        let files = load_memory(&sub);
+        let project: Vec<_> = files.iter().filter(|f| f.path.starts_with(&root)).collect();
+        assert_eq!(project.len(), 3);
+        assert!(project[0].content.contains("imported text"));
+        assert!(project[0].content.contains("@not-imported"));
+        assert_eq!(project[1].content.trim(), "pkg rules");
+        assert_eq!(project[2].kind, MemoryKind::Local);
+    }
+
+    #[test]
+    fn import_cycles_stop() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        std::fs::write(root.join("KODACT.md"), "@a.md").unwrap();
+        std::fs::write(root.join("a.md"), "A\n@KODACT.md").unwrap();
+        let f = load_memory(&root);
+        let mine = f.iter().find(|f| f.path.starts_with(&root)).unwrap();
+        assert!(mine.content.contains('A'));
+    }
+
+    #[test]
+    fn forgecli_instructions_still_load_where_kodact_has_none() {
+        let d = tempfile::tempdir().unwrap();
+        let old = d.path().join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("FORGE.md"), "old rules").unwrap();
+        let files = load_memory(&old);
+        assert!(files.iter().any(|f| f.content.contains("old rules")), "FORGE.md is read when there is no KODACT.md");
+        std::fs::write(old.join("KODACT.md"), "new rules").unwrap();
+        let files = load_memory(&old);
+        assert!(files.iter().any(|f| f.content.contains("new rules")));
+        assert!(!files.iter().any(|f| f.content.contains("old rules")), "KODACT.md wins");
+    }
+
+    #[test]
+    fn agents_md_when_no_kodact_md() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let sub = root.join("svc");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "shared agent rules").unwrap();
+        std::fs::write(sub.join("AGENTS.md"), "svc agent rules").unwrap();
+        std::fs::write(sub.join("KODACT.md"), "svc kodact rules").unwrap();
+        let files = load_memory(&sub);
+        let ours: Vec<&str> = files.iter().filter(|f| f.path.starts_with(&root)).map(|f| f.content.trim()).collect();
+        assert_eq!(ours, ["shared agent rules", "svc kodact rules"]);
+    }
+}

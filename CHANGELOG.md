@@ -2,6 +2,17 @@
 
 ## 0.1.0 (unreleased)
 
+### ForgeCLI is now KodAct
+- The command is `kodact`, the crates are `kodact-*`, the settings are
+  `KODACT_*` variables, `.kodact/` and `KODACT.md`, and the user folders are
+  `~/.config/kodact` (state and cache likewise). Entries below say "Forge":
+  they are from before the rename.
+- Nothing set up before is lost: every `FORGE_*` variable still works (as
+  its `KODACT_*` name, when that is unset); a project's `.forge/` and its
+  `FORGE.md`, and the user's `~/.config/forge`, state and cache folders, are
+  used until KodAct's own exist; `.forge/<kind>` resources are still read;
+  `${FORGE_*}` placeholders in skills and plugins still fill in.
+
 ### Skills written for the reference CLI
 - They load unchanged: Forge also reads `~/.claude/skills` (or
   `$CLAUDE_CONFIG_DIR/skills`) and the project's `.claude/skills` from the

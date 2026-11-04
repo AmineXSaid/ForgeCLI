@@ -1,17 +1,17 @@
-# ForgeCLI
+# KodAct
 
-ForgeCLI is an agentic coding CLI written in Rust: an agent loop, a tool
+KodAct is an agentic coding CLI written in Rust: an agent loop, a tool
 system, permission modes, MCP, context compaction, hooks, a stream-json
 protocol for IDE hosts, and a terminal UI.
 
-ForgeCLI is written from public interface documentation only, and it ships
+KodAct is written from public interface documentation only, and it ships
 its own system prompt and tool descriptions.
 
 ## Goal
 
-`docs/GOALS.md` defines what ForgeCLI optimizes: the best measured task success
+`docs/GOALS.md` defines what KodAct optimizes: the best measured task success
 per model, cost and time. Every feature is built against it and measured with
-`forge-eval` (see `FORGE.md`).
+`kodact-eval` (see `KODACT.md`).
 
 ## Status
 
@@ -23,23 +23,23 @@ the crate layout and the behavioural contracts (C1–C11).
 
 ```bash
 cargo build --release
-./target/release/forge --help
+./target/release/kodact --help
 ```
 
 ## Credentials
 
 | Variable | Used for |
 | --- | --- |
-| `FORGE_API_KEY` | API key, sent as `x-api-key` |
-| `FORGE_AUTH_TOKEN` | Bearer token, for gateways and proxies |
-| `FORGE_BASE_URL` | A different Messages API endpoint |
-| `FORGE_CUSTOM_HEADERS` | Extra request headers, one `Name: value` per line |
-| `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint |
-| `FORGE_GEMINI_API_KEY`, `FORGE_GEMINI_BASE_URL` | Google's Gemini API (Google AI Studio by default; Vertex AI or a gateway by URL) |
+| `KODACT_API_KEY` | API key, sent as `x-api-key` |
+| `KODACT_AUTH_TOKEN` | Bearer token, for gateways and proxies |
+| `KODACT_BASE_URL` | A different Messages API endpoint |
+| `KODACT_CUSTOM_HEADERS` | Extra request headers, one `Name: value` per line |
+| `KODACT_OPENAI_BASE_URL`, `KODACT_OPENAI_API_KEY` | An OpenAI-compatible endpoint |
+| `KODACT_GEMINI_API_KEY`, `KODACT_GEMINI_BASE_URL` | Google's Gemini API (Google AI Studio by default; Vertex AI or a gateway by URL) |
 
 ## Optional external prompt set
 
-Point `FORGE_PROMPTS_DIR` at a directory containing:
+Point `KODACT_PROMPTS_DIR` at a directory containing:
 - `system/*.md`, which replace the built-in system prompt sections;
 - `tools/<ToolName>.md`, which replace individual tool descriptions.
 

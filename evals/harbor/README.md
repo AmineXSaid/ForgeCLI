@@ -1,19 +1,19 @@
 # Terminal-Bench with Harbor
 
-`forge-eval` (in `evals/tasks/`) is the quick local suite. Terminal-Bench is
+`kodact-eval` (in `evals/tasks/`) is the quick local suite. Terminal-Bench is
 the external benchmark: 89 tasks, each in its own container, graded by hidden
 tests. [Harbor](https://github.com/laude-institute/harbor) runs it. This
-directory holds a ForgeCLI agent for Harbor (`forge_agent.py`) and two scripts.
+directory holds a KodAct agent for Harbor (`kodact_agent.py`) and two scripts.
 
 How a task runs:
 1. Harbor starts the task's container.
-2. The agent copies a static `forge` into it (`/usr/local/bin/forge`).
-3. The agent runs `forge -p "<task>" --dangerously-skip-permissions --output-format stream-json`
+2. The agent copies a static `kodact` into it (`/usr/local/bin/kodact`).
+3. The agent runs `kodact -p "<task>" --dangerously-skip-permissions --output-format stream-json`
    once.
 4. Harbor runs the hidden tests.
 
-The stream ends up in each trial's agent logs (`forge.jsonl`,
-`forge.stderr.txt`). Tokens and cost come from its final `result` line.
+The stream ends up in each trial's agent logs (`kodact.jsonl`,
+`kodact.stderr.txt`). Tokens and cost come from its final `result` line.
 
 ## Setup (once)
 
@@ -29,21 +29,21 @@ harbor --help
 Build the static binary:
 
 ```bash
-evals/harbor/build-static.sh             # Docker rust:alpine -> target-static/release/forge
+evals/harbor/build-static.sh             # Docker rust:alpine -> target-static/release/kodact
 ```
 
 `run.sh` rebuilds it by itself when the code changed since the last build
-(`build-static.sh` records the source it built from in `forge.source`), so a job
-named after a commit always runs that commit's code. `FORGE_STATIC_BIN` runs
+(`build-static.sh` records the source it built from in `kodact.source`), so a job
+named after a commit always runs that commit's code. `KODACT_STATIC_BIN` runs
 another binary as is; its jobs are named `-custombin`.
 
 ## Running
 
-The `FORGE_*` variables of your shell (endpoint, key, `FORGE_CONTEXT_WINDOW`,
+The `KODACT_*` variables of your shell (endpoint, key, `KODACT_CONTEXT_WINDOW`,
 ...) are passed into every container. The key is never put on a command line.
 
 ```bash
-source ~/.forge-env
+source ~/.kodact-env
 evals/harbor/run.sh subset               # first 10 tasks, 1 attempt: check that it works
 evals/harbor/run.sh full                 # all tasks, 5 attempts: the leaderboard setup
 evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
@@ -51,16 +51,16 @@ evals/harbor/run.sh subset -i 'hello*'   # extra args go to `harbor run`
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FORGE_HARBOR_MODEL` | `deep-thinking` | the model as the endpoint names it (a `provider/` prefix is dropped); the same variable sets it for `run-forgecode.sh` and `run-ante.sh` |
-| `FORGE_HARBOR_DATASET` | `terminal-bench@2.0` | Harbor dataset |
-| `FORGE_HARBOR_JOBS` | `2` | Tasks in parallel |
-| `FORGE_HARBOR_ARGS` | | Extra `forge` flags, e.g. `--max-turns 100` |
-| `FORGE_STATIC_BIN` | `target-static/release/forge` | Binary copied into containers |
-| `FORGE_HARBOR_AUTONOMOUS` | `1` | `forge --autonomous`; `0` turns it off (job name gets `-noauto`) |
-| `FORGE_HARBOR_TIME_LIMIT` | the task's own limit | Seconds for `forge --max-time` |
-| `FORGE_HARBOR_CA_BUNDLE` | | Extra CAs to trust inside containers (see below) |
-| `FORGE_HARBOR_HOSTS` | the endpoint's host | Names to resolve here and pin in each container's `/etc/hosts` (`none` turns it off) |
-| `FORGE_HARBOR_HOST_IP` | found automatically | This machine's address, used in place of a `localhost` endpoint |
+| `KODACT_HARBOR_MODEL` | `deep-thinking` | the model as the endpoint names it (a `provider/` prefix is dropped); the same variable sets it for `run-forgecode.sh` and `run-ante.sh` |
+| `KODACT_HARBOR_DATASET` | `terminal-bench@2.0` | Harbor dataset |
+| `KODACT_HARBOR_JOBS` | `2` | Tasks in parallel |
+| `KODACT_HARBOR_ARGS` | | Extra `kodact` flags, e.g. `--max-turns 100` |
+| `KODACT_STATIC_BIN` | `target-static/release/kodact` | Binary copied into containers |
+| `KODACT_HARBOR_AUTONOMOUS` | `1` | `kodact --autonomous`; `0` turns it off (job name gets `-noauto`) |
+| `KODACT_HARBOR_TIME_LIMIT` | the task's own limit | Seconds for `kodact --max-time` |
+| `KODACT_HARBOR_CA_BUNDLE` | | Extra CAs to trust inside containers (see below) |
+| `KODACT_HARBOR_HOSTS` | the endpoint's host | Names to resolve here and pin in each container's `/etc/hosts` (`none` turns it off) |
+| `KODACT_HARBOR_HOST_IP` | found automatically | This machine's address, used in place of a `localhost` endpoint |
 
 Each task has an agent time limit, and Harbor stops the agent when it's up.
 The agent passes that limit, less 30 seconds, as `--max-time`. The model then
@@ -75,27 +75,27 @@ A server on this machine (vLLM, llama.cpp, Ollama, ...) works through its
 OpenAI-compatible endpoint:
 
 ```bash
-export FORGE_OPENAI_BASE_URL=http://localhost:8000/v1
-export FORGE_OPENAI_API_KEY=none            # any value, if the server doesn't check
-export FORGE_CONTEXT_WINDOW=131072          # the context the server was started with
-export FORGE_HARBOR_MODEL=<served model name>
+export KODACT_OPENAI_BASE_URL=http://localhost:8000/v1
+export KODACT_OPENAI_API_KEY=none            # any value, if the server doesn't check
+export KODACT_CONTEXT_WINDOW=131072          # the context the server was started with
+export KODACT_HARBOR_MODEL=<served model name>
 evals/harbor/run.sh subset
 ```
 
 - Inside a task container `localhost` is the container itself. The agent
-  replaces it with this machine's address (`FORGE_HARBOR_HOST_IP` to choose
+  replaces it with this machine's address (`KODACT_HARBOR_HOST_IP` to choose
   one). Start the server on `0.0.0.0`, not only `127.0.0.1`, and allow the
   port in the firewall. Check with
   `docker run --rm curlimages/curl -s http://<that address>:8000/v1/models`.
-- Set `FORGE_CONTEXT_WINDOW` (or `modelLimits`) to what the server really
-  serves. ForgeCLI otherwise assumes 200,000 tokens and compacts too late.
-- Cost shows as 0 or unknown: ForgeCLI has no price for the model. That
+- Set `KODACT_CONTEXT_WINDOW` (or `modelLimits`) to what the server really
+  serves. KodAct otherwise assumes 200,000 tokens and compacts too late.
+- Cost shows as 0 or unknown: KodAct has no price for the model. That
   changes nothing in the run. Spending limits are opt-in: no budget is set
   unless you pass `--max-budget-usd`, and the Harbor agent doesn't. If you
-  pass it for a model ForgeCLI has no price for, `forge` refuses to start
+  pass it for a model KodAct has no price for, `kodact` refuses to start
   rather than run without a limit. Give the model a price under
   `modelPricing` (`{"input": 0, "output": 0}` for a free one).
-- A slow server makes tasks hit their time limit. Lower `FORGE_HARBOR_JOBS`
+- A slow server makes tasks hit their time limit. Lower `KODACT_HARBOR_JOBS`
   so tasks don't share the GPU, and look at `--max-time` warnings in
   `watch.py`.
 
@@ -107,8 +107,8 @@ python3 evals/harbor/watch.py --thinking   # also the model's reasoning
 python3 evals/harbor/watch.py --full       # also tool input and output
 ```
 
-One colour per task. For ForgeCLI it shows what the model says, one short line
-per tool call (`$ ls -la /app`, `Read /app/x.py`), failed tool calls, ForgeCLI's
+One colour per task. For KodAct it shows what the model says, one short line
+per tool call (`$ ls -la /app`, `Read /app/x.py`), failed tool calls, KodAct's
 reminders, how the run ended (with the error when it failed) and the task's
 reward once the verifier writes it. Other agents' logs (Ante, ...) are shown as
 they are. A step shows up once the model finishes it.
@@ -127,7 +127,7 @@ When a job ends, `run.sh`, `run-forgecode.sh` and `run-ante.sh` write
 - **Trials table:** reward, verdict, turns, agent time against the limit,
   tokens, tool calls and errors, API retries, how the run ended.
 - **Signals:** HTTP 429s and retries, run-ending errors, tool errors by kind and
-  by tool, unknown tool names, ForgeCLI's reminders and other events.
+  by tool, unknown tool names, KodAct's reminders and other events.
 - **Per task:** the instruction, the agent's last words, the verifier's failing
   tests and output, tool use, and the whole conversation (reasoning, messages,
   tool calls and results, shortened where long); other agents' logs as text.
@@ -150,11 +150,11 @@ agent:
 - `-a opencode` or another built-in Harbor agent, against this one;
 - Ante (`run-ante.sh`, `ante_agent.py`) or Forge Code (`run-forgecode.sh`,
   `forgecode_agent.py`), against the same endpoint and model;
-- two ForgeCLI builds;
-- `FORGE_VERIFY=0` against the default.
+- two KodAct builds;
+- `KODACT_VERIFY=0` against the default.
 
 ```bash
-export FORGE_HARBOR_MODEL=deep-thinking
+export KODACT_HARBOR_MODEL=deep-thinking
 evals/harbor/run.sh subset
 evals/harbor/run-forgecode.sh subset
 evals/harbor/run-ante.sh subset
@@ -163,7 +163,7 @@ evals/harbor/run-ante.sh subset
 `run-forgecode.sh` downloads Forge Code's static Linux build
 (`forge-x86_64-unknown-linux-musl`, latest release) to `~/.forgecode/forge` on
 first use; `FORGECODE_BIN` points it at another binary. It passes the endpoint
-and key as `OPENAI_URL` and `OPENAI_API_KEY`, and none of ForgeCLI's `FORGE_*`
+and key as `OPENAI_URL` and `OPENAI_API_KEY`, and none of KodAct's `KODACT_*`
 settings, which Forge Code would read as its own. `run-forgecode.sh smoke` runs
 one task: try it first.
 
@@ -200,7 +200,7 @@ the same directory say why.
 - **Keys.** The key is copied into every task container. Use a key made for
   benchmark runs.
 
-`forge_agent.py` was written against Harbor 0.24.0 and checked against its
+`kodact_agent.py` was written against Harbor 0.24.0 and checked against its
 installed-agent API with a fake environment. It has not been run against real
 task containers here.
 
@@ -226,7 +226,7 @@ The task containers have the same problem. Their test scripts download tools
 scores 0, whatever the agent did. To work around it:
 
 ```bash
-export FORGE_HARBOR_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
+export KODACT_HARBOR_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 evals/harbor/run.sh subset
 ```
 
@@ -234,7 +234,7 @@ The agent adds those certificates to each container's trust store, including
 for any later `update-ca-certificates`, and turns on `native-tls` for `uv`.
 This changes the task environment, so:
 - these jobs are named `-hostca`;
-- their scores only compare ForgeCLI builds with each other;
+- their scores only compare KodAct builds with each other;
 - they aren't comparable with the leaderboard, and must not be submitted.
 
 Tools that bring their own certificate list (for example `pip` through

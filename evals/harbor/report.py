@@ -13,7 +13,7 @@ the whole conversation, shortened where tool output is long. A JSON block at the
 end holds the same numbers for scripts. With several jobs, a comparison
 (`jobs/comparison-<time>.md`) puts the tasks side by side.
 
-Works for ForgeCLI (`agent/forge.jsonl`) and for other agents (Forge Code, Ante, ...),
+Works for KodAct (`agent/kodact.jsonl`) and for other agents (Forge Code, Ante, ...),
 whose `agent/*.stdout.txt` and `*.stderr.txt` are included as text. API keys are
 removed before anything is written. run.sh, run-forgecode.sh and run-ante.sh call
 this script when their job ends.
@@ -43,7 +43,7 @@ SECRET_PATTERNS = [
 ]
 SECRET_VALUES = [
     os.environ[k]
-    for k in ("FORGE_OPENAI_API_KEY", "FORGE_API_KEY", "FORGE_AUTH_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+    for k in ("KODACT_OPENAI_API_KEY", "KODACT_API_KEY", "KODACT_AUTH_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
     if len(os.environ.get(k, "")) >= 8
 ]
 
@@ -183,9 +183,9 @@ class Trial:
             self.limit_s = self.run_meta["time_limit_s"]
         self.instruction = read(path / "agent" / "instruction.txt")
         self.events: list[dict] = []
-        self.forge = (path / "agent" / "forge.jsonl").is_file()
-        if self.forge:
-            for line in read(path / "agent" / "forge.jsonl").splitlines():
+        self.kodact = (path / "agent" / "kodact.jsonl").is_file()
+        if self.kodact:
+            for line in read(path / "agent" / "kodact.jsonl").splitlines():
                 try:
                     ev = json.loads(line)
                 except ValueError:
@@ -251,14 +251,14 @@ class Trial:
         if r.get("result"):
             self.final_text = r["result"]
         # A run that was killed has no result: count its steps instead.
-        self.turns = r.get("num_turns", steps if self.forge else None)
-        self.subtype = r.get("subtype") or ("" if not self.forge else "no result (killed or crashed)")
+        self.turns = r.get("num_turns", steps if self.kodact else None)
+        self.subtype = r.get("subtype") or ("" if not self.kodact else "no result (killed or crashed)")
         self.stop_reason = r.get("stop_reason") or ""
         self.errors = r.get("errors") or []
         stderr = "\n".join(v for k, v in self.other_logs.items() if k.endswith("stderr.txt"))
         self.http_429 = stderr.count("HTTP 429") + sum("429" in e for e in self.retries)
         self.crash_reason = ""
-        if not self.forge:
+        if not self.kodact:
             out = "\n".join(v for k, v in self.other_logs.items() if not k.endswith("stderr.txt"))
             self.final_text = "\n".join(out.strip().splitlines()[-15:])
             lines = [re.sub(r"^\W*(err(or)?:?\s*)?", "", ln).strip() for ln in stderr.splitlines() if ln.strip()]
@@ -291,8 +291,8 @@ class Trial:
             return "refused"
         if GIVE_UP.search(text[-1500:]) and sum(self.tools.values()) <= 6:
             return "gave up"
-        if self.subtype == "success" or (not self.forge and not self.exception):
-            return "false success" if self.forge else "failed"
+        if self.subtype == "success" or (not self.kodact and not self.exception):
+            return "false success" if self.kodact else "failed"
         if self.exception:
             if self.crash_reason:
                 return f"crashed: {self.crash_reason}"
@@ -325,7 +325,7 @@ class Trial:
             out.append(f"- {self.turns} turns, tokens in {self.tokens_in:,} / out {self.tokens_out:,}")
         if self.exception:
             out.append(f"- exception: {self.exception}: {clip(self.exception_message, 300)}")
-        if self.forge:
+        if self.kodact:
             out.append(f"- finish: {self.subtype} / {self.stop_reason or '-'}")
         for e in self.errors:
             out.append(f"- error: {clip(e, 400)}")
@@ -351,7 +351,7 @@ class Trial:
             if self.reward is not None and self.reward < 1 and v["stdout_tail"]:
                 out += ["", "```text", *v["stdout_tail"], "```"]
         out += ["", "**Conversation**", ""]
-        out += self.conversation() if self.forge else self.plain_logs()
+        out += self.conversation() if self.kodact else self.plain_logs()
         out.append("")
         return "\n".join(out)
 
@@ -377,7 +377,7 @@ class Trial:
                         mark = "✗" if b.get("is_error") else "←"
                         out.append(f"    {mark} {head_tail(tool_text(b), TOOL_OUT)}")
                     elif b.get("type") == "text" and ev.get("isSynthetic"):
-                        out.append(f"    [forge] {clip(b.get('text', ''), 500)}")
+                        out.append(f"    [kodact] {clip(b.get('text', ''), 500)}")
             elif kind == "system" and ev.get("subtype") not in (None, "init"):
                 extra = {k: v for k, v in ev.items() if k not in ("type", "subtype", "session_id", "uuid")}
                 out.append(f"    [system] {ev['subtype']} {clip(json.dumps(extra, ensure_ascii=False), 300)}")
@@ -386,7 +386,7 @@ class Trial:
                     f"== {ev.get('subtype')} after {ev.get('num_turns')} turns, "
                     f"{(ev.get('duration_ms') or 0) / 1000:.0f}s (API {(ev.get('duration_api_ms') or 0) / 1000:.0f}s)"
                 )
-        stderr = self.other_logs.get("forge.stderr.txt", "").strip()
+        stderr = self.other_logs.get("kodact.stderr.txt", "").strip()
         if stderr:
             counts = Counter(ln.strip() for ln in stderr.splitlines() if ln.strip())
             out += ["", "-- stderr (distinct lines) --"] + [f"{n}× {clip(ln, 300)}" for ln, n in counts.most_common(30)]
@@ -396,7 +396,7 @@ class Trial:
     def plain_logs(self) -> list[str]:
         out = []
         for name, text in self.other_logs.items():
-            if not text.strip() or name == "forge.stderr.txt":
+            if not text.strip() or name == "kodact.stderr.txt":
                 continue
             out += [f"`{name}`", "", "```text", head_tail(text, 40_000), "```", ""]
         return out or ["(no agent logs)"]
@@ -440,7 +440,7 @@ class Job:
         self.agent = agents[0].get("name", "?")
         self.model = (agents[0].get("model_name") or "").split("/", 1)[-1] or (self.trials[0].result.get("config", {}).get("agent", {}).get("model_name") if self.trials else "?")
         self.harness = (
-            "ForgeCLI" if "forge_agent" in self.agent else "Forge Code" if "forgecode" in self.agent
+            "KodAct" if "kodact_agent" in self.agent else "Forge Code" if "forgecode" in self.agent
             else "Ante" if "ante" in self.agent else self.agent
         )
         self.version = next((t.result.get("agent_info", {}).get("version") for t in self.trials if t.result.get("agent_info")), "?")
@@ -552,7 +552,7 @@ def comparison(jobs: list[Job]) -> str:
 def newest_job() -> Path:
     jobs = [p for p in Path("jobs").glob("*") if p.is_dir() and (p / "config.json").is_file()]
     if not jobs:
-        sys.exit("no jobs/ directory with runs here; cd to the ForgeCLI checkout or pass a job path")
+        sys.exit("no jobs/ directory with runs here; cd to the KodAct checkout or pass a job path")
     return max(jobs, key=lambda p: p.stat().st_mtime)
 
 

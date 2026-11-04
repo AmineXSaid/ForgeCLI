@@ -2,7 +2,7 @@
 
 The test suite runs against a mock API (`MockProvider`, `MockApi`) and, for
 the terminal UI, a pseudo-terminal. It can't show how a real model uses
-Forge's tools and prompts, or how a real terminal emulator behaves. Run this
+KodAct's tools and prompts, or how a real terminal emulator behaves. Run this
 list with a real key before a release. It is one ordered run in three parts:
 
 - **A. Print mode** (a key; any shell): 12 checks, about 15 minutes.
@@ -24,17 +24,17 @@ row).
 ## Before you start
 
 You need:
-- `forge` built from this repository and on `PATH`
+- `kodact` built from this repository and on `PATH`
   (`cargo build --release`, then `export PATH="$PWD/target/release:$PATH"`);
-- a key: `export FORGE_API_KEY=...`;
+- a key: `export KODACT_API_KEY=...`;
 - `git`, `python3` and `jq`.
 
 Create the scratch repository (it refuses a non-empty directory unless given
 `--force`):
 
 ```sh
-scripts/check-setup.sh /tmp/forge-check
-cd /tmp/forge-check
+scripts/check-setup.sh /tmp/kodact-check
+cd /tmp/kodact-check
 ```
 
 It holds:
@@ -44,12 +44,12 @@ It holds:
 - the branch `planted-bug`, which commits the same bug;
 - `notes.md` (for `@` mentions) and `secret.txt` (git-ignored, for a deny
   rule);
-- `.forge/settings.json` with a `SessionStart` hook (`true`), so the hooks
+- `.kodact/settings.json` with a `SessionStart` hook (`true`), so the hooks
   screen has something to list;
 - `other-repo/`, a second repository for `/cd`.
 
 **Each part starts from a fresh setup:** `scripts/check-setup.sh
-/tmp/forge-check --force`. Inside a part, the checks run in order and some
+/tmp/kodact-check --force`. Inside a part, the checks run in order and some
 use what an earlier one left.
 
 Where to look:
@@ -61,29 +61,29 @@ Where to look:
 
 ## A. Print mode
 
-1. [1] `forge -p "/goal python3 test_calc.py prints ok" --output-format stream-json --verbose`
-   - Forge fixes `calc.py`, runs the test, and stops.
+1. [1] `kodact -p "/goal python3 test_calc.py prints ok" --output-format stream-json --verbose`
+   - KodAct fixes `calc.py`, runs the test, and stops.
    - The last `system` line with `"subtype": "goal"` has
      `"status": "achieved"`; `echo $?` prints `0`.
 2. [2] Put the bug back (`printf 'def add(a, b):\n    return a - b\n' > calc.py`),
-   then `forge -p "/goal make the tests pass without touching any file"`.
+   then `kodact -p "/goal make the tests pass without touching any file"`.
    - stderr has `Goal can't be met: ...`; `echo $?` prints `1`.
-3. [26, part] `forge -p --permission-mode acceptEdits "fix @calc.py"`
+3. [26, part] `kodact -p --permission-mode acceptEdits "fix @calc.py"`
    - `git diff` shows no change left in `calc.py` (`return a + b` again).
    - Run it again on the bug with `--output-format stream-json --verbose`
      added: there is no `"name":"Read"` tool call before the `Edit`, because
      the file came attached.
-4. (new) `forge -p "what does @notes.md say about the CLI?"`
+4. (new) `kodact -p "what does @notes.md say about the CLI?"`
    - The answer says Monday, without reading the file first
      (with `--output-format stream-json --verbose`,
      `grep -c '"name":"Read"'` prints `0`).
-5. (new) `forge -p "what does @secret.txt say?" --disallowedTools "Read(secret.txt)" --output-format stream-json --verbose > /tmp/forge-deny.jsonl`
-   - `grep -c 4417 /tmp/forge-deny.jsonl` prints `0`: neither the attachment
+5. (new) `kodact -p "what does @secret.txt say?" --disallowedTools "Read(secret.txt)" --output-format stream-json --verbose > /tmp/kodact-deny.jsonl`
+   - `grep -c 4417 /tmp/kodact-deny.jsonl` prints `0`: neither the attachment
      nor a Read call got the file.
    - The answer says the file can't be read (the prompt carried the note
      `secret.txt was not attached: blocked by a permission rule; use Read`).
 6. [18] `git stash -q && git checkout -q planted-bug`, then
-   `forge -p "/code-review high"`.
+   `kodact -p "/code-review high"`.
    - The report names `calc.py:2` with an input that fails (for example
      `add(2, 3)` returns `-1`).
    - Afterwards: `git checkout -q - && git stash pop -q`.
@@ -93,7 +93,7 @@ Where to look:
    user() { jq -cn --arg t "$1" '{type: "user", message: {role: "user", content: $t}}'; }
    { user "Explain every file in this repository in detail, one by one."; sleep 8
      user "/usage"; user "/btw what are you working on?"; sleep 60; } |
-   forge -p --input-format stream-json --output-format stream-json --verbose |
+   kodact -p --input-format stream-json --output-format stream-json --verbose |
    jq -c 'select(.type == "result") | {immediate, num_turns, result: (.result // "" | .[0:70])}'
    ```
 
@@ -104,26 +104,26 @@ Where to look:
    - Raise the second `sleep` if the turn is still running when it ends.
 8. (new) The same with `user "/status"` instead of the two commands: its
    result line names the model and comes before the turn's.
-9. [14, part] `forge -p "/status"` prints `Directory:` as
-   `/tmp/forge-check`, the model and `Permissions:    default mode`.
-10. (new) `forge -p "/hooks add PreToolUse Bash echo hook-ran >> /tmp/forge-hook.log"`
-    - It says `Added a PreToolUse hook for Bash`; `.forge/settings.local.json`
+9. [14, part] `kodact -p "/status"` prints `Directory:` as
+   `/tmp/kodact-check`, the model and `Permissions:    default mode`.
+10. (new) `kodact -p "/hooks add PreToolUse Bash echo hook-ran >> /tmp/kodact-hook.log"`
+    - It says `Added a PreToolUse hook for Bash`; `.kodact/settings.local.json`
       has it.
-    - `forge -p --permission-mode acceptEdits "run ls with Bash"`, then
-      `cat /tmp/forge-hook.log` shows `hook-ran`.
-    - `forge -p "/hooks"` numbers it (`1. [Bash] echo hook-ran ... local`);
-      `forge -p "/hooks remove PreToolUse 1"` removes it from the file.
-11. (new) `forge -p "/agents create test-writer --description 'Writes unit tests' --tools Read,Write,Bash --model sonnet"`
-    - `.forge/agents/test-writer.md` has those fields.
-    - `forge -p --permission-mode acceptEdits "use the test-writer agent to add a test for add(0, 0)" --output-format stream-json --verbose`
+    - `kodact -p --permission-mode acceptEdits "run ls with Bash"`, then
+      `cat /tmp/kodact-hook.log` shows `hook-ran`.
+    - `kodact -p "/hooks"` numbers it (`1. [Bash] echo hook-ran ... local`);
+      `kodact -p "/hooks remove PreToolUse 1"` removes it from the file.
+11. (new) `kodact -p "/agents create test-writer --description 'Writes unit tests' --tools Read,Write,Bash --model sonnet"`
+    - `.kodact/agents/test-writer.md` has those fields.
+    - `kodact -p --permission-mode acceptEdits "use the test-writer agent to add a test for add(0, 0)" --output-format stream-json --verbose`
       shows a `"name":"Task"` call with `"subagent_type":"test-writer"`.
-12. [17] `forge -p "/feedback checklist run"`
+12. [17] `kodact -p "/feedback checklist run"`
     - It names a bundle directory; `grep -r sk- <bundle>` finds nothing.
 
 ## B. Interactive (a real terminal emulator)
 
-Reset first (`scripts/check-setup.sh /tmp/forge-check --force`), then start
-`forge` in `/tmp/forge-check`. Unless a check says otherwise, keep that
+Reset first (`scripts/check-setup.sh /tmp/kodact-check --force`), then start
+`kodact` in `/tmp/kodact-check`. Unless a check says otherwise, keep that
 session open from one check to the next.
 
 ### The terminal UI
@@ -141,7 +141,7 @@ session open from one check to the next.
 17. [23] Shift+Tab twice shows plan mode in the status line.
     `make add subtract instead` ends with the plan dialog; option 1 switches
     to accept edits.
-18. [25] Leave with `/exit`; start `forge` again and leave with Ctrl-D;
+18. [25] Leave with `/exit`; start `kodact` again and leave with Ctrl-D;
     again, with Ctrl-C twice. Each time the shell works afterwards: typed
     text echoes, and `stty -a` shows `icanon echo`.
 19. (new, gap) `/terminal-setup` says whether the keyboard protocol is on in
@@ -156,7 +156,7 @@ session open from one check to the next.
     - It answers at once, then about every 2 minutes (up to a minute late).
     - `/tasks` lists it as `every 2 minutes`; `/tasks stop <id>` ends it.
 22. [4] `/loop watch for a file named done.txt and stop when it exists`;
-    a few minutes later, in another shell, `touch /tmp/forge-check/done.txt`.
+    a few minutes later, in another shell, `touch /tmp/kodact-check/done.txt`.
     - The model schedules its own checks with ScheduleWakeup.
     - Once the file exists, it stops the loop (`The loop is finished.`).
 
@@ -202,7 +202,7 @@ session open from one check to the next.
       `Fast mode isn't available for claude-haiku-4-5.`
 31. [9] `/effort low`, then a question.
     - The `/debug` log shows `output_config` with `"effort": "low"`.
-    - `<config>/settings.json` (`forge config paths`) has
+    - `<config>/settings.json` (`kodact config paths`) has
       `"effortLevel": "low"`.
 32. [10] `/output-style explanatory`, then `how should I test calc.py?`.
     The answer includes the explanatory style's insight notes.
@@ -214,14 +214,14 @@ session open from one check to the next.
 34. [13] `/branch experiment`, then `add a comment to calc.py`. `/resume`
     and pick the original: it doesn't have that change.
 35. [14] `/cd other-repo` keeps the conversation. `/status` shows
-    `/tmp/forge-check/other-repo`, and the next answer knows about the move.
+    `/tmp/kodact-check/other-repo`, and the next answer knows about the move.
     `/cd ..` to come back.
 
 ### Extras
 
 36. [15] `/advisor opus`, then
     `refactor calc.py into a class and make sure nothing breaks`.
-    - Forge calls the Advisor tool at least once before finishing (`/export`
+    - KodAct calls the Advisor tool at least once before finishing (`/export`
       shows `› Advisor`).
     - `/usage` shows the advisor model's cost.
 
@@ -237,26 +237,26 @@ Reset first, so `calc.py` has its uncommitted change.
     numbers match `/context all`'s top lines. During a long turn, `/context`
     still opens.
 39. [31] `/hooks`: Enter on "Add hook…", Right to `PreToolUse`, Tab, `Bash`,
-    Tab, `echo hook-ran >> /tmp/forge-hook.log`, Tab, `local`, Enter.
+    Tab, `echo hook-ran >> /tmp/kodact-hook.log`, Tab, `local`, Enter.
     - The reply says it was added and applies now;
-      `.forge/settings.local.json` has it. The `SessionStart` hook from the
+      `.kodact/settings.local.json` has it. The `SessionStart` hook from the
       setup is listed too, with source `project`.
-    - `run ls with Bash`: `/tmp/forge-hook.log` gets a line.
+    - `run ls with Bash`: `/tmp/kodact-hook.log` gets a line.
     - `/hooks` again, Enter on the PreToolUse hook, Yes: it is gone from the
       file.
 40. [32] `/agents`: Enter on "Create an agent…", name `test-writer`, a
     description, Space on Read and Write, model sonnet, project, Enter.
-    - `.forge/agents/test-writer.md` exists with those fields.
+    - `.kodact/agents/test-writer.md` exists with those fields.
     - `/agents` lists it; `use the test-writer agent to add a test` runs it
       through the Task tool.
 41. [34] `/color green` turns the prompt marker and selections green;
-    `/color default` brings Forge's colour back.
+    `/color default` brings KodAct's colour back.
 42. [34] `/focus`, then `run ls and git status`: no tool lines in the
     scrollback, the spinner names each tool; `/focus off` shows them again.
 43. [33] Leave, write
     `{"ctrl+s": "submit", "ctrl+r": "none", "ctrl+q": "nope"}` to
-    `keybindings.json` in the config directory (`forge config paths`), and
-    start `forge`.
+    `keybindings.json` in the config directory (`kodact config paths`), and
+    start `kodact`.
     - A warning names `ctrl+q` and the unknown action.
     - Ctrl+S sends a prompt; Ctrl+R does nothing.
     - `/keybindings` lists `enter, ctrl+s` for sending and `Unbound: ctrl+r.`
@@ -264,21 +264,21 @@ Reset first, so `calc.py` has its uncommitted change.
 
 ### Abnormal exits (a known gap)
 
-44. (new, gap) Start `forge`; from another shell, `pkill -TERM -x forge`.
+44. (new, gap) Start `kodact`; from another shell, `pkill -TERM -x kodact`.
     The shell works afterwards (`stty -a` shows `icanon echo`; typed text
     echoes). If it doesn't, `reset` repairs it: record that in PARITY.
-45. (new, gap) Start `forge` and close the terminal window (or tab) while a
+45. (new, gap) Start `kodact` and close the terminal window (or tab) while a
     turn runs. In a new one, `ps aux | grep '[f]orge'` shows no leftover
     process.
 46. (new, gap) A panic can't be forced from outside, so the path that
     restores the terminal after one is covered only by reading the code
-    (`crates/forge-cli/src/tui/mod.rs`: the panic hook installed in `setup()`
+    (`crates/kodact-cli/src/tui/mod.rs`: the panic hook installed in `setup()`
     calls `restore()`, and so does `Guard`'s `Drop`) and by `tui::tests`.
     Record it as "read, not run".
 
 ## C. Special setups
 
-47. [24] `NO_COLOR=1 forge`: no colours anywhere (markers and selections
+47. [24] `NO_COLOR=1 kodact`: no colours anywhere (markers and selections
     are bold or reversed). `/diff` still marks lines with `+` and `-`;
     `/context`'s grid uses letters (`S`, `T`, `G`, `·`).
 48. [24] In a 40-column window: the input box wraps without breaking its
@@ -289,49 +289,49 @@ Reset first, so `calc.py` has its uncommitted change.
 50. (new, gap) In tmux with `set -g set-clipboard on` (and, for Shift+Enter,
     `set -s extended-keys on`): `/copy` reaches the system clipboard (paste
     outside tmux).
-51. (new, gap) Over SSH (`ssh localhost`, then `forge` in the scratch
+51. (new, gap) Over SSH (`ssh localhost`, then `kodact` in the scratch
     repository): the UI draws, Esc interrupts, and `/copy` reaches the local
     clipboard where the terminal supports OSC 52.
 52. [11] On Linux with bubblewrap: `/sandbox on`, then
-    `touch /etc/forge-check with Bash`. The command fails inside the
+    `touch /etc/kodact-check with Bash`. The command fails inside the
     sandbox, and `/sandbox` says it is on.
 53. [16] On a machine with MCP servers in `~/.codex/config.toml`: `/import`
     lists them; `/import codex --yes` adds them to `<config>/settings.json`;
     the next session connects them (`/mcp`).
-54. (new) The line REPL: `forge --no-tui`. `hello` answers; `/status` typed
+54. (new) The line REPL: `kodact --no-tui`. `hello` answers; `/status` typed
     during a turn runs after it (the REPL reads input only between turns).
-55. (new) `FORGE_TUI=0 forge` also starts the line REPL.
+55. (new) `KODACT_TUI=0 kodact` also starts the line REPL.
 
 ### Windows (Windows Terminal and PowerShell)
 
 Checked under Wine with Git for Windows 2.47 (not a real Windows machine):
-the shell search, the no-shell message, `forge doctor` and paths without
+the shell search, the no-shell message, `kodact doctor` and paths without
 `\\?\`. These need a real Windows machine:
 
-56. (new) With Git for Windows installed: `forge doctor` shows
+56. (new) With Git for Windows installed: `kodact doctor` shows
     `ok   shell        Git Bash (C:\Program Files\Git\bin\bash.exe), ...`
-    and `ok   git`. In `forge`, `run echo hello` answers `hello`; the header
+    and `ok   git`. In `kodact`, `run echo hello` answers `hello`; the header
     and `/status` show `C:\...` paths, never `\\?\C:\...`.
-57. (new) Without Git Bash (or with `FORGE_SHELL=C:\nowhere\bash.exe`):
-    `forge doctor` fails the `shell` row and names what it looked for; in
-    `forge`, `run echo hello` gets one clear answer naming the fix, and the
+57. (new) Without Git Bash (or with `KODACT_SHELL=C:\nowhere\bash.exe`):
+    `kodact doctor` fails the `shell` row and names what it looked for; in
+    `kodact`, `run echo hello` gets one clear answer naming the fix, and the
     model does not retry through cmd.exe or PowerShell.
-58. (new) `FORGE_SHELL=pwsh forge`: `run Get-ChildItem` works, and `/status`
+58. (new) `KODACT_SHELL=pwsh kodact`: `run Get-ChildItem` works, and `/status`
     shows `Shell: PowerShell 7 (...)`.
 59. (new) `run ping -n 100 127.0.0.1`, then Esc after a few seconds: the
     command stops at once (Task Manager shows no leftover `PING.EXE`).
 60. (new) A deny rule `Read(./secrets/**)`: reading `.\Secrets\key.txt` or
     `/c/.../secrets/key.txt` is denied too.
-61. (new) An OpenAI-compatible gateway with only `FORGE_API_KEY` set: `forge`
-    warns that `FORGE_OPENAI_API_KEY` is not set at startup; the 401 names
-    `FORGE_OPENAI_API_KEY`; `forge doctor` fails the `credentials` row;
-    `forge doctor --probe` with the right key says the key works.
+61. (new) An OpenAI-compatible gateway with only `KODACT_API_KEY` set: `kodact`
+    warns that `KODACT_OPENAI_API_KEY` is not set at startup; the 401 names
+    `KODACT_OPENAI_API_KEY`; `kodact doctor` fails the `credentials` row;
+    `kodact doctor --probe` with the right key says the key works.
 
 ## Results
 
 Copy this table into the release notes or an issue, one row per check:
 
-| Check | Pass / fail / skipped | Notes | Forge version (`forge --version`) |
+| Check | Pass / fail / skipped | Notes | KodAct version (`kodact --version`) |
 | --- | --- | --- | --- |
 | 1 | | | |
 | ... | | | |

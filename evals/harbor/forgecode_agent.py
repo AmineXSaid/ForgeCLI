@@ -1,22 +1,22 @@
-"""Forge Code (forgecode.dev) as a Harbor installed agent, next to ForgeCLI and Ante.
+"""Forge Code (forgecode.dev) as a Harbor installed agent, next to KodAct and Ante.
 
 It copies a static Forge Code binary into the task container and runs it once
-with `-p`, against the same OpenAI-compatible endpoint as ForgeCLI, so the three
+with `-p`, against the same OpenAI-compatible endpoint as KodAct, so the three
 harnesses can be compared on the same model and tasks.
 
 Configuration comes from the environment of the `harbor` process:
 - `FORGECODE_BIN`: the static binary to copy (default `~/.forgecode/forge`;
   `run-forgecode.sh` downloads `forge-x86_64-unknown-linux-musl` from the
   latest release when it is missing).
-- `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY`: the endpoint and key, the
-  same ones ForgeCLI uses. Forge Code gets them as `OPENAI_URL` and
+- `KODACT_OPENAI_BASE_URL`, `KODACT_OPENAI_API_KEY`: the endpoint and key, the
+  same ones KodAct uses. Forge Code gets them as `OPENAI_URL` and
   `OPENAI_API_KEY`.
 - `FORGECODE_HARBOR_ARGS`: extra Forge Code flags for every task.
-- `FORGE_HARBOR_HOSTS`, `FORGE_HARBOR_HOST_IP`, `FORGE_HARBOR_CA_BUNDLE`: as for
-  ForgeCLI (see forge_agent.py).
+- `KODACT_HARBOR_HOSTS`, `KODACT_HARBOR_HOST_IP`, `KODACT_HARBOR_CA_BUNDLE`: as for
+  KodAct (see kodact_agent.py).
 
 Forge Code reads every `FORGE_*` variable as one of its own settings, so none of
-ForgeCLI's are passed. Its provider and model are set with
+KodAct's are passed. Its provider and model are set with
 `FORGE_SESSION__PROVIDER_ID` and `FORGE_SESSION__MODEL_ID`, its config lives in
 a fresh directory per task, and its self-update is off. Its output goes to
 `forgecode.stdout.txt` and `forgecode.stderr.txt`, which watch.py follows.
@@ -31,7 +31,7 @@ from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_templat
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from forge_agent import REMOTE_CA, TRUST_CA, container_url, pinned_hosts, record_run, settings, task_time_limit
+from kodact_agent import REMOTE_CA, TRUST_CA, container_url, pinned_hosts, record_run, settings, task_time_limit
 
 DEFAULT_BIN = Path.home() / ".forgecode" / "forge"
 REMOTE_BIN = "/usr/local/bin/forgecode"
@@ -57,20 +57,20 @@ class ForgeCode(BaseInstalledAgent):
         if hosts:
             lines = "\n".join(f"{ip} {name}" for ip, name in hosts)
             await self.exec_as_root(environment, command=f"printf '%s\\n' {shlex.quote(lines)} >> /etc/hosts")
-        ca = os.environ.get("FORGE_HARBOR_CA_BUNDLE")
+        ca = os.environ.get("KODACT_HARBOR_CA_BUNDLE")
         if ca:
             if not Path(ca).is_file():
-                raise RuntimeError(f"FORGE_HARBOR_CA_BUNDLE: {ca} not found")
+                raise RuntimeError(f"KODACT_HARBOR_CA_BUNDLE: {ca} not found")
             await environment.upload_file(Path(ca), REMOTE_CA)
             await self.exec_as_root(environment, command=TRUST_CA)
 
     @with_prompt_template
     async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
         model = (self.model_name or "").split("/", 1)[-1]
-        url = os.environ.get("FORGE_OPENAI_BASE_URL")
-        key = os.environ.get("FORGE_OPENAI_API_KEY")
+        url = os.environ.get("KODACT_OPENAI_BASE_URL")
+        key = os.environ.get("KODACT_OPENAI_API_KEY")
         if not url or not key:
-            raise RuntimeError("FORGE_OPENAI_BASE_URL and FORGE_OPENAI_API_KEY must be set")
+            raise RuntimeError("KODACT_OPENAI_BASE_URL and KODACT_OPENAI_API_KEY must be set")
         env = {
             "OPENAI_URL": container_url(url).rstrip("/"),
             "OPENAI_API_KEY": key,
@@ -80,7 +80,7 @@ class ForgeCode(BaseInstalledAgent):
             "FORGE_UPDATES__AUTO_UPDATE": "false",
             "FORGECODE_TASK": instruction,
         }
-        if os.environ.get("FORGE_HARBOR_CA_BUNDLE"):
+        if os.environ.get("KODACT_HARBOR_CA_BUNDLE"):
             env["FORGE_HTTP__ROOT_CERT_PATHS"] = REMOTE_CA
         extra = os.environ.get("FORGECODE_HARBOR_ARGS", "")
         meta = {

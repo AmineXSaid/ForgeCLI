@@ -1,0 +1,22 @@
+//! Model Context Protocol support.
+//!
+//! - [`config`]: where servers are declared, which are trusted, `${VAR}` expansion.
+//! - [`transport`]: stdio, streamable HTTP and HTTP+SSE JSON-RPC transports.
+//! - [`client`]: one server session (initialize, tools, resources, prompts).
+//! - [`tools`]: server tools as KodAct tools (`mcp__<server>__<tool>`), plus
+//!   `ListMcpResourcesTool` and `ReadMcpResourceTool`.
+//! - [`manager`]: connects every server at startup, reports status, and
+//!   reconnects, enables or disables one while a session runs.
+//! - [`server`]: `kodact mcp serve`.
+
+pub mod client;
+pub mod config;
+pub mod manager;
+pub mod server;
+pub mod tools;
+pub mod transport;
+
+pub use client::{ConnectOptions, McpClient, ToolInfo};
+pub use config::{resolve, NamedServer, Resolved, Scope, ServerConfig};
+pub use manager::{McpManager, Outcome, ServerAction, ServerEntry, Status};
+pub use transport::McpError;

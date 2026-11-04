@@ -1,25 +1,25 @@
 # The interactive terminal UI (M8)
 
-`forge` with no `-p` opens the interactive UI when stdin and stdout are both
-terminals. `--no-tui` (or `FORGE_TUI=0`) keeps the line REPL
-(`crates/forge-cli/src/repl.rs`), and print mode is unchanged.
+`kodact` with no `-p` opens the interactive UI when stdin and stdout are both
+terminals. `--no-tui` (or `KODACT_TUI=0`) keeps the line REPL
+(`crates/kodact-cli/src/repl.rs`), and print mode is unchanged.
 
 ## Status
 
 | Part | State | Where |
 | --- | --- | --- |
-| Prompt editor: multiline text, word moves, kill commands, history | done, tested | `crates/forge-cli/src/tui/editor.rs` |
-| Theme, one-line markdown, wrapping by display width | done, tested | `crates/forge-cli/src/tui/text.rs` |
-| UI state machine: keys, streaming into scrollback, tool lines, `/` menu, permission/question/plan dialogs, queued input, Esc/Ctrl-C/Shift+Tab | done, tested | `crates/forge-cli/src/tui/app.rs` |
-| Session task (owns the Driver), `TuiSink`, `TuiPrompter` | done, tested | `crates/forge-cli/src/tui/session.rs` |
-| Renderer for the live region (`LiveView`) | done, tested | `crates/forge-cli/src/tui/render.rs` |
-| Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/forge-cli/src/tui/mod.rs` |
-| Wiring into `main`, `--no-tui`, `FORGE_TUI`, persisted history | done | `crates/forge-cli/src/main.rs`, `args.rs` |
-| Pickers, Ctrl+R search, `@file` completion | done, tested | `crates/forge-core/src/commands/picker.rs`, `tui/app.rs`, `tui/session.rs` |
-| Screens: the scrolling viewer and forms; `/diff`, `/context`, `/hooks`, `/agents`; key rebinding; `/color`, `/focus` (Phase 4) | done, tested | `forge-core` `commands/screens.rs`, `tui/app.rs` (`Viewer`, `Form`), `tui/render.rs` |
-| UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | done, tested | `forge-core` `commands/settings.rs` (`/theme`, `/statusline`), `tui/session.rs` (the others) |
+| Prompt editor: multiline text, word moves, kill commands, history | done, tested | `crates/kodact-cli/src/tui/editor.rs` |
+| Theme, one-line markdown, wrapping by display width | done, tested | `crates/kodact-cli/src/tui/text.rs` |
+| UI state machine: keys, streaming into scrollback, tool lines, `/` menu, permission/question/plan dialogs, queued input, Esc/Ctrl-C/Shift+Tab | done, tested | `crates/kodact-cli/src/tui/app.rs` |
+| Session task (owns the Driver), `TuiSink`, `TuiPrompter` | done, tested | `crates/kodact-cli/src/tui/session.rs` |
+| Renderer for the live region (`LiveView`) | done, tested | `crates/kodact-cli/src/tui/render.rs` |
+| Terminal loop, inline viewport, scrollback writes, panic-safe restore | done, tested (`Screen`), checked by hand | `crates/kodact-cli/src/tui/mod.rs` |
+| Wiring into `main`, `--no-tui`, `KODACT_TUI`, persisted history | done | `crates/kodact-cli/src/main.rs`, `args.rs` |
+| Pickers, Ctrl+R search, `@file` completion | done, tested | `crates/kodact-core/src/commands/picker.rs`, `tui/app.rs`, `tui/session.rs` |
+| Screens: the scrolling viewer and forms; `/diff`, `/context`, `/hooks`, `/agents`; key rebinding; `/color`, `/focus` (Phase 4) | done, tested | `kodact-core` `commands/screens.rs`, `tui/app.rs` (`Viewer`, `Form`), `tui/render.rs` |
+| UI-only commands (`/theme`, `/copy`, `/keybindings`, `/statusline`, `/terminal-setup`) | done, tested | `kodact-core` `commands/settings.rs` (`/theme`, `/statusline`), `tui/session.rs` (the others) |
 
-Dependencies are in `crates/forge-cli/Cargo.toml`:
+Dependencies are in `crates/kodact-cli/Cargo.toml`:
 - `ratatui` 0.29 (MIT);
 - `crossterm` 0.28 with `event-stream` (MIT);
 - `unicode-width` 0.2 (MIT or Apache-2.0);
@@ -52,7 +52,7 @@ output behind. The live region grows and shrinks with what it shows.
 ```rust
 pub enum ToSession { Input(String), Exit }
 
-pub async fn run(mut driver: forge_core::Driver,
+pub async fn run(mut driver: kodact_core::Driver,
                  mut rx: mpsc::UnboundedReceiver<ToSession>,
                  ui: mpsc::UnboundedSender<app::UiEvent>)
 ```
@@ -86,7 +86,7 @@ pub async fn run(mut driver: forge_core::Driver,
 - a local command result (`num_turns == 0 && stop_reason.is_none()`) becomes
   `UiEvent::Reply { text: result, is_error }`;
 - a blocked prompt (`prompt_blocked`) becomes `Reply { is_error: true }`;
-- an interrupted turn becomes `Reply { text: "Interrupted · What should Forge do instead?" }`;
+- an interrupted turn becomes `Reply { text: "Interrupted · What should KodAct do instead?" }`;
 - a model turn that errored becomes `Reply { text: errors or result, is_error: true }`;
 - a successful model turn sends nothing: its text already streamed.
 
@@ -96,7 +96,7 @@ pub async fn run(mut driver: forge_core::Driver,
 - cwd: `driver.info.cwd`;
 - cost: `driver.engine.state.total_cost_usd`;
 - context %: `driver.engine.state.context_tokens` over the model's window
-  (`forge_api::models::model_info(model).context_window`).
+  (`kodact_api::models::model_info(model).context_window`).
 
 Also send `UiEvent::Commands` from `driver.catalog.catalog_json(Surface::Tui)`
 (fields `name`, `argumentHint`, `description`). Send it once at start and
@@ -160,7 +160,7 @@ The live region, top to bottom (each part only when present):
 1. `app.live`, the unfinished answer line, rendered with
    `text::Markdown::line` and wrapped. At most 3 rows, the last ones.
 2. The spinner while `busy`:
-   - braille frames `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` (`forge_core::glyphs::SPINNER`),
+   - braille frames `⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏` (`kodact_core::glyphs::SPINNER`),
      advanced every 80 ms from `busy_since`;
    - then `{activity}… ({secs}s · esc to interrupt)`, in the accent style;
      while a permission, plan or question dialog is open,
@@ -250,11 +250,11 @@ Other events:
 **On exit:**
 - clear the live region;
 - restore the terminal;
-- print `Resume this conversation with: forge --resume <id>`;
+- print `Resume this conversation with: kodact --resume <id>`;
 - save the history.
 
 **Prompt history** is
-`forge_config::state_dir().join("history.jsonl")`, one JSON line per prompt
+`kodact_config::state_dir().join("history.jsonl")`, one JSON line per prompt
 with `{"text", "cwd"}`:
 - load the last 500 entries for this project directory into
   `App::new(.., history)`;
@@ -263,7 +263,7 @@ with `{"text", "cwd"}`:
 
 **Choosing the UI** (`main.rs`):
 - open the TUI when stdin and stdout are both terminals and neither
-  `--no-tui` nor `FORGE_TUI=0|false|off` is set;
+  `--no-tui` nor `KODACT_TUI=0|false|off` is set;
 - otherwise use `repl::run`.
 
 `term::Term` has `stdin_tty`. Add a `stdout_tty` field
@@ -277,7 +277,7 @@ with `{"text", "cwd"}`:
   how the conversation is written (`app.rs`), the approval's frame and the
   input (`render.rs`); colours (`/theme dark|light|none`) apply to all:
   - `forgeframe`: a framed welcome, the wordmark with an ember shadow beside
-    Forge's anvil (original pixel art), the version, what Forge does, the
+    KodAct's anvil (original pixel art), the version, what KodAct does, the
     connected MCP servers, the last conversation, the folder and branch;
     the input across the page. Steps with a dot; approvals in copper
     corner marks.
@@ -285,7 +285,7 @@ with `{"text", "cwd"}`:
     seam, a copper-framed input with the mode and model under it. Your
     words on a warm band, finished steps with a copper ✓, answers plain.
   - `anvil`: a card with the anvil beside the wordmark and the session's
-    model, tools and folder; turns headed `you · 14:02` and `forge`.
+    model, tools and folder; turns headed `you · 14:02` and `kodact`.
   - `ledger`: aligned left, the wordmark in copper outline, past work
     numbered beside this folder, the input docked at the bottom under a
     rule. A column of times and voices; steps as plain quiet lines.
@@ -296,7 +296,7 @@ with `{"text", "cwd"}`:
     middle, recent work under it. Plain steps, a bold `›` for your words,
     the input and approvals under a rule, without boxes.
   A terminal too narrow for a style's front page gets the bare one.
-- **Full screen** (the default; `FORGE_TUI=inline` for the inline
+- **Full screen** (the default; `KODACT_TUI=inline` for the inline
   viewport): the UI takes the terminal's alternate screen and keeps the
   transcript itself (`mod.rs` `Full`, `render::full_view`). Before the first
   message, the front screen fills the window: the wordmark and tagline, the
@@ -308,7 +308,7 @@ with `{"text", "cwd"}`:
   newest lines. On exit the transcript is printed into the terminal's
   scrollback, wrapped to its width.
 - **The front screen** (`brand::welcome`), printed once at the start,
-  centred across the terminal and down the room above the input: the FORGE
+  centred across the terminal and down the room above the input: the KODACT
   wordmark (spaced capitals, its O a cube with a copper top, drawn in half
   blocks, 47 columns by 5 rows; `F O R G E` in one row on a terminal under
   51 columns), the tagline, and `/resume` with the newest other
@@ -342,7 +342,7 @@ with `{"text", "cwd"}`:
   - table rows are held until the table ends, then drawn with aligned
     columns (`--:` aligns right), `│` between cells, a `─┼─` rule and a
     bold header.
-- **Colours** (`palette.rs`): Forge's ember. Warm ink and paper for text and
+- **Colours** (`palette.rs`): KodAct's ember. Warm ink and paper for text and
   surfaces, copper for the brand and for what needs the person; green, red
   and amber only where they mean done, failed or a warning.
 - **Wrapping** (`text::wrap`): a wrapped row continues under the text, past
@@ -363,7 +363,7 @@ with `{"text", "cwd"}`:
 - **Approvals**: a box titled `◆ Approve <tool>?`. A command shows its lines
   and description, an edit its change, and any other tool every argument it
   will be sent (each line of each value). Choices: `Allow once` (y), the
-  suggested `Always allow …` (a), `Deny, and tell Forge what to do` (n);
+  suggested `Always allow …` (a), `Deny, and tell KodAct what to do` (n);
   also ↑↓ and Enter, or 1 to 3. While it is open the working line says
   `◆ Waiting for your answer (Ns …)`, timed from when the question was
   asked, not from the turn's start.
@@ -373,7 +373,7 @@ with `{"text", "cwd"}`:
 - Events of sub-agents (those with a `parent_tool_use_id`) are not shown.
 - **Your prompts**: `> text`, in the user style.
 - **Local command output**: `  ↳  ` on the first line, then indented.
-- **Glyphs** live in `forge_core::glyphs` (answer `•`, tool `›`, result `↳`,
+- **Glyphs** live in `kodact_core::glyphs` (answer `•`, tool `›`, result `↳`,
   the spinner, the mode marks), so `/export` and the line REPL use the same
   marks.
 - **Notices**: dim, yellow (warning) or red (error).
@@ -419,7 +419,7 @@ keys in effect, the file and the unbound keys.
 | --- | --- | --- |
 | Permission | 1. Yes | `Allow` |
 | | 2. Yes, and don't ask again for `<rule>`, or "Yes, and allow all edits this session (shift+tab)" for an edit (only when the prompt has suggestions) | `Allow` with the suggestions as `updated_permissions` |
-| | 3. No, and tell Forge what to do instead (Esc) | `Deny { interrupt: true }` |
+| | 3. No, and tell KodAct what to do instead (Esc) | `Deny { interrupt: true }` |
 | AskUserQuestion | The options, then "Type an answer"; multi-select toggles with Space | `Allow` with `input.answers = {question: answer}` (the shape `LinePrompter` uses) |
 | Plan approval (the plan goes to scrollback first) | 1. Yes, and accept edits without asking | `Allow` plus `setMode acceptEdits` (session) |
 | | 2. Yes, and ask before each edit | `Allow` |
@@ -432,7 +432,7 @@ text answer: `/diff`, `/context`, `/hooks`, `/agents`. It stays an inline
 viewport: a screen is a dialog in the live region, at most the terminal
 height minus the status line, and long content scrolls inside it.
 
-- **Data** comes from forge-core (`commands::screens`), as pickers do:
+- **Data** comes from kodact-core (`commands::screens`), as pickers do:
   a `Screen` is a title and rows of tagged text (`Tone`: plain, dim, bold,
   accent, added, removed, or a context part). A row may have an action:
   - `Jump(row)`: Enter moves there (a file in `/diff`); Esc comes back;
@@ -466,7 +466,7 @@ height minus the status line, and long content scrolls inside it.
 
 The screens:
 - **`/diff`:** git's uncommitted changes (`git diff HEAD`), or outside git
-  the files Forge changed against how they were. First the files, each with
+  the files KodAct changed against how they were. First the files, each with
   `+added -removed` (Enter jumps to its hunks), untracked files and the files
   each prompt changed; then each file's hunks: additions green, deletions
   red, hunk headers dim. Built from the same data as the text `/diff`.
@@ -488,7 +488,7 @@ The screens:
 ## Testing
 
 - **Unit tests, done:** `tui::editor`, `tui::text` and `tui::app`.
-  Run them with `cargo test -p forge-cli --bin forge tui`.
+  Run them with `cargo test -p kodact-cli --bin kodact tui`.
 - **Renderer (done, `tui::render::tests`):** `ratatui::backend::TestBackend` snapshot tests of
   `live_view` drawn into a fixed area:
   - idle;
@@ -499,7 +499,7 @@ The screens:
   - `Theme { color: false }`.
   Compare `buffer` text rows; colours are checked through a few cells.
 - **Session (done, `tui::session::tests`):** build a session with `MockProvider` (as
-  `crates/forge-core/src/driver_tests.rs` does in `driver_with`), run
+  `crates/kodact-core/src/driver_tests.rs` does in `driver_with`), run
   `session::run` on a task, and drive it through the channels:
   - a text turn ends with `Idle`, and `Engine` events carry the text;
   - a `/status` reply arrives as `Reply`;
@@ -515,7 +515,7 @@ The screens:
 
 1. **The session view** (finish it):
    - `session.rs`, `render.rs` and `mod.rs` as above;
-   - wiring into `main` with `--no-tui` and `FORGE_TUI`;
+   - wiring into `main` with `--no-tui` and `KODACT_TUI`;
    - persisted history;
    - tests;
    - docs:
@@ -524,7 +524,7 @@ The screens:
      - `CHANGELOG.md`;
      - `docs/CHECKLIST.md`: the manual steps below.
 2. **Pickers** (done). A `Picker` dialog (title, rows, filter by typing).
-   The rows come from `forge_core::commands::picker::picker(driver, text)`,
+   The rows come from `kodact_core::commands::picker::picker(driver, text)`,
    so they number and name things exactly as the commands do. Each row is a
    `Pick`: `Run(text)`, `RunThenEdit` (run, then put the rewound prompt back
    in the input box), `Step(text)` (a second picker) or `Edit(text)` (put
@@ -538,8 +538,8 @@ The screens:
    - `/model` with no argument: `driver.model_choices()`, the models the
      endpoint lists (`Provider::list_models`, asked once per session) with
      the current one first, plus "Another model…" (puts `/model ` in the
-     input box). Forge shows no built-in catalogue;
-   - `/resume`: `forge_session::SessionStore::list(cwd)`;
+     input box). KodAct shows no built-in catalogue;
+   - `/resume`: `kodact_session::SessionStore::list(cwd)`;
    - `/rewind`: `driver.engine.prompt_points()`, then a second step for the
      action (both, conversation, code, summarize from, summarize to);
    - `/output-style`: `driver.catalog.styles`;
@@ -559,7 +559,7 @@ The screens:
      path with spaces (`@"my notes.md"`). Sending attaches the file (the
      driver does it for every surface; docs/CLI.md, "`@` mentions"), and the
      scrollback shows a dim `(attached: a.rs, b.rs)` under the prompt.
-3. **UI-only commands** (done). `/theme` and `/statusline` are forge-core
+3. **UI-only commands** (done). `/theme` and `/statusline` are kodact-core
    commands (they save settings through the driver); the session task sends
    `UiEvent::Theme` when the `theme` setting changes and runs the
    `statusLine` command after each input (`UiEvent::StatusLine`). `/copy`,
@@ -579,7 +579,7 @@ The screens:
    Register them in `BUILTINS` with `Surfaces` set to the TUI only, so
    `/help` in other modes leaves them out.
 4. **Screens and settings** (done). The pattern is in "Screens" above:
-   forge-core builds a `Screen` (and any `Form`), the TUI draws it in the
+   kodact-core builds a `Screen` (and any `Form`), the TUI draws it in the
    live region, and every change is command text.
    - A scrolling viewer dialog (`DialogKind::Viewer`) and a form dialog
      (`DialogKind::Form`), with `TestBackend` tests at 40 and 100 columns,
@@ -590,7 +590,7 @@ The screens:
    - Key rebinding from `keybindings.json` ("Keys", "Rebinding").
    - `/color <name>` (the accent colour for this session) and `/focus` (tool
      calls stay out of the scrollback), answered by the app itself like
-     `/keybindings`. `/tui` and `/scroll-speed` are out: Forge has one UI,
+     `/keybindings`. `/tui` and `/scroll-speed` are out: KodAct has one UI,
      and the terminal scrolls its own scrollback.
 
 ## Manual checks

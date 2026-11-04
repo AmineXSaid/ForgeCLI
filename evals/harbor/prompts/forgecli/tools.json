@@ -419,7 +419,7 @@
  },
  {
   "name": "Skill",
-  "description": "Load a skill: packaged instructions (and files) for a specific kind of task. When the task matches a skill below, invoke it first and follow what it says; it takes precedence over your default approach. Do not invoke a skill that is already loaded in this conversation.\n\nAvailable skills:\n- code-review: Review code changes for bugs, with a depth level and an optional fix pass\n- security-review: Review pending changes for exploitable security vulnerabilities\n- simplify: Review recent changes for reuse, clarity and efficiency, then fix what you find\n- update-config: Change Forge's settings files: permissions, hooks, environment variables, model and more\n- verify: Prove a change works by running it, not by reading it\n",
+  "description": "Load a skill: packaged instructions (and files) for a specific kind of task. When the task matches a skill below, invoke it first and follow what it says; it takes precedence over your default approach. Do not invoke a skill that is already loaded in this conversation.\n\nAvailable skills:\n- code-review: Review code changes for bugs, with a depth level and an optional fix pass\n- security-review: Review pending changes for exploitable security vulnerabilities\n- simplify: Review recent changes for reuse, clarity and efficiency, then fix what you find\n- update-config: Change KodAct's settings files: permissions, hooks, environment variables, model and more\n- verify: Prove a change works by running it, not by reading it\n",
   "parameters": {
    "type": "object",
    "properties": {
@@ -488,7 +488,7 @@
  },
  {
   "name": "ScheduleWakeup",
-  "description": "Pace a self-paced loop (/loop without an interval): schedule its next iteration, or end it.\n\n- To continue: delaySeconds (60-3600), reason (one short sentence on why that delay), and prompt: the loop's input, starting with /loop, so the next run re-enters the loop. Pick the delay from how fast the thing you're waiting for changes; don't poll faster than that.\n- To end the loop (the work is done, or it can't progress): {\"stop\": true}.\n- Only one wakeup is pending at a time; a new one replaces it. If an iteration does neither, Forge checks back once after 20 minutes and then ends the loop.",
+  "description": "Pace a self-paced loop (/loop without an interval): schedule its next iteration, or end it.\n\n- To continue: delaySeconds (60-3600), reason (one short sentence on why that delay), and prompt: the loop's input, starting with /loop, so the next run re-enters the loop. Pick the delay from how fast the thing you're waiting for changes; don't poll faster than that.\n- To end the loop (the work is done, or it can't progress): {\"stop\": true}.\n- Only one wakeup is pending at a time; a new one replaces it. If an iteration does neither, KodAct checks back once after 20 minutes and then ends the loop.",
   "parameters": {
    "type": "object",
    "properties": {

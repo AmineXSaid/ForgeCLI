@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Save the exact system prompt and tool descriptions that ForgeCLI, Forge Code and Ante
+# Save the exact system prompt and tool descriptions that KodAct, Forge Code and Ante
 # send to a model, for side-by-side comparison. Nothing leaves this machine: each agent
 # talks to capture_prompt.py on localhost, which records the request and answers "Done.".
 #
@@ -8,7 +8,7 @@
 #
 # Output: evals/harbor/prompts/<harness>/system.md, tools.json, request-*.json, version.txt,
 # and agent.log / server.log to see why when nothing was captured.
-# Binaries: FORGECLI_BIN (target-static/release/forge, else target/release/forge), FORGECODE_BIN
+# Binaries: KODACT_BIN (target-static/release/kodact, else target/release/kodact), FORGECODE_BIN
 # (~/.forgecode/forge), ANTE_BIN (~/.ante/bin/ante). Set CAPTURE_PORT to change the port.
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -47,10 +47,10 @@ capture() {  # name, binary, then the command to run with its environment
 for h in "${which[@]}"; do
   case "$h" in
     forgecli)
-      bin="${FORGECLI_BIN:-target-static/release/forge}"; [ -x "$bin" ] || bin="target/release/forge"
+      bin="${KODACT_BIN:-target-static/release/kodact}"; [ -x "$bin" ] || bin="target/release/kodact"
       [ -x "$bin" ] || { echo "== forgecli: no binary (build it first)"; continue; }
       case "$bin" in /*) ;; *) bin="$repo/$bin" ;; esac
-      capture forgecli "$bin" FORGE_OPENAI_BASE_URL="$url" FORGE_OPENAI_API_KEY=capture \
+      capture forgecli "$bin" KODACT_OPENAI_BASE_URL="$url" KODACT_OPENAI_API_KEY=capture \
         "$bin" -p "$task" --model capture --autonomous --dangerously-skip-permissions --output-format stream-json --verbose ;;
     forgecode)
       bin="${FORGECODE_BIN:-$HOME/.forgecode/forge}"

@@ -1,4 +1,4 @@
-# ForgeCLI command-line contract
+# KodAct command-line contract
 
 This document is a public interface. Changing documented syntax, exit
 statuses, machine output or config precedence is a breaking change and needs
@@ -8,16 +8,16 @@ a note in `CHANGELOG.md`.
 
 | Topic | Contract |
 | --- | --- |
-| Executable | `forge` (and `forge-eval` for evaluation) |
-| Help and version | `forge --help`, `forge <command> --help`, `forge help <command>`, `forge --version`. They need no credentials, no network and no config, and print to stdout. |
-| Option style | Descriptive long options, with short aliases only for frequent ones (`-p`, `-c`, `-r`, `-n`, `-q`, `-d`, `-v`, `-h`). `--` ends option parsing: `forge -p -- "-v means?"` |
+| Executable | `kodact` (and `kodact-eval` for evaluation) |
+| Help and version | `kodact --help`, `kodact <command> --help`, `kodact help <command>`, `kodact --version`. They need no credentials, no network and no config, and print to stdout. |
+| Option style | Descriptive long options, with short aliases only for frequent ones (`-p`, `-c`, `-r`, `-n`, `-q`, `-d`, `-v`, `-h`). `--` ends option parsing: `kodact -p -- "-v means?"` |
 | Streams | **stdout** carries results only: the answer, a JSON document, an NDJSON stream, or `config` output. **stderr** carries diagnostics, warnings, progress and errors. |
 | Machine output | `--output-format json` writes exactly one JSON document; `--output-format stream-json` writes NDJSON. Neither ever contains banners, colors or logs. |
 | Color | Color is on when stdout and stderr are terminals and `TERM` isn't `dumb`. `NO_COLOR` (non-empty) turns it off, and `FORCE_COLOR` / `CLICOLOR_FORCE` turn it on. `--color auto\|always\|never` overrides all of these. Machine output is never colored. |
 | Quiet and verbose | `-q/--quiet`: errors only on stderr. `--verbose`: adds informational diagnostics. Both affect stderr only, never stdout. `-d/--debug` and `--debug-file <path>` turn on debug logs. |
-| No terminal UI | `--no-tui` (or `FORGE_TUI=0`): interactive mode uses the line-based prompt. |
-| No input | `--no-input` (or `FORGE_NO_INPUT=1`): Forge never waits for a person. Permission prompts are denied, and interactive mode refuses to start. |
-| Confirmations | Forge has no `--yes`. Tool permissions are granted only by `--permission-mode`, `--allowedTools` or settings rules, never by a blanket yes. |
+| No terminal UI | `--no-tui` (or `KODACT_TUI=0`): interactive mode uses the line-based prompt. |
+| No input | `--no-input` (or `KODACT_NO_INPUT=1`): KodAct never waits for a person. Permission prompts are denied, and interactive mode refuses to start. |
+| Confirmations | KodAct has no `--yes`. Tool permissions are granted only by `--permission-mode`, `--allowedTools` or settings rules, never by a blanket yes. |
 | Secrets | Values whose key looks secret (`*key*`, `*token*`, `*secret*`, `*password*`, `*auth*`, ...) and values that look like credentials (`sk-…`, `Bearer …`) are printed as `<redacted>` in `config` output and diagnostics. |
 
 ## Exit statuses
@@ -33,13 +33,13 @@ a note in `CHANGELOG.md`.
 
 ## Commands
 
-### `forge [prompt]`: interactive session
+### `kodact [prompt]`: interactive session
 
 - **Purpose:** work with the agent in a project, in conversation.
-- **Example:** `forge "add a --dry-run flag to the export command"`
+- **Example:** `kodact "add a --dry-run flag to the export command"`
 - **Input:** the optional first prompt, then what you type. Slash commands
   work here and in `-p` (see "Slash commands" below); `/exit` quits.
-- **Needs a terminal on stdin.** Without one, or with `--no-input`, Forge exits
+- **Needs a terminal on stdin.** Without one, or with `--no-input`, KodAct exits
   with status `2` and suggests `-p`.
 - **Side effects:**
   - files change as the agent's tools allow;
@@ -73,8 +73,8 @@ an argument open a picker (type to filter, Enter to choose). Each choice runs
 the same command with its argument, as you could type it. Typing `@` and part
 of a path lists matching project files.
 
-**Key bindings.** `keybindings.json` in the config directory (`forge config
-paths` shows it; `$FORGE_HOME` when set) maps keys to actions:
+**Key bindings.** `keybindings.json` in the config directory (`kodact config
+paths` shows it; `$KODACT_HOME` when set) maps keys to actions:
 
 ```json
 {"ctrl+s": "submit", "alt+r": "historySearch", "ctrl+g": "none"}
@@ -106,9 +106,9 @@ working unless they are bound to something else or to `"none"`. A bad entry
 | `redraw` | Ctrl+L | Redraw the screen |
 | `showKeys` | `?` | Show the shortcuts (empty prompt) |
 
-When you leave, Forge prints `Resume this conversation with: forge --resume <id>`.
+When you leave, KodAct prints `Resume this conversation with: kodact --resume <id>`.
 
-**The line REPL** (`--no-tui`, or `FORGE_TUI=0`, or when stdout isn't a
+**The line REPL** (`--no-tui`, or `KODACT_TUI=0`, or when stdout isn't a
 terminal) reads one line at a time and prints the conversation on stdout;
 warnings go to stderr. Ctrl-C interrupts the current turn without killing
 the process; `/exit` or end-of-file quits. It reads input only between
@@ -135,13 +135,13 @@ stream-json only a message that is a single text block is scanned. A
 the files as they are then). Other slash commands and `!shell` lines aren't scanned (custom commands attach the
 `@path`s in their own body).
 
-### `forge -p [prompt]`: print mode, for scripts and CI
+### `kodact -p [prompt]`: print mode, for scripts and CI
 
 - **Purpose:** run one task without supervision and print the result.
 - **Examples:**
-  - `forge -p "explain src/main.rs"`
-  - `git diff | forge -p "review this"`
-  - `forge -p --output-format json --max-budget-usd 0.50 "fix the failing test"`
+  - `kodact -p "explain src/main.rs"`
+  - `git diff | kodact -p "review this"`
+  - `kodact -p --output-format json --max-budget-usd 0.50 "fix the failing test"`
 - **Input:** the prompt argument, piped stdin, or both. With both, stdin comes
   first, then the prompt.
 - **Output, per `--output-format`:**
@@ -161,7 +161,7 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
   - `--max-turns N` caps model calls;
   - `--max-budget-usd X` caps spend; it fails closed when the model's pricing
     is unknown;
-  - `--autonomous` (or `FORGE_AUTONOMOUS=1`) is for runs nobody watches. It
+  - `--autonomous` (or `KODACT_AUTONOMOUS=1`) is for runs nobody watches. It
     removes the question and plan-approval tools, tells the model to finish
     without asking, reminds it once to make a real attempt if it tries to
     end a turn without using any tool, and retries model calls that fail for a
@@ -169,13 +169,13 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
     instead of ending the run (contract C21);
   - `--max-time T` (`900`, `15m`, `1h`) tells the model its time limit up
     front and warns it when a fifth of the time (at least a minute) is left.
-    It doesn't stop the run: the host that set the limit does (Forge
+    It doesn't stop the run: the host that set the limit does (KodAct
     extension, used for benchmark runs);
   - `--fallback-model M` switches models on overload.
 - **Interrupting:** Ctrl-C stops the run; the result is written and the exit
   status is `130`.
 - **Worktree:** `-w/--worktree [name]` runs the session in
-  `.forge/worktrees/<name>`, on a new branch `forge/<name>` (the name is
+  `.kodact/worktrees/<name>`, on a new branch `kodact/<name>` (the name is
   generated when left out). The worktree is kept afterwards, and the main
   checkout is untouched.
 - **Web:**
@@ -185,9 +185,9 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
   - Both need permission. Allow sites with rules like
     `WebFetch(domain:docs.rs)`.
 
-### `forge -p --input-format stream-json --output-format stream-json`: IDE host protocol
+### `kodact -p --input-format stream-json --output-format stream-json`: IDE host protocol
 
-- **Purpose:** let an editor or other program drive Forge.
+- **Purpose:** let an editor or other program drive KodAct.
 - **Input:** NDJSON on stdin:
   - `user` messages;
   - `control_request` messages: `initialize`, `interrupt`,
@@ -201,7 +201,7 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
     error `No running agent <id>`. `set_permission_mode` to
     `bypassPermissions` needs `--allow-dangerously-skip-permissions` (or a
     launch in that mode) and is refused when managed settings disable it;
-  - `control_response` answers to Forge's `can_use_tool` requests.
+  - `control_response` answers to KodAct's `can_use_tool` requests.
 - **Output:** NDJSON on stdout, as in print mode, plus `control_request` and
   `control_response` lines.
 - **Permission prompts** go to the host when
@@ -217,7 +217,7 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
   later without that field. `/btw`'s cost and `/mcp`'s effect on the system
   prompt and `system/init` are applied when the turn ends.
 
-### `forge doctor [--probe]`
+### `kodact doctor [--probe]`
 
 Checks the local setup:
 - settings files;
@@ -239,20 +239,20 @@ check that the URL and key work.
 
 | Endpoint | Chosen by | Key | Sent as |
 | --- | --- | --- | --- |
-| OpenAI-compatible | `FORGE_OPENAI_BASE_URL`, else `openai.baseUrl` | `FORGE_OPENAI_API_KEY`, else `openai.apiKeyHelper` | `Authorization: Bearer` |
-| Gemini API | `FORGE_GEMINI_BASE_URL`, else `gemini.baseUrl`, else `FORGE_GEMINI_API_KEY` alone (Google AI Studio, when no Messages key is set) | `FORGE_GEMINI_API_KEY`, else `gemini.apiKeyHelper` | `x-goog-api-key` for Google AI Studio, `Authorization: Bearer` for Vertex AI, both for other hosts; `gemini.authHeader` (or `FORGE_GEMINI_AUTH_HEADER`) chooses: `x-goog-api-key`, `bearer`, `both` |
-| Messages API | `FORGE_BASE_URL`, else `baseUrl`, else the default host | `FORGE_API_KEY` and/or `FORGE_AUTH_TOKEN`, else `apiKeyHelper` | `x-api-key` / `Authorization: Bearer` |
+| OpenAI-compatible | `KODACT_OPENAI_BASE_URL`, else `openai.baseUrl` | `KODACT_OPENAI_API_KEY`, else `openai.apiKeyHelper` | `Authorization: Bearer` |
+| Gemini API | `KODACT_GEMINI_BASE_URL`, else `gemini.baseUrl`, else `KODACT_GEMINI_API_KEY` alone (Google AI Studio, when no Messages key is set) | `KODACT_GEMINI_API_KEY`, else `gemini.apiKeyHelper` | `x-goog-api-key` for Google AI Studio, `Authorization: Bearer` for Vertex AI, both for other hosts; `gemini.authHeader` (or `KODACT_GEMINI_AUTH_HEADER`) chooses: `x-goog-api-key`, `bearer`, `both` |
+| Messages API | `KODACT_BASE_URL`, else `baseUrl`, else the default host | `KODACT_API_KEY` and/or `KODACT_AUTH_TOKEN`, else `apiKeyHelper` | `x-api-key` / `Authorization: Bearer` |
 
 - A key is never sent to the other kind of endpoint. With an OpenAI-compatible
-  endpoint and only `FORGE_API_KEY` set, Forge warns at startup, and a 401
-  names `FORGE_OPENAI_API_KEY`.
-- The OpenAI-compatible endpoint may need no key (a local server): Forge
+  endpoint and only `KODACT_API_KEY` set, KodAct warns at startup, and a 401
+  names `KODACT_OPENAI_API_KEY`.
+- The OpenAI-compatible endpoint may need no key (a local server): KodAct
   starts without one, silently for `localhost` and private addresses, with a
   warning otherwise. The Messages API always needs one.
 - The Gemini endpoint's URL ends at the API version: Google AI Studio's is
   `https://generativelanguage.googleapis.com/v1beta` (the default); Vertex
   AI's is `https://<location>-aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/publishers/google`,
-  with `gemini.apiKeyHelper` set to `gcloud auth print-access-token`. Forge
+  with `gemini.apiKeyHelper` set to `gcloud auth print-access-token`. KodAct
   adds `/models/<model>:streamGenerateContent`. Gemini 3 and later get
   effort as their thinking level, 2.5 as a thinking budget; each tool call's
   thought signature goes back on that call.
@@ -262,12 +262,12 @@ check that the URL and key work.
 - `baseUrl`, `openai.baseUrl`, `gemini.baseUrl`, `apiKeyHelper`,
   `openai.apiKeyHelper` and `gemini.apiKeyHelper` are
   read from your user, local, `--settings` and managed settings only. In a
-  project's checked-in `.forge/settings.json` they are ignored with a warning:
+  project's checked-in `.kodact/settings.json` they are ignored with a warning:
   a repository can't choose where your key goes or run a command for it.
 - A key helper must print the key and nothing else on one line; any failure
   (exit status, stderr, empty or extra output) is reported and stops startup.
 
-### `forge config list [--origin] | get <key> | paths`
+### `kodact config list [--origin] | get <key> | paths`
 
 - **`list`:** the merged settings as JSON, with secrets redacted.
 - **`list --origin`:** for each top-level key, its value, its source layer and
@@ -280,17 +280,17 @@ check that the URL and key work.
 
 Read-only. The output goes to stdout.
 
-### `forge mcp ...`: MCP servers
+### `kodact mcp ...`: MCP servers
 
 | Command | Does |
 | --- | --- |
-| `forge mcp add [-s local\|project\|user] [-t stdio\|http\|sse] [-e K=V]... [-H "K: V"]... <name> <command-or-url> [-- args...]` | Saves a server. `local` writes `.forge/settings.local.json` (private), `project` writes `.mcp.json` (shared) and `user` writes `<config>/settings.json` |
-| `forge mcp add-json [-s scope] <name> '<json>'` | The same, from a JSON config |
-| `forge mcp remove [-s scope] <name>` | Removes it (from every scope when none is given). Exits 1 if it was not found |
-| `forge mcp list` | Starts each server and reports `connected, N tools`, `failed: <why>` or `needs approval`. Exits 1 if any failed |
-| `forge mcp get <name>` | Config (secret values hidden), status, server info and tools |
-| `forge mcp approve <name>` / `--all` | Trusts servers from this project's `.mcp.json` (local settings) |
-| `forge mcp serve` | Forge's built-in tools as an MCP server on stdio |
+| `kodact mcp add [-s local\|project\|user] [-t stdio\|http\|sse] [-e K=V]... [-H "K: V"]... <name> <command-or-url> [-- args...]` | Saves a server. `local` writes `.kodact/settings.local.json` (private), `project` writes `.mcp.json` (shared) and `user` writes `<config>/settings.json` |
+| `kodact mcp add-json [-s scope] <name> '<json>'` | The same, from a JSON config |
+| `kodact mcp remove [-s scope] <name>` | Removes it (from every scope when none is given). Exits 1 if it was not found |
+| `kodact mcp list` | Starts each server and reports `connected, N tools`, `failed: <why>` or `needs approval`. Exits 1 if any failed |
+| `kodact mcp get <name>` | Config (secret values hidden), status, server info and tools |
+| `kodact mcp approve <name>` / `--all` | Trusts servers from this project's `.mcp.json` (local settings) |
+| `kodact mcp serve` | KodAct's built-in tools as an MCP server on stdio |
 
 **Config shapes:**
 - `{"command": "...", "args": [...], "env": {...}}`
@@ -306,12 +306,12 @@ Values may use `${VAR}` and `${VAR:-default}`.
   like `mcp__github` or `mcp__github__create_issue`.
 - `system/init` lists each server's status.
 
-### `forge completion <bash|zsh|fish|elvish|powershell>`
+### `kodact completion <bash|zsh|fish|elvish|powershell>`
 
 Prints a completion script generated from the same definitions as `--help`.
-For example: `forge completion bash > ~/.local/share/bash-completion/completions/forge`.
+For example: `kodact completion bash > ~/.local/share/bash-completion/completions/kodact`.
 
-### `forge-eval run | compare | validate | list`
+### `kodact-eval run | compare | validate | list`
 
 Measures the harness; see `evals/README.md`. `run` writes `report.json` and
 `report.md` under `evals/results/<label>/` and prints the Markdown report.
@@ -345,12 +345,12 @@ The same message also goes to stderr for people.
 
 **Precedence, highest first:**
 1. Command-line flags.
-2. Environment variables (`FORGE_MODEL`, ...).
-3. Managed policy (`/etc/forge/managed-settings.json`). An administrator's
+2. Environment variables (`KODACT_MODEL`, ...).
+3. Managed policy (`/etc/kodact/managed-settings.json`). An administrator's
    policy beats user files on purpose.
 4. `--settings` (a file or a JSON string).
-5. Project local settings: `.forge/settings.local.json`.
-6. Project settings: `.forge/settings.json`.
+5. Project local settings: `.kodact/settings.local.json`.
+6. Project settings: `.kodact/settings.json`.
 7. User settings: `<config>/settings.json`.
 8. Built-in defaults.
 
@@ -358,18 +358,18 @@ The same message also goes to stderr for people.
 higher layer replace lower ones. `--setting-sources user,project,local` limits
 which file layers load.
 
-**Invalid files** are skipped with a warning on stderr; `forge doctor` reports
+**Invalid files** are skipped with a warning on stderr; `kodact doctor` reports
 them.
 
-**Models Forge doesn't know** (a gateway's or a local server's): Forge needs
+**Models KodAct doesn't know** (a gateway's or a local server's): KodAct needs
 the context window to compact in time, and prices to show costs.
 - `modelLimits`: `{"<model id>": {"contextWindow": 131072, "maxOutputTokens": 8192}}`.
-  `FORGE_CONTEXT_WINDOW` sets the window for every model without one.
+  `KODACT_CONTEXT_WINDOW` sets the window for every model without one.
 - An OpenAI-compatible endpoint's model list is read for the window when it
   reports one (`context_length`, `max_model_len`, `max_input_tokens`, ...).
 - `modelPricing`: `{"<model id>": {"input": 0.3, "output": 1.2}}`, USD per
   million tokens.
-- Without these, Forge assumes 200,000 tokens of context and 32,000 of output,
+- Without these, KodAct assumes 200,000 tokens of context and 32,000 of output,
   says so once at startup, shows the cost as `cost ?` (or `$1.20+` when only
   part of it is known) and marks `/usage`'s context figure as a guess.
 
@@ -377,39 +377,39 @@ the context window to compact in time, and prices to show costs.
 
 | Kind | Default | Override |
 | --- | --- | --- |
-| Config (settings, `FORGE.md`, agents, commands) | `$XDG_CONFIG_HOME/forge`, else `~/.config/forge` (Linux), `~/Library/Application Support/forge` (macOS), `%APPDATA%\forge` (Windows) | `FORGE_HOME` |
-| State (sessions, file history) | `$XDG_STATE_HOME/forge`, else the platform state or local-data directory | `FORGE_HOME/state` |
-| Cache | `$XDG_CACHE_HOME/forge`, else the platform cache directory | `FORGE_HOME/cache` |
-| Project | `.forge/` in the project, plus `FORGE.md` files from the root down to the cwd (a directory's `AGENTS.md` when it has no `FORGE.md`). Agents (and later commands, skills and output styles) are also read from the vendor-neutral `.agents/<kind>/`, below `.forge/<kind>/` in precedence | — |
+| Config (settings, `KODACT.md`, agents, commands) | `$XDG_CONFIG_HOME/kodact`, else `~/.config/kodact` (Linux), `~/Library/Application Support/kodact` (macOS), `%APPDATA%\kodact` (Windows) | `KODACT_HOME` |
+| State (sessions, file history) | `$XDG_STATE_HOME/kodact`, else the platform state or local-data directory | `KODACT_HOME/state` |
+| Cache | `$XDG_CACHE_HOME/kodact`, else the platform cache directory | `KODACT_HOME/cache` |
+| Project | `.kodact/` in the project, plus `KODACT.md` files from the root down to the cwd (a directory's `AGENTS.md` when it has no `KODACT.md`). Agents (and later commands, skills and output styles) are also read from the vendor-neutral `.agents/<kind>/`, below `.kodact/<kind>/` in precedence | — |
 
 **Environment variables:**
 
 | Variable | Purpose |
 | --- | --- |
-| `FORGE_API_KEY` | Messages API key |
-| `FORGE_AUTH_TOKEN` | Bearer token, for gateways |
-| `FORGE_BASE_URL` | API endpoint |
-| `FORGE_CUSTOM_HEADERS` | Extra headers, one `Name: value` per line |
-| `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint instead |
-| `FORGE_GEMINI_API_KEY`, `FORGE_GEMINI_BASE_URL`, `FORGE_GEMINI_AUTH_HEADER` | Google's Gemini API instead (Google AI Studio by default, Vertex AI or a gateway by URL) |
-| `FORGE_MODEL` | Default model |
-| `FORGE_TUI` | `inline` keeps the interactive UI in an inline viewport at the bottom of the terminal, writing output into its scrollback as it happens; by default the UI takes the whole window and prints the conversation into the scrollback when it closes |
-| `FORGE_MAX_OUTPUT_TOKENS` | Per-request output cap |
-| `FORGE_CONTEXT_WINDOW` | Context window, in tokens, for models Forge doesn't know (see `modelLimits`) |
-| `FORGE_MAX_THINKING_TOKENS` | Thinking budget |
-| `FORGE_MAX_RETRIES` | API retries (default 3) |
-| `FORGE_MAX_CONCURRENT_REQUESTS` | Model requests in flight at once for the whole session (default 4; also `maxConcurrentRequests`) |
-| `FORGE_MAX_PARALLEL_AGENTS` | Task sub-agents running at once (default 4; also `maxParallelAgents`) |
-| `FORGE_PROMPTS_DIR` | A local prompt set |
-| `FORGE_HOME` | One root for config, state and cache |
-| `FORGE_SANDBOX` | Same as `--sandbox` |
-| `FORGE_SHELL` | The shell commands run in: a full path, or a name on PATH (bash, sh, zsh, pwsh, powershell). Also read from the settings `env` block. See "Shells" below |
-| `FORGE_VERIFY` | `0` turns the verification loop off |
-| `FORGE_DISABLE_CRON` | `1` turns scheduled prompts off (`/loop`, `CronCreate`, ...) |
+| `KODACT_API_KEY` | Messages API key |
+| `KODACT_AUTH_TOKEN` | Bearer token, for gateways |
+| `KODACT_BASE_URL` | API endpoint |
+| `KODACT_CUSTOM_HEADERS` | Extra headers, one `Name: value` per line |
+| `KODACT_OPENAI_BASE_URL`, `KODACT_OPENAI_API_KEY` | An OpenAI-compatible endpoint instead |
+| `KODACT_GEMINI_API_KEY`, `KODACT_GEMINI_BASE_URL`, `KODACT_GEMINI_AUTH_HEADER` | Google's Gemini API instead (Google AI Studio by default, Vertex AI or a gateway by URL) |
+| `KODACT_MODEL` | Default model |
+| `KODACT_TUI` | `inline` keeps the interactive UI in an inline viewport at the bottom of the terminal, writing output into its scrollback as it happens; by default the UI takes the whole window and prints the conversation into the scrollback when it closes |
+| `KODACT_MAX_OUTPUT_TOKENS` | Per-request output cap |
+| `KODACT_CONTEXT_WINDOW` | Context window, in tokens, for models KodAct doesn't know (see `modelLimits`) |
+| `KODACT_MAX_THINKING_TOKENS` | Thinking budget |
+| `KODACT_MAX_RETRIES` | API retries (default 3) |
+| `KODACT_MAX_CONCURRENT_REQUESTS` | Model requests in flight at once for the whole session (default 4; also `maxConcurrentRequests`) |
+| `KODACT_MAX_PARALLEL_AGENTS` | Task sub-agents running at once (default 4; also `maxParallelAgents`) |
+| `KODACT_PROMPTS_DIR` | A local prompt set |
+| `KODACT_HOME` | One root for config, state and cache |
+| `KODACT_SANDBOX` | Same as `--sandbox` |
+| `KODACT_SHELL` | The shell commands run in: a full path, or a name on PATH (bash, sh, zsh, pwsh, powershell). Also read from the settings `env` block. See "Shells" below |
+| `KODACT_VERIFY` | `0` turns the verification loop off |
+| `KODACT_DISABLE_CRON` | `1` turns scheduled prompts off (`/loop`, `CronCreate`, ...) |
 | `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT` | MCP connect and call timeouts, in milliseconds (30 s, 10 min) |
-| `FORGE_NO_INPUT` | Same as `--no-input` |
-| `FORGE_TUI` | `0`, `false`, `off` or `no`: interactive mode uses the line REPL (same as `--no-tui`) |
-| `FORGE_LOG` | Log filter, with `--debug` (`/debug` turns logging on partway through a session) |
+| `KODACT_NO_INPUT` | Same as `--no-input` |
+| `KODACT_TUI` | `0`, `false`, `off` or `no`: interactive mode uses the line REPL (same as `--no-tui`) |
+| `KODACT_LOG` | Log filter, with `--debug` (`/debug` turns logging on partway through a session) |
 | `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR_FORCE` | Color |
 
 ## Slash commands
@@ -424,18 +424,18 @@ them all. The built-ins so far:
 | `/usage` (`/cost`, `/stats`) | Cost, time, model calls, tool calls, tokens per model, and context now |
 | `/compact [what to keep]` | Summarizes the conversation now |
 | `/clear [name]` (`/reset`, `/new`) | Starts a new conversation (a new session id); the old one stays resumable, under `name` if given |
-| `/doctor` (`/checkup`) | `forge doctor` plus this session's MCP, model and warnings |
+| `/doctor` (`/checkup`) | `kodact doctor` plus this session's MCP, model and warnings |
 | `/skills`, `/agents`, `/memory`, `/hooks`, `/plugin` | What is loaded, and from where |
-| `/hooks add <Event> <matcher> <command> [--scope local\|project\|user] [--timeout <s>]` | Adds a command hook to that scope's settings file (default `local`, `.forge/settings.local.json`) and reloads the session so it applies at once. `''` or `*` as the matcher matches everything; the words after the matcher are the command |
-| `/agents create <name> --description <text> [--prompt <text>] [--tools a,b] [--model <model\|inherit>] [--scope project\|user]` | Writes `<name>.md` (project: `.forge/agents/`, user: the config directory's `agents/`) and reloads, so the Task tool offers it at once. No tools picked means all tools; no instructions means instructions from the description. Names are lowercase letters, digits and dashes; an existing file is never overwritten |
+| `/hooks add <Event> <matcher> <command> [--scope local\|project\|user] [--timeout <s>]` | Adds a command hook to that scope's settings file (default `local`, `.kodact/settings.local.json`) and reloads the session so it applies at once. `''` or `*` as the matcher matches everything; the words after the matcher are the command |
+| `/agents create <name> --description <text> [--prompt <text>] [--tools a,b] [--model <model\|inherit>] [--scope project\|user]` | Writes `<name>.md` (project: `.kodact/agents/`, user: the config directory's `agents/`) and reloads, so the Task tool offers it at once. No tools picked means all tools; no instructions means instructions from the description. Names are lowercase letters, digits and dashes; an existing file is never overwritten |
 | `/hooks remove <Event> <n>` | Removes hook `n` of that event, as `/hooks` numbers it (each line shows its source: user, project, local, flag, managed or plugin). Only user, project and local hooks can be removed |
-| `/mcp [reconnect\|enable\|disable <server\|all>]` | Each MCP server's status. `reconnect` restarts a server from the config it started with; `disable` stops it, hides its tools and prompts, and saves that in `.forge/settings.local.json` (`disabledMcpjsonServers`); `enable` reverses it. Tools a server didn't offer when the session started join after `/reload-plugins`. `--mcp-config` and plugin servers change for the session only |
+| `/mcp [reconnect\|enable\|disable <server\|all>]` | Each MCP server's status. `reconnect` restarts a server from the config it started with; `disable` stops it, hides its tools and prompts, and saves that in `.kodact/settings.local.json` (`disabledMcpjsonServers`); `enable` reverses it. Tools a server didn't offer when the session started join after `/reload-plugins`. `--mcp-config` and plugin servers change for the session only |
 | `/tasks [stop <id>]` (`/bashes`) | Background shells, scheduled tasks and subtasks; `stop` ends one |
-| `/subtask <task>` | Hands the task to a background agent that starts from this conversation; you keep going. Its report reaches the model with your next prompt (and is shown when it finishes). In `-p`, Forge waits for it, then runs one more turn with the report |
+| `/subtask <task>` | Hands the task to a background agent that starts from this conversation; you keep going. Its report reaches the model with your next prompt (and is shown when it finishes). In `-p`, KodAct waits for it, then runs one more turn with the report |
 | `/model [model]` | Shows the current model and the models your endpoint lists (`GET {baseUrl}/models` on an OpenAI-compatible endpoint; the default backend lists none), or switches to the given model id |
 | `/effort [low\|medium\|high\|xhigh\|max\|auto]` | Shows or sets reasoning effort; `max` lasts for the session only |
 | `/fast [on\|off]` | Fast mode, on models that offer it |
-| `/config [key=value ...] [--scope user\|project\|local]` (`/settings`) | Shows the settings Forge can change, or changes them; `key=` restores the default; `/config --help` lists the keys |
+| `/config [key=value ...] [--scope user\|project\|local]` (`/settings`) | Shows the settings KodAct can change, or changes them; `key=` restores the default; `/config --help` lists the keys |
 | `/output-style [style]` | Lists the output styles, or switches |
 | `/autocompact [on\|off\|auto\|<tokens>]` | When the conversation is summarized automatically |
 | `/sandbox [on\|off\|read-only\|workspace-write]` | The OS sandbox for shell commands |
@@ -443,25 +443,25 @@ them all. The built-ins so far:
 | `/add-dir <path> [--save]` | Adds a working directory; `--save` keeps it in local settings |
 | `/rename [name]` | Names the session; without a name, a small model suggests one |
 | `/export [file]` | The conversation as plain text, to a file or stdout |
-| `/diff` | Uncommitted changes (`git diff HEAD` and untracked files), or outside git the files Forge changed; then the files each prompt changed |
+| `/diff` | Uncommitted changes (`git diff HEAD` and untracked files), or outside git the files KodAct changed; then the files each prompt changed |
 | `/context [all]` | Estimated tokens for the system prompt, tools, skills, memory and messages against the window, with suggestions |
 | `/rewind [<n> <action> [instructions]]` (`/checkpoint`, `/undo`) | Lists your prompts; then goes back to before prompt `n`. Actions: `both` (code and conversation, the default), `conversation`, `code`, `summarize-from`, `summarize-to` |
 | `/branch [name]` | Continues in a copy of the conversation under a new id; the original stays as it was |
 | `/resume [n\|id\|name]` (`/continue`) | Interactive only: lists this directory's conversations, or switches to one |
 | `/cd <directory>` | Moves the conversation to another directory (a new session there) |
 | `/reload-skills`, `/reload-plugins` | Re-reads skills, commands, agents, output styles, plugins and settings without leaving the conversation |
-| `/loop [interval] [prompt]` | Runs a prompt now and on a schedule (`5m`, `2h`, `every 20 minutes`), or self-paced when no interval is given (the model picks when to check again, or stops). No prompt: `.forge/loop.md`, else a maintenance pass. `/tasks` lists scheduled tasks; `/tasks stop <id>` ends one |
+| `/loop [interval] [prompt]` | Runs a prompt now and on a schedule (`5m`, `2h`, `every 20 minutes`), or self-paced when no interval is given (the model picks when to check again, or stops). No prompt: `.kodact/loop.md`, else a maintenance pass. `/tasks` lists scheduled tasks; `/tasks stop <id>` ends one |
 | `/goal [condition\|clear]` | Sets a goal and keeps working until a check finds it met (see below) |
 | `/plan [description]` | Plan mode; with a description, starts planning it |
 | `/btw [question]` | A side question, answered from the conversation without tools; it doesn't enter the conversation |
 | `/recap` | One line: what was asked, what's done, what's open |
 | `!command` | In the interactive session, runs `command` in the shell as you (no prompt, no sandbox) and gives the model the command and its output; the model answers unless `respondToBashCommands` is `false`. In `-p`, `!...` is an ordinary prompt |
-| `/advisor [model\|off]` | Lets Forge consult a second model (the `Advisor` tool) before risky changes, when stuck, and before calling work done. Its cost counts toward the session |
-| `/import [codex\|gemini\|cursor] [--yes]` | Shows what it would bring over from other coding agents (their MCP servers, GEMINI.md, Cursor rules); `--yes` applies it. Servers from your own configs go to your user settings; servers shipped in the repository go to `.mcp.json` and still need `forge mcp approve` |
+| `/advisor [model\|off]` | Lets KodAct consult a second model (the `Advisor` tool) before risky changes, when stuck, and before calling work done. Its cost counts toward the session |
+| `/import [codex\|gemini\|cursor] [--yes]` | Shows what it would bring over from other coding agents (their MCP servers, GEMINI.md, Cursor rules); `--yes` applies it. Servers from your own configs go to your user settings; servers shipped in the repository go to `.mcp.json` and still need `kodact mcp approve` |
 | `/feedback [description]` (`/bug`, `/share`) | Saves a bug-report bundle in `<state>/feedback/` (report, doctor checks, this session's transcript and settings, with secrets masked). Nothing is uploaded |
-| `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, Forge reads the log and diagnoses it |
+| `/debug [problem]` | Turns on a debug log for the session (`<state>/debug/<session>.txt`); with a description, KodAct reads the log and diagnoses it |
 | `/release-notes` | The changelog |
-| `/color [name\|default]` | Terminal UI only: the accent colour (prompt and answer markers, selections, dialog borders) for this session: red, orange, yellow, green, cyan, blue, purple, pink; `default` is Forge's own. Not saved |
+| `/color [name\|default]` | Terminal UI only: the accent colour (prompt and answer markers, selections, dialog borders) for this session: red, orange, yellow, green, cyan, blue, purple, pink; `default` is KodAct's own. Not saved |
 | `/focus [on\|off]` | Terminal UI only: keeps tool calls and their results out of the scrollback until turned off (the spinner still names the running tool) |
 | `/diff`, `/context`, `/hooks`, `/agents` with no arguments | Terminal UI: a screen instead of the text answer (TUI.md, "Screens"): the diff viewer, the context grid, the hooks editor, the agents wizard |
 | `/theme [style\|dark\|light\|none]` | Terminal UI only. A style (`forgeframe`, `molten`, `anvil`, `ledger`, `status`, `bare`) sets the front page, chat lines, approvals and prompt, saved as `tuiStyle`; `auto`, `dark`, `light` or `none` set the colours, saved as `theme`; both in user settings. Without an argument, a picker of both. `NO_COLOR` still wins |
@@ -486,7 +486,7 @@ Contract C19 has the details.
 
 **Goals:** `/goal <condition>` sends the condition as the prompt. After each
 turn the model checks the conversation against it, trusting tool output rather
-than the agent's own summary (a pass must cite the evidence), and Forge keeps going
+than the agent's own summary (a pass must cite the evidence), and KodAct keeps going
 until the check says it is met or can't be met. It pauses after three turns
 without a tool call, an interrupt or an error, and resumes with your next
 prompt. In `-p` the whole loop runs in one invocation: one `result` per turn
@@ -506,13 +506,13 @@ wrote.
 **Local commands** answer without calling the model: the result has
 `num_turns: 0`, and in text mode the answer goes to stdout. A failed or
 unknown command (`Unknown command: /name`) goes to stderr with exit status
-`1`. Account and cloud commands such as `/login` don't exist in Forge.
+`1`. Account and cloud commands such as `/login` don't exist in KodAct.
 
 A word that looks like a path (`/usr/bin/env ...`, or any name containing
 `/`) is sent as an ordinary prompt.
 
 **Custom commands** are Markdown files in `<config>/commands/`,
-`.agents/commands/` or `.forge/commands/` (later wins). A file in a
+`.agents/commands/` or `.kodact/commands/` (later wins). A file in a
 subdirectory is named `dir:name`, and a plugin's command `plugin:name`.
 
 The optional frontmatter takes `description`, `argument-hint` and
@@ -523,8 +523,8 @@ The optional frontmatter takes `description`, `argument-hint` and
 - `@path` attaches a file (same rules as `@` mentions in prompts, without the
   permission check: the command's author chose the files).
 
-**Bundled skills** ship with Forge:
-- `/init` writes FORGE.md.
+**Bundled skills** ship with KodAct:
+- `/init` writes KODACT.md.
 - `/code-review [low|medium|high|max] [--fix] [pr|branch|path]` (also
   `/review`) and `/security-review` review changes.
 - `/simplify`, `/verify` and `/run` check and tidy work.
@@ -534,7 +534,7 @@ The optional frontmatter takes `description`, `argument-hint` and
 - `/update-config` edits settings files.
 
 A skill of yours with the same name replaces one, and so does
-`FORGE_PROMPTS_DIR/skills/<name>.md`.
+`KODACT_PROMPTS_DIR/skills/<name>.md`.
 
 **Skills** are folders `skills/<name>/SKILL.md`, with frontmatter `name` and
 `description`. The model sees only names and descriptions, and loads a body
@@ -545,7 +545,7 @@ with the `Skill` tool when the task matches. You can load one with
 or a custom style from `output-styles/*.md`.
 
 **Plugins:** `--plugin-dir <dir>...` (or the `pluginDirs` setting) loads a
-plugin directory: `plugin.json` (or `.forge-plugin/plugin.json`) plus any of
+plugin directory: `plugin.json` (or `.kodact-plugin/plugin.json`) plus any of
 `commands/`, `agents/`, `skills/`, `output-styles/`, `hooks/hooks.json` and
 `.mcp.json`.
 
@@ -566,7 +566,7 @@ listed in the system prompt's environment section.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `verification.enabled` | `true` | `false` turns the loop off (as does `FORGE_VERIFY=0`) |
+| `verification.enabled` | `true` | `false` turns the loop off (as does `KODACT_VERIFY=0`) |
 | `verification.commands` | detected | The project's check commands |
 | `verification.maxReminders` | `1` | Reminders per user turn |
 
@@ -594,17 +594,17 @@ listed in the system prompt's environment section.
   reads like instructions to an AI agent: "ignore previous instructions",
   chat-template tokens, fake system tags, or invisible Unicode tag
   characters.
-- Forge then appends a note to that tool result, telling the model the text
+- KodAct then appends a note to that tool result, telling the model the text
   is data and not to follow it. Nothing is removed. This is OWASP LLM01:
   prompt injection.
 
 ## Shells
 
-Every command Forge runs (the Bash tool, `!command`, hooks, `apiKeyHelper`,
+Every command KodAct runs (the Bash tool, `!command`, hooks, `apiKeyHelper`,
 the status line, `!` lines in custom commands) runs in one shell, chosen at
 startup:
-1. `FORGE_SHELL`, from the environment, else from a settings `env` block. A
-   value that names no program, or a program Forge can't drive (cmd, fish),
+1. `KODACT_SHELL`, from the environment, else from a settings `env` block. A
+   value that names no program, or a program KodAct can't drive (cmd, fish),
    is an error, never silently skipped.
 2. **Windows:** Git Bash: next to `git.exe` on PATH, then the standard install
    directories (`%ProgramFiles%\Git`, `%LOCALAPPDATA%\Programs\Git`, scoop),
@@ -616,7 +616,7 @@ The tool keeps the name `Bash` (permission rules and hooks match on it); its
 description and the model's environment prompt say which shell it is, and on
 Windows how to write paths for it.
 
-**With no shell,** Forge starts anyway: it warns once on stderr, `forge doctor`
+**With no shell,** KodAct starts anyway: it warns once on stderr, `kodact doctor`
 fails its `shell` row with the places it looked, and the Bash tool answers
 every call with that message and tells the model not to retry, instead of
 failing with an OS error.
@@ -628,7 +628,7 @@ and permission rules, which compare paths without regard to case.
 
 ## Sandbox
 
-`--sandbox <mode>`, `FORGE_SANDBOX` or the `sandbox.mode` setting (in that
+`--sandbox <mode>`, `KODACT_SANDBOX` or the `sandbox.mode` setting (in that
 order) run each Bash command inside an OS sandbox. The sandbox is separate from
 permissions: a sandboxed command is allowed without a prompt, because the
 operating system, not a rule, limits what it can touch.
@@ -640,7 +640,7 @@ operating system, not a rule, limits what it can touch.
 | `workspace-write` | the working directories (`--add-dir` included), the temp directories, and `sandbox.writableRoots` | `sandbox.network` (default off) |
 
 **What stays protected, in every mode:**
-- `.forge/` inside each writable root (settings, hooks and agents can't be
+- `.kodact/` inside each writable root (settings, hooks and agents can't be
   rewritten from a command);
 - `.git/hooks` and `.git/config`.
 
@@ -652,11 +652,11 @@ operating system, not a rule, limits what it can touch.
 - Linux: bubblewrap (`bwrap`). Install it with your package manager.
 - macOS: `sandbox-exec` with a generated Seatbelt profile. This backend is
   untested.
-- Windows: none. Run Forge inside WSL 2 to confine commands.
+- Windows: none. Run KodAct inside WSL 2 to confine commands.
 
-`forge doctor` reports which backend was found.
+`kodact doctor` reports which backend was found.
 
-**When the backend is missing,** Forge warns once on stderr and commands go
+**When the backend is missing,** KodAct warns once on stderr and commands go
 through normal approval. It never runs them unconfined silently.
 
 **When a command fails because of the sandbox,** the tool result says so. The
@@ -672,8 +672,8 @@ Settings example:
 
 ## Pipes
 
-- **A closed stdout** ends Forge quietly with status 0. That happens with
-  `forge ... | head`, or when a host exits.
+- **A closed stdout** ends KodAct quietly with status 0. That happens with
+  `kodact ... | head`, or when a host exits.
 - **SIGPIPE stays ignored**, so a hook or MCP server that exits before
   reading its input can't kill the process.
 
@@ -681,16 +681,16 @@ Settings example:
 
 Every model request in a session (the main agent, Task sub-agents,
 `/subtask`, compaction, goal checks, `/btw`) shares one limit on requests in
-flight: `maxConcurrentRequests` or `FORGE_MAX_CONCURRENT_REQUESTS`, default 4.
+flight: `maxConcurrentRequests` or `KODACT_MAX_CONCURRENT_REQUESTS`, default 4.
 A request over the limit waits for a slot instead of failing.
 
-When the endpoint answers 429 anyway, Forge halves the limit (never below 1),
+When the endpoint answers 429 anyway, KodAct halves the limit (never below 1),
 says so once on stderr or in the UI, waits (`Retry-After` when the endpoint
 sends one, otherwise 2, 4, 8... seconds, at most 60) and sends the request
 again, up to 6 times on top of the provider's own retries. After 8 requests in
 a row succeed, the limit grows back by one.
 
-`maxParallelAgents` (or `FORGE_MAX_PARALLEL_AGENTS`, default 4) caps how many
+`maxParallelAgents` (or `KODACT_MAX_PARALLEL_AGENTS`, default 4) caps how many
 Task sub-agents run at once; the others wait their turn. A sub-agent that
 fails returns a result starting with `FAILED:` that tells the model its task
 is not done.
@@ -699,12 +699,12 @@ is not done.
 
 **Timeouts:**
 - connecting: 30 s;
-- between reads of a response: 300 s (`FORGE_MAX_RETRIES` controls retries);
+- between reads of a response: 300 s (`KODACT_MAX_RETRIES` controls retries);
 - no overall deadline, because long generations stream for minutes.
 
 **Retries:** only failures before any streamed output are retried, at most
-`FORGE_MAX_RETRIES` times, with exponential backoff. They cover HTTP 408, 409,
+`KODACT_MAX_RETRIES` times, with exponential backoff. They cover HTTP 408, 409,
 429 and 5xx (honouring `retry-after`) and connection failures.
 
 **Errors** state what failed, the cause, and the next step. For example:
-`could not connect to http://…/v1/messages: Connection refused. Check FORGE_BASE_URL, your network connection and proxy settings.`
+`could not connect to http://…/v1/messages: Connection refused. Check KODACT_BASE_URL, your network connection and proxy settings.`

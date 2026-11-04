@@ -1,19 +1,19 @@
 # Baseline (2026-10-06)
 
-## What ForgeCLI is
+## What KodAct is
 
-ForgeCLI is a terminal coding agent written in Rust.
-- **Binary:** `forge`, built from a Cargo workspace of 16 crates.
+KodAct is a terminal coding agent written in Rust.
+- **Binary:** `kodact`, built from a Cargo workspace of 16 crates.
 - **Platforms:** Linux and macOS, from source. Windows is untested.
 - **Users:** developers working in a terminal; IDE hosts that drive
-  `forge -p --input-format stream-json`; CI jobs and scripts.
+  `kodact -p --input-format stream-json`; CI jobs and scripts.
 - **Core workflows:**
-  1. An interactive session in a project (`forge`).
-  2. A one-shot task (`forge -p "..."`), whose result goes to stdout as text
+  1. An interactive session in a project (`kodact`).
+  2. A one-shot task (`kodact -p "..."`), whose result goes to stdout as text
      or JSON.
   3. An IDE host over stream-json, with permission prompts.
   4. Resuming or continuing a session.
-  5. Measuring the harness (`forge-eval`).
+  5. Measuring the harness (`kodact-eval`).
 
 ## Checks run
 
@@ -34,16 +34,16 @@ ForgeCLI is a terminal coding agent written in Rust.
 
 ### Critical: incorrect behaviour, broken automation, unsafe side effects
 
-1. **Errors go to stdout in text mode, and twice.** `forge -p hi` with no
+1. **Errors go to stdout in text mode, and twice.** `kodact -p hi` with no
    credentials prints the error on stderr *and* on stdout. Scripts that
    capture stdout see an error as if it were a result.
 2. **One exit code for every failure.** A run that fails, missing credentials
    and a hit limit all exit with `1`, so scripts can't tell them apart. Only
    clap's usage errors are distinct (`2`).
-3. **Interactive mode doesn't check for a terminal.** With stdin piped, `forge`
+3. **Interactive mode doesn't check for a terminal.** With stdin piped, `kodact`
    starts the interactive session, prints a banner and reads prompts and
    permission answers from the pipe.
-4. **`forge config list` / `get` print secrets.** Values such as API keys in
+4. **`kodact config list` / `get` print secrets.** Values such as API keys in
    the settings `env` block are printed without redaction.
 5. **Closed pipes can panic.** Text output uses `println!`, which panics if the
    reader of the pipe exits early.
@@ -53,10 +53,10 @@ ForgeCLI is a terminal coding agent written in Rust.
 6. **Network errors give no cause and no next step.** For example:
    `error sending request for url (…)`.
 7. **Missing credentials are found late.** They're reported only at the first
-   API call, as an "API Error", with no pointer to `forge doctor`.
+   API call, as an "API Error", with no pointer to `kodact doctor`.
 8. **No `--no-input`, `--quiet` or color control (`NO_COLOR`)**, and the
    `--yes` scope isn't documented.
-9. **Config and state live in `~/.forge`.** XDG locations are ignored, and
+9. **Config and state live in `~/.kodact`.** XDG locations are ignored, and
    there's no command to show where a setting came from.
 10. **No written CLI contract:** commands, outputs, exit statuses and config
     precedence aren't specified anywhere.
@@ -92,8 +92,8 @@ API key and about an hour of model time. From the repository root:
    must pass); `list` shows the tasks and their pillars:
 
    ```sh
-   target/release/forge-eval validate
-   target/release/forge-eval list
+   target/release/kodact-eval validate
+   target/release/kodact-eval list
    ```
 
 3. **Run the baseline**: three runs per task, one fixed model (`--model
@@ -101,13 +101,13 @@ API key and about an hour of model time. From the repository root:
    under the output directory, never in this repository):
 
    ```sh
-   export FORGE_API_KEY=...
-   target/release/forge-eval run --label baseline --repeat 3 -- --model sonnet --dangerously-skip-permissions
+   export KODACT_API_KEY=...
+   target/release/kodact-eval run --label baseline --repeat 3 -- --model sonnet --dangerously-skip-permissions
    ```
 
    `--only <id|tag|pillar>` runs part of the suite, `-j` sets how many tasks
-   run at once (default 2), and `--forge` points at another `forge` binary
-   (default `target/release/forge`).
+   run at once (default 2), and `--kodact` points at another `kodact` binary
+   (default `target/release/kodact`).
 
 4. **Read the results** in `evals/results/baseline/` (git ignores
    `evals/results/`):
@@ -119,7 +119,7 @@ API key and about an hour of model time. From the repository root:
 
 5. **Commit the summary, not the runs.** Copy `report.md` and `report.json`
    to `evals/baselines/<yyyy-mm-dd>-baseline/` and commit them, with the
-   Forge commit and the model in the commit message. Never commit:
+   KodAct commit and the model in the commit message. Never commit:
    - API keys (check `grep -rn "sk-" evals/baselines/` finds nothing);
    - `transcript.jsonl`, `stderr.txt` or `workspace/`: they hold full model
      traffic, environment details and paths from your machine.
@@ -129,8 +129,8 @@ API key and about an hour of model time. From the repository root:
    directory or a `report.json`):
 
    ```sh
-   target/release/forge-eval run --label my-change --repeat 3 -- --model sonnet --dangerously-skip-permissions
-   target/release/forge-eval compare evals/results/baseline evals/results/my-change
+   target/release/kodact-eval run --label my-change --repeat 3 -- --model sonnet --dangerously-skip-permissions
+   target/release/kodact-eval compare evals/results/baseline evals/results/my-change
    ```
 
 **Reading the A/B report.** `compare` prints one table: pass rate, cost per

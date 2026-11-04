@@ -1,0 +1,31 @@
+[package]
+name = "kodact-agents"
+description = "Sub-agents: agent definitions and the Task tool that runs them in their own context."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kodact-platform.workspace = true
+kodact-types.workspace = true
+kodact-api.workspace = true
+kodact-config.workspace = true
+kodact-permissions.workspace = true
+kodact-hooks.workspace = true
+kodact-tools.workspace = true
+kodact-session.workspace = true
+kodact-engine.workspace = true
+async-trait.workspace = true
+ignore.workspace = true
+regex.workspace = true
+globset.workspace = true
+shlex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,7 +1,7 @@
 # Scripted models
 
 Models that know nothing about a task's answer, for measuring the harness
-itself when no API key is at hand. A task passes only if ForgeCLI hands the
+itself when no API key is at hand. A task passes only if KodAct hands the
 model what it needs.
 
 ## `openai_pdf_reader.py`: the `pdf-read` task on an OpenAI-compatible endpoint
@@ -13,8 +13,8 @@ An OpenAI chat-completions endpoint that does three things:
 
 ```bash
 python3 evals/scripted/openai_pdf_reader.py 8791 &
-export FORGE_OPENAI_BASE_URL=http://127.0.0.1:8791/v1 FORGE_OPENAI_API_KEY=sk-test0123456789
-forge-eval run --only pdf-read --forge <forge> --label <label> --repeat 3 -- --model m --permission-mode bypassPermissions
+export KODACT_OPENAI_BASE_URL=http://127.0.0.1:8791/v1 KODACT_OPENAI_API_KEY=sk-test0123456789
+kodact-eval run --only pdf-read --kodact <kodact> --label <label> --repeat 3 -- --model m --permission-mode bypassPermissions
 ```
 
 Measured on 2026-10-13. A is 1610f82, before the OpenAI document fix; B is that fix.

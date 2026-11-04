@@ -1,6 +1,6 @@
-# ForgeCLI architecture
+# KodAct architecture
 
-ForgeCLI is a clean-room Rust agentic coding CLI. Its behaviour follows a
+KodAct is a clean-room Rust agentic coding CLI. Its behaviour follows a
 reference CLI, version **2.1.290** (the 2026-10-06 release). The only sources
 are public interfaces: the reference CLI's `--help` output (2.1.291 was the
 binary on the build machine, used as the flag reference), the documented SDK
@@ -14,23 +14,23 @@ Dependencies point one way. Nothing lower in the list depends on anything
 higher.
 
 ```
-forge-platform                   OS differences: the shell commands run in, process trees, path display
-forge-types                      wire types (Messages API + stream-json protocol)
-  ├─ forge-api                   Provider trait, Messages API SSE client, OpenAI-compatible adapter, mock, model table + pricing
-  ├─ forge-config                settings layers, memory files (FORGE.md), resource search paths
-  ├─ forge-permissions           modes, rule grammar, decision engine
-  ├─ forge-hooks                 hook events, matchers, command runner
-  ├─ forge-session               JSONL transcripts, resume / continue / fork, file checkpoints + rewind
-  └─ forge-git                   repo detection, status for the prompt, worktrees
-forge-tools                      Tool trait, registry, built-in tools
-  ├─ forge-compact               auto-compact, /compact, micro-compaction of stale tool results
-  └─ forge-mcp                   MCP client (stdio / HTTP / SSE) and `forge mcp serve`
-forge-engine                     the query loop: stream a turn, batch tools, permission → hook → execute → hook, interrupt, budgets, fallback model
-forge-agents                     Task sub-agents, custom agents, skills, slash commands, output styles, plugins
-forge-core                       composition root: builds an engine from config + flags; ports (PermissionPrompter, EventSink)
-  ├─ forge-cli                   the `forge` binary (headless print mode, stream-json host protocol, subcommands)
-  └─ forge-tui                   interactive terminal UI
-forge-test-host                  test-only SDK host: drives `forge` over stream-json the way an IDE extension does
+kodact-platform                   OS differences: the shell commands run in, process trees, path display
+kodact-types                      wire types (Messages API + stream-json protocol)
+  ├─ kodact-api                   Provider trait, Messages API SSE client, OpenAI-compatible adapter, mock, model table + pricing
+  ├─ kodact-config                settings layers, memory files (KODACT.md), resource search paths
+  ├─ kodact-permissions           modes, rule grammar, decision engine
+  ├─ kodact-hooks                 hook events, matchers, command runner
+  ├─ kodact-session               JSONL transcripts, resume / continue / fork, file checkpoints + rewind
+  └─ kodact-git                   repo detection, status for the prompt, worktrees
+kodact-tools                      Tool trait, registry, built-in tools
+  ├─ kodact-compact               auto-compact, /compact, micro-compaction of stale tool results
+  └─ kodact-mcp                   MCP client (stdio / HTTP / SSE) and `kodact mcp serve`
+kodact-engine                     the query loop: stream a turn, batch tools, permission → hook → execute → hook, interrupt, budgets, fallback model
+kodact-agents                     Task sub-agents, custom agents, skills, slash commands, output styles, plugins
+kodact-core                       composition root: builds an engine from config + flags; ports (PermissionPrompter, EventSink)
+  ├─ kodact-cli                   the `kodact` binary (headless print mode, stream-json host protocol, subcommands)
+  └─ kodact-tui                   interactive terminal UI
+kodact-test-host                  test-only SDK host: drives `kodact` over stream-json the way an IDE extension does
 ```
 
 ## Behavioural contracts
@@ -49,7 +49,7 @@ prompts:
 | `-p` with no host, or `--permission-prompts none` | **Denied automatically.** The model receives an `is_error` `tool_result` that names the tool and says how to allow it (`--allowedTools`, a permission mode, or settings rules). The denial is recorded in `result.permission_denials`. The turn continues; it is not failed. |
 
 Read-only tools inside the working directories are allowed by default rules, so
-`forge -p "explain this repo"` works with no flags. `bypassPermissions` skips
+`kodact -p "explain this repo"` works with no flags. `bypassPermissions` skips
 the prompt but not explicit **deny** rules.
 
 ### C2. Concurrency, permissions and hooks
@@ -106,11 +106,11 @@ both cancel it.
 
 - **What is captured:** content snapshots, not git. Before the first write to
   a file in each user turn, the edit tools save the file's prior content to
-  `~/.forge/file-history/<session-id>/<sha256(path)[..16]>@v<n>`. They do this
+  `~/.kodact/file-history/<session-id>/<sha256(path)[..16]>@v<n>`. They do this
   for Write, Edit, MultiEdit and NotebookEdit, and for "file did not exist".
   It works in non-git directories and in `--add-dir` directories.
 - **What is not captured:** writes made by Bash (`sed -i`, `git checkout`,
-  build output) and writes made outside ForgeCLI. The escape hatch for those is
+  build output) and writes made outside KodAct. The escape hatch for those is
   git, so `/rewind` warns when the working tree has changes it can't restore.
 - **What rewind does:** rewinding to a user message restores every file that
   was checkpointed after that message to its snapshot, and deletes files that
@@ -121,12 +121,12 @@ both cancel it.
 
 ### C5. Session storage
 
-- **Location:** `~/.forge/projects/<project-key>/<session-id>.jsonl`.
+- **Location:** `~/.kodact/projects/<project-key>/<session-id>.jsonl`.
 - **Project key:** the canonical cwd with every non-alphanumeric character
   replaced by `-` (`/home/u/app` becomes `-home-u-app`). That's readable and
   matches the reference CLI's project layout. Keys longer than 200
   characters are cut to 180 and given a `-<sha256[..12]>` suffix.
-- **Index:** `~/.forge/projects/index.json` maps each key to its cwd, so
+- **Index:** `~/.kodact/projects/index.json` maps each key to its cwd, so
   `/resume` can show real paths.
 - **Format:** one JSON object per line. Each entry has `type`, `uuid`,
   `parentUuid`, `sessionId`, `timestamp`, `cwd`, `gitBranch` and `version`, plus
@@ -169,7 +169,7 @@ session JSONL (C5). 429 doesn't trigger a fallback; it's retried with
 - **`--max-turns N`** counts assistant API calls in a run. Reaching it ends
   with `error_max_turns`.
 - **`--max-budget-usd X`** is checked after each API call. Pricing comes from
-  the compiled model table in `forge-api/src/models.rs`, which settings can
+  the compiled model table in `kodact-api/src/models.rs`, which settings can
   override with `modelPricing`. Exceeding it ends with `error_max_budget_usd`.
 - **Unknown models fail closed.** If the active model, or any
   `--fallback-model`, has no price in the table and no `modelPricing`
@@ -201,7 +201,7 @@ session JSONL (C5). 429 doesn't trigger a fallback; it's retried with
 
 ### C9. Compaction
 
-ForgeCLI shrinks context in three ways.
+KodAct shrinks context in three ways.
 
 **Micro-compaction** clears stale tool results.
 - **What is eligible:** a `tool_result` that is all of the following:
@@ -247,9 +247,9 @@ Tests: `compact::c9_micro_clears_only_eligible_results`,
 ### C10. Worktrees
 
 `-w/--worktree [name]` creates a worktree:
-- **Location:** `<repo>/.forge/worktrees/<name>`. The default name is
+- **Location:** `<repo>/.kodact/worktrees/<name>`. The default name is
   `session-<short id>`.
-- **Branch:** `forge/<name>`, started from `HEAD`.
+- **Branch:** `kodact/<name>`, started from `HEAD`.
 
 The session runs with the worktree as its cwd, so it's stored under the
 worktree's project key (C5). Its `session_meta` entry records
@@ -346,7 +346,7 @@ Tests: `engine::verify_reminds_once_when_changes_are_unchecked`,
 
 ### C13. Recovery
 
-**Edit errors** (`forge-tools`): when `old_string` isn't found, the error
+**Edit errors** (`kodact-tools`): when `old_string` isn't found, the error
 adds, in this order of preference:
 1. `old_string` contains Read's line-number prefixes;
 2. the lines match except for whitespace (shown numbered);
@@ -356,7 +356,7 @@ adds, in this order of preference:
 
 When there are several matches, the error lists the line each one starts on.
 
-**Loop guard** (`forge-engine/stuck.rs`): within one user turn, each pattern
+**Loop guard** (`kodact-engine/stuck.rs`): within one user turn, each pattern
 below fires at most once. When it fires, a meta user message follows the tool
 results, and `system/loop_guard` `{kind, ...}` is recorded and emitted. The
 patterns:
@@ -383,7 +383,7 @@ Denied calls are not counted.
 - A text reply stopped by `max_tokens` is continued with a meta prompt, up
   to 3 times. The pieces join into one result.
 - After the first `max_tokens` stop, the turn's output cap rises to 64,000
-  (bounded by the model), unless the user set `FORGE_MAX_OUTPUT_TOKENS`, and
+  (bounded by the model), unless the user set `KODACT_MAX_OUTPUT_TOKENS`, and
   `system/output_limit` is emitted.
 
 Tests:
@@ -395,7 +395,7 @@ Tests:
 
 ### C14. Dangerous commands and injected instructions
 
-**Threat patterns** (`forge-permissions/threat.rs`):
+**Threat patterns** (`kodact-permissions/threat.rs`):
 - Every Bash command is scanned.
 - A high- or critical-risk match makes `decide` return `Ask`, with
   `Reason::Threat` and no suggestions (`Deny` under `dontAsk`). This happens
@@ -404,7 +404,7 @@ Tests:
 - Medium-risk matches (history tampering) are reported by `scan_command`
   but not escalated.
 
-**Injection markers** (`forge-tools/injection.rs`):
+**Injection markers** (`kodact-tools/injection.rs`):
 - After a successful call, and after the PostToolUse hooks, the output of
   every tool except the edit tools and TodoWrite is checked for:
   - phrases aimed at an agent;
@@ -473,7 +473,7 @@ Tests:
 **Trust:** a `.mcp.json` server is a command shipped with the repository.
 - It starts only when the user's own settings trust it: the user or local
   layer, via `enableAllProjectMcpServers` or `enabledMcpjsonServers`
-  (`forge mcp approve`).
+  (`kodact mcp approve`).
 - `disabledMcpjsonServers` (user or local layer) wins over both, and also
   turns off servers from `mcpServers` in settings. `--mcp-config` and plugin
   servers are chosen per run and aren't affected.
@@ -483,7 +483,7 @@ Tests:
 
 **The same rule for the endpoint:** `baseUrl`, `openai.baseUrl`,
 `apiKeyHelper` and `openai.apiKeyHelper` in the project's checked-in settings
-are ignored with a warning (`forge-core/src/endpoint.rs`). Otherwise cloning a
+are ignored with a warning (`kodact-core/src/endpoint.rs`). Otherwise cloning a
 repository could send the user's key to another host, or run a command at
 startup without approval.
 
@@ -525,17 +525,17 @@ and the stream-json `mcp_reconnect` / `mcp_toggle` requests):
   list when the session was built has no tool object until the session is
   rebuilt (`/reload-plugins`, `/clear`, a new run).
 - `disable` saves the name in `disabledMcpjsonServers` in the launch
-  project's `.forge/settings.local.json`; `enable` takes it out. A server
+  project's `.kodact/settings.local.json`; `enable` takes it out. A server
   waiting for approval stays off: `enable` never grants trust.
 - A restart stops the old process before starting the new one, so calls in
   flight to that server fail. Changes to one server run one at a time.
 
-**`forge mcp serve`** exposes the built-in tools without prompts, since the
+**`kodact mcp serve`** exposes the built-in tools without prompts, since the
 client approves, but refuses commands matching dangerous-command patterns.
 
 ### C17. Command dispatch and surfaces
 
-**One registry.** `forge_core::commands::BUILTINS` is the only list of
+**One registry.** `kodact_core::commands::BUILTINS` is the only list of
 built-in commands: name, aliases, argument hint, description, the surfaces
 it runs on, and whether it is immediate. `/help`, `system/init`
 `slash_commands`, the `initialize` response's `commands` and the TUI menu
@@ -552,7 +552,7 @@ is an existing root path, is an ordinary prompt when no command has that name. A
 reference ties to its vendor's account or cloud are not registered, so they
 get the same answer.
 
-**One driver.** `forge_core::Driver` owns the engine and the catalog. Every
+**One driver.** `kodact_core::Driver` owns the engine and the catalog. Every
 front end (print, stream-json, REPL, TUI) passes each input to
 `Driver::input`, which returns either a `TurnResult` or `Exit`.
 - A command either expands to a prompt for the model, or answers locally.
@@ -631,7 +631,7 @@ decides: an immediate built-in, aliases included. Arguments don't change it
 and built-ins win over custom commands, so the catalog never turns one into
 something else.
 
-*The session view* (`forge_core::view::SessionView`). A turn holds the
+*The session view* (`kodact_core::view::SessionView`). A turn holds the
 driver mutably, so these commands never touch it. They read a view that is
 cheap to clone (an `Arc` inside) and survives session switches, as `Live`
 does. It has two parts, each an `Arc` replaced whole on every update:
@@ -645,7 +645,7 @@ does. It has two parts, each an `Arc` replaced whole on every update:
   driver publishes it when idle (`Driver::sync_view`, at the start and end of
   every input and scheduled task, after a switch) and after each turn of an
   input (`record`), so a goal's later turns see the earlier ones.
-- **The engine's** (`forge_engine::EngineSnapshot`, behind
+- **The engine's** (`kodact_engine::EngineSnapshot`, behind
   `EngineHandle::snapshot()`): the conversation (`Arc<Vec<Message>>`),
   cleared tool results, system blocks, tool specs, cost, usage, per-model
   usage, context tokens, the configuration `/context` and `/btw` need, and
@@ -679,7 +679,7 @@ the turn, or at once when idle; front ends' idle loops wake on
   driver's, so a second `/btw` in the same turn sees the first.
 
 *`/btw` mid-turn* builds its request from the snapshot
-(`forge_engine::side_question_request`, shared with the engine's own
+(`kodact_engine::side_question_request`, shared with the engine's own
 requests): same system prompt and tools, `tool_choice: none`. A model reply
 whose tool calls have no results yet is left out. It uses the view's
 provider and a token of its own, so Esc interrupts the turn, not the side
@@ -757,7 +757,7 @@ where goals run as an end-of-turn check.
 
 A session can run prompts later: on a cron schedule (`CronCreate`, or
 `/loop` with an interval) or self-paced (`ScheduleWakeup`, or `/loop`
-without one). The scheduler is part of the session; `FORGE_DISABLE_CRON=1`
+without one). The scheduler is part of the session; `KODACT_DISABLE_CRON=1`
 turns it off.
 
 **Tasks:**
@@ -789,8 +789,8 @@ turns it off.
   - If an iteration does neither, a fallback check comes 20 minutes later;
     a second miss ends the loop.
   - An interrupted iteration ends the loop.
-- **Without a prompt:** `.forge/loop.md`, else `<config>/loop.md` (up to
-  25 KB), else Forge's maintenance prompt.
+- **Without a prompt:** `.kodact/loop.md`, else `<config>/loop.md` (up to
+  25 KB), else KodAct's maintenance prompt.
 
 **Fired prompts:** a custom command, or skills the model may use, expand as
 usual. Built-in commands, user-only skills and MCP prompts reach the model as
@@ -803,7 +803,7 @@ interval emits `system/scheduled`. `/tasks` lists scheduled tasks, and
 - `-p` keeps running after its prompt while tasks are pending. It stops
   when none are left, on Ctrl-C, at `--max-turns` (counted across the run),
   or when the budget is spent.
-- `FORGE_TEST_TIME_SCALE` speeds up the scheduler's clock, for tests only.
+- `KODACT_TEST_TIME_SCALE` speeds up the scheduler's clock, for tests only.
 
 ### C20. Subtasks
 
@@ -856,7 +856,7 @@ and the reloads keep them. Session end gives them 3 s, then aborts them.
 ### C21. Unattended runs (`--autonomous`)
 
 For runs nobody watches: benchmarks, CI, scripts. Turned on by `--autonomous`,
-`FORGE_AUTONOMOUS=1` or the `autonomous` setting.
+`KODACT_AUTONOMOUS=1` or the `autonomous` setting.
 - **Tools:** AskUserQuestion, EnterPlanMode and ExitPlanMode are removed, since
   nobody answers questions or approves plans.
 - **Prompt:** the system prompt gains a "Running unattended" section
@@ -915,7 +915,7 @@ wait. They are not killed for it.
   `interrupted: false`), not an error. Its working directory is not carried over.
 - **Interrupts** still kill the command's process group (C3), and so does a
   call that goes away mid-command (the session ends) unless the command moved
-  to the background. `!command`, hooks and other commands Forge runs itself
+  to the background. `!command`, hooks and other commands KodAct runs itself
   keep their own timeouts, which kill.
 - **Exit notices:** when a background shell exits (either kind), the model is
   told with the next tool results, or with the next prompt: a system reminder
@@ -949,34 +949,34 @@ Tests:
 
 ## Prompts
 
-ForgeCLI ships its own system prompt and tool descriptions in
-`crates/forge-engine/prompts/`. At runtime it can load a different set from
-`FORGE_PROMPTS_DIR`: a directory of `system/*.md` and `tools/<ToolName>.md`
+KodAct ships its own system prompt and tool descriptions in
+`crates/kodact-engine/prompts/`. At runtime it can load a different set from
+`KODACT_PROMPTS_DIR`: a directory of `system/*.md` and `tools/<ToolName>.md`
 files, for example a local, uncommitted copy of a published prompt extraction.
 `--system-prompt[-file]` and `--append-system-prompt[-file]` work as their help
 text says.
 
 ## Configuration names
 
-- **Environment:** only `FORGE_*` variables are read, the API ones included:
-  `FORGE_API_KEY`, `FORGE_AUTH_TOKEN`, `FORGE_BASE_URL`, `FORGE_MODEL`,
-  `FORGE_CUSTOM_HEADERS`. Other tools' variables are ignored.
+- **Environment:** only `KODACT_*` variables are read, the API ones included:
+  `KODACT_API_KEY`, `KODACT_AUTH_TOKEN`, `KODACT_BASE_URL`, `KODACT_MODEL`,
+  `KODACT_CUSTOM_HEADERS`. Other tools' variables are ignored.
 - **Settings files** (later wins):
 
   | Layer | Paths |
   | --- | --- |
-  | user | `~/.forge/settings.json` |
-  | project | `.forge/settings.json` |
-  | local | `.forge/settings.local.json` |
+  | user | `~/.kodact/settings.json` |
+  | project | `.kodact/settings.json` |
+  | local | `.kodact/settings.local.json` |
   | flag | `--settings` |
-  | managed | `/etc/forge/managed-settings.json` |
+  | managed | `/etc/kodact/managed-settings.json` |
 - **Resources** (agents, commands, skills, output styles) live in
-  `~/.forge/<kind>/` and `.forge/<kind>/`. Project wins over user when two
+  `~/.kodact/<kind>/` and `.kodact/<kind>/`. Project wins over user when two
   names collide.
-- **Memory files:** `~/.forge/FORGE.md`, then `FORGE.md` or `.forge/FORGE.md` in
+- **Memory files:** `~/.kodact/KODACT.md`, then `KODACT.md` or `.kodact/KODACT.md` in
   each directory from the filesystem root down to the cwd, each followed by its
-  `FORGE.local.md`.
-- **`forge --version`** prints `<version> (ForgeCLI)`.
+  `KODACT.local.md`.
+- **`kodact --version`** prints `<version> (KodAct)`.
 
 ## Read limits
 
@@ -987,7 +987,7 @@ text says.
 - **PDFs:** sent as `document` blocks, up to 32 MB. A PDF over 10 pages needs a
   `pages` range of at most 20 pages, given as a page count, not the raw file.
 - **Notebooks (`.ipynb`):** rendered cell by cell with their outputs.
-- **`@` mentions** (`forge_agents::attach`, attached by `Driver::input` to
+- **`@` mentions** (`kodact_agents::attach`, attached by `Driver::input` to
   plain prompts and by custom commands): 50,000 characters per file
   (`truncate_middle`), at most 10 files and 200,000 characters per message,
   directory listings of at most 200 entries; files over 10 MB, images, PDFs

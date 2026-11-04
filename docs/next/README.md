@@ -13,7 +13,7 @@ prompt starts from the previous one's pushed work.
 | 4 | [Real-API check pass](4-real-api-check-pass.md) | small | No features: makes the manual checks complete and quick to run, so it comes after everything it checks | Done: `b1f5ead` |
 
 All four are done. What is left needs a real key and a real terminal: the
-run in `docs/CHECKLIST.md` and the first `forge-eval` baseline
+run in `docs/CHECKLIST.md` and the first `kodact-eval` baseline
 (`docs/BASELINE.md`).
 
 ## The branch
@@ -37,20 +37,20 @@ Each prompt begins the same way:
 
 - **Sources:** never use leaked or leak-derived source of any commercial CLI.
   Official public docs and open-source projects are fine.
-- **Forge's own wording.** The vendor's company and product names never appear
-  in Forge code, prompts, UI text or docs. Env vars are `FORGE_*`, project
-  files `.forge/` and `FORGE.md`.
+- **KodAct's own wording.** The vendor's company and product names never appear
+  in KodAct code, prompts, UI text or docs. Env vars are `KODACT_*`, project
+  files `.kodact/` and `KODACT.md`.
 - **No model identifiers** in commits, code or docs. No pull requests unless
   asked. Don't send the user's email anywhere.
 - **No real vendor CLI binary**, not even against a mock server. Tests use
-  `forge_api::MockProvider` (unit and driver tests) and
-  `forge_test_host::MockApi` (end-to-end tests in `crates/forge-cli/tests/`).
+  `kodact_api::MockProvider` (unit and driver tests) and
+  `kodact_test_host::MockApi` (end-to-end tests in `crates/kodact-cli/tests/`).
 - **Locks across awaits:** never hold a std `Mutex`/`RwLock` guard across
   `.await`.
 - **Before every push**, all three pass with zero warnings and zero failures:
   `cargo fmt --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`. Regenerate the stream-json golden only on purpose
-  (`FORGE_UPDATE_GOLDEN=1`).
+  (`KODACT_UPDATE_GOLDEN=1`).
 - **Commits:** small, one per feature or fix, each with tests and doc updates
   (PARITY row, CLI.md, CHANGELOG, and TUI.md / ARCHITECTURE.md where they
   apply), each pushed. Messages end with a `Goals:` line naming the priority

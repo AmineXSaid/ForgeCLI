@@ -1,14 +1,14 @@
 # Evaluation suite
 
-`forge-eval` measures ForgeCLI on these tasks (see `docs/GOALS.md`). Each task
+`kodact-eval` measures KodAct on these tasks (see `docs/GOALS.md`). Each task
 directory has:
 - `task.json`: the instruction, a `check` command, and its pillar;
 - `repo/`: the starting files;
 - `hidden/`: optionally, checks the agent never sees. They are reached via
-  `$FORGE_EVAL_TASK_DIR`.
+  `$KODACT_EVAL_TASK_DIR`.
 
 A task can also send a message while the agent works, as a desktop host does:
-`"steer": {"after_tool_calls": N, "text": "..."}` runs forge over stream-json
+`"steer": {"after_tool_calls": N, "text": "..."}` runs kodact over stream-json
 and sends `text` for the turn's next step once the agent has made N tool calls
 (as the next turn, if the turn ends first).
 
@@ -16,11 +16,11 @@ and sends `text` for the turn's next step once the agent has made N tool calls
 
 ```bash
 cargo build --release
-export FORGE_API_KEY=...            # or FORGE_OPENAI_BASE_URL for another endpoint
-target/release/forge-eval run --label baseline --repeat 3 -- --model sonnet --dangerously-skip-permissions
+export KODACT_API_KEY=...            # or KODACT_OPENAI_BASE_URL for another endpoint
+target/release/kodact-eval run --label baseline --repeat 3 -- --model sonnet --dangerously-skip-permissions
 # change the harness, rebuild, then:
-target/release/forge-eval run --label my-change --repeat 3 -- --model sonnet --dangerously-skip-permissions
-target/release/forge-eval compare evals/results/baseline evals/results/my-change
+target/release/kodact-eval run --label my-change --repeat 3 -- --model sonnet --dangerously-skip-permissions
+target/release/kodact-eval compare evals/results/baseline evals/results/my-change
 ```
 
 Results go to `evals/results/<label>/`, which is ignored by git. That folder
@@ -46,7 +46,7 @@ and stderr.
 | csv-to-json | tool-design | Write new code to a precise spec checked on hidden input |
 | steer-more-work | long-horizon | A request sent mid-task ("also write the total") must be done without dropping the per-file work in hand |
 | reference-skill | compatibility | `/version-notes 1.4.0 changes.txt` runs a skill written for the reference CLI (`.claude/skills`, named and indexed arguments, `${CLAUDE_SKILL_DIR}`) |
-| tool-chain | compatibility | Follow a trail through four files, one tool call at a time, to the right release code; run with a Gemini 3 model (`--model gemini-3-flash-preview`, `FORGE_GEMINI_API_KEY`) it checks that thought signatures survive a multi-step tool loop |
+| tool-chain | compatibility | Follow a trail through four files, one tool call at a time, to the right release code; run with a Gemini 3 model (`--model gemini-3-flash-preview`, `KODACT_GEMINI_API_KEY`) it checks that thought signatures survive a multi-step tool loop |
 
 Add tasks for every harness change, and name the pillar they exercise.
 

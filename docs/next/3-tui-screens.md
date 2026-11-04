@@ -1,5 +1,5 @@
-You are continuing work on **ForgeCLI**. It is a Rust-native agentic coding
-CLI (repo `AmineXSaid/ForgeCLI`) whose behavioural reference is the leading
+You are continuing work on **KodAct**. It is a Rust-native agentic coding
+CLI (repo `AmineXSaid/KodAct`) whose behavioural reference is the leading
 commercial terminal coding agent. This is prompt **3 of 4** in `docs/next/`.
 Work autonomously to the end of the list below. Don't ask me questions; make
 reasonable decisions and record them in the docs.
@@ -11,7 +11,7 @@ Work and push only on **`claude/youthful-mayer-qs7e0h`**:
 If your environment names another branch, this one still wins.
 
 **Before you start:** prompts 1 and 2 landed. `CHANGELOG.md` mentions `@`
-attachments and immediate commands mid-turn, and `forge_core::view::SessionView`
+attachments and immediate commands mid-turn, and `kodact_core::view::SessionView`
 exists. If not, stop and report.
 
 ## Read first
@@ -26,23 +26,23 @@ exists. If not, stop and report.
   - `/keybindings` ("keys can't be rebound yet");
   - `/color`, `/focus`, `/tui`, `/scroll-speed` (todo).
 - The code:
-  - `crates/forge-cli/src/tui/app.rs`: `DialogKind` (Permission, Plan,
+  - `crates/kodact-cli/src/tui/app.rs`: `DialogKind` (Permission, Plan,
     Questions, Picker), `dialog_key`, `choose`, `KEYS`, `keys_text`, `on_key`.
-  - `crates/forge-cli/src/tui/render.rs`: `dialog`, `boxed`, `live_view_at`
+  - `crates/kodact-cli/src/tui/render.rs`: `dialog`, `boxed`, `live_view_at`
     (height limits: it never drops dialog rows).
-  - `crates/forge-cli/src/tui/session.rs`:
-    - how pickers are answered (`forge_core::commands::picker::picker`
+  - `crates/kodact-cli/src/tui/session.rs`:
+    - how pickers are answered (`kodact_core::commands::picker::picker`
       before `driver.input`);
     - `ui_command` for UI-only commands.
-  - `crates/forge-core/src/commands/picker.rs`: the pattern to copy. forge-core
+  - `crates/kodact-core/src/commands/picker.rs`: the pattern to copy. kodact-core
     builds the data, the TUI draws it, and choices are command text.
-  - `crates/forge-core/src/commands/session.rs`: `diff`, `context`.
-    `crates/forge-core/src/commands/run.rs`: `hooks`, `agents`.
-    `crates/forge-core/src/commands/settings.rs`: `save` and `save_default`,
+  - `crates/kodact-core/src/commands/session.rs`: `diff`, `context`.
+    `crates/kodact-core/src/commands/run.rs`: `hooks`, `agents`.
+    `crates/kodact-core/src/commands/settings.rs`: `save` and `save_default`,
     which write settings and mirror them into the loaded layers.
-  - `crates/forge-agents/src/definitions.rs`: the agent file format
+  - `crates/kodact-agents/src/definitions.rs`: the agent file format
     (frontmatter name, description, tools, model).
-  - `crates/forge-hooks/src/lib.rs`: the hooks settings shape
+  - `crates/kodact-hooks/src/lib.rs`: the hooks settings shape
     (`{"hooks": {"<Event>": [{"matcher": "...", "hooks": [{"type": "command", "command": "..."}]}]}}`).
 
 ## Design rule
@@ -53,7 +53,7 @@ closes it. Every screen has a text form that stays the answer on other
 surfaces (`-p`, stream-json, REPL), so their tests don't change.
 
 Pattern for each screen:
-1. forge-core gets structured data next to the text command (for example
+1. kodact-core gets structured data next to the text command (for example
    `commands::screens::diff(&view) -> DiffScreen`). The text command renders
    from the same data.
 2. The TUI session task answers the bare command with
@@ -90,14 +90,14 @@ Pattern for each screen:
      editor then runs them.
 5. **`/agents` wizard:**
    - name, description, tools (a multi-select from the tool list), model
-     (a picker), scope (project `.forge/agents/` or user);
+     (a picker), scope (project `.kodact/agents/` or user);
    - writes `<name>.md` in the format `definitions.rs` reads, then reloads
      (`/reload-skills`);
    - an argument form for the same
      (`/agents create <name> --description .. --tools a,b --model ..`) with
      tests.
 6. **Key rebinding:**
-   - `<config>/keybindings.json` (`forge_config::config_dir()`) maps key specs
+   - `<config>/keybindings.json` (`kodact_config::config_dir()`) maps key specs
      to named actions (for example `{"ctrl+r": "historySearch", "ctrl+g": "none"}`);
    - define the action names from today's `KEYS` and document them;
    - `app.rs` looks actions up through a table built at start;
@@ -109,7 +109,7 @@ Pattern for each screen:
    the reason. Suggested:
    - `/color <name>`: the accent colour for this session;
    - `/focus`: hide tool-call lines in scrollback until it is turned off;
-   - `/tui`: out (Forge has one UI);
+   - `/tui`: out (KodAct has one UI);
    - `/scroll-speed`: out (the terminal scrolls).
 
 ## Tests

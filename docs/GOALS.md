@@ -1,4 +1,4 @@
-# ForgeCLI goals
+# KodAct goals
 
 ## Objective
 
@@ -7,7 +7,7 @@ highest measured task success, at the lowest cost and wall time, with any
 given model.
 
 The reference CLI (v2.1.290) is the **compatibility baseline**: its flags,
-stream-json protocol, settings, hooks and tools are matched so that ForgeCLI
+stream-json protocol, settings, hooks and tools are matched so that KodAct
 can replace it. It is not the ceiling. A better harness can beat a weaker one
 running the same model, so the harness gets designed, measured and improved as
 the product.
@@ -15,7 +15,7 @@ the product.
 ## Rule: measure, don't assume
 
 A change that claims to improve the harness must show it on the evaluation
-suite (`forge-eval`). It is compared A/B against the previous build, using the
+suite (`kodact-eval`). It is compared A/B against the previous build, using the
 same model, the same tasks and repeated runs.
 
 | Metric | Definition |
@@ -29,7 +29,7 @@ same model, the same tasks and repeated runs.
 
 ## The five pillars
 
-Each pillar lists what ForgeCLI does about it and what shows that it works.
+Each pillar lists what KodAct does about it and what shows that it works.
 
 ### 1. Context management
 
@@ -82,8 +82,8 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
     and the checks;
   - the reminder asks the final message to state what was verified and what
     was not.
-  - It is on by default; `FORGE_VERIFY=0` turns it off for A/B runs, and
-    `forge-eval` records `verify_reminders` per run.
+  - It is on by default; `KODACT_VERIFY=0` turns it off for A/B runs, and
+    `kodact-eval` records `verify_reminders` per run.
 - **To build:** LSP diagnostics and formatter feedback after edits (the
   OpenCode pattern).
 - **Measured by:** false-finish rate and pass rate (tasks `fix-median`,
@@ -131,12 +131,12 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 
 ## Priority order
 
-1. `forge-eval`: the task suite, the runner and A/B reports. **Done.** There
+1. `kodact-eval`: the task suite, the runner and A/B reports. **Done.** There
    are 13 validated tasks across the pillars, plus `validate`, `run` and
-   `compare`. No measured baseline exists yet: the first `forge-eval run` with
+   `compare`. No measured baseline exists yet: the first `kodact-eval run` with
    a real API key sets it. How to record it, what to commit and how to read
    the A/B report: docs/BASELINE.md, "Recording the first real baseline"
-   (its commands are checked against `forge-eval` by a test).
+   (its commands are checked against `kodact-eval` by a test).
 2. Sub-agents (the Task tool, built-in Explore and Plan agents), to isolate
    context.
 3. The verification loop. **Done**, without LSP feedback.
@@ -146,7 +146,7 @@ Each pillar lists what ForgeCLI does about it and what shows that it works.
 6. A plan that survives compaction. **Done** (the task list; a notes file is
    still to build).
 7. Parity features in order of use:
-   - **Done:** MCP (stdio, HTTP and SSE client, `forge mcp`, `forge mcp
+   - **Done:** MCP (stdio, HTTP and SSE client, `kodact mcp`, `kodact mcp
      serve`), web tools, plan mode and AskUserQuestion, skills, output styles.
    - **Mostly done:** slash commands, with one registry, goals (C18) and
      scheduled prompts (C19), and background subtasks (C20).
