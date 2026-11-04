@@ -393,6 +393,7 @@ the context window to compact in time, and prices to show costs.
 | `FORGE_OPENAI_BASE_URL`, `FORGE_OPENAI_API_KEY` | An OpenAI-compatible endpoint instead |
 | `FORGE_GEMINI_API_KEY`, `FORGE_GEMINI_BASE_URL`, `FORGE_GEMINI_AUTH_HEADER` | Google's Gemini API instead (Google AI Studio by default, Vertex AI or a gateway by URL) |
 | `FORGE_MODEL` | Default model |
+| `FORGE_TUI` | `inline` keeps the interactive UI in an inline viewport at the bottom of the terminal, writing output into its scrollback as it happens; by default the UI takes the whole window and prints the conversation into the scrollback when it closes |
 | `FORGE_MAX_OUTPUT_TOKENS` | Per-request output cap |
 | `FORGE_CONTEXT_WINDOW` | Context window, in tokens, for models Forge doesn't know (see `modelLimits`) |
 | `FORGE_MAX_THINKING_TOKENS` | Thinking budget |

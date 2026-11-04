@@ -148,31 +148,43 @@ pub struct Welcome<'a> {
 /// Rows the live region takes under the front screen: a gap, the input box, the line under it and the status line.
 const LIVE_ROWS: usize = 6;
 
-/// The front screen, printed once at the top of a session: the wordmark,
-/// the tagline and a way back to the newest conversation here, centred
-/// across `cols` and down the `rows` above the input. A terminal too narrow
-/// for the wordmark gets the name in one row.
-pub fn welcome(t: &Theme, w: &Welcome, cols: usize, rows: usize) -> Vec<Line<'static>> {
+/// The top of the front screen, centred across `cols`: the wordmark (or
+/// the name in one row on a narrow terminal), then the tagline.
+pub fn front_head(t: &Theme, cols: usize) -> Vec<Line<'static>> {
     let mut block: Vec<Line<'static>> = if cols >= WORDMARK_W + 4 { wordmark(t) } else { vec![wordmark_text(t)] };
     block.push(Line::default());
     block.push(Line::from(Span::styled(TAGLINE, t.dim())));
-    if let Some((what, ago)) = w.recent.first() {
+    super::text::wrap(block, cols.saturating_sub(2).max(1) as u16).into_iter().map(|l| centred(l, cols)).collect()
+}
+
+/// The foot of the front screen, under the input: `/resume` and the newest
+/// other conversation here, centred; nothing when there is none.
+pub fn front_foot(t: &Theme, w: &Welcome, cols: usize) -> Vec<Line<'static>> {
+    let Some((what, ago)) = w.recent.first() else { return vec![] };
+    let room = cols.saturating_sub(4 + "/resume  ".len() + "  ·  ".len() + width(ago)).max(8);
+    let line = Line::from(vec![
+        Span::styled("/resume", t.accent()),
+        Span::raw("  "),
+        Span::styled(super::render::fit(what, room), t.dim()),
+        Span::styled("  ·  ", t.hairline()),
+        Span::styled(ago.clone(), t.subtle()),
+    ]);
+    vec![centred(line, cols)]
+}
+
+/// The front screen for the inline UI, printed once at the top of a session:
+/// [`front_head`] and [`front_foot`], centred down the `rows` above the input.
+pub fn welcome(t: &Theme, w: &Welcome, cols: usize, rows: usize) -> Vec<Line<'static>> {
+    let mut block = front_head(t, cols);
+    let foot = front_foot(t, w, cols);
+    if !foot.is_empty() {
         block.push(Line::default());
         block.push(Line::default());
-        let room = cols.saturating_sub(4 + "/resume  ".len() + "  ·  ".len() + width(ago)).max(8);
-        block.push(Line::from(vec![
-            Span::styled("/resume", t.accent()),
-            Span::raw("  "),
-            Span::styled(super::render::fit(what, room), Style::default()),
-            Span::styled("  ·  ", t.hairline()),
-            Span::styled(ago.clone(), t.subtle()),
-        ]));
+        block.extend(foot);
     }
-    let block = super::text::wrap(block, cols.saturating_sub(2).max(1) as u16);
-    // Down the screen: centred in the room above the input, never off its top.
     let pad = rows.saturating_sub(block.len() + LIVE_ROWS) / 2;
     let mut out = vec![Line::default(); pad.max(1)];
-    out.extend(block.into_iter().map(|l| centred(l, cols)));
+    out.extend(block);
     out.push(Line::default());
     out
 }

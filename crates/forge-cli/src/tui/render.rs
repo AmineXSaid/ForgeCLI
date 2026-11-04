@@ -516,6 +516,95 @@ fn status_right_spans(app: &App, room: usize) -> Vec<Span<'static>> {
     out
 }
 
+/// The whole screen for the full-screen UI, `width` by `height`. Before the
+/// first message, the front screen: `head` (the wordmark and tagline), the
+/// centred input with the mode and model under it, then `foot` and any
+/// notices, all centred down the screen, with the status line on the last
+/// row. After it, the conversation: `rows` (the transcript, already wrapped
+/// to `width`) fills the screen down to the live region, `scroll` rows up
+/// from its end. Returns the view and the furthest it can scroll.
+pub fn full_view(
+    app: &App,
+    width: u16,
+    height: u16,
+    rows: &[Line<'static>],
+    head: &[Line<'static>],
+    foot: &[Line<'static>],
+    scroll: usize,
+) -> (LiveView, usize) {
+    full_view_at(app, width, height, rows, head, foot, scroll, Instant::now())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn full_view_at(
+    app: &App,
+    width: u16,
+    height: u16,
+    rows: &[Line<'static>],
+    head: &[Line<'static>],
+    foot: &[Line<'static>],
+    scroll: usize,
+    now: Instant,
+) -> (LiveView, usize) {
+    let h = (height as usize).max(1);
+    let live = live_view_at(app, width, height, now);
+    if app.front && app.dialog.is_none() && !app.busy {
+        let mut input = live.lines;
+        let status = input.pop().unwrap_or_default();
+        let room = h.saturating_sub(1);
+        let notes: Vec<Line<'static>> = rows.iter().rev().take(6).rev().cloned().collect();
+        let mut mid: Vec<Line<'static>> = vec![];
+        // The wordmark goes first when the screen is too short for it all.
+        let fits = head.len() + 2 + input.len() + if foot.is_empty() { 0 } else { foot.len() + 1 } <= room;
+        if fits {
+            mid.extend(head.iter().cloned());
+            mid.push(Line::default());
+            mid.push(Line::default());
+        }
+        let box_at = mid.len();
+        mid.extend(input);
+        if !foot.is_empty() && mid.len() + 1 + foot.len() <= room {
+            mid.push(Line::default());
+            mid.extend(foot.iter().cloned());
+        }
+        if !notes.is_empty() && mid.len() + 1 + notes.len() <= room {
+            mid.push(Line::default());
+            mid.extend(notes);
+        }
+        // A little above the middle, where the eye settles.
+        let top = room.saturating_sub(mid.len()) * 2 / 5;
+        let mut out = vec![Line::default(); top];
+        out.extend(mid);
+        out.truncate(room);
+        out.resize(room, Line::default());
+        out.push(status);
+        let cursor = live.cursor.map(|(x, y)| (x, y + (top + box_at) as u16)).filter(|(_, y)| (*y as usize) < room);
+        return (LiveView { lines: out, cursor }, 0);
+    }
+    // The conversation: the transcript down to the live region.
+    let avail = h.saturating_sub(live.lines.len());
+    let max_scroll = rows.len().saturating_sub(avail);
+    let scroll = scroll.min(max_scroll);
+    let end = rows.len() - scroll;
+    let mut out: Vec<Line<'static>> = rows[end.saturating_sub(avail)..end].to_vec();
+    if scroll > 0 && !out.is_empty() {
+        let t = app.theme;
+        let note = format!("↓ {scroll} more {} · PgDn", if scroll == 1 { "line" } else { "lines" });
+        let pad = (width as usize).saturating_sub(text_width(&note)) / 2;
+        let last = out.len() - 1;
+        out[last] = Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(note, t.subtle())]);
+    }
+    // A short transcript sits just above the live region, as one flow with the input.
+    if out.len() < avail {
+        let mut padded = vec![Line::default(); avail - out.len()];
+        padded.extend(out);
+        out = padded;
+    }
+    let cursor = live.cursor.map(|(x, y)| (x, y + avail as u16));
+    out.extend(live.lines);
+    (LiveView { lines: out, cursor }, max_scroll)
+}
+
 /// The live region for a terminal `width` columns wide, at most `max_height` rows.
 pub fn live_view(app: &App, width: u16, max_height: u16) -> LiveView {
     live_view_at(app, width, max_height, Instant::now())
@@ -1150,6 +1239,47 @@ mod tests {
         assert_eq!(meter(&t, 75)[0].style, t.warning());
         assert_eq!(meter(&t, 95)[0].style, t.error());
         assert_eq!(meter(&t, 0)[0].content, "");
+    }
+
+    #[test]
+    fn the_full_screen_centres_the_front_then_keeps_the_input_at_the_bottom() {
+        let mut a = app(false);
+        a.front = true;
+        a.endpoint = "127.0.0.1:11434".into();
+        let head = vec![Line::from("WORDMARK"), Line::default(), Line::from("tagline")];
+        let foot = vec![Line::from("/resume  checkout rounding")];
+        let (v, _) = full_view(&a, 100, 30, &[], &head, &foot, 0);
+        let (rows, _) = draw(&v, 100);
+        assert_eq!(rows.len(), 30, "the whole screen");
+        let mark = rows.iter().position(|r| r == "WORDMARK").unwrap();
+        let resume = rows.iter().position(|r| r.contains("/resume")).unwrap();
+        assert!(mark > 3 && resume < 25, "centred down the screen: {rows:#?}");
+        assert!(rows[mark + 3..resume].iter().any(|r| r.contains("❯ What shall we forge today?")), "the input between");
+        assert!(rows[29].ends_with(&format!("v{}", forge_core::VERSION)), "the status line on the last row");
+        let (_, cy) = v.cursor.unwrap();
+        assert!(rows[cy as usize].contains('❯'), "the cursor in the input");
+        // After the first message: the transcript from the top, the input at the bottom.
+        a.submit("hello".into());
+        let transcript: Vec<Line<'static>> = (1..=40).map(|i| Line::from(format!("line {i}"))).collect();
+        let (v, max) = full_view(&a, 100, 30, &transcript, &head, &foot, 0);
+        let (rows, _) = draw(&v, 100);
+        assert_eq!(rows.len(), 30);
+        assert!(rows.iter().any(|r| r == "line 40"), "the newest line shows");
+        assert!(!rows.iter().any(|r| r == "line 1"));
+        assert!(rows[25..].iter().any(|r| r.contains('❯')), "the input at the bottom: {rows:#?}");
+        assert!(max > 0);
+        // Scrolled up: older lines, and a note of what is below.
+        let (v, _) = full_view(&a, 100, 30, &transcript, &head, &foot, 10);
+        let (rows, _) = draw(&v, 100);
+        // The last row turns into the note of what is below.
+        assert!(rows.iter().any(|r| r == "line 29") && !rows.iter().any(|r| r == "line 31"), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.trim() == "↓ 10 more lines · PgDn"), "{rows:#?}");
+        // A short transcript sits just above the live region, not at the top with a gap.
+        let (v, _) = full_view(&a, 100, 30, &transcript[..2], &head, &foot, 0);
+        let (rows, _) = draw(&v, 100);
+        let at = rows.iter().position(|r| r == "line 2").unwrap();
+        assert_eq!(rows[0], "");
+        assert!(rows[at + 1..].iter().take(3).any(|r| r.contains('╭')), "{rows:#?}");
     }
 
     #[test]

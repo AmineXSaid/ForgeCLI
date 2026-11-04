@@ -1,8 +1,12 @@
 //! The interactive terminal UI (M8). The design is in docs/TUI.md.
 //!
-//! An inline viewport at the bottom of the terminal shows what is live (the
-//! answer being written, the spinner, a dialog, the input box, the status
-//! line). Finished output goes into the terminal's own scrollback.
+//! By default the UI takes the whole window (the terminal's alternate
+//! screen): a centred front screen until the first message, then the
+//! transcript above the live region (the answer being written, the spinner,
+//! a dialog, the input box, the status line). On exit the transcript is
+//! printed into the terminal's scrollback. With `FORGE_TUI=inline`, an inline
+//! viewport at the bottom shows what is live and finished output goes into
+//! the terminal's own scrollback as it happens.
 //!
 //! - `editor`: the prompt's text editor;
 //! - `text`: theme, one-line markdown, wrapping;
@@ -25,8 +29,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, EventStream, KeyCode,
+    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use futures::StreamExt;
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -216,9 +221,114 @@ impl<B: Backend> Screen<B> {
     }
 }
 
+/// The full-screen UI: the whole window, and the transcript it keeps itself
+/// (wrapped once per width, as lines arrive).
+pub struct Full<B: Backend> {
+    terminal: Terminal<B>,
+    /// Finished lines, as committed.
+    transcript: Vec<Line<'static>>,
+    /// The transcript wrapped to `wrapped_w`.
+    wrapped: Vec<Line<'static>>,
+    wrapped_w: u16,
+    /// Rows up from the transcript's end.
+    pub scroll: usize,
+    max_scroll: usize,
+    /// For the front screen's foot.
+    recent: Vec<(String, String)>,
+}
+
+impl<B: Backend> Full<B> {
+    pub fn new(backend: B, recent: Vec<(String, String)>) -> std::io::Result<Self> {
+        let terminal = Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Fullscreen })?;
+        Ok(Full { terminal, transcript: vec![], wrapped: vec![], wrapped_w: 0, scroll: 0, max_scroll: 0, recent })
+    }
+
+    pub fn width(&self) -> u16 {
+        self.terminal.size().map(|s| s.width).unwrap_or(80)
+    }
+
+    pub fn rows(&self) -> u16 {
+        self.terminal.size().map(|s| s.height).unwrap_or(24)
+    }
+
+    /// Finished lines join the transcript. A view scrolled up stays where it is.
+    pub fn commit(&mut self, lines: Vec<Line<'static>>) {
+        let w = self.width();
+        let rows = text::wrap(lines.clone(), w);
+        if self.scroll > 0 {
+            self.scroll += rows.len();
+        }
+        if w == self.wrapped_w {
+            self.wrapped.extend(rows);
+        }
+        self.transcript.extend(lines);
+    }
+
+    /// Scroll by `rows` (up when positive), within the transcript.
+    pub fn scroll_by(&mut self, rows: isize) {
+        self.scroll = (self.scroll as isize + rows).clamp(0, self.max_scroll as isize) as usize;
+    }
+
+    pub fn draw(&mut self, app: &App) -> std::io::Result<()> {
+        let size = self.terminal.size()?;
+        if size.width != self.wrapped_w {
+            self.wrapped = text::wrap(self.transcript.clone(), size.width);
+            self.wrapped_w = size.width;
+        }
+        let cols = size.width as usize;
+        let head = brand::front_head(&app.theme, cols);
+        let foot = brand::front_foot(&app.theme, &brand::Welcome { recent: &self.recent }, cols);
+        let (view, max) = render::full_view(app, size.width, size.height, &self.wrapped, &head, &foot, self.scroll);
+        self.max_scroll = max;
+        self.scroll = self.scroll.min(max);
+        self.terminal.draw(|f| {
+            let area = f.area();
+            f.render_widget(Paragraph::new(view.lines.clone()), area);
+            if let Some((x, y)) = view.cursor {
+                if x < area.width && y < area.height {
+                    f.set_cursor_position((area.x + x, area.y + y));
+                }
+            }
+        })?;
+        Ok(())
+    }
+
+    pub fn clear(&mut self) -> std::io::Result<()> {
+        self.terminal.clear()
+    }
+
+    /// The transcript as text with ANSI styles, wrapped to `cols`, for the
+    /// terminal's scrollback once the full screen has closed.
+    pub fn transcript_text(&self, cols: u16) -> Vec<String> {
+        text::wrap(self.transcript.clone(), cols).iter().map(brand::ansi).collect()
+    }
+}
+
+/// Where the UI draws: the whole window, or an inline viewport.
+enum Display {
+    Full(Full<CrosstermBackend<std::io::Stdout>>),
+    Inline(Screen<CrosstermBackend<std::io::Stdout>>),
+}
+
+impl Display {
+    fn clear(&mut self) -> std::io::Result<()> {
+        match self {
+            Display::Full(f) => f.clear(),
+            Display::Inline(s) => s.clear(),
+        }
+    }
+}
+
+/// The full-screen UI, unless `FORGE_TUI=inline` asks for the inline one.
+fn full_screen() -> bool {
+    std::env::var("FORGE_TUI").map(|v| !v.trim().eq_ignore_ascii_case("inline")).unwrap_or(true)
+}
+
 // ---- the terminal's modes ----
 
 static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The UI is on the alternate screen, with the mouse captured (for the wheel).
+static FULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The terminal turned on the keyboard protocol (Shift+Enter is its own key).
 pub fn keyboard_protocol() -> bool {
@@ -237,6 +347,9 @@ fn restore() {
     if ENHANCED.swap(false, std::sync::atomic::Ordering::SeqCst) {
         let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
     }
+    if FULL.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let _ = crossterm::execute!(out, DisableMouseCapture, crossterm::terminal::LeaveAlternateScreen);
+    }
     let _ = crossterm::execute!(out, DisableBracketedPaste, crossterm::cursor::Show);
     let _ = crossterm::terminal::disable_raw_mode();
     let _ = out.flush();
@@ -251,11 +364,15 @@ impl Drop for Guard {
     }
 }
 
-fn setup() -> std::io::Result<Guard> {
+fn setup(full: bool) -> std::io::Result<Guard> {
     crossterm::terminal::enable_raw_mode()?;
     let guard = Guard;
     let mut out = std::io::stdout();
     crossterm::execute!(out, EnableBracketedPaste)?;
+    if full {
+        crossterm::execute!(out, crossterm::terminal::EnterAlternateScreen, EnableMouseCapture)?;
+        FULL.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     if crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
         // Shift+Enter becomes a key of its own.
         crossterm::execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
@@ -369,11 +486,13 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let provider = driver.engine.provider();
     let endpoint = endpoint_label(provider.base_url().as_deref(), provider.origin().map(|o| o.backend));
     let recent = forge_core::commands::recent_sessions(&driver, 1);
-    let welcome = brand::Welcome { recent: &recent };
+    let full = full_screen();
     app.front = true;
     app.endpoint = endpoint;
-    let rows = crossterm::terminal::size().map(|(_, r)| r as usize).unwrap_or(24);
-    app.pending.extend(brand::welcome(&theme, &welcome, cols, rows));
+    if !full {
+        let rows = crossterm::terminal::size().map(|(_, r)| r as usize).unwrap_or(24);
+        app.pending.extend(brand::welcome(&theme, &brand::Welcome { recent: &recent }, cols, rows));
+    }
     for w in warnings {
         app.on_event(UiEvent::Engine(forge_engine::EngineEvent::Notice {
             level: forge_engine::NoticeLevel::Warning,
@@ -390,9 +509,13 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     // The session task holds the other senders (here and in its sink and prompter): when it
     // ends, the UI sees the channel close.
     let task = tokio::spawn(session::run(driver, rx, ui_tx));
-    let guard = setup().map_err(|e| Fail::config(format!("cannot set up the terminal: {e}")))?;
-    let mut screen = Screen::new(Box::new(|| CrosstermBackend::new(std::io::stdout())), 1)
-        .map_err(|e| Fail::config(format!("cannot draw on the terminal: {e}")))?;
+    let guard = setup(full).map_err(|e| Fail::config(format!("cannot set up the terminal: {e}")))?;
+    let draw_fail = |e: std::io::Error| Fail::config(format!("cannot draw on the terminal: {e}"));
+    let mut screen = if full {
+        Display::Full(Full::new(CrosstermBackend::new(std::io::stdout()), recent).map_err(draw_fail)?)
+    } else {
+        Display::Inline(Screen::new(Box::new(|| CrosstermBackend::new(std::io::stdout())), 1).map_err(draw_fail)?)
+    };
 
     let send = |text: String, to: &mpsc::UnboundedSender<ToSession>| {
         let _ = append_history(&hist_path, &cwd, &text);
@@ -414,7 +537,10 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let mut exiting = false;
     loop {
         if !app.pending.is_empty() {
-            screen.commit(app.take_pending()).map_err(io_fail)?;
+            match &mut screen {
+                Display::Inline(s) => s.commit(app.take_pending()).map_err(io_fail)?,
+                Display::Full(f) => f.commit(app.take_pending()),
+            }
             app.dirty = true;
         }
         if let Some(text) = app.clipboard.take() {
@@ -436,14 +562,19 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         }
         let now = Instant::now();
         if app.dirty && now.duration_since(last_draw) >= FRAME {
-            let max = screen.rows().saturating_sub(1).max(1);
-            let view = render::live_view(&app, screen.width(), max);
-            let want = (view.lines.len() as u16).min(max);
-            let dialog_closed = had_dialog && app.dialog.is_none();
-            if want > screen.height() || (want < screen.height() && (!app.busy || dialog_closed)) {
-                screen.set_height(want).map_err(io_fail)?;
+            match &mut screen {
+                Display::Inline(screen) => {
+                    let max = screen.rows().saturating_sub(1).max(1);
+                    let view = render::live_view(&app, screen.width(), max);
+                    let want = (view.lines.len() as u16).min(max);
+                    let dialog_closed = had_dialog && app.dialog.is_none();
+                    if want > screen.height() || (want < screen.height() && (!app.busy || dialog_closed)) {
+                        screen.set_height(want).map_err(io_fail)?;
+                    }
+                    screen.draw(&view).map_err(io_fail)?;
+                }
+                Display::Full(f) => f.draw(&app).map_err(io_fail)?,
             }
-            screen.draw(&view).map_err(io_fail)?;
             had_dialog = app.dialog.is_some();
             app.dirty = false;
             last_draw = now;
@@ -459,10 +590,38 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                     screen.clear().map_err(io_fail)?;
                     app.dirty = true;
                 }
+                // The full screen scrolls its transcript: the wheel, and PgUp / PgDn with no dialog open.
+                Some(Ok(Event::Mouse(m))) if matches!(screen, Display::Full(_)) => {
+                    if let Display::Full(f) = &mut screen {
+                        match m.kind {
+                            MouseEventKind::ScrollUp => f.scroll_by(3),
+                            MouseEventKind::ScrollDown => f.scroll_by(-3),
+                            _ => {}
+                        }
+                    }
+                    app.dirty = true;
+                }
+                Some(Ok(Event::Key(k))) if k.kind != KeyEventKind::Release
+                    && app.dialog.is_none()
+                    && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown)
+                    && matches!(screen, Display::Full(_)) => {
+                    if let Display::Full(f) = &mut screen {
+                        let page = (f.rows() as isize / 2).max(1);
+                        f.scroll_by(if k.code == KeyCode::PageUp { page } else { -page });
+                    }
+                    app.dirty = true;
+                }
+                Some(Ok(Event::Resize(..))) => app.dirty = true,
                 Some(Ok(ev)) => {
                     for a in app.on_term_event(ev) {
                         match a {
-                            Action::Send(t) => send(t, &to_session),
+                            Action::Send(t) => {
+                                // Sending goes back to the newest lines.
+                                if let Display::Full(f) = &mut screen {
+                                    f.scroll = 0;
+                                }
+                                send(t, &to_session)
+                            }
                             Action::Picker(t) => {
                                 let _ = to_session.send(ToSession::Picker(t));
                             }
@@ -498,12 +657,30 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
             _ = tokio::time::sleep(frame_wait), if app.dirty && !frame_wait.is_zero() => {}
         }
     }
-    // Whatever is left goes to scrollback, then the live region is cleared.
-    let _ = screen.commit(app.take_pending());
-    let _ = screen.set_height(1);
-    let _ = screen.clear();
+    // Whatever is left goes to scrollback, then the live region is cleared. The full
+    // screen closes, and its transcript goes into the terminal's scrollback.
+    let transcript = match &mut screen {
+        Display::Inline(s) => {
+            let _ = s.commit(app.take_pending());
+            let _ = s.set_height(1);
+            let _ = s.clear();
+            vec![]
+        }
+        Display::Full(f) => {
+            f.commit(app.take_pending());
+            let cols = f.width();
+            f.transcript_text(cols)
+        }
+    };
     drop(screen);
     drop(guard);
+    if !transcript.is_empty() {
+        let mut out = std::io::stdout();
+        for l in transcript {
+            let _ = writeln!(out, "{l}");
+        }
+        let _ = out.flush();
+    }
     let _ = to_session.send(ToSession::Exit);
     drop(to_session);
     // The session ends its own way (hooks, MCP); don't wait for it forever.

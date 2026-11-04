@@ -272,6 +272,17 @@ with `{"text", "cwd"}`:
 
 ## Rendering rules (implemented in `app.rs` and `text.rs`)
 
+- **Full screen** (the default; `FORGE_TUI=inline` for the inline
+  viewport): the UI takes the terminal's alternate screen and keeps the
+  transcript itself (`mod.rs` `Full`, `render::full_view`). Before the first
+  message, the front screen fills the window: the wordmark and tagline, the
+  centred input with the mode, model and endpoint under it, the resume line
+  and any notices, a little above the middle, with the status line on the
+  last row. After it, the transcript sits above the live region (a short one
+  just above it), scrolled with PgUp / PgDn and the mouse wheel (Shift+drag
+  selects text while the mouse is captured); sending goes back to the
+  newest lines. On exit the transcript is printed into the terminal's
+  scrollback, wrapped to its width.
 - **The front screen** (`brand::welcome`), printed once at the start,
   centred across the terminal and down the room above the input: the FORGE
   wordmark (spaced capitals, its O a cube with a copper top, drawn in half
