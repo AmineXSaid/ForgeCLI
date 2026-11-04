@@ -276,11 +276,12 @@ with `{"text", "cwd"}`:
   first is the default). Each sets the full-screen front page (`front.rs`),
   how the conversation is written (`app.rs`), the approval's frame and the
   input (`render.rs`); colours (`/theme dark|light|none`) apply to all:
-  - `frame`: a framed welcome, the wordmark (`Kod` in paper, `Act` in lime)
-    with an olive shadow beside KodAct's mark, the version, what KodAct
+  - `frame`: the name first, centred: KodAct's mark beside the wordmark
+    (`Kod` in paper, `Act` in lime, over an olive shadow), twice the size on
+    a terminal at least 110 columns wide (the mark beside it from 136), the
+    tagline under them; then, in a centred column, the version, what KodAct
     does, the connected MCP servers, the last conversation, the folder and
-    branch; the input across the page. Steps with a dot; approvals in lime
-    corner marks.
+    branch, and the input. Steps with a dot; approvals in lime corner marks.
   - `glow`: centred, the wordmark lit from the top with sparks and a glowing
     seam, a lime-framed input with the mode and model under it. Your words
     on a tinted band, finished steps with a ✓, answers plain.

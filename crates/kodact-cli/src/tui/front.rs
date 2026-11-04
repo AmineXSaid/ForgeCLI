@@ -160,6 +160,16 @@ fn wordmark_grid(look: Letters, light: bool) -> Vec<Vec<Px>> {
     grid
 }
 
+/// `grid` with each pixel drawn `k` by `k`.
+fn scaled(grid: &[Vec<Px>], k: usize) -> Vec<Vec<Px>> {
+    grid.iter()
+        .flat_map(|row| {
+            let wide: Vec<Px> = row.iter().flat_map(|p| std::iter::repeat_n(*p, k)).collect();
+            std::iter::repeat_n(wide, k)
+        })
+        .collect()
+}
+
 /// The wordmark in `look`: 5 rows (6 with a shadow).
 pub fn wordmark(t: &Theme, look: Letters) -> Vec<Line<'static>> {
     half_blocks(&wordmark_grid(look, t.light), t)
@@ -340,23 +350,29 @@ fn small_name(t: &Theme) -> Vec<Span<'static>> {
     super::brand::wordmark_text(t).spans
 }
 
-/// 1 · A framed welcome: the wordmark over its shadow beside the mark,
-/// then the version, what KodAct does, what is connected, and the folder.
+/// 1 · The name first: the mark and the wordmark centred together, twice the
+/// size where the terminal is wide enough, the tagline under them; then the
+/// version, what KodAct does, what is connected, and the folder, in a centred
+/// column with the input under it.
 fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
-    let m = 4;
-    let fw = cols - 2 * m;
-    let corner = t.subtle();
-    let mut above = vec![spread(m, vec![Span::styled("┌─", corner)], m + fw, vec![Span::styled("─┐", corner)])];
-    let mut left = vec![Line::from(Span::styled("Welcome to", t.dim())), Line::default()];
-    left.extend(wordmark(t, Letters::Shadow));
-    let tag = "code, then act";
-    left.push(Line::from(vec![
-        Span::raw(" ".repeat(wordmark_w(Letters::Shadow).saturating_sub(width(tag)))),
-        Span::styled(tag, t.subtle()),
-    ]));
-    let right = if fw >= wordmark_w(Letters::Shadow) + MARK_W + 16 { mark_art(t) } else { vec![] };
-    above.extend(beside(m + 4, left, m + fw - 4 - MARK_W, right));
-    above.push(spread(m, vec![Span::styled("└─", corner)], m + fw, vec![Span::styled("─┘", corner)]));
+    let fw = (cols - 8).min(104);
+    let m = (cols - fw) / 2;
+    let one = wordmark_w(Letters::Shadow);
+    let k = if cols >= 2 * one + 4 { 2 } else { 1 };
+    let word = half_blocks(&scaled(&wordmark_grid(Letters::Shadow, t.light), k), t);
+    let ww = k * one;
+    // The mark as tall as the letters, beside them where there is room.
+    let mark_n = 2 * word.len();
+    let gap = 2 * k;
+    let (logo, lw) = if cols >= ww + gap + mark_n + 4 {
+        (beside(0, super::brand::mark(t, mark_n), mark_n + gap, word), mark_n + gap + ww)
+    } else {
+        (word, ww)
+    };
+    let mut above = vec![Line::default()];
+    above.extend(centre_block(logo, lw, cols));
+    above.push(Line::default());
+    above.push(centred(Line::from(Span::styled(TAGLINE, t.dim())), cols));
     above.push(Line::default());
     above.push(at(
         m,
@@ -692,8 +708,12 @@ mod tests {
             }
         }
         let frame = plain(&front_page(&DARK, Look::Frame, &info(), 120).above).join("\n");
+        assert!(!frame.contains("Welcome to"), "the name speaks for itself");
+        let big = front_page(&DARK, Look::Frame, &info(), 140).above;
+        assert!(big.iter().filter(|l| line_w(l) > 2 * WORDMARK_W).count() >= 10, "twice the size when wide");
+        assert!(big.iter().all(|l| line_w(l) <= 140));
         for want in [
-            "Welcome to",
+            TAGLINE,
             "Connected to jira",
             "Last time: checkout rounding",
             "/resume",
