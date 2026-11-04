@@ -314,7 +314,7 @@ with `{"text", "cwd"}`:
   transcript itself (`mod.rs` `Full`, `render::full_view`). Before the first
   message, the front screen fills the window: the wordmark and tagline, the
   centred input with the mode, model and endpoint under it, the resume line
-  and any notices, a little above the middle, with the status line on the
+  and any notices, centred down the screen, with the status line on the
   last row. After it, the transcript sits above the live region (a short one
   just above it), scrolled with PgUp / PgDn and the mouse wheel (Shift+drag
   selects text while the mouse is captured); sending goes back to the

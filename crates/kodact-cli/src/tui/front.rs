@@ -417,7 +417,7 @@ fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     }
     above.push(at(m, Line::from(folder)));
     above.push(Line::default());
-    FrontPage { above, box_left: m, box_w: fw, top: true, ..Default::default() }
+    FrontPage { above, box_left: m, box_w: fw, ..Default::default() }
 }
 
 /// 2 · Centred, the name as hot metal with sparks over it and a glowing seam under it.

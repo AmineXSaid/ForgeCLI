@@ -769,8 +769,8 @@ pub fn full_view_at(
                 mid.extend(notes);
             }
             let free = room.saturating_sub(page.header.len() + mid.len());
-            // A little above the middle, where the eye settles; or from the top.
-            let top = if page.top { free.min(1) } else { free * 2 / 5 };
+            // Centred down the screen, the empty rows split evenly above and below; or from the top.
+            let top = if page.top { free.min(1) } else { free / 2 };
             out.extend(vec![Line::default(); top]);
             box_at = out.len() + at;
             out.extend(mid);
@@ -1594,6 +1594,10 @@ mod tests {
         let mark = rows.iter().position(|r| r == "WORDMARK").unwrap();
         let resume = rows.iter().position(|r| r.contains("/resume")).unwrap();
         assert!(mark > 3 && resume < 25, "centred down the screen: {rows:#?}");
+        // As many empty rows above the page as below it (the status line aside).
+        let first = rows.iter().position(|r| !r.trim().is_empty()).unwrap();
+        let last = rows[..29].iter().rposition(|r| !r.trim().is_empty()).unwrap();
+        assert!(first.abs_diff(28 - last) <= 1, "centred: {first} above, {} below\n{rows:#?}", 28 - last);
         assert!(rows[mark + 3..resume].iter().any(|r| r.contains("❯ What shall we build today?")), "the input between");
         assert!(rows[29].ends_with(&format!("v{}", kodact_core::VERSION)), "the status line on the last row");
         let (_, cy) = v.cursor.unwrap();
