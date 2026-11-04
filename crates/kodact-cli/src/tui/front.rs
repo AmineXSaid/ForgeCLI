@@ -1,11 +1,11 @@
 //! The full-screen front page, one per style (`look.rs`): what the session
 //! has, laid out before the first message. Pixel art (the wordmark in four
-//! looks, the anvil) is drawn in half blocks, two square pixels per cell.
+//! looks, the mark) is drawn in half blocks, two square pixels per cell.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-use super::brand::{centred, GLYPHS, TAGLINE};
+use super::brand::{centred, GAP, GLYPHS, TAGLINE, WORDMARK_W};
 use super::look::Look;
 use super::palette;
 use super::render::fit;
@@ -17,13 +17,13 @@ type Px = Option<(u32, Color)>;
 /// How the wordmark is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Letters {
-    /// Paper letters.
+    /// "Kod" in paper, "Act" in lime.
     Flat,
-    /// Paper letters over an ember shadow, one pixel down and right.
+    /// Paper and lime letters over a dark olive shadow, one pixel down and right.
     Shadow,
-    /// Metal out of the fire: gold at the top, ember at the foot.
-    Heat,
-    /// The letters' edges only, in copper.
+    /// Lit from above: bright lime at the top, a deeper green at the foot.
+    Glow,
+    /// The letters' edges only, in lime.
     Outline,
 }
 
@@ -100,52 +100,41 @@ fn half_blocks(grid: &[Vec<Px>], t: &Theme) -> Vec<Line<'static>> {
     out
 }
 
-/// The wordmark's pixels in one of its looks: 47 by 10, 48 by 11 with a shadow.
+/// The wordmark's pixels in one of its looks: 52 by 10, 53 by 11 with a
+/// shadow. "Kod" is paper (ink on a light background) and "Act" lime.
 fn wordmark_grid(look: Letters, light: bool) -> Vec<Vec<Px>> {
-    let (paper, copper, lit, edge, shade, shadow) = if light {
-        (
-            (0x2b2825, Color::Black),
-            (0xb4532a, Color::Yellow),
-            (0x5a544e, Color::DarkGray),
-            (0x433e39, Color::Black),
-            (0xa59e97, Color::Gray),
-            (0xd9b49c, Color::Yellow),
-        )
+    let (paper, lime, shadow) = if light {
+        ((0x101214, Color::Black), (0x4a7200, Color::Green), (0xc9dca0, Color::Gray))
     } else {
-        (
-            (0xefe9e4, Color::White),
-            (0xe2895b, Color::LightYellow),
-            (0xc4bbb3, Color::Gray),
-            (0x8f877f, Color::DarkGray),
-            (0x6f6963, Color::DarkGray),
-            (0x7a3a1f, Color::Red),
-        )
+        ((0xf2f0e9, Color::White), (0xc6ff3d, Color::LightGreen), (0x3d5a10, Color::Green))
     };
-    // Gold at the top cooling to ember at the foot.
-    const HEAT: [(u32, Color); 10] = [
-        (0xffe3a1, Color::LightYellow),
-        (0xffd27a, Color::LightYellow),
-        (0xffc160, Color::Yellow),
-        (0xf9ab52, Color::Yellow),
-        (0xf2954a, Color::Yellow),
-        (0xea8045, Color::LightRed),
-        (0xe26e40, Color::LightRed),
-        (0xd65d3a, Color::Red),
-        (0xc84d34, Color::Red),
-        (0xb8402f, Color::Red),
+    // The glow: bright at the top, settling to a deeper green at the foot.
+    const GLOW: [(u32, Color); 10] = [
+        (0xf1ffc4, Color::White),
+        (0xe4ff9a, Color::LightGreen),
+        (0xd6ff6e, Color::LightGreen),
+        (0xc6ff3d, Color::LightGreen),
+        (0xb8f034, Color::LightGreen),
+        (0xa8de2c, Color::Green),
+        (0x97c925, Color::Green),
+        (0x86b31e, Color::Green),
+        (0x749c18, Color::Green),
+        (0x628512, Color::Green),
     ];
-    let (w, h) = if look == Letters::Shadow { (48, 11) } else { (47, 10) };
-    let mut letter = vec![vec![None::<char>; w]; h];
+    let step = 7 + GAP;
+    let base = 6 * 7 + 5 * GAP;
+    let (w, h) = if look == Letters::Shadow { (base + 1, 11) } else { (base, 10) };
+    let mut letter = vec![vec![None::<usize>; w]; h];
     for (gi, rows) in GLYPHS.iter().enumerate() {
         for (y, row) in rows.iter().enumerate() {
             for (x, c) in row.chars().enumerate() {
                 if c != '.' {
-                    letter[y][gi * 10 + x] = Some(c);
+                    letter[y][gi * step + x] = Some(gi);
                 }
             }
         }
     }
-    let at = |x: isize, y: isize| -> Option<char> {
+    let at = |x: isize, y: isize| -> Option<usize> {
         (x >= 0 && y >= 0).then(|| letter.get(y as usize).and_then(|r| r.get(x as usize)).copied().flatten()).flatten()
     };
     let mut grid = vec![vec![None; w]; h];
@@ -153,18 +142,15 @@ fn wordmark_grid(look: Letters, light: bool) -> Vec<Vec<Px>> {
         for (x, cell) in row.iter_mut().enumerate() {
             let (xi, yi) = (x as isize, y as isize);
             *cell = match at(xi, yi) {
-                Some('T') => Some(copper),
-                Some('L') => Some(lit),
-                Some('E') => Some(edge),
-                Some('S') => Some(shade),
-                Some(_) => match look {
-                    Letters::Heat => Some(HEAT[y.min(9)]),
+                Some(gi) => match look {
+                    Letters::Glow => Some(GLOW[y.min(9)]),
                     Letters::Outline => {
                         let inside =
                             [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().all(|(dx, dy)| at(xi + dx, yi + dy).is_some());
-                        (!inside).then_some(copper)
+                        (!inside).then_some(lime)
                     }
-                    _ => Some(paper),
+                    _ if gi < 3 => Some(paper),
+                    _ => Some(lime),
                 },
                 None if look == Letters::Shadow && at(xi - 1, yi - 1).is_some() => Some(shadow),
                 None => None,
@@ -181,57 +167,15 @@ pub fn wordmark(t: &Theme, look: Letters) -> Vec<Line<'static>> {
 
 /// The wordmark's width in columns.
 pub fn wordmark_w(look: Letters) -> usize {
-    if look == Letters::Shadow {
-        48
-    } else {
-        47
-    }
+    WORDMARK_W + usize::from(look == Letters::Shadow)
 }
 
-/// KodAct's anvil: a hot ingot on its face, two sparks, a horn to the left and
-/// two small eyes. Original pixel art, 24 by 16 (24 columns by 8 rows).
-const ANVIL: [&str; 16] = [
-    "..............y.........",
-    ".........y..............",
-    "..........hhhhhh....y...",
-    ".........hooooooh.......",
-    ".........rrrrrrrr.......",
-    "...AAAAAAAAAAAAAAAAAA...",
-    "AAAABBBBBBBBBBBBBBBBBC..",
-    ".ABBBBBBBBBBBBBBBBBBBC..",
-    "...BBBBKBBBBBBKBBBBBC...",
-    ".....BBBBBBBBBBBBBBC....",
-    "........BBBBBBBC........",
-    "........BBBBBBBC........",
-    ".......BBBBBBBBBC.......",
-    ".....BBBBBBBBBBBBBC.....",
-    "....BBBBBBBBBBBBBBBC....",
-    "....CCCCCCCCCCCCCCCC....",
-];
+/// The mark's size on the front pages: 16 columns by 8 rows.
+pub const MARK_W: usize = 16;
 
-/// The anvil's width in columns.
-pub const ANVIL_W: usize = 24;
-
-pub fn anvil(t: &Theme) -> Vec<Line<'static>> {
-    let px = |c: char| -> Px {
-        Some(match (c, t.light) {
-            ('y', _) => (0xffd27a, Color::LightYellow),
-            ('h', _) => (0xffe3a1, Color::LightYellow),
-            ('o', _) => (0xf9ab52, Color::Yellow),
-            ('r', _) => (0xe2593a, Color::Red),
-            ('A', false) => (0xe4ddd6, Color::White),
-            ('B', false) => (0x9a928a, Color::Gray),
-            ('C', false) => (0x5f5952, Color::DarkGray),
-            ('K', false) => (0x1b1916, Color::Black),
-            ('A', true) => (0x8f8a84, Color::Gray),
-            ('B', true) => (0x5f5a54, Color::DarkGray),
-            ('C', true) => (0x3a3631, Color::Black),
-            ('K', true) => (0xf7f3ee, Color::White),
-            _ => return None,
-        })
-    };
-    let grid: Vec<Vec<Px>> = ANVIL.iter().map(|r| r.chars().map(px).collect()).collect();
-    half_blocks(&grid, t)
+/// KodAct's mark (a cursor bar and a run triangle on a lime tile), front-page size.
+pub fn mark_art(t: &Theme) -> Vec<Line<'static>> {
+    super::brand::mark(t, MARK_W)
 }
 
 // ---- layout helpers ----
@@ -374,44 +318,44 @@ fn boxed(x: usize, w: usize, rows: Vec<Line<'static>>, border: Style) -> Vec<Lin
 /// layout gets the bare one.
 pub fn front_page(t: &Theme, look: Look, info: &FrontInfo, cols: usize) -> FrontPage {
     let need = match look {
-        Look::Forgeframe | Look::Anvil => 84,
+        Look::Frame | Look::Card => 84,
         Look::Ledger | Look::Status => 80,
-        Look::Molten | Look::Bare => 0,
+        Look::Glow | Look::Bare => 0,
     };
     if cols < need {
         return bare(t, info, cols);
     }
     match look {
-        Look::Forgeframe => forgeframe(t, info, cols),
-        Look::Molten => molten(t, info, cols),
-        Look::Anvil => anvil_card(t, info, cols),
+        Look::Frame => frame(t, info, cols),
+        Look::Glow => glow(t, info, cols),
+        Look::Card => mark_card(t, info, cols),
         Look::Ledger => ledger(t, info, cols),
         Look::Status => status_board(t, info, cols),
         Look::Bare => bare(t, info, cols),
     }
 }
 
-/// The name in letters too wide for the terminal: `F O R G E` in one row.
-fn small_name(t: &Theme) -> Span<'static> {
-    Span::styled("F O R G E", t.brand_strong().add_modifier(Modifier::BOLD))
+/// The name in one row, for a terminal too narrow for the wordmark.
+fn small_name(t: &Theme) -> Vec<Span<'static>> {
+    super::brand::wordmark_text(t).spans
 }
 
-/// 1 · A framed welcome: the wordmark with an ember shadow beside the anvil,
+/// 1 · A framed welcome: the wordmark over its shadow beside the mark,
 /// then the version, what KodAct does, what is connected, and the folder.
-fn forgeframe(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
+fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     let m = 4;
     let fw = cols - 2 * m;
     let corner = t.subtle();
     let mut above = vec![spread(m, vec![Span::styled("┌─", corner)], m + fw, vec![Span::styled("─┐", corner)])];
     let mut left = vec![Line::from(Span::styled("Welcome to", t.dim())), Line::default()];
     left.extend(wordmark(t, Letters::Shadow));
-    let tag = "a coding agent, reforged";
+    let tag = "code, then act";
     left.push(Line::from(vec![
         Span::raw(" ".repeat(wordmark_w(Letters::Shadow).saturating_sub(width(tag)))),
         Span::styled(tag, t.subtle()),
     ]));
-    let right = if fw >= wordmark_w(Letters::Shadow) + ANVIL_W + 16 { anvil(t) } else { vec![] };
-    above.extend(beside(m + 4, left, m + fw - 4 - ANVIL_W, right));
+    let right = if fw >= wordmark_w(Letters::Shadow) + MARK_W + 16 { mark_art(t) } else { vec![] };
+    above.extend(beside(m + 4, left, m + fw - 4 - MARK_W, right));
     above.push(spread(m, vec![Span::styled("└─", corner)], m + fw, vec![Span::styled("─┘", corner)]));
     above.push(Line::default());
     above.push(at(
@@ -460,15 +404,15 @@ fn forgeframe(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
 }
 
 /// 2 · Centred, the name as hot metal with sparks over it and a glowing seam under it.
-fn molten(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
+fn glow(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     let mut above = vec![];
-    let ww = wordmark_w(Letters::Heat);
+    let ww = wordmark_w(Letters::Glow);
     if cols >= ww + 4 {
         // Sparks rising off the letters, at fixed places.
         let spark = |hex: u32| Style::default().fg(ink(hex, Color::Yellow, t));
         let rows: [&[(usize, &str, u32)]; 2] = [
-            &[(9, "·", 0xffd27a), (21, "˙", 0xffe3a1), (33, "·", 0xffc160)],
-            &[(4, "˙", 0xf9ab52), (15, "·", 0xffd27a), (27, "·", 0xf2954a), (40, "˙", 0xffc160)],
+            &[(9, "·", 0xdcff85), (21, "˙", 0xf1ffc4), (33, "·", 0xc6ff3d)],
+            &[(4, "˙", 0xa8de2c), (15, "·", 0xdcff85), (27, "·", 0xb8f034), (40, "˙", 0xc6ff3d)],
         ];
         for r in rows {
             let mut spans = vec![];
@@ -480,20 +424,20 @@ fn molten(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
             }
             above.push(at(cols.saturating_sub(ww) / 2, Line::from(spans)));
         }
-        above.extend(centre_block(wordmark(t, Letters::Heat), ww, cols));
+        above.extend(centre_block(wordmark(t, Letters::Glow), ww, cols));
         // The seam: brightest in the middle.
         let n = 40usize;
         let seam: Vec<Span<'static>> = (0..n)
             .map(|i| {
                 let d = (i as f32 - n as f32 / 2.0).abs() / (n as f32 / 2.0);
                 let hex = if d < 0.2 {
-                    0xffd27a
+                    0xf1ffc4
                 } else if d < 0.5 {
-                    0xf2954a
+                    0xc6ff3d
                 } else if d < 0.8 {
-                    0xc84d34
+                    0x749c18
                 } else {
-                    0x5e2a1c
+                    0x2a3a0c
                 };
                 Span::styled("━", if t.color { Style::default().fg(ink(hex, Color::Yellow, t)) } else { t.subtle() })
             })
@@ -518,8 +462,8 @@ fn molten(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     FrontPage { above, below, box_left: (cols - bw) / 2, box_w: bw, under: true, ..Default::default() }
 }
 
-/// 3 · A card: the anvil beside the name and the session's readouts; the input under it.
-fn anvil_card(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
+/// 3 · A card: the mark beside the name and the session's readouts; the input under it.
+fn mark_card(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     let cw = cols.saturating_sub(8).min(86);
     let x = (cols - cw) / 2;
     let border = t.hairline();
@@ -535,9 +479,9 @@ fn anvil_card(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     rows.push(Line::default());
     let mut right = wordmark(t, Letters::Flat);
     right.push(Line::default());
-    let tag = if inner >= ANVIL_W + 5 + width(TAGLINE) { TAGLINE } else { "a coding agent, reforged" };
+    let tag = if inner >= MARK_W + 5 + width(TAGLINE) { TAGLINE } else { "code, then act" };
     right.push(Line::from(Span::styled(tag, t.dim())));
-    rows.extend(beside(1, anvil(t), ANVIL_W + 5, right));
+    rows.extend(beside(1, mark_art(t), MARK_W + 5, right));
     rows.push(Line::default());
     let kv = |k: &str, v: String, d: String| {
         Line::from(vec![Span::styled(format!(" {k:<8}"), t.subtle()), Span::raw(v), Span::styled(d, t.subtle())])
@@ -558,7 +502,7 @@ fn anvil_card(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     FrontPage { above: boxed(x, cw, rows, border), below, box_left: x, box_w: cw, ..Default::default() }
 }
 
-/// 4 · Aligned left: the name in copper outline, past work numbered beside this folder,
+/// 4 · Aligned left: the name in lime outline, past work numbered beside this folder,
 /// the input docked at the bottom.
 fn ledger(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
     let m = 8;
@@ -666,14 +610,18 @@ fn bare(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
         Line::default(),
         spread(
             2,
-            vec![small_name(t), Span::styled(format!("  {}", info.version), t.subtle())],
+            {
+                let mut v = small_name(t);
+                v.push(Span::styled(format!("  {}", info.version), t.subtle()));
+                v
+            },
             cols.saturating_sub(2),
             right,
         ),
     ];
     let bw = cols.saturating_sub(4).min(72);
     let x = (cols - bw) / 2;
-    let above = vec![centred(Line::from(Span::styled("What shall we kodact today?", t.bold())), cols), Line::default()];
+    let above = vec![centred(Line::from(Span::styled("What shall we build today?", t.bold())), cols), Line::default()];
     let mut below = vec![];
     if !info.recent.is_empty() {
         below.push(Line::default());
@@ -714,19 +662,19 @@ mod tests {
     }
 
     #[test]
-    fn the_wordmark_has_four_looks_and_the_anvil_is_whole() {
+    fn the_wordmark_has_four_looks_and_the_mark_is_whole() {
         assert_eq!(wordmark(&DARK, Letters::Flat).len(), 5);
         assert_eq!(wordmark(&DARK, Letters::Shadow).len(), 6, "the shadow adds a pixel row");
-        let heat = wordmark(&DARK, Letters::Heat);
+        let heat = wordmark(&DARK, Letters::Glow);
         let fg = |l: &Line| {
             l.spans.iter().find(|s| s.content.contains('█') || s.content.contains('▀')).and_then(|s| s.style.fg)
         };
         assert_ne!(fg(&heat[0]), fg(&heat[4]), "hot at the top, cooler at the foot");
         let outline = plain(&wordmark(&DARK, Letters::Outline));
         assert!(outline.iter().any(|l| l.contains(' ')), "hollow letters");
-        let a = anvil(&DARK);
+        let a = mark_art(&DARK);
         assert_eq!(a.len(), 8);
-        assert!(a.iter().all(|l| line_w(l) <= ANVIL_W));
+        assert!(a.iter().all(|l| line_w(l) <= MARK_W));
     }
 
     #[test]
@@ -743,7 +691,7 @@ mod tests {
                 assert!(text.contains("stand-in") || p.under, "{look:?} {cols}: the model shows\n{text}");
             }
         }
-        let frame = plain(&front_page(&DARK, Look::Forgeframe, &info(), 120).above).join("\n");
+        let frame = plain(&front_page(&DARK, Look::Frame, &info(), 120).above).join("\n");
         for want in [
             "Welcome to",
             "Connected to jira",
@@ -759,7 +707,7 @@ mod tests {
         let board = plain(&front_page(&DARK, Look::Status, &info(), 120).above).join("\n");
         assert!(board.contains("Model") && board.contains("Tools") && board.contains("Folder"));
         // Too narrow for a style's layout: the bare page.
-        let narrow = front_page(&DARK, Look::Forgeframe, &info(), 60);
-        assert!(plain(&narrow.header).join("").contains("F O R G E"));
+        let narrow = front_page(&DARK, Look::Frame, &info(), 60);
+        assert!(plain(&narrow.header).join("").contains("KodAct"));
     }
 }

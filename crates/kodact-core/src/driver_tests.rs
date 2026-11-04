@@ -1363,18 +1363,21 @@ async fn tui_only_commands_save_theme_and_status_line() {
 
     t.d.surface = Surface::Tui;
     let d = &mut t.d;
-    assert!(local(d, "/theme").await.starts_with("Style: forgeframe · colours: auto"));
-    assert!(fails(d, "/theme neon").await.contains("Choose one of: forgeframe, molten"));
+    assert!(local(d, "/theme").await.starts_with("Style: frame · colours: auto"));
+    assert!(fails(d, "/theme neon").await.contains("Choose one of: frame, glow"));
     assert!(local(d, "/theme light").await.starts_with("Colours set to light. Saved in user settings"));
     assert_eq!(read_json(&user)["theme"], "light");
     assert_eq!(d.info.settings.str("/theme"), Some("light"), "the loaded settings follow");
     // A style is its own setting, beside the colours.
-    assert!(local(d, "/theme Molten").await.starts_with("Style set to molten. Saved in user settings"));
-    assert_eq!(read_json(&user)["tuiStyle"], "molten");
+    assert!(
+        local(d, "/theme Molten").await.starts_with("Style set to glow. Saved in user settings"),
+        "an old name still works"
+    );
+    assert_eq!(read_json(&user)["tuiStyle"], "glow");
     assert_eq!(read_json(&user)["theme"], "light", "the colours stay");
     let p = crate::commands::picker::picker(d, "/theme").unwrap();
     assert!(p.choices.iter().any(|c| c.current && c.label == "light colours"));
-    assert!(p.choices.iter().any(|c| c.current && c.label == "molten"));
+    assert!(p.choices.iter().any(|c| c.current && c.label == "glow"));
     assert_eq!(p.choices.len(), 10, "six styles and four colour themes");
 
     assert!(local(d, "/statusline").await.starts_with("No status line command"));

@@ -685,9 +685,9 @@ pub(super) fn advisor(d: &mut Driver, args: &str) -> Exec {
 
 /// The styles of the terminal UI: how its front page, chat and prompt are laid out.
 pub const STYLES: [(&str, &str); 6] = [
-    ("forgeframe", "A framed welcome with the anvil, what is connected, a timeline of steps"),
-    ("molten", "Centred, the name as hot metal, quiet steps and a glowing prompt"),
-    ("anvil", "A card with the anvil and the session, one card per turn"),
+    ("frame", "A framed welcome with the mark, what is connected, a timeline of steps"),
+    ("glow", "Centred, the name glowing lime, quiet steps and a glowing prompt"),
+    ("card", "A card with the mark and the session, one card per turn"),
     ("ledger", "Aligned left, past work numbered, times and voices down the side"),
     ("status", "Readouts of the session, a header bar, approvals over the thread"),
     ("bare", "One prompt in the middle and nothing else; plain steps and answers"),
@@ -726,6 +726,13 @@ pub(super) fn theme(d: &mut Driver, args: &str) -> Exec {
         return ok(s);
     }
     let arg = args.trim().to_ascii_lowercase();
+    // The style names from before KodAct was renamed.
+    let arg = match arg.as_str() {
+        "forgeframe" => "frame".to_string(),
+        "molten" => "glow".to_string(),
+        "anvil" => "card".to_string(),
+        _ => arg,
+    };
     if let Some((name, _)) = STYLES.iter().find(|(n, _)| *n == arg) {
         let saved = save_default(d, Scope::User, &["tuiStyle"], Some(json!(name)));
         return ok(join(&[format!("Style set to {name}."), saved]));

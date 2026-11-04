@@ -1,7 +1,7 @@
-//! KodAct's name in the terminal: the KODACT wordmark, its O a cube, drawn as
-//! pixels in half blocks (each cell is two pixels stacked, so the pixels come
-//! out square), and the two screens it heads: the front screen and the
-//! first-run card.
+//! KodAct's name in the terminal: the KodAct wordmark and its mark (a cursor
+//! bar and a run triangle on a lime tile), drawn as pixels in half blocks
+//! (each cell is two pixels stacked, so the pixels come out square), and the
+//! two screens they head: the front screen and the first-run card.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,28 +10,34 @@ use super::palette;
 use super::text::{width, Theme};
 
 /// The wordmark's letters, seven pixels wide and ten tall (five terminal
-/// rows); `.` is empty. `X` is a letter; the cube in place of the O has a
-/// copper top (`T`), a lit face (`L`), the edge between them (`E`) and a
-/// shaded face (`S`).
-pub(super) const GLYPHS: [[&str; 10]; 5] = [
-    ["XXXXXXX", "XXXXXXX", "XX.....", "XX.....", "XXXXXX.", "XXXXXX.", "XX.....", "XX.....", "XX.....", "XX....."],
-    ["..TTT..", "TTTTTTT", "LTTTTTS", "LLLTSSS", "LLLESSS", "LLLESSS", "LLLESSS", "LLLESSS", "LLLESSS", ".LLESS."],
-    ["XXXXXX.", "XXXXXXX", "XX...XX", "XX...XX", "XXXXXXX", "XXXXXX.", "XX.XX..", "XX..XX.", "XX...XX", "XX...XX"],
-    [".XXXXXX", "XXXXXXX", "XX.....", "XX.....", "XX..XXX", "XX..XXX", "XX...XX", "XX...XX", "XXXXXXX", ".XXXXX."],
-    ["XXXXXXX", "XXXXXXX", "XX.....", "XX.....", "XXXXXX.", "XXXXXX.", "XX.....", "XX.....", "XXXXXXX", "XXXXXXX"],
+/// rows): capitals K and A, lowercase o, d, c and t on the same baseline.
+/// `.` is empty and `X` a letter.
+pub(super) const GLYPHS: [[&str; 10]; 6] = [
+    // K
+    ["XX...XX", "XX..XX.", "XX.XX..", "XXXX...", "XXX....", "XXX....", "XXXX...", "XX.XX..", "XX..XX.", "XX...XX"],
+    // o
+    [".......", ".......", ".......", ".XXXXX.", "XXXXXXX", "XX...XX", "XX...XX", "XX...XX", "XXXXXXX", ".XXXXX."],
+    // d
+    [".....XX", ".....XX", ".....XX", ".XXXXXX", "XXXXXXX", "XX...XX", "XX...XX", "XX...XX", "XXXXXXX", ".XXXXXX"],
+    // A
+    ["..XXX..", ".XXXXX.", "XX...XX", "XX...XX", "XX...XX", "XXXXXXX", "XXXXXXX", "XX...XX", "XX...XX", "XX...XX"],
+    // c
+    [".......", ".......", ".......", ".XXXXXX", "XXXXXXX", "XX.....", "XX.....", "XX.....", "XXXXXXX", ".XXXXXX"],
+    // t
+    [".......", ".XX....", ".XX....", "XXXXXX.", "XXXXXX.", ".XX....", ".XX....", ".XX....", ".XXXXXX", "..XXXXX"],
 ];
 
-/// Columns between letters: the wordmark is spaced, as the name is said.
-const GAP: usize = 3;
+/// Columns between letters.
+pub(super) const GAP: usize = 2;
 
 /// The wordmark's width in columns.
-pub const WORDMARK_W: usize = 5 * 7 + 4 * GAP;
+pub const WORDMARK_W: usize = 6 * 7 + 5 * GAP;
 
 /// The tagline under the wordmark.
-pub const TAGLINE: &str = "A coding agent, reforged, on the model you choose.";
+pub const TAGLINE: &str = "Code, then act: a coding agent on the model you choose.";
 
-/// The wordmark's pixel rows: `H` and `h` the letters' top and bottom halves
-/// (one ink today: flat letters read crisper at five rows).
+/// The wordmark's pixel rows: `P` for "Kod" in paper, `G` for "Act" in lime,
+/// so the name reads as what it does.
 fn wordmark_rows() -> Vec<String> {
     (0..10)
         .map(|y| {
@@ -41,8 +47,8 @@ fn wordmark_rows() -> Vec<String> {
                     row.push_str(&".".repeat(GAP));
                 }
                 row.extend(g[y].chars().map(|c| match c {
-                    'X' if y < 5 => 'H',
-                    'X' => 'h',
+                    'X' if i < 3 => 'P',
+                    'X' => 'G',
                     other => other,
                 }));
             }
@@ -51,23 +57,56 @@ fn wordmark_rows() -> Vec<String> {
         .collect()
 }
 
-/// The wordmark's inks for a light or dark background: hex, and the ANSI
-/// colour for 16-colour terminals. Paper letters (ink on a light background)
-/// and the cube as KodAct's: a copper top, its faces apart by lightness.
+/// KodAct's mark, `n` pixels square (`n / 2` rows): a lime tile with rounded
+/// corners holding an ink cursor bar and a run triangle. `M` is the tile, `K` ink.
+pub fn mark_rows(n: usize) -> Vec<String> {
+    let n = n.max(8);
+    let f = |v: f32| (v * n as f32).round() as usize;
+    let bar0 = f(0.20);
+    let bar1 = f(0.32).max(bar0 + 1);
+    // At least one pixel of tile between the bar and the triangle, whatever the size.
+    let tri0 = f(0.42).max(bar1 + 1);
+    let tri1 = f(0.80).max(tri0 + 2);
+    let (top, bottom) = (f(0.24), f(0.76));
+    let mid = (top + bottom) as f32 / 2.0;
+    let half = (bottom - top) as f32 / 2.0;
+    (0..n)
+        .map(|y| {
+            (0..n)
+                .map(|x| {
+                    // Rounded corners: the corner pixel and, on bigger tiles, its neighbours.
+                    let r = if n >= 16 { 2 } else { 1 };
+                    let (cx, cy) = (x.min(n - 1 - x), y.min(n - 1 - y));
+                    if cx + cy < r {
+                        return '.';
+                    }
+                    let inside = y >= top && y < bottom;
+                    let bar = inside && x >= bar0 && x < bar1;
+                    // The triangle narrows from its base to a point on the right.
+                    let reach = 1.0 - ((y as f32 + 0.5 - mid).abs() / half);
+                    let tri = inside && x >= tri0 && (x as f32) < tri0 as f32 + (tri1 - tri0) as f32 * reach;
+                    if bar || tri {
+                        'K'
+                    } else {
+                        'M'
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The inks for a light or dark background: hex, and the ANSI colour for
+/// 16-colour terminals. Paper letters (ink on a light background), lime for
+/// "Act" and the tile, ink inside the tile.
 fn ink(c: char, light: bool) -> Option<(u32, Color)> {
     Some(match (c, light) {
-        ('H', false) => (0xefe9e4, Color::White),
-        ('h', false) => (0xefe9e4, Color::White),
-        ('T', false) => (0xe2895b, Color::LightYellow),
-        ('L', false) => (0xc4bbb3, Color::Gray),
-        ('E', false) => (0x8f877f, Color::DarkGray),
-        ('S', false) => (0x6f6963, Color::DarkGray),
-        ('H', true) => (0x2b2825, Color::Black),
-        ('h', true) => (0x2b2825, Color::Black),
-        ('T', true) => (0xb4532a, Color::Yellow),
-        ('L', true) => (0x5a544e, Color::DarkGray),
-        ('E', true) => (0x433e39, Color::Black),
-        ('S', true) => (0xa59e97, Color::Gray),
+        ('P', false) => (0xf2f0e9, Color::White),
+        ('P', true) => (0x101214, Color::Black),
+        ('G', false) | ('M', false) => (0xc6ff3d, Color::LightGreen),
+        ('G', true) => (0x4a7200, Color::Green),
+        ('M', true) => (0xb5ea2c, Color::Green),
+        ('K', _) => (0x101214, Color::Black),
         _ => return None,
     })
 }
@@ -119,9 +158,15 @@ pub fn wordmark(t: &Theme) -> Vec<Line<'static>> {
     sprite(&wordmark_rows(), t)
 }
 
-/// The name in one row, for terminals too narrow for the wordmark: `F O R G E`.
-fn wordmark_text(t: &Theme) -> Line<'static> {
-    Line::from(Span::styled("F O R G E", t.brand_strong().add_modifier(Modifier::BOLD)))
+/// The mark, `n` columns wide and `n / 2` rows tall.
+pub fn mark(t: &Theme, n: usize) -> Vec<Line<'static>> {
+    sprite(&mark_rows(n), t)
+}
+
+/// The name in one row, for terminals too narrow for the wordmark: `KodAct`,
+/// "Act" in the brand colour.
+pub fn wordmark_text(t: &Theme) -> Line<'static> {
+    Line::from(vec![Span::styled("Kod", t.bold()), Span::styled("Act", t.brand_strong().add_modifier(Modifier::BOLD))])
 }
 
 /// A line centred in `cols` columns.
@@ -248,8 +293,8 @@ fn text_under_wordmark(t: &Theme, cols: usize, text: Vec<Line<'static>>) -> Vec<
 pub fn first_run(t: &Theme, version: &str, problem: &str, cols: usize) -> Vec<Line<'static>> {
     let eyebrow = Line::from(Span::styled(format!("KODACT  v{version}"), t.dim().add_modifier(Modifier::BOLD)));
     let headline = Line::from(vec![
-        Span::styled("A coding agent, ", t.bold()),
-        Span::styled("reforged", t.brand_strong().add_modifier(Modifier::BOLD)),
+        Span::styled("A coding agent that ", t.bold()),
+        Span::styled("acts", t.brand_strong().add_modifier(Modifier::BOLD)),
         Span::styled(",", t.bold()),
     ]);
     let headline2 = Line::from(Span::styled("on the model you choose.", t.bold()));
@@ -360,7 +405,7 @@ mod tests {
     const DARK: Theme = Theme { color: true, light: false, accent: None, depth: Depth::True };
 
     #[test]
-    fn the_wordmark_is_forge_with_a_cube_for_its_o() {
+    fn the_wordmark_is_kod_in_paper_and_act_in_lime() {
         let rows = wordmark_rows();
         assert_eq!(rows.len(), 10);
         assert!(rows.iter().all(|r| r.chars().count() == WORDMARK_W));
@@ -371,23 +416,46 @@ mod tests {
         let m = wordmark(&DARK);
         assert_eq!(m.len(), 5, "five rows");
         assert!(m.iter().all(|l| l.spans.iter().map(|s| width(&s.content)).sum::<usize>() <= WORDMARK_W));
-        // The F's top bar in paper; the cube's top, letters 10 to 16, in copper.
         let cells = |l: &Line| l.spans.iter().flat_map(|s| s.content.chars().map(move |_| s.style)).collect::<Vec<_>>();
-        assert_eq!(cells(&m[0])[0].fg, Some(Color::Rgb(0xef, 0xe9, 0xe4)));
-        let copper = Some(Color::Rgb(0xe2, 0x89, 0x5b));
-        assert!(cells(&m[0])[10..17].iter().any(|s| s.fg == copper || s.bg == copper), "the cube's top");
-        // Flat letters: the F's foot is the same paper as its bar.
-        assert!(cells(&m[4])[..2].iter().all(|s| s.fg == Some(Color::Rgb(0xef, 0xe9, 0xe4))));
-        // On a light background the letters are ink.
+        let paper = Some(Color::Rgb(0xf2, 0xf0, 0xe9));
+        let lime = Some(Color::Rgb(0xc6, 0xff, 0x3d));
+        // The K's stem, at the left, in paper; the t's stem, at the right, in lime.
+        assert_eq!(cells(&m[0])[0].fg, paper);
+        assert!(cells(&m[4]).iter().rev().take(6).any(|s| s.fg == lime || s.bg == lime), "Act in lime");
+        // On a light background the paper letters are ink.
         let light = wordmark(&Theme { light: true, ..DARK });
-        assert_eq!(cells(&light[0])[0].fg, Some(Color::Rgb(0x2b, 0x28, 0x25)));
+        assert_eq!(cells(&light[0])[0].fg, Some(Color::Rgb(0x10, 0x12, 0x14)));
+    }
+
+    #[test]
+    fn the_mark_is_a_bar_and_a_run_triangle_on_a_lime_tile() {
+        for n in [8, 12, 16, 24] {
+            let rows = mark_rows(n);
+            assert_eq!(rows.len(), n);
+            assert!(rows.iter().all(|r| r.chars().count() == n));
+            let mid = &rows[n / 2];
+            // Across the middle: tile, the bar, tile, the triangle, tile.
+            let runs: Vec<char> = mid.chars().fold(vec![], |mut v, c| {
+                if v.last() != Some(&c) {
+                    v.push(c);
+                }
+                v
+            });
+            assert_eq!(runs, ['M', 'K', 'M', 'K', 'M'], "{n}: {mid}");
+            // The triangle is widest across the middle and narrows towards its top.
+            let ink_in = |r: &str| r.chars().filter(|c| *c == 'K').count();
+            let first = rows.iter().find(|r| r.contains('K')).unwrap();
+            assert!(ink_in(first) < ink_in(mid), "{n}: {rows:?}");
+            assert_eq!(rows[0].chars().next(), Some('.'), "rounded corners");
+        }
+        assert_eq!(mark(&DARK, 16).len(), 8);
     }
 
     #[test]
     fn without_colour_the_wordmark_keeps_its_shape() {
         let mono = Theme { color: false, ..DARK };
         let m = plain(&wordmark(&mono));
-        assert!(m[0].starts_with("███████"), "the F's bar: {m:?}");
+        assert!(m[0].starts_with("██"), "the K's stem: {m:?}");
         assert!(wordmark(&mono).iter().all(|l| l.spans.iter().all(|s| s.style.fg.is_none() && s.style.bg.is_none())));
     }
 
@@ -402,7 +470,7 @@ mod tests {
                 assert!(lw <= cols, "{cols}: {lw} {:?}", plain(std::slice::from_ref(l)));
             }
             let text = plain(&lines).join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
-            for want in ["A coding agent, reforged, on the model you choose.", "/resume", "check", "2h ago"] {
+            for want in ["Code, then act: a coding agent on the model you choose.", "/resume", "check", "2h ago"] {
                 assert!(text.contains(want), "{cols}: {want}\n{text}");
             }
             // Only the name, the tagline and the way back: no keys, no welcome line.
@@ -420,7 +488,7 @@ mod tests {
         assert!((first as i32 - below as i32).abs() <= 2, "centred down: {first} above, {below} below");
         // Too narrow for the wordmark: the name in one row.
         let narrow = plain(&welcome(&DARK, &w, 40, 30));
-        assert!(narrow.iter().any(|l| l.trim() == "F O R G E"), "{narrow:?}");
+        assert!(narrow.iter().any(|l| l.trim() == "KodAct"), "{narrow:?}");
         assert!(narrow.iter().all(|l| !l.contains('█')));
         // A short terminal still starts on screen; no other conversations, no resume line.
         assert_eq!(welcome(&DARK, &w, 100, 5)[0], Line::default());
@@ -431,7 +499,7 @@ mod tests {
     fn the_first_run_card_says_how_to_set_up() {
         let text = plain(&first_run(&DARK, "0.1.0", "no API key for the Messages API", 100)).join("\n");
         for want in [
-            "reforged",
+            "A coding agent that acts",
             "KODACT_OPENAI_BASE_URL",
             "KODACT_API_KEY",
             "KodAct found  no API key",

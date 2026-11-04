@@ -28,10 +28,10 @@ pub const HINT_FOR: Duration = Duration::from_secs(2);
 const MENU_ROWS: usize = 8;
 const LIVE_ROWS: usize = 3;
 /// The composer's placeholder, as KodAct's says it.
-pub const PLACEHOLDER: &str = "What shall we kodact today?";
+pub const PLACEHOLDER: &str = "What shall we build today?";
 /// What the spinner says while the model works, in KodAct's voice (its spinner verbs).
 pub const VERBS: [&str; 8] =
-    ["Forging", "Hammering", "Tempering", "Shaping", "Heating the anvil", "Striking", "Annealing", "Polishing"];
+    ["Acting", "Reading the code", "Thinking", "Building", "Wiring it up", "Checking", "Shaping", "Polishing"];
 /// How long one verb stays.
 const VERB_FOR: Duration = Duration::from_secs(4);
 /// How long the turning dot of a running tool shows one face.
@@ -186,7 +186,7 @@ fn boxed(title: Line<'static>, body: Vec<Line<'static>>, w: usize, border: Style
     out
 }
 
-/// `body` rows between copper corner marks, `w` columns wide: the Forgeframe
+/// `body` rows between lime corner marks, `w` columns wide: the frame
 /// style's way of setting a question apart.
 fn cornered(title: Line<'static>, body: Vec<Line<'static>>, w: usize, mark: Style) -> Vec<Line<'static>> {
     let inner = w.saturating_sub(4).max(1);
@@ -369,8 +369,8 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
     };
     use super::look::Look;
     match app.look {
-        // Copper corner marks around the question, no full frame.
-        Look::Forgeframe => cornered(title, rows, w, t.accent()),
+        // Lime corner marks around the question, no full frame.
+        Look::Frame => cornered(title, rows, w, t.accent()),
         // A centred sheet, narrower than the terminal.
         Look::Status if w >= 60 => {
             let bw = w.min(76);
@@ -805,10 +805,10 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     let (left, bw) = fb.map(|b| (b.left.min(w.saturating_sub(4)), b.w.min(w))).unwrap_or((0, w));
     let margin = " ".repeat(left);
     use super::look::Look;
-    // Bare and Ledger draw the input under a rule, without a box; Molten's box glows copper.
+    // Bare and Ledger draw the input under a rule, without a box; Glow's box glows lime.
     let open = matches!(app.look, Look::Bare | Look::Ledger);
     let border = match app.look {
-        Look::Molten => t.accent(),
+        Look::Glow => t.accent(),
         _ if app.editor.is_empty() => t.hairline(),
         _ => t.subtle(),
     };
@@ -961,7 +961,7 @@ mod tests {
     fn app(color: bool) -> App {
         let mut a = App::new(Theme { color, light: false, accent: None, depth: Default::default() }, vec![]);
         // The rounded boxes these tests were written for.
-        a.look = crate::tui::look::Look::Anvil;
+        a.look = crate::tui::look::Look::Card;
         a.on_event(UiEvent::Status(StatusView {
             model: "opus".into(),
             mode: "default".into(),
@@ -1008,7 +1008,7 @@ mod tests {
         assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
         assert_eq!(rows[3], "  /p                             opus · ━─────── 12% · $0.25");
         assert_eq!(v.cursor, Some((4, 1)));
-        // The placeholder is quiet; the prompt marker is KodAct's copper.
+        // The placeholder is quiet; the prompt marker is KodAct's lime.
         assert_eq!(buf[(6, 1)].fg, crate::tui::palette::SUBTLE.color(Default::default(), false));
         assert_eq!(buf[(2, 1)].fg, crate::tui::palette::BRAND.color(Default::default(), false));
     }
@@ -1027,7 +1027,7 @@ mod tests {
         let (rows, _) = draw(&v, 50);
         assert_eq!(rows[0], "● partial answer");
         assert_eq!(rows[1], "");
-        assert_eq!(rows[2], "⠦ Forging… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
+        assert_eq!(rows[2], "⠦ Acting… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
         assert_eq!(rows[3], "  ⏎ next");
         assert!(rows[5].starts_with("│ ❯ ab ") && rows[5].ends_with('│'), "{}", rows[5]);
         assert_eq!(v.cursor, Some((6, 5)));
@@ -1374,14 +1374,14 @@ mod tests {
         assert_eq!(
             color,
             crate::tui::palette::BRAND.color(Default::default(), false),
-            "running is copper, as the spinner"
+            "running is lime, as the spinner"
         );
     }
 
     #[test]
     fn the_shimmer_sweeps_and_the_meter_warns() {
         let t = text::Theme { color: true, light: false, accent: None, depth: Default::default() };
-        let at = |ms| shimmer(&t, "Forging…", Duration::from_millis(ms));
+        let at = |ms| shimmer(&t, "Acting…", Duration::from_millis(ms));
         // Where the brightest character is, in characters from the start.
         let bright = |spans: &[Span]| {
             let i = spans.iter().position(|s| s.style == t.shimmer(3))?;
@@ -1389,7 +1389,7 @@ mod tests {
         };
         assert_ne!(bright(&at(500)), bright(&at(700)), "the highlight moves");
         let text: String = at(500).iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "Forging…");
+        assert_eq!(text, "Acting…");
         assert_eq!(meter(&t, 50)[0].content, "━━━━");
         assert_eq!(meter(&t, 50)[0].style, t.accent());
         assert_eq!(meter(&t, 75)[0].style, t.warning());
@@ -1416,10 +1416,7 @@ mod tests {
         let mark = rows.iter().position(|r| r == "WORDMARK").unwrap();
         let resume = rows.iter().position(|r| r.contains("/resume")).unwrap();
         assert!(mark > 3 && resume < 25, "centred down the screen: {rows:#?}");
-        assert!(
-            rows[mark + 3..resume].iter().any(|r| r.contains("❯ What shall we kodact today?")),
-            "the input between"
-        );
+        assert!(rows[mark + 3..resume].iter().any(|r| r.contains("❯ What shall we build today?")), "the input between");
         assert!(rows[29].ends_with(&format!("v{}", kodact_core::VERSION)), "the status line on the last row");
         let (_, cy) = v.cursor.unwrap();
         assert!(rows[cy as usize].contains('❯'), "the cursor in the input");
@@ -1470,10 +1467,10 @@ mod tests {
         a.look = Look::Bare;
         let (rows, _) = draw(&live_view(&a, 60, 10), 60);
         assert!(rows.iter().any(|r| r == &"─".repeat(60)));
-        assert!(rows.iter().any(|r| r.starts_with("› What shall we kodact today?")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.starts_with("› What shall we build today?")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains('╭')));
-        // Forgeframe: the question between corner marks.
-        a.look = Look::Forgeframe;
+        // Frame: the question between corner marks.
+        a.look = Look::Frame;
         ask(&mut a, "Bash", serde_json::json!({"command": "ls"}));
         let (rows, _) = draw(&live_view(&a, 60, 30), 60);
         assert!(rows[0].starts_with("┌─") && rows[0].ends_with("─┐"), "{rows:#?}");
@@ -1488,7 +1485,7 @@ mod tests {
         let (rows, _) = draw(&live_view(&a, 100, 12), 100);
         let top = rows.iter().position(|r| r.contains('╭')).unwrap();
         assert_eq!(rows[top].find('╭'), Some(10), "an 80-column box, centred: {rows:#?}");
-        assert!(rows[top + 1].trim_start().starts_with("│ ❯ What shall we kodact today?"));
+        assert!(rows[top + 1].trim_start().starts_with("│ ❯ What shall we build today?"));
         assert_eq!(
             rows[top + 3].trim(),
             "Default  ·  opus  ·  127.0.0.1:11434",

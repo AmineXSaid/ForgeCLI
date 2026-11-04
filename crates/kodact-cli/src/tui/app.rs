@@ -652,13 +652,11 @@ impl App {
     }
 
     /// The mark before an answer's first line: KodAct's dot, or two spaces in styles that head
-    /// the answer with a time (Ledger) or keep it plain (Molten, Bare).
+    /// the answer with a time (Ledger) or keep it plain (Glow, Bare).
     fn answer_mark(&self) -> Span<'static> {
         use super::look::Look;
         match self.look {
-            Look::Forgeframe | Look::Status | Look::Anvil => {
-                Span::styled(format!("{} ", glyphs::ANSWER), self.theme.dim())
-            }
+            Look::Frame | Look::Status | Look::Card => Span::styled(format!("{} ", glyphs::ANSWER), self.theme.dim()),
             _ => Span::raw("  "),
         }
     }
@@ -676,9 +674,9 @@ impl App {
             let marker = if self.first_line { self.answer_mark() } else { Span::raw("  ") };
             if self.first_line {
                 self.gap();
-                // Anvil and Ledger head KodAct's turn.
+                // Card and Ledger head KodAct's turn.
                 match self.look {
-                    Look::Anvil => self.pending.push(Line::from(Span::styled("  kodact", t.accent()))),
+                    Look::Card => self.pending.push(Line::from(Span::styled("  kodact", t.accent()))),
                     Look::Ledger => self.pending.push(Line::from(vec![
                         Span::styled(format!("  {}  ", Self::clock()), t.subtle()),
                         Span::styled("kodact", t.accent()),
@@ -722,7 +720,7 @@ impl App {
         let t = self.theme;
         match self.look {
             // A warm band, no mark.
-            Look::Molten => {
+            Look::Glow => {
                 let st = if t.color {
                     Style::default().bg(super::palette::WARM_BG.color(t.depth, t.light))
                 } else {
@@ -733,7 +731,7 @@ impl App {
                 }
             }
             // A header line, then the words.
-            Look::Anvil => {
+            Look::Card => {
                 self.pending.push(Line::from(Span::styled(format!("  you · {}", Self::clock()), t.subtle())));
                 for l in text.lines() {
                     self.pending.push(Line::from(format!("  {l}")));
@@ -763,7 +761,7 @@ impl App {
                         .push(Line::from(vec![Span::styled(mark, t.subtle()), Span::styled(l.to_string(), t.bold())]));
                 }
             }
-            Look::Forgeframe | Look::Status => {
+            Look::Frame | Look::Status => {
                 let st = t.user();
                 // The mark in brand colour on the prompt's own surface.
                 let mark_st = if t.color { st.patch(t.accent()) } else { st };
@@ -815,7 +813,7 @@ impl App {
                 Line::from(vec![lead, Span::styled(text, if failed { t.error() } else { t.subtle() })])
             }
             // A ✓ in the brand colour, a ✗ when it failed.
-            Look::Molten => {
+            Look::Glow => {
                 let mut spans =
                     vec![if failed { Span::styled("✗ ", t.error()) } else { Span::styled("✓ ", t.accent()) }];
                 spans.extend(tool_header(&t, &r.name, &r.input, true));
@@ -2310,14 +2308,14 @@ mod tests {
             a.echo_prompt("fix the cart");
             texts(&a.take_pending())
         };
-        assert_eq!(prompt_for(Look::Forgeframe).last().unwrap(), "❯ fix the cart ");
+        assert_eq!(prompt_for(Look::Frame).last().unwrap(), "❯ fix the cart ");
         assert_eq!(prompt_for(Look::Bare).last().unwrap(), "› fix the cart");
-        let anvil = prompt_for(Look::Anvil);
-        assert!(anvil[anvil.len() - 2].starts_with("  you · "), "{anvil:?}");
+        let card = prompt_for(Look::Card);
+        assert!(card[card.len() - 2].starts_with("  you · "), "{card:?}");
         let ledger = prompt_for(Look::Ledger);
         assert!(ledger.last().unwrap().ends_with("you    fix the cart"), "{ledger:?}");
-        assert_eq!(prompt_for(Look::Molten).last().unwrap(), "  fix the cart  ");
-        // Steps: plain quiet lines in Bare and Ledger, a ✓ in Molten, the dot elsewhere.
+        assert_eq!(prompt_for(Look::Glow).last().unwrap(), "  fix the cart  ");
+        // Steps: plain quiet lines in Bare and Ledger, a ✓ in Glow, the dot elsewhere.
         let step_for = |look: Look| {
             let mut a = app();
             a.look = look;
@@ -2334,14 +2332,14 @@ mod tests {
         };
         assert_eq!(step_for(Look::Bare), "  ran cargo test");
         assert_eq!(step_for(Look::Ledger), "  ran cargo test");
-        assert_eq!(step_for(Look::Molten), "✓ Ran cargo test");
-        assert_eq!(step_for(Look::Forgeframe), "● Ran cargo test");
+        assert_eq!(step_for(Look::Glow), "✓ Ran cargo test");
+        assert_eq!(step_for(Look::Frame), "● Ran cargo test");
         // A style arrives from the session by name.
         let mut a = app();
         a.on_event(UiEvent::Look("ledger".into()));
         assert_eq!(a.look, Look::Ledger);
         a.on_event(UiEvent::Look("neon".into()));
-        assert_eq!(a.look, Look::Forgeframe, "an unknown name falls back to the first style");
+        assert_eq!(a.look, Look::Frame, "an unknown name falls back to the first style");
     }
 
     #[test]

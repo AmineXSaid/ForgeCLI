@@ -276,17 +276,17 @@ with `{"text", "cwd"}`:
   first is the default). Each sets the full-screen front page (`front.rs`),
   how the conversation is written (`app.rs`), the approval's frame and the
   input (`render.rs`); colours (`/theme dark|light|none`) apply to all:
-  - `forgeframe`: a framed welcome, the wordmark with an ember shadow beside
-    KodAct's anvil (original pixel art), the version, what KodAct does, the
-    connected MCP servers, the last conversation, the folder and branch;
-    the input across the page. Steps with a dot; approvals in copper
+  - `frame`: a framed welcome, the wordmark (`Kod` in paper, `Act` in lime)
+    with an olive shadow beside KodAct's mark, the version, what KodAct
+    does, the connected MCP servers, the last conversation, the folder and
+    branch; the input across the page. Steps with a dot; approvals in lime
     corner marks.
-  - `molten`: centred, the wordmark as hot metal with sparks and a glowing
-    seam, a copper-framed input with the mode and model under it. Your
-    words on a warm band, finished steps with a copper ✓, answers plain.
-  - `anvil`: a card with the anvil beside the wordmark and the session's
+  - `glow`: centred, the wordmark lit from the top with sparks and a glowing
+    seam, a lime-framed input with the mode and model under it. Your words
+    on a tinted band, finished steps with a ✓, answers plain.
+  - `card`: a card with the mark beside the wordmark and the session's
     model, tools and folder; turns headed `you · 14:02` and `kodact`.
-  - `ledger`: aligned left, the wordmark in copper outline, past work
+  - `ledger`: aligned left, the wordmark in lime outline, past work
     numbered beside this folder, the input docked at the bottom under a
     rule. A column of times and voices; steps as plain quiet lines.
   - `status`: the wordmark over boxed readouts of the model, tools and
@@ -295,7 +295,9 @@ with `{"text", "cwd"}`:
   - `bare`: the name in the corner, one question and the input in the
     middle, recent work under it. Plain steps, a bold `›` for your words,
     the input and approvals under a rule, without boxes.
-  A terminal too narrow for a style's front page gets the bare one.
+  A terminal too narrow for a style's front page gets the bare one. The
+  names ForgeCLI used (`forgeframe`, `molten`, `anvil`) still choose
+  `frame`, `glow` and `card`.
 - **Full screen** (the default; `KODACT_TUI=inline` for the inline
   viewport): the UI takes the terminal's alternate screen and keeps the
   transcript itself (`mod.rs` `Full`, `render::full_view`). Before the first
@@ -308,10 +310,10 @@ with `{"text", "cwd"}`:
   newest lines. On exit the transcript is printed into the terminal's
   scrollback, wrapped to its width.
 - **The front screen** (`brand::welcome`), printed once at the start,
-  centred across the terminal and down the room above the input: the KODACT
-  wordmark (spaced capitals, its O a cube with a copper top, drawn in half
-  blocks, 47 columns by 5 rows; `F O R G E` in one row on a terminal under
-  51 columns), the tagline, and `/resume` with the newest other
+  centred across the terminal and down the room above the input: the KodAct
+  wordmark (`Kod` in paper and `Act` in lime, drawn in half blocks, 52
+  columns by 5 rows; `KodAct` in one row on a narrower terminal) and the
+  mark (a lime tile with an ink bar and a run triangle: code, then act), the tagline, and `/resume` with the newest other
   conversation here. Until the first message, the input is a centred box at
   most 80 columns wide, with the mode, the model and its endpoint on the
   line under it, and the status line shows the version on its right. The
@@ -342,13 +344,13 @@ with `{"text", "cwd"}`:
   - table rows are held until the table ends, then drawn with aligned
     columns (`--:` aligns right), `│` between cells, a `─┼─` rule and a
     bold header.
-- **Colours** (`palette.rs`): KodAct's ember. Warm ink and paper for text and
-  surfaces, copper for the brand and for what needs the person; green, red
+- **Colours** (`palette.rs`): KodAct's ink, paper and lime. Ink and paper for
+  text and surfaces, lime for the brand and for what needs the person; green, red
   and amber only where they mean done, failed or a warning.
 - **Wrapping** (`text::wrap`): a wrapped row continues under the text, past
   the line's indent and its marker (`• `, `› `, `↳ `, `- `, `1. `).
 - **Tool calls**: a dot, a verb and what the call works on (`app::tool_header`):
-  `Running cargo test` with a turning copper dot while it runs, then
+  `Running cargo test` with a turning lime dot while it runs, then
   `● Ran cargo test`, green when it worked and red when it failed. Verbs:
   Ran, Read, Edited, Wrote, Searched, Listed, Fetched, Searched the web,
   Delegated, Updated the plan, Used skill; any other tool is `Called`, with

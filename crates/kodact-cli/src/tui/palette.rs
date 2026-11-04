@@ -1,5 +1,4 @@
-//! KodAct's colours in the terminal: the ember palette (warm ink, paper and
-//! copper), one value per role for a dark and for a light background.
+//! KodAct's colours in the terminal: ink, paper and lime, one value per role for a dark and for a light background.
 //! A role is drawn in 24-bit colour where the terminal has it, else as the
 //! nearest of xterm's 256 colours, else as one of the 16 ANSI colours.
 
@@ -91,58 +90,59 @@ impl Role {
     }
 }
 
-// The roles: KodAct's ember. Warm ink and paper for text and surfaces, copper
-// for the brand and for what needs the person, and colour elsewhere only
-// where it means something (done, failed, added, removed, code).
+// The roles: KodAct's identity. Ink and paper for text and surfaces, lime for
+// the brand and for what needs the person, and colour elsewhere only where it
+// means something (done, failed, added, removed, code). On a light
+// background the lime deepens to an olive that reads on paper.
 
 /// The brand: the prompt mark, the spinner, selections, the keys, headings.
-pub const BRAND: Role = role(0xe2895b, 0xb4532a, Color::LightYellow, Color::Yellow);
+pub const BRAND: Role = role(0xc6ff3d, 0x4a7200, Color::LightGreen, Color::Green);
 /// The brand a step brighter, for emphasis: the wordmark, the shimmer's peak.
-pub const BRAND_STRONG: Role = role(0xf3b694, 0x9a4420, Color::LightYellow, Color::Yellow);
+pub const BRAND_STRONG: Role = role(0xdcff85, 0x3d5f00, Color::LightGreen, Color::Green);
 /// Secondary text.
-pub const MUTED: Role = role(0xb1a9a1, 0x5b534b, Color::Gray, Color::DarkGray);
+pub const MUTED: Role = role(0xa9adb2, 0x55595e, Color::Gray, Color::DarkGray);
 /// Placeholders, hints, details.
-pub const SUBTLE: Role = role(0x7b736b, 0x8d847a, Color::DarkGray, Color::DarkGray);
+pub const SUBTLE: Role = role(0x767b82, 0x83878d, Color::DarkGray, Color::DarkGray);
 /// Rules, gutters and box edges.
-pub const HAIRLINE: Role = role(0x3a3530, 0xcfc4b6, Color::DarkGray, Color::Gray);
+pub const HAIRLINE: Role = role(0x2d3238, 0xd2d4d6, Color::DarkGray, Color::Gray);
 /// Links and paths.
-pub const INFO: Role = role(0x9db8cf, 0x3a6285, Color::LightBlue, Color::Blue);
+pub const INFO: Role = role(0x8fbef0, 0x2f63a8, Color::LightBlue, Color::Blue);
 /// Done.
-pub const SUCCESS: Role = role(0x86b58f, 0x3d7a4d, Color::LightGreen, Color::Green);
+pub const SUCCESS: Role = role(0x7ccf8f, 0x2f7a45, Color::LightGreen, Color::Green);
 /// Needs a look.
-pub const WARNING: Role = role(0xe0b060, 0x93601a, Color::LightYellow, Color::Yellow);
+pub const WARNING: Role = role(0xf0c25e, 0x8f6200, Color::LightYellow, Color::Yellow);
 /// Failed.
-pub const DANGER: Role = role(0xe27a68, 0xb4473a, Color::LightRed, Color::Red);
+pub const DANGER: Role = role(0xff7a6b, 0xb8392e, Color::LightRed, Color::Red);
 /// A diff's added line.
-pub const ADDED: Role = role(0x86b58f, 0x3d7a4d, Color::LightGreen, Color::Green);
+pub const ADDED: Role = role(0x7ccf8f, 0x2f7a45, Color::LightGreen, Color::Green);
 /// A diff's removed line.
-pub const REMOVED: Role = role(0xe27a68, 0xb4473a, Color::LightRed, Color::Red);
+pub const REMOVED: Role = role(0xff7a6b, 0xb8392e, Color::LightRed, Color::Red);
 /// Inline code.
-pub const CODE: Role = role(0xe9c9a8, 0x7c4a22, Color::LightMagenta, Color::Magenta);
-/// The person's prompt: a raised surface.
-pub const PROMPT_BG: Role = role(0x1e1b18, 0xece5dc, Color::DarkGray, Color::Gray);
-/// The Molten style's band behind the person's words: a warm tint.
-pub const WARM_BG: Role = role(0x2a1d15, 0xf3e3d6, Color::DarkGray, Color::Gray);
+pub const CODE: Role = role(0xd9f2a6, 0x4d6512, Color::LightMagenta, Color::Magenta);
+/// The person's prompt: a raised surface (the logo's tile).
+pub const PROMPT_BG: Role = role(0x1b1f23, 0xebeae4, Color::DarkGray, Color::Gray);
+/// The glow style's band behind the person's words: a lime tint.
+pub const WARM_BG: Role = role(0x1c230f, 0xe8f1d2, Color::DarkGray, Color::Gray);
 /// Text on [`PROMPT_BG`].
-pub const PROMPT_FG: Role = role(0xede8e3, 0x1f1b17, Color::White, Color::Black);
-/// The working shimmer's resting and brightest tones: warm grey up to copper.
-pub const SHIMMER_BASE: Role = role(0x8a8178, 0x8d847a, Color::Gray, Color::DarkGray);
-pub const SHIMMER_PEAK: Role = role(0xf3b694, 0xb4532a, Color::White, Color::Black);
+pub const PROMPT_FG: Role = role(0xf2f0e9, 0x101214, Color::White, Color::Black);
+/// The working shimmer's resting and brightest tones: grey up to lime.
+pub const SHIMMER_BASE: Role = role(0x80858b, 0x83878d, Color::Gray, Color::DarkGray);
+pub const SHIMMER_PEAK: Role = role(0xdcff85, 0x4a7200, Color::White, Color::Black);
 
-// Code blocks: one quiet text colour and a few token colours, all warm.
+// Code blocks: one quiet text colour and a few token colours.
 
 /// Plain code.
-pub const CODE_TEXT: Role = role(0xcfc7bf, 0x3a342e, Color::Gray, Color::DarkGray);
+pub const CODE_TEXT: Role = role(0xcdd1d5, 0x33373b, Color::Gray, Color::DarkGray);
 /// Keywords: `fn`, `def`, `const`, `if`.
-pub const CODE_KEYWORD: Role = role(0xd9a07c, 0xa4481f, Color::LightYellow, Color::Yellow);
+pub const CODE_KEYWORD: Role = role(0xb8e86a, 0x4f7000, Color::LightYellow, Color::Yellow);
 /// String literals.
-pub const CODE_STRING: Role = role(0xaec596, 0x4a7a3c, Color::LightGreen, Color::Green);
+pub const CODE_STRING: Role = role(0x8fd6b4, 0x1f7a5a, Color::LightGreen, Color::Green);
 /// Numbers and constants.
-pub const CODE_NUMBER: Role = role(0xe3bd85, 0x93601a, Color::LightMagenta, Color::Magenta);
+pub const CODE_NUMBER: Role = role(0xf0c25e, 0x8f6200, Color::LightMagenta, Color::Magenta);
 /// Comments.
-pub const CODE_COMMENT: Role = role(0x7b736b, 0x8d847a, Color::DarkGray, Color::DarkGray);
+pub const CODE_COMMENT: Role = role(0x767b82, 0x83878d, Color::DarkGray, Color::DarkGray);
 /// Type names.
-pub const CODE_TYPE: Role = role(0xe9c9a8, 0x7c4a22, Color::LightCyan, Color::Cyan);
+pub const CODE_TYPE: Role = role(0xe6eccf, 0x3d4a1a, Color::LightCyan, Color::Cyan);
 
 pub const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
@@ -222,9 +222,9 @@ mod tests {
 
     #[test]
     fn roles_differ_for_light_and_dark_backgrounds() {
-        assert_eq!(BRAND.color(Depth::True, false), Color::Rgb(0xe2, 0x89, 0x5b));
-        assert_eq!(BRAND.color(Depth::True, true), Color::Rgb(0xb4, 0x53, 0x2a));
-        assert_eq!(BRAND.color(Depth::Ansi16, false), Color::LightYellow);
+        assert_eq!(BRAND.color(Depth::True, false), Color::Rgb(0xc6, 0xff, 0x3d));
+        assert_eq!(BRAND.color(Depth::True, true), Color::Rgb(0x4a, 0x72, 0x00));
+        assert_eq!(BRAND.color(Depth::Ansi16, false), Color::LightGreen);
         assert!(matches!(BRAND.color(Depth::Ansi256, false), Color::Indexed(_)));
     }
 }
