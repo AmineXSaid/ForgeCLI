@@ -358,7 +358,6 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     };
     let live = driver.live();
     let cwd = driver.info.cwd.display().to_string();
-    let model = driver.handle().model();
     let persist = !o.no_session_persistence;
     let hist_path = history_path();
     // The `theme` setting arrives from the session first thing.
@@ -370,7 +369,9 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let provider = driver.engine.provider();
     let endpoint = endpoint_label(provider.base_url().as_deref(), provider.origin().map(|o| o.backend));
     let recent = forge_core::commands::recent_sessions(&driver, 1);
-    let welcome = brand::Welcome { model: &model, endpoint: &endpoint, recent: &recent };
+    let welcome = brand::Welcome { recent: &recent };
+    app.front = true;
+    app.endpoint = endpoint;
     let rows = crossterm::terminal::size().map(|(_, r)| r as usize).unwrap_or(24);
     app.pending.extend(brand::welcome(&theme, &welcome, cols, rows));
     for w in warnings {

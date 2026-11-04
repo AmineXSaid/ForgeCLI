@@ -282,6 +282,10 @@ pub struct App {
     pub viewer_page: std::cell::Cell<usize>,
     /// Key bindings in effect (`keybindings.json`).
     pub keymap: super::keys::Keymap,
+    /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
+    pub front: bool,
+    /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
+    pub endpoint: String,
     /// `/focus`: tool calls and their results stay out of the scrollback.
     pub focus: bool,
     /// A screen or picker waiting for an open question to be answered.
@@ -601,6 +605,8 @@ impl App {
             status_text: None,
             viewer_page: std::cell::Cell::new(10),
             keymap: Default::default(),
+            front: false,
+            endpoint: String::new(),
             focus: false,
             held: None,
         }
@@ -1817,6 +1823,7 @@ impl App {
 
     /// Send `text` as if typed (queued while a turn runs).
     pub fn submit(&mut self, text: String) -> Vec<Action> {
+        self.front = false;
         self.menu_selected = 0;
         self.menu_dismissed = false;
         // The UI's own immediate commands answer at once, even while a turn runs.

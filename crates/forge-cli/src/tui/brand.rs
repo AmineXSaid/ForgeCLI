@@ -30,8 +30,8 @@ pub const WORDMARK_W: usize = 5 * 7 + 4 * GAP;
 /// The tagline under the wordmark.
 pub const TAGLINE: &str = "A coding agent, reforged, on the model you choose.";
 
-/// The wordmark's pixel rows. Letters are lit from above: `H` in their top
-/// half, `h` a step darker below.
+/// The wordmark's pixel rows: `H` and `h` the letters' top and bottom halves
+/// (one ink today: flat letters read crisper at five rows).
 fn wordmark_rows() -> Vec<String> {
     (0..10)
         .map(|y| {
@@ -57,13 +57,13 @@ fn wordmark_rows() -> Vec<String> {
 fn ink(c: char, light: bool) -> Option<(u32, Color)> {
     Some(match (c, light) {
         ('H', false) => (0xefe9e4, Color::White),
-        ('h', false) => (0xc9c0b7, Color::Gray),
+        ('h', false) => (0xefe9e4, Color::White),
         ('T', false) => (0xe2895b, Color::LightYellow),
         ('L', false) => (0xc4bbb3, Color::Gray),
         ('E', false) => (0x8f877f, Color::DarkGray),
         ('S', false) => (0x6f6963, Color::DarkGray),
         ('H', true) => (0x2b2825, Color::Black),
-        ('h', true) => (0x4f4842, Color::DarkGray),
+        ('h', true) => (0x2b2825, Color::Black),
         ('T', true) => (0xb4532a, Color::Yellow),
         ('L', true) => (0x5a544e, Color::DarkGray),
         ('E', true) => (0x433e39, Color::Black),
@@ -139,36 +139,14 @@ fn trim_end(mut l: Line<'static>) -> Line<'static> {
     l
 }
 
-/// `s` in at most `max` columns, its end kept: `…/live/proj`.
-fn keep_end(s: &str, max: usize) -> String {
-    if width(s) <= max {
-        return s.to_string();
-    }
-    let mut tail: Vec<char> = vec![];
-    let mut w = 1;
-    for c in s.chars().rev() {
-        let cw = width(&c.to_string());
-        if w + cw > max {
-            break;
-        }
-        w += cw;
-        tail.push(c);
-    }
-    tail.reverse();
-    format!("…{}", tail.into_iter().collect::<String>())
-}
-
 /// What the front screen says.
 pub struct Welcome<'a> {
-    pub model: &'a str,
-    /// Where requests go: a host, or the kind of endpoint.
-    pub endpoint: &'a str,
     /// The newest other conversations here: (what it was about, how long ago).
     pub recent: &'a [(String, String)],
 }
 
-/// Rows the live region takes under the front screen: a gap, the input box and the status line.
-const LIVE_ROWS: usize = 5;
+/// Rows the live region takes under the front screen: a gap, the input box, the line under it and the status line.
+const LIVE_ROWS: usize = 6;
 
 /// The front screen, printed once at the top of a session: the wordmark,
 /// the tagline and a way back to the newest conversation here, centred
@@ -178,12 +156,6 @@ pub fn welcome(t: &Theme, w: &Welcome, cols: usize, rows: usize) -> Vec<Line<'st
     let mut block: Vec<Line<'static>> = if cols >= WORDMARK_W + 4 { wordmark(t) } else { vec![wordmark_text(t)] };
     block.push(Line::default());
     block.push(Line::from(Span::styled(TAGLINE, t.dim())));
-    // Where the session runs, quietly: which model, and on what.
-    let endpoint = keep_end(w.endpoint, cols.saturating_sub(width(w.model) + 8).max(8));
-    block.push(Line::from(vec![
-        Span::styled(w.model.to_string(), t.subtle()),
-        Span::styled(format!(" on {endpoint}"), t.subtle()),
-    ]));
     if let Some((what, ago)) = w.recent.first() {
         block.push(Line::default());
         block.push(Line::default());
@@ -392,9 +364,8 @@ mod tests {
         assert_eq!(cells(&m[0])[0].fg, Some(Color::Rgb(0xef, 0xe9, 0xe4)));
         let copper = Some(Color::Rgb(0xe2, 0x89, 0x5b));
         assert!(cells(&m[0])[10..17].iter().any(|s| s.fg == copper || s.bg == copper), "the cube's top");
-        // Letters are lit from above: their lower half a step darker.
-        let lower = Some(Color::Rgb(0xc9, 0xc0, 0xb7));
-        assert!(cells(&m[4])[..2].iter().all(|s| s.fg == lower));
+        // Flat letters: the F's foot is the same paper as its bar.
+        assert!(cells(&m[4])[..2].iter().all(|s| s.fg == Some(Color::Rgb(0xef, 0xe9, 0xe4))));
         // On a light background the letters are ink.
         let light = wordmark(&Theme { light: true, ..DARK });
         assert_eq!(cells(&light[0])[0].fg, Some(Color::Rgb(0x2b, 0x28, 0x25)));
@@ -411,7 +382,7 @@ mod tests {
     #[test]
     fn the_front_screen_is_quiet_and_centred() {
         let recent = vec![("checkout rounding".to_string(), "2h ago".to_string())];
-        let w = Welcome { model: "deep-thinking", endpoint: "localhost:11434", recent: &recent };
+        let w = Welcome { recent: &recent };
         for cols in [120, 80, 60, 50, 40, 30] {
             let lines = welcome(&DARK, &w, cols, 40);
             for l in &lines {
@@ -419,9 +390,7 @@ mod tests {
                 assert!(lw <= cols, "{cols}: {lw} {:?}", plain(std::slice::from_ref(l)));
             }
             let text = plain(&lines).join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
-            for want in
-                ["A coding agent, reforged, on the model you choose.", "deep-thinking on", "/resume", "check", "2h ago"]
-            {
+            for want in ["A coding agent, reforged, on the model you choose.", "/resume", "check", "2h ago"] {
                 assert!(text.contains(want), "{cols}: {want}\n{text}");
             }
             // Only the name, the tagline and the way back: no keys, no welcome line.
@@ -437,14 +406,13 @@ mod tests {
         let last = wide.iter().rposition(|l| !l.trim().is_empty()).unwrap();
         let below = 40 - LIVE_ROWS - (last + 1);
         assert!((first as i32 - below as i32).abs() <= 2, "centred down: {first} above, {below} below");
-        assert_eq!(keep_end("abcdef", 4), "…def");
         // Too narrow for the wordmark: the name in one row.
         let narrow = plain(&welcome(&DARK, &w, 40, 30));
         assert!(narrow.iter().any(|l| l.trim() == "F O R G E"), "{narrow:?}");
         assert!(narrow.iter().all(|l| !l.contains('█')));
         // A short terminal still starts on screen; no other conversations, no resume line.
         assert_eq!(welcome(&DARK, &w, 100, 5)[0], Line::default());
-        assert!(!plain(&welcome(&DARK, &Welcome { recent: &[], ..w }, 80, 30)).join(" ").contains("/resume"));
+        assert!(!plain(&welcome(&DARK, &Welcome { recent: &[] }, 80, 30)).join(" ").contains("/resume"));
     }
 
     #[test]

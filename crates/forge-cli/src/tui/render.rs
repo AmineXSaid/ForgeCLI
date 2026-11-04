@@ -144,6 +144,19 @@ fn keep_end(s: &str, max: usize) -> String {
     format!("…{}", tail.into_iter().collect::<String>())
 }
 
+/// A permission mode as people say it.
+fn mode_name(mode: &str) -> String {
+    match mode {
+        "acceptEdits" => "Accept edits",
+        "plan" => "Plan",
+        "auto" => "Auto",
+        "dontAsk" => "Don't ask",
+        "bypassPermissions" => "Bypass permissions",
+        _ => "Default",
+    }
+    .to_string()
+}
+
 /// A token count as people read it: `950 tokens`, `15.5k tokens`, `1.2M tokens`.
 fn tokens(n: u64) -> String {
     match n {
@@ -459,7 +472,12 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     let folder = !app.status.cwd.is_empty() && left == super::short_path(&app.status.cwd);
     let left = if folder { keep_end(&left, (w / 2).max(8)) } else { fit(&left, w.saturating_sub(lead)) };
     let room = w.saturating_sub(text_width(&left) + lead + 2);
-    let right = status_right_spans(app, room);
+    // The front screen shows the model under its input; the status line keeps the version.
+    let right = if app.front && app.status_text.is_none() {
+        vec![Span::styled(format!("v{}", forge_core::VERSION), app.theme.subtle())]
+    } else {
+        status_right_spans(app, room)
+    };
     let right_w: usize = right.iter().map(|s| text_width(&s.content)).sum();
     let gap = w.saturating_sub(lead + text_width(&left) + right_w);
     let mut spans = vec![Span::raw("  ")];
@@ -556,24 +574,51 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         .map(|q| Line::from(Span::styled(fit(&format!("  ⏎ {}", q.replace('\n', " ")), w), t.dim())))
         .collect();
     // 5. The input box (hidden while a dialog is open).
-    // The input sits in a rounded box; its rows are padded to the box's inside.
+    // The input sits in a rounded box; its rows are padded to the box's inside. On the
+    // front screen the box is centred under the wordmark, at most 80 columns, with the
+    // mode, the model and where it runs under it.
+    let front = app.front && app.dialog.is_none() && w >= 60;
+    let bw = if front { (w - 4).min(80) } else { w };
+    let margin = " ".repeat((w - bw) / 2);
     let border = if app.editor.is_empty() { t.hairline() } else { t.subtle() };
-    let inner = w.saturating_sub(4).max(1);
-    let top = Line::from(Span::styled(format!("╭{}╮", "─".repeat(w.saturating_sub(2))), border));
-    let bottom = Line::from(Span::styled(format!("╰{}╯", "─".repeat(w.saturating_sub(2))), border));
+    let inner = bw.saturating_sub(4).max(1);
+    let edge = |l: char, r: char| {
+        Line::from(vec![
+            Span::raw(margin.clone()),
+            Span::styled(format!("{l}{}{r}", "─".repeat(bw.saturating_sub(2))), border),
+        ])
+    };
+    let (top, bottom) = (edge('╭', '╮'), edge('╰', '╯'));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, inner) } else { (vec![], (0, 0)) };
     let input_rows: Vec<Line<'static>> = input_rows
         .into_iter()
         .map(|row| {
             let used: usize = row.spans.iter().map(|s| text_width(&s.content)).sum();
-            let mut spans = vec![Span::styled("│ ", border)];
+            let mut spans = vec![Span::raw(margin.clone()), Span::styled("│ ", border)];
             spans.extend(row.spans);
             spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
             spans.push(Span::styled(" │", border));
             Line::from(spans)
         })
         .collect();
-    let cursor = (cursor.0 + 2, cursor.1);
+    let cursor = (cursor.0 + 2 + margin.len() as u16, cursor.1);
+    let under: Vec<Line<'static>> = if front && !input_rows.is_empty() {
+        let mut parts = vec![Span::styled(mode_name(&app.status.mode), t.accent())];
+        for p in [app.status.model.as_str(), app.endpoint.as_str()].into_iter().filter(|p| !p.is_empty()) {
+            parts.push(Span::styled("  ·  ", t.hairline()));
+            parts.push(Span::styled(p.to_string(), t.subtle()));
+        }
+        let used: usize = parts.iter().map(|s| text_width(&s.content)).sum();
+        if used + 4 <= w {
+            let mut spans = vec![Span::raw(" ".repeat((w - used) / 2))];
+            spans.extend(parts);
+            vec![Line::from(spans)]
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
     // Ctrl+R: what is being searched for, above the input.
     let search: Vec<Line<'static>> = app
         .search
@@ -592,6 +637,7 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         + search.len()
         + dialog.len()
         + if input_rows.is_empty() { 0 } else { input_rows.len() + 2 }
+        + under.len()
         + menu.len()
         + 1;
     let max = (max_height as usize).max(1);
@@ -616,6 +662,7 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         cur = Some((cursor.0, (lines.len() as u16) + cursor.1));
         lines.extend(input_rows);
         lines.push(bottom);
+        lines.extend(under);
     }
     lines.extend(menu);
     lines.push(status);
@@ -1103,6 +1150,28 @@ mod tests {
         assert_eq!(meter(&t, 75)[0].style, t.warning());
         assert_eq!(meter(&t, 95)[0].style, t.error());
         assert_eq!(meter(&t, 0)[0].content, "");
+    }
+
+    #[test]
+    fn the_front_screen_centres_its_input_until_something_is_sent() {
+        let mut a = app(false);
+        a.front = true;
+        a.endpoint = "127.0.0.1:11434".into();
+        let (rows, _) = draw(&live_view(&a, 100, 12), 100);
+        let top = rows.iter().position(|r| r.contains('╭')).unwrap();
+        assert_eq!(rows[top].find('╭'), Some(10), "an 80-column box, centred: {rows:#?}");
+        assert!(rows[top + 1].trim_start().starts_with("│ ❯ What shall we forge today?"));
+        assert_eq!(
+            rows[top + 3].trim(),
+            "Default  ·  opus  ·  127.0.0.1:11434",
+            "the mode, model and endpoint under it"
+        );
+        assert!(rows.last().unwrap().ends_with(&format!("v{}", forge_core::VERSION)), "the version on the status line");
+        assert_eq!(live_view(&a, 100, 12).cursor, Some((14, top as u16 + 1)));
+        // Sending anything ends the front screen: the box spans the terminal again.
+        a.submit("hello".into());
+        let (rows, _) = draw(&live_view(&a, 100, 12), 100);
+        assert!(rows.iter().any(|r| r.starts_with('╭')), "{rows:#?}");
     }
 
     #[test]

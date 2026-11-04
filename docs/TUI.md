@@ -276,10 +276,12 @@ with `{"text", "cwd"}`:
   centred across the terminal and down the room above the input: the FORGE
   wordmark (spaced capitals, its O a cube with a copper top, drawn in half
   blocks, 47 columns by 5 rows; `F O R G E` in one row on a terminal under
-  51 columns), the tagline, the model and its endpoint, and `/resume` with
-  the newest other conversation here. The status line shows the folder on
-  its left (its end kept, at most half the line) until a mode or a hint
-  takes the place.
+  51 columns), the tagline, and `/resume` with the newest other
+  conversation here. Until the first message, the input is a centred box at
+  most 80 columns wide, with the mode, the model and its endpoint on the
+  line under it, and the status line shows the version on its right. The
+  status line shows the folder on its left (its end kept, at most half the
+  line) until a mode or a hint takes the place.
 - **Assistant text** streams into `app.live`. Each complete line moves to
   scrollback. The first line of a text block gets `• `, the others two
   spaces.
