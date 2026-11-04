@@ -91,8 +91,10 @@ impl Role {
 }
 
 // The roles: KodAct's identity. Ink and paper for text and surfaces, lime for
-// the brand and for what needs the person, and colour elsewhere only where it
-// means something (done, failed, added, removed, code). On a light
+// the brand and for what needs the person. Teal and violet, set either side of
+// lime on the colour wheel, carry the structure of an answer (headings, lists,
+// quotes, code), so it is not all one colour. Green, red and amber still mean
+// done, failed and a warning. On a light
 // background the lime deepens to an olive that reads on paper.
 
 /// The brand: the prompt mark, the spinner, selections, the keys, headings.
@@ -117,8 +119,15 @@ pub const DANGER: Role = role(0xff7a6b, 0xb8392e, Color::LightRed, Color::Red);
 pub const ADDED: Role = role(0x7ccf8f, 0x2f7a45, Color::LightGreen, Color::Green);
 /// A diff's removed line.
 pub const REMOVED: Role = role(0xff7a6b, 0xb8392e, Color::LightRed, Color::Red);
-/// Inline code.
-pub const CODE: Role = role(0xd9f2a6, 0x4d6512, Color::LightMagenta, Color::Magenta);
+/// The first companion to lime, a cool teal: second-level headings, numbers
+/// in lists, table headers, the second bullet level.
+pub const TEAL: Role = role(0x5fd8c4, 0x0e7568, Color::LightCyan, Color::Cyan);
+/// The second companion, a soft violet: third-level headings, quote bars,
+/// the third bullet level, keywords in code.
+pub const VIOLET: Role = role(0xb4a2ff, 0x5a44c0, Color::LightMagenta, Color::Magenta);
+/// Inline code: a warm peach, the one warm accent, apart from the blue of
+/// links and the lime of the brand.
+pub const CODE: Role = role(0xffb98f, 0xa4461c, Color::LightRed, Color::Red);
 /// The person's prompt: a raised surface (the logo's tile).
 pub const PROMPT_BG: Role = role(0x1b1f23, 0xebeae4, Color::DarkGray, Color::Gray);
 /// The glow style's band behind the person's words: a lime tint.
@@ -134,15 +143,15 @@ pub const SHIMMER_PEAK: Role = role(0xdcff85, 0x4a7200, Color::White, Color::Bla
 /// Plain code.
 pub const CODE_TEXT: Role = role(0xcdd1d5, 0x33373b, Color::Gray, Color::DarkGray);
 /// Keywords: `fn`, `def`, `const`, `if`.
-pub const CODE_KEYWORD: Role = role(0xb8e86a, 0x4f7000, Color::LightYellow, Color::Yellow);
+pub const CODE_KEYWORD: Role = role(0xb4a2ff, 0x5a44c0, Color::LightMagenta, Color::Magenta);
 /// String literals.
-pub const CODE_STRING: Role = role(0x8fd6b4, 0x1f7a5a, Color::LightGreen, Color::Green);
+pub const CODE_STRING: Role = role(0xc9ec7a, 0x4f7000, Color::LightGreen, Color::Green);
 /// Numbers and constants.
-pub const CODE_NUMBER: Role = role(0xf0c25e, 0x8f6200, Color::LightMagenta, Color::Magenta);
+pub const CODE_NUMBER: Role = role(0xf0c25e, 0x8f6200, Color::LightYellow, Color::Yellow);
 /// Comments.
 pub const CODE_COMMENT: Role = role(0x767b82, 0x83878d, Color::DarkGray, Color::DarkGray);
 /// Type names.
-pub const CODE_TYPE: Role = role(0xe6eccf, 0x3d4a1a, Color::LightCyan, Color::Cyan);
+pub const CODE_TYPE: Role = role(0x5fd8c4, 0x0e7568, Color::LightCyan, Color::Cyan);
 
 pub const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)

@@ -324,12 +324,13 @@ with `{"text", "cwd"}`:
   spaces.
 - **Markdown**, one line at a time (`text::Markdown::push`), so streamed
   text is drawn as it arrives:
-  - headings `#` to `######` (a space after the hashes): level 1 bold in the
-    bright brand colour, level 2 bold in the brand colour, the rest bold;
-  - bullets `-`, `*`, `+` as `•`, `◦`, `▪` by indent level; numbered items
-    (`1.` or `1)`) with the number in the brand colour; tasks `- [ ]` as `○`
-    and `- [x]` as a green `✓` with the text struck through;
-  - quotes `>` (nested `>>`) as a `│` per level, the text dim and italic;
+  - headings `#` to `######` (a space after the hashes): level 1 bold in
+    lime, level 2 bold in teal, level 3 bold in violet, the rest bold;
+  - bullets `-`, `*`, `+` as `•`, `◦`, `▪` by indent level, in lime, teal
+    and violet; numbered items (`1.` or `1)`) with the number in teal;
+    tasks `- [ ]` as `○` and `- [x]` as a green `✓` with the text struck through;
+  - quotes `>` (nested `>>`) as a violet `│` per level, the text dim and
+    italic;
     rules (`---`, `***`, `___`) as a hairline;
   - code fences (```` ``` ```` or `~~~`, closed only by the same run) open
     with `╭─ lang`, put each line after a `│ ` gutter and close with `╰─`.
@@ -343,9 +344,12 @@ with `{"text", "cwd"}`:
     bare URLs underlined, `\` escapes; emphasis nests;
   - table rows are held until the table ends, then drawn with aligned
     columns (`--:` aligns right), `│` between cells, a `─┼─` rule and a
-    bold header.
-- **Colours** (`palette.rs`): KodAct's ink, paper and lime. Ink and paper for
-  text and surfaces, lime for the brand and for what needs the person; green, red
+    bold teal header.
+- **Colours** (`palette.rs`): KodAct's ink, paper and lime, with teal and
+  violet beside it. Ink and paper for text and surfaces, lime for the brand
+  and for what needs the person; teal and violet for the structure of an
+  answer (headings, lists, quotes, table headers, inline code in peach,
+  code keywords violet, strings lime, types teal, numbers amber); green, red
   and amber only where they mean done, failed or a warning.
 - **Wrapping** (`text::wrap`): a wrapped row continues under the text, past
   the line's indent and its marker (`• `, `› `, `↳ `, `- `, `1. `).

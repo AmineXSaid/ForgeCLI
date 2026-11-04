@@ -154,6 +154,20 @@ impl Theme {
         self.role(r)
     }
 
+    /// Teal, lime's first companion. Bold without colour.
+    pub fn teal(&self) -> Style {
+        if self.color {
+            self.role(palette::TEAL)
+        } else {
+            self.bold()
+        }
+    }
+
+    /// Violet, lime's second companion. Plain without colour.
+    pub fn violet(&self) -> Style {
+        self.role(palette::VIOLET)
+    }
+
     /// Inline `code`.
     pub fn code(&self) -> Style {
         self.role(palette::CODE)
@@ -334,7 +348,7 @@ impl Markdown {
                 let mut cell = inline(c, t);
                 if header {
                     for s in &mut cell {
-                        s.style = s.style.patch(t.bold());
+                        s.style = s.style.patch(t.teal().add_modifier(Modifier::BOLD));
                     }
                 }
                 let used: usize = cell.iter().map(|s| width(&s.content)).sum();
@@ -386,7 +400,8 @@ impl Markdown {
             let text = trimmed[hashes..].trim().trim_end_matches('#').trim_end();
             let style = match hashes {
                 1 => t.brand_strong().add_modifier(Modifier::BOLD),
-                2 => t.accent().add_modifier(Modifier::BOLD),
+                2 => t.teal().add_modifier(Modifier::BOLD),
+                3 => t.violet().add_modifier(Modifier::BOLD),
                 _ => t.bold(),
             };
             let spans =
@@ -404,7 +419,7 @@ impl Markdown {
                 depth += 1;
                 rest = r.trim_start();
             }
-            let mut spans: Vec<Span<'static>> = (0..depth).map(|_| Span::styled("│ ", t.hairline())).collect();
+            let mut spans: Vec<Span<'static>> = (0..depth).map(|_| Span::styled("│ ", t.violet())).collect();
             let quiet = t.dim().add_modifier(Modifier::ITALIC);
             spans.extend(inline(rest, t).into_iter().map(|s| Span::styled(s.content, quiet.patch(s.style))));
             return Some(Line::from(spans));
@@ -417,8 +432,8 @@ impl Markdown {
                     let level = cols / 2;
                     let (glyph, st) = match level % 3 {
                         0 => ("• ", t.accent()),
-                        1 => ("◦ ", t.dim()),
-                        _ => ("▪ ", t.subtle()),
+                        1 => ("◦ ", t.teal()),
+                        _ => ("▪ ", t.violet()),
                     };
                     spans.push(Span::raw(pad(cols)));
                     spans.push(Span::styled(glyph, st));
@@ -438,7 +453,7 @@ impl Markdown {
                 }
                 Item::Number(cols, n, text) => {
                     spans.push(Span::raw(pad(cols)));
-                    spans.push(Span::styled(format!("{n}. "), t.accent()));
+                    spans.push(Span::styled(format!("{n}. "), t.teal()));
                     spans.extend(inline(text, t));
                 }
             }
@@ -1051,12 +1066,14 @@ mod tests {
 
     #[test]
     fn every_kind_of_block_is_drawn() {
-        // Headings by level, in brand colour at the top two.
+        // Headings by level: lime, then teal, then violet.
         let h1 = Markdown::default().line("# Title #", &T).unwrap();
         assert_eq!(plain(&h1), "Title");
         assert!(h1.spans[0].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(h1.spans[0].style.fg, T.brand_strong().fg);
-        assert_eq!(Markdown::default().line("## Plan", &T).unwrap().spans[0].style.fg, T.accent().fg);
+        assert_eq!(Markdown::default().line("## Plan", &T).unwrap().spans[0].style.fg, T.teal().fg);
+        assert_eq!(Markdown::default().line("### Step", &T).unwrap().spans[0].style.fg, T.violet().fg);
+        assert_ne!(T.teal().fg, T.accent().fg, "the second level is not lime again");
         assert_eq!(one("#hashtag"), "#hashtag", "no space, no heading");
         // Lists: bullets by level, numbers, tasks.
         assert_eq!(one("- one"), "• one");
