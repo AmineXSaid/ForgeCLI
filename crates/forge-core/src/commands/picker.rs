@@ -156,15 +156,18 @@ fn styles(d: &Driver) -> Picker {
 }
 
 fn themes(d: &Driver) -> Picker {
-    let current = d.info.settings.str("/theme").unwrap_or("auto");
-    let choices = super::settings::THEMES
-        .iter()
-        .map(|(name, what)| Choice {
-            current: *name == current,
-            ..choice(*name, *what, Pick::Run(format!("/theme {name}")))
-        })
-        .collect();
-    Picker { title: "Choose a theme".into(), choices }
+    let colours = d.info.settings.str("/theme").unwrap_or("auto");
+    let style = d.info.settings.str("/tuiStyle").unwrap_or(super::settings::STYLES[0].0);
+    // The styles first, then the colours; each marks the one in use.
+    let styles = super::settings::STYLES.iter().map(|(name, what)| Choice {
+        current: *name == style,
+        ..choice(*name, *what, Pick::Run(format!("/theme {name}")))
+    });
+    let themes = super::settings::THEMES.iter().map(|(name, what)| Choice {
+        current: *name == colours,
+        ..choice(format!("{name} colours"), *what, Pick::Run(format!("/theme {name}")))
+    });
+    Picker { title: "Choose a style or colours".into(), choices: styles.chain(themes).collect() }
 }
 
 fn permissions(d: &Driver) -> Picker {

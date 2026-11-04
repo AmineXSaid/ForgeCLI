@@ -272,6 +272,30 @@ with `{"text", "cwd"}`:
 
 ## Rendering rules (implemented in `app.rs` and `text.rs`)
 
+- **Styles** (`look.rs`, `/theme <style>`, the `tuiStyle` setting; the
+  first is the default). Each sets the full-screen front page (`front.rs`),
+  how the conversation is written (`app.rs`), the approval's frame and the
+  input (`render.rs`); colours (`/theme dark|light|none`) apply to all:
+  - `forgeframe`: a framed welcome, the wordmark with an ember shadow beside
+    Forge's anvil (original pixel art), the version, what Forge does, the
+    connected MCP servers, the last conversation, the folder and branch;
+    the input across the page. Steps with a dot; approvals in copper
+    corner marks.
+  - `molten`: centred, the wordmark as hot metal with sparks and a glowing
+    seam, a copper-framed input with the mode and model under it. Your
+    words on a warm band, finished steps with a copper ✓, answers plain.
+  - `anvil`: a card with the anvil beside the wordmark and the session's
+    model, tools and folder; turns headed `you · 14:02` and `forge`.
+  - `ledger`: aligned left, the wordmark in copper outline, past work
+    numbered beside this folder, the input docked at the bottom under a
+    rule. A column of times and voices; steps as plain quiet lines.
+  - `status`: the wordmark over boxed readouts of the model, tools and
+    folder; in the conversation, a bar of readouts across the top and
+    approvals as a centred sheet.
+  - `bare`: the name in the corner, one question and the input in the
+    middle, recent work under it. Plain steps, a bold `›` for your words,
+    the input and approvals under a rule, without boxes.
+  A terminal too narrow for a style's front page gets the bare one.
 - **Full screen** (the default; `FORGE_TUI=inline` for the inline
   viewport): the UI takes the terminal's alternate screen and keeps the
   transcript itself (`mod.rs` `Full`, `render::full_view`). Before the first

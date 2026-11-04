@@ -34,7 +34,7 @@ pub(crate) use run::duration;
 pub use run::{execute, Exec};
 pub use session::{clean_title, render_conversation};
 pub(crate) use session::{goal_model, side_request_on};
-pub use settings::{Scope, THEMES};
+pub use settings::{Scope, STYLES, THEMES};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -286,7 +286,7 @@ builtins! {
         Surfaces::TUI,
         true
     ),
-    (Theme, "theme", [], "[dark|light|none]", "Choose the colour theme", Surfaces::TUI, false),
+    (Theme, "theme", [], "[style|dark|light|none]", "Choose the look: a style or the colours", Surfaces::TUI, false),
     (
         Usage,
         "usage",

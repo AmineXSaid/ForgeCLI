@@ -10,6 +10,8 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
 use super::app::App;
+use super::front::FrontPage;
+use super::palette;
 use super::text::{self, width as text_width};
 
 /// The rows to draw, and where the cursor goes (column, row) when it shows.
@@ -184,6 +186,29 @@ fn boxed(title: Line<'static>, body: Vec<Line<'static>>, w: usize, border: Style
     out
 }
 
+/// `body` rows between copper corner marks, `w` columns wide: the Forgeframe
+/// style's way of setting a question apart.
+fn cornered(title: Line<'static>, body: Vec<Line<'static>>, w: usize, mark: Style) -> Vec<Line<'static>> {
+    let inner = w.saturating_sub(4).max(1);
+    let edge = |l: &str, r: &str| {
+        Line::from(vec![
+            Span::styled(l.to_string(), mark),
+            Span::raw(" ".repeat(w.saturating_sub(4))),
+            Span::styled(r.to_string(), mark),
+        ])
+    };
+    let mut out = vec![edge("┌─", "─┐")];
+    for l in std::iter::once(title).chain(body) {
+        for row in text::wrap(vec![l], inner as u16) {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(row.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out.push(edge("└─", "─┘"));
+    out
+}
+
 /// A screen's spans, styled.
 fn screen_spans(app: &App, spans: &[forge_core::commands::screens::Span]) -> Vec<Span<'static>> {
     use forge_core::commands::screens::{context_parts, Tone};
@@ -342,14 +367,45 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
     } else {
         Line::from(Span::styled(title, t.bold()))
     };
-    boxed(title, rows, w, t.accent())
+    use super::look::Look;
+    match app.look {
+        // Copper corner marks around the question, no full frame.
+        Look::Forgeframe => cornered(title, rows, w, t.accent()),
+        // A centred sheet, narrower than the terminal.
+        Look::Status if w >= 60 => {
+            let bw = w.min(76);
+            let pad = " ".repeat((w - bw) / 2);
+            boxed(title, rows, bw, t.accent())
+                .into_iter()
+                .map(|l| {
+                    let mut spans = vec![Span::raw(pad.clone())];
+                    spans.extend(l.spans);
+                    Line::from(spans)
+                })
+                .collect()
+        }
+        // No box: a rule, then the question.
+        Look::Bare => {
+            let mut out = vec![Line::from(Span::styled("─".repeat(w), t.hairline()))];
+            out.extend(text::wrap(std::iter::once(title).chain(rows).collect(), w as u16));
+            out
+        }
+        _ => boxed(title, rows, w, t.accent()),
+    }
 }
 
 /// The input box's rows and the cursor's (column, row) inside them.
 fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
     let t = app.theme;
     let text_w = w.saturating_sub(2).max(1);
-    let prompt = || Span::styled(format!("{} ", glyphs::PROMPT), t.accent());
+    let bare = app.look == super::look::Look::Bare;
+    let prompt = || {
+        if bare {
+            Span::styled("› ", t.subtle())
+        } else {
+            Span::styled(format!("{} ", glyphs::PROMPT), t.accent())
+        }
+    };
     if app.editor.is_empty() && !app.busy {
         let row = Line::from(vec![prompt(), Span::styled(fit(PLACEHOLDER, text_w), t.subtle())]);
         return (vec![row], (2, 0));
@@ -517,72 +573,89 @@ fn status_right_spans(app: &App, room: usize) -> Vec<Span<'static>> {
 }
 
 /// The whole screen for the full-screen UI, `width` by `height`. Before the
-/// first message, the front screen: `head` (the wordmark and tagline), the
-/// centred input with the mode and model under it, then `foot` and any
-/// notices, all centred down the screen, with the status line on the last
-/// row. After it, the conversation: `rows` (the transcript, already wrapped
-/// to `width`) fills the screen down to the live region, `scroll` rows up
-/// from its end. Returns the view and the furthest it can scroll.
+/// first message, the style's front page (`front.rs`): its header at the top,
+/// then its rows with the input among them, centred down the screen (or from
+/// the top, or with the input docked at the bottom), and the status line on
+/// the last row. After it, the conversation: `rows` (the transcript, already
+/// wrapped to `width`) fills the screen down to the live region, `scroll` rows
+/// up from its end; the status style adds a bar of readouts on top. Returns
+/// the view and the furthest it can scroll.
 pub fn full_view(
     app: &App,
     width: u16,
     height: u16,
     rows: &[Line<'static>],
-    head: &[Line<'static>],
-    foot: &[Line<'static>],
+    page: &FrontPage,
     scroll: usize,
 ) -> (LiveView, usize) {
-    full_view_at(app, width, height, rows, head, foot, scroll, Instant::now())
+    full_view_at(app, width, height, rows, page, scroll, Instant::now())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn full_view_at(
     app: &App,
     width: u16,
     height: u16,
     rows: &[Line<'static>],
-    head: &[Line<'static>],
-    foot: &[Line<'static>],
+    page: &FrontPage,
     scroll: usize,
     now: Instant,
 ) -> (LiveView, usize) {
     let h = (height as usize).max(1);
-    let live = live_view_at(app, width, height, now);
     if app.front && app.dialog.is_none() && !app.busy {
+        let fb = FrontBox { left: page.box_left, w: page.box_w, under: page.under };
+        let live = live_view_inner(app, width, height, now, Some(fb));
         let mut input = live.lines;
         let status = input.pop().unwrap_or_default();
         let room = h.saturating_sub(1);
         let notes: Vec<Line<'static>> = rows.iter().rev().take(6).rev().cloned().collect();
-        let mut mid: Vec<Line<'static>> = vec![];
-        // The wordmark goes first when the screen is too short for it all.
-        let fits = head.len() + 2 + input.len() + if foot.is_empty() { 0 } else { foot.len() + 1 } <= room;
-        if fits {
-            mid.extend(head.iter().cloned());
-            mid.push(Line::default());
-            mid.push(Line::default());
+        let mut out: Vec<Line<'static>> = page.header.clone();
+        let box_at;
+        if page.dock {
+            // The page from the top, the input at the bottom.
+            out.extend(page.above.iter().cloned());
+            if !notes.is_empty() {
+                out.push(Line::default());
+                out.extend(notes);
+            }
+            out.truncate(room.saturating_sub(input.len()));
+            out.resize(room.saturating_sub(input.len()), Line::default());
+            box_at = out.len();
+            out.extend(input);
+        } else {
+            let mut mid: Vec<Line<'static>> = vec![];
+            // The style's art goes first when the screen is too short for it all.
+            let fits = page.header.len() + page.above.len() + input.len() + page.below.len() <= room;
+            if fits {
+                mid.extend(page.above.iter().cloned());
+            }
+            let at = mid.len();
+            mid.extend(input);
+            if mid.len() + page.below.len() + page.header.len() <= room {
+                mid.extend(page.below.iter().cloned());
+            }
+            if !notes.is_empty() && page.header.len() + mid.len() + 1 + notes.len() <= room {
+                mid.push(Line::default());
+                mid.extend(notes);
+            }
+            let free = room.saturating_sub(page.header.len() + mid.len());
+            // A little above the middle, where the eye settles; or from the top.
+            let top = if page.top { free.min(1) } else { free * 2 / 5 };
+            out.extend(vec![Line::default(); top]);
+            box_at = out.len() + at;
+            out.extend(mid);
         }
-        let box_at = mid.len();
-        mid.extend(input);
-        if !foot.is_empty() && mid.len() + 1 + foot.len() <= room {
-            mid.push(Line::default());
-            mid.extend(foot.iter().cloned());
-        }
-        if !notes.is_empty() && mid.len() + 1 + notes.len() <= room {
-            mid.push(Line::default());
-            mid.extend(notes);
-        }
-        // A little above the middle, where the eye settles.
-        let top = room.saturating_sub(mid.len()) * 2 / 5;
-        let mut out = vec![Line::default(); top];
-        out.extend(mid);
         out.truncate(room);
         out.resize(room, Line::default());
         out.push(status);
-        let cursor = live.cursor.map(|(x, y)| (x, y + (top + box_at) as u16)).filter(|(_, y)| (*y as usize) < room);
+        let cursor = live.cursor.map(|(x, y)| (x, y + box_at as u16)).filter(|(_, y)| (*y as usize) < room);
         return (LiveView { lines: out, cursor }, 0);
     }
+    let live = live_view_at(app, width, height, now);
+    // The status style: a bar of the session's readouts across the top.
+    let bar: Vec<Line<'static>> =
+        if app.look == super::look::Look::Status { vec![readouts(app, width as usize)] } else { vec![] };
     // The conversation: the transcript down to the live region.
-    let avail = h.saturating_sub(live.lines.len());
+    let avail = h.saturating_sub(live.lines.len() + bar.len());
     let max_scroll = rows.len().saturating_sub(avail);
     let scroll = scroll.min(max_scroll);
     let end = rows.len() - scroll;
@@ -600,9 +673,60 @@ pub fn full_view_at(
         padded.extend(out);
         out = padded;
     }
-    let cursor = live.cursor.map(|(x, y)| (x, y + avail as u16));
-    out.extend(live.lines);
-    (LiveView { lines: out, cursor }, max_scroll)
+    let mut lines = bar;
+    let cursor = live.cursor.map(|(x, y)| (x, y + (lines.len() + avail) as u16));
+    lines.extend(out);
+    lines.extend(live.lines);
+    (LiveView { lines, cursor }, max_scroll)
+}
+
+/// The status style's bar: the model, the context in use, the folder and the branch.
+fn readouts(app: &App, w: usize) -> Line<'static> {
+    let t = app.theme;
+    let raised =
+        if t.color { Style::default().bg(palette::PROMPT_BG.color(t.depth, t.light)) } else { Style::default() };
+    let mut parts: Vec<(String, String)> =
+        vec![("model".into(), fit(&format!("{} · {}", app.status.model, app.endpoint), (w / 3).max(12)))];
+    if let Some(p) = app.status.context_pct {
+        parts.push(("context".into(), format!("{p}%")));
+    }
+    parts.push(("folder".into(), keep_end(&super::short_path(&app.status.cwd), (w / 4).max(12))));
+    if !app.branch.is_empty() {
+        parts.push(("branch".into(), app.branch.clone()));
+    }
+    let mut spans = vec![Span::styled(" ", raised)];
+    for (i, (k, v)) in parts.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  │  ", t.hairline().patch(raised)));
+        }
+        spans.push(Span::styled(format!("{k} "), t.subtle().patch(raised)));
+        spans.push(Span::styled(v.clone(), Style::default().patch(raised)));
+    }
+    let used: usize = spans.iter().map(|s| text_width(&s.content)).sum();
+    if used < w {
+        spans.push(Span::styled(" ".repeat(w - used), raised));
+    }
+    // One row, never wrapped: cut at the width.
+    let mut out = vec![];
+    let mut room = w;
+    for sp in spans {
+        if room == 0 {
+            break;
+        }
+        let text = if text_width(&sp.content) > room { fit(&sp.content, room) } else { sp.content.to_string() };
+        room -= text_width(&text).min(room);
+        out.push(Span::styled(text, sp.style));
+    }
+    Line::from(out)
+}
+
+/// Where the front page puts the input: its first column, its width, and
+/// whether the mode, model and endpoint go on a line under it.
+#[derive(Debug, Clone, Copy)]
+pub struct FrontBox {
+    pub left: usize,
+    pub w: usize,
+    pub under: bool,
 }
 
 /// The live region for a terminal `width` columns wide, at most `max_height` rows.
@@ -611,6 +735,10 @@ pub fn live_view(app: &App, width: u16, max_height: u16) -> LiveView {
 }
 
 pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> LiveView {
+    live_view_inner(app, width, max_height, now, None)
+}
+
+fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_box: Option<FrontBox>) -> LiveView {
     let w = (width as usize).max(4);
     let t = app.theme;
     // 1. The unfinished answer line: its last rows.
@@ -666,16 +794,35 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     // The input sits in a rounded box; its rows are padded to the box's inside. On the
     // front screen the box is centred under the wordmark, at most 80 columns, with the
     // mode, the model and where it runs under it.
-    let front = app.front && app.dialog.is_none() && w >= 60;
-    let bw = if front { (w - 4).min(80) } else { w };
-    let margin = " ".repeat((w - bw) / 2);
-    let border = if app.editor.is_empty() { t.hairline() } else { t.subtle() };
-    let inner = bw.saturating_sub(4).max(1);
+    let fb = front_box.or_else(|| {
+        (app.front && w >= 60).then(|| {
+            let bw = (w - 4).min(80);
+            FrontBox { left: (w - bw) / 2, w: bw, under: true }
+        })
+    });
+    let fb = fb.filter(|_| app.front && app.dialog.is_none());
+    let front = fb.is_some();
+    let (left, bw) = fb.map(|b| (b.left.min(w.saturating_sub(4)), b.w.min(w))).unwrap_or((0, w));
+    let margin = " ".repeat(left);
+    use super::look::Look;
+    // Bare and Ledger draw the input under a rule, without a box; Molten's box glows copper.
+    let open = matches!(app.look, Look::Bare | Look::Ledger);
+    let border = match app.look {
+        Look::Molten => t.accent(),
+        _ if app.editor.is_empty() => t.hairline(),
+        _ => t.subtle(),
+    };
+    let side = if open { 0 } else { 2 };
+    let inner = bw.saturating_sub(2 * side).max(1);
     let edge = |l: char, r: char| {
-        Line::from(vec![
-            Span::raw(margin.clone()),
-            Span::styled(format!("{l}{}{r}", "─".repeat(bw.saturating_sub(2))), border),
-        ])
+        if open {
+            Line::from(vec![Span::raw(margin.clone()), Span::styled("─".repeat(bw), border)])
+        } else {
+            Line::from(vec![
+                Span::raw(margin.clone()),
+                Span::styled(format!("{l}{}{r}", "─".repeat(bw.saturating_sub(2))), border),
+            ])
+        }
     };
     let (top, bottom) = (edge('╭', '╮'), edge('╰', '╯'));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, inner) } else { (vec![], (0, 0)) };
@@ -683,15 +830,20 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         .into_iter()
         .map(|row| {
             let used: usize = row.spans.iter().map(|s| text_width(&s.content)).sum();
-            let mut spans = vec![Span::raw(margin.clone()), Span::styled("│ ", border)];
+            let mut spans = vec![Span::raw(margin.clone())];
+            if !open {
+                spans.push(Span::styled("│ ", border));
+            }
             spans.extend(row.spans);
-            spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
-            spans.push(Span::styled(" │", border));
+            if !open {
+                spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+                spans.push(Span::styled(" │", border));
+            }
             Line::from(spans)
         })
         .collect();
-    let cursor = (cursor.0 + 2 + margin.len() as u16, cursor.1);
-    let under: Vec<Line<'static>> = if front && !input_rows.is_empty() {
+    let cursor = (cursor.0 + side as u16 + margin.len() as u16, cursor.1);
+    let under: Vec<Line<'static>> = if front && fb.is_some_and(|b| b.under) && !input_rows.is_empty() {
         let mut parts = vec![Span::styled(mode_name(&app.status.mode), t.accent())];
         for p in [app.status.model.as_str(), app.endpoint.as_str()].into_iter().filter(|p| !p.is_empty()) {
             parts.push(Span::styled("  ·  ", t.hairline()));
@@ -725,7 +877,7 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
     let fixed = spinner.len()
         + search.len()
         + dialog.len()
-        + if input_rows.is_empty() { 0 } else { input_rows.len() + 2 }
+        + if input_rows.is_empty() { 0 } else { input_rows.len() + if open { 1 } else { 2 } }
         + under.len()
         + menu.len()
         + 1;
@@ -750,7 +902,9 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
         lines.push(top);
         cur = Some((cursor.0, (lines.len() as u16) + cursor.1));
         lines.extend(input_rows);
-        lines.push(bottom);
+        if !open {
+            lines.push(bottom);
+        }
         lines.extend(under);
     }
     lines.extend(menu);
@@ -806,6 +960,8 @@ mod tests {
 
     fn app(color: bool) -> App {
         let mut a = App::new(Theme { color, light: false, accent: None, depth: Default::default() }, vec![]);
+        // The rounded boxes these tests were written for.
+        a.look = crate::tui::look::Look::Anvil;
         a.on_event(UiEvent::Status(StatusView {
             model: "opus".into(),
             mode: "default".into(),
@@ -1246,9 +1402,15 @@ mod tests {
         let mut a = app(false);
         a.front = true;
         a.endpoint = "127.0.0.1:11434".into();
-        let head = vec![Line::from("WORDMARK"), Line::default(), Line::from("tagline")];
-        let foot = vec![Line::from("/resume  checkout rounding")];
-        let (v, _) = full_view(&a, 100, 30, &[], &head, &foot, 0);
+        let page = FrontPage {
+            above: vec![Line::from("WORDMARK"), Line::default(), Line::from("tagline"), Line::default()],
+            below: vec![Line::default(), Line::from("/resume  checkout rounding")],
+            box_left: 10,
+            box_w: 80,
+            under: true,
+            ..Default::default()
+        };
+        let (v, _) = full_view(&a, 100, 30, &[], &page, 0);
         let (rows, _) = draw(&v, 100);
         assert_eq!(rows.len(), 30, "the whole screen");
         let mark = rows.iter().position(|r| r == "WORDMARK").unwrap();
@@ -1261,7 +1423,7 @@ mod tests {
         // After the first message: the transcript from the top, the input at the bottom.
         a.submit("hello".into());
         let transcript: Vec<Line<'static>> = (1..=40).map(|i| Line::from(format!("line {i}"))).collect();
-        let (v, max) = full_view(&a, 100, 30, &transcript, &head, &foot, 0);
+        let (v, max) = full_view(&a, 100, 30, &transcript, &page, 0);
         let (rows, _) = draw(&v, 100);
         assert_eq!(rows.len(), 30);
         assert!(rows.iter().any(|r| r == "line 40"), "the newest line shows");
@@ -1269,17 +1431,50 @@ mod tests {
         assert!(rows[25..].iter().any(|r| r.contains('❯')), "the input at the bottom: {rows:#?}");
         assert!(max > 0);
         // Scrolled up: older lines, and a note of what is below.
-        let (v, _) = full_view(&a, 100, 30, &transcript, &head, &foot, 10);
+        let (v, _) = full_view(&a, 100, 30, &transcript, &page, 10);
         let (rows, _) = draw(&v, 100);
         // The last row turns into the note of what is below.
         assert!(rows.iter().any(|r| r == "line 29") && !rows.iter().any(|r| r == "line 31"), "{rows:#?}");
         assert!(rows.iter().any(|r| r.trim() == "↓ 10 more lines · PgDn"), "{rows:#?}");
         // A short transcript sits just above the live region, not at the top with a gap.
-        let (v, _) = full_view(&a, 100, 30, &transcript[..2], &head, &foot, 0);
+        let (v, _) = full_view(&a, 100, 30, &transcript[..2], &page, 0);
         let (rows, _) = draw(&v, 100);
         let at = rows.iter().position(|r| r == "line 2").unwrap();
         assert_eq!(rows[0], "");
         assert!(rows[at + 1..].iter().take(3).any(|r| r.contains('╭')), "{rows:#?}");
+    }
+
+    #[test]
+    fn styles_change_the_bar_the_input_and_the_dialog() {
+        use crate::tui::look::Look;
+        let mut a = app(false);
+        a.endpoint = "127.0.0.1:11434".into();
+        a.branch = "main".into();
+        // The status style puts a bar of readouts on top of the conversation.
+        a.look = Look::Status;
+        let page = FrontPage { box_left: 0, box_w: 100, ..Default::default() };
+        let (v, _) = full_view(&a, 100, 20, &[Line::from("hello")], &page, 0);
+        let (rows, _) = draw(&v, 100);
+        assert!(rows[0].contains("model opus · 127.0.0.1:11434") && rows[0].contains("branch main"), "{}", rows[0]);
+        a.status.cwd = "/tmp/a/very/long/path/that/goes/on/to/the/project/demo/proj2".into();
+        let (v, _) = full_view(&a, 100, 20, &[Line::from("hello")], &page, 0);
+        let bar = &draw(&v, 100).0[0];
+        assert!(
+            bar.contains("…") && bar.contains("proj2") && bar.contains("branch main"),
+            "a long folder keeps its end: {bar}"
+        );
+        // Bare: the input under a rule, no box, a plain mark.
+        a.look = Look::Bare;
+        let (rows, _) = draw(&live_view(&a, 60, 10), 60);
+        assert!(rows.iter().any(|r| r == &"─".repeat(60)));
+        assert!(rows.iter().any(|r| r.starts_with("› What shall we forge today?")), "{rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains('╭')));
+        // Forgeframe: the question between corner marks.
+        a.look = Look::Forgeframe;
+        ask(&mut a, "Bash", serde_json::json!({"command": "ls"}));
+        let (rows, _) = draw(&live_view(&a, 60, 30), 60);
+        assert!(rows[0].starts_with("┌─") && rows[0].ends_with("─┐"), "{rows:#?}");
+        assert!(rows.iter().any(|r| r.starts_with("└─")));
     }
 
     #[test]

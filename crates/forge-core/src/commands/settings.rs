@@ -681,6 +681,16 @@ pub(super) fn advisor(d: &mut Driver, args: &str) -> Exec {
     }
 }
 
+/// The styles of the terminal UI: how its front page, chat and prompt are laid out.
+pub const STYLES: [(&str, &str); 6] = [
+    ("forgeframe", "A framed welcome with the anvil, what is connected, a timeline of steps"),
+    ("molten", "Centred, the name as hot metal, quiet steps and a glowing prompt"),
+    ("anvil", "A card with the anvil and the session, one card per turn"),
+    ("ledger", "Aligned left, past work numbered, times and voices down the side"),
+    ("status", "Readouts of the session, a header bar, approvals over the thread"),
+    ("bare", "One prompt in the middle and nothing else; plain steps and answers"),
+];
+
 /// The colour themes of the terminal UI.
 pub const THEMES: [(&str, &str); 4] = [
     ("auto", "Follow the terminal's background (COLORFGBG), else dark"),
@@ -693,25 +703,37 @@ fn tui_only(d: &Driver, name: &str) -> Option<Exec> {
     (d.surface != Surface::Tui).then(|| err(format!("/{name} works only in the terminal UI.")))
 }
 
-/// `/theme [auto|dark|light|none]`: saved as `theme` in user settings; the UI applies it.
+/// `/theme [style|colours]`: a style of the terminal UI (saved as `tuiStyle`) or its
+/// colours (saved as `theme`), both in user settings; the UI applies them.
 pub(super) fn theme(d: &mut Driver, args: &str) -> Exec {
     if let Some(e) = tui_only(d, "theme") {
         return e;
     }
-    let current = d.info.settings.str("/theme").unwrap_or("auto").to_string();
+    let colours = d.info.settings.str("/theme").unwrap_or("auto").to_string();
+    let style = d.info.settings.str("/tuiStyle").unwrap_or(STYLES[0].0).to_string();
     if args.is_empty() {
-        let mut s = format!("Theme: {current}\n");
-        for (name, what) in THEMES {
-            let _ = writeln!(s, "  {name:<6} {what}");
+        let mut s = format!("Style: {style} · colours: {colours}\n\nStyles\n");
+        for (name, what) in STYLES {
+            let _ = writeln!(s, "  {name:<10} {what}");
         }
-        s.push_str("Choose one with /theme <name>.");
+        s.push_str("\nColours\n");
+        for (name, what) in THEMES {
+            let _ = writeln!(s, "  {name:<10} {what}");
+        }
+        s.push_str("\nChoose one with /theme <name>.");
         return ok(s);
     }
-    let Some((name, _)) = THEMES.iter().find(|(n, _)| *n == args) else {
-        return err(format!("No theme {args:?}. Choose auto, dark, light or none."));
+    let arg = args.trim().to_ascii_lowercase();
+    if let Some((name, _)) = STYLES.iter().find(|(n, _)| *n == arg) {
+        let saved = save_default(d, Scope::User, &["tuiStyle"], Some(json!(name)));
+        return ok(join(&[format!("Style set to {name}."), saved]));
+    }
+    let Some((name, _)) = THEMES.iter().find(|(n, _)| *n == arg) else {
+        let names: Vec<&str> = STYLES.iter().chain(THEMES.iter()).map(|(n, _)| *n).collect();
+        return err(format!("No theme {args:?}. Choose one of: {}.", names.join(", ")));
     };
     let saved = save_default(d, Scope::User, &["theme"], Some(json!(name)));
-    ok(join(&[format!("Theme set to {name}."), saved]))
+    ok(join(&[format!("Colours set to {name}."), saved]))
 }
 
 /// `/statusline [command|off]`: the `statusLine` setting. The UI runs the

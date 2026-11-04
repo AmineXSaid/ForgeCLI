@@ -70,6 +70,8 @@ pub enum UiEvent {
     Files(Vec<String>),
     /// The `theme` setting changed (`/theme`).
     Theme(String),
+    /// The UI's style (`tuiStyle`): how its pages and lines are laid out.
+    Look(String),
     /// Put this text on the clipboard (`/copy`).
     Copy(String),
     /// The `statusLine` command's output, or `None` when there is none.
@@ -282,10 +284,14 @@ pub struct App {
     pub viewer_page: std::cell::Cell<usize>,
     /// Key bindings in effect (`keybindings.json`).
     pub keymap: super::keys::Keymap,
+    /// The UI's style.
+    pub look: super::look::Look,
     /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
     pub front: bool,
     /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
     pub endpoint: String,
+    /// The git branch, for the status style's bar (empty outside a repository).
+    pub branch: String,
     /// `/focus`: tool calls and their results stay out of the scrollback.
     pub focus: bool,
     /// A screen or picker waiting for an open question to be answered.
@@ -605,8 +611,10 @@ impl App {
             status_text: None,
             viewer_page: std::cell::Cell::new(10),
             keymap: Default::default(),
+            look: Default::default(),
             front: false,
             endpoint: String::new(),
+            branch: String::new(),
             focus: false,
             held: None,
         }
@@ -643,14 +651,40 @@ impl App {
         self.commit_answer_lines(lines);
     }
 
+    /// The mark before an answer's first line: Forge's dot, or two spaces in styles that head
+    /// the answer with a time (Ledger) or keep it plain (Molten, Bare).
+    fn answer_mark(&self) -> Span<'static> {
+        use super::look::Look;
+        match self.look {
+            Look::Forgeframe | Look::Status | Look::Anvil => {
+                Span::styled(format!("{} ", glyphs::ANSWER), self.theme.dim())
+            }
+            _ => Span::raw("  "),
+        }
+    }
+
+    /// The local time, for the Ledger style's column.
+    fn clock() -> String {
+        chrono::Local::now().format("%H:%M").to_string()
+    }
+
     /// Answer lines into scrollback: the first of a block gets the answer mark.
     fn commit_answer_lines(&mut self, lines: Vec<Line<'static>>) {
+        use super::look::Look;
         let t = self.theme;
         for mut line in lines {
-            let marker =
-                if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.dim()) } else { Span::raw("  ") };
+            let marker = if self.first_line { self.answer_mark() } else { Span::raw("  ") };
             if self.first_line {
                 self.gap();
+                // Anvil and Ledger head Forge's turn.
+                match self.look {
+                    Look::Anvil => self.pending.push(Line::from(Span::styled("  forge", t.accent()))),
+                    Look::Ledger => self.pending.push(Line::from(vec![
+                        Span::styled(format!("  {}  ", Self::clock()), t.subtle()),
+                        Span::styled("forge", t.accent()),
+                    ])),
+                    _ => {}
+                }
             }
             self.first_line = false;
             line.spans.insert(0, marker);
@@ -665,8 +699,7 @@ impl App {
         }
         let t = self.theme;
         let mut line = self.md.clone().line(&self.live, &t)?;
-        let marker =
-            if self.first_line { Span::styled(format!("{} ", glyphs::ANSWER), t.dim()) } else { Span::raw("  ") };
+        let marker = if self.first_line { self.answer_mark() } else { Span::raw("  ") };
         line.spans.insert(0, marker);
         Some(line)
     }
@@ -684,14 +717,62 @@ impl App {
 
     /// Write the person's prompt into scrollback.
     pub fn echo_prompt(&mut self, text: &str) {
+        use super::look::Look;
         self.gap();
         let t = self.theme;
-        let st = t.user();
-        // The mark in brand colour on the prompt's own surface.
-        let mark_st = if t.color { st.patch(t.accent()) } else { st };
-        for (i, l) in text.lines().enumerate() {
-            let marker = if i == 0 { format!("{} ", glyphs::PROMPT) } else { "  ".into() };
-            self.pending.push(Line::from(vec![Span::styled(marker, mark_st), Span::styled(format!("{l} "), st)]));
+        match self.look {
+            // A warm band, no mark.
+            Look::Molten => {
+                let st = if t.color {
+                    Style::default().bg(super::palette::WARM_BG.color(t.depth, t.light))
+                } else {
+                    t.user()
+                };
+                for l in text.lines() {
+                    self.pending.push(Line::from(Span::styled(format!("  {l}  "), st)));
+                }
+            }
+            // A header line, then the words.
+            Look::Anvil => {
+                self.pending.push(Line::from(Span::styled(format!("  you · {}", Self::clock()), t.subtle())));
+                for l in text.lines() {
+                    self.pending.push(Line::from(format!("  {l}")));
+                }
+            }
+            // The time and the voice in a column.
+            Look::Ledger => {
+                for (i, l) in text.lines().enumerate() {
+                    let lead = if i == 0 {
+                        vec![
+                            Span::styled(format!("  {}  ", Self::clock()), t.subtle()),
+                            Span::styled("you    ", t.dim()),
+                        ]
+                    } else {
+                        vec![Span::raw(" ".repeat(16))]
+                    };
+                    let mut spans = lead;
+                    spans.push(Span::raw(l.to_string()));
+                    self.pending.push(Line::from(spans));
+                }
+            }
+            // Bold, after a plain mark.
+            Look::Bare => {
+                for (i, l) in text.lines().enumerate() {
+                    let mark = if i == 0 { "› " } else { "  " };
+                    self.pending
+                        .push(Line::from(vec![Span::styled(mark, t.subtle()), Span::styled(l.to_string(), t.bold())]));
+                }
+            }
+            Look::Forgeframe | Look::Status => {
+                let st = t.user();
+                // The mark in brand colour on the prompt's own surface.
+                let mark_st = if t.color { st.patch(t.accent()) } else { st };
+                for (i, l) in text.lines().enumerate() {
+                    let marker = if i == 0 { format!("{} ", glyphs::PROMPT) } else { "  ".into() };
+                    self.pending
+                        .push(Line::from(vec![Span::styled(marker, mark_st), Span::styled(format!("{l} "), st)]));
+                }
+            }
         }
     }
 
@@ -713,11 +794,40 @@ impl App {
     }
 
     /// A tool call's header into scrollback, its dot in the colour of how it ended.
-    fn commit_tool(&mut self, r: Running, dot: Style) {
+    fn commit_tool(&mut self, r: Running, dot: Style, failed: bool) {
+        use super::look::Look;
         self.gap();
-        let mut spans = vec![Span::styled(format!("{} ", glyphs::TOOL), dot)];
-        spans.extend(tool_header(&self.theme, &r.name, &r.input, true));
-        self.pending.push(Line::from(spans));
+        let t = self.theme;
+        let line = match self.look {
+            // Plain, quiet lines: `ran cargo test`.
+            l if l.plain_steps() => {
+                let mut text = tool_verb(&r.name, true).to_lowercase();
+                if tool_verb(&r.name, true) == "Called" {
+                    text.push(' ');
+                    text.push_str(&tool_display_name(&r.name));
+                }
+                let arg = summarize(&r.name, &r.input);
+                if !arg.is_empty() {
+                    text.push(' ');
+                    text.push_str(&arg);
+                }
+                let lead = if failed { Span::styled("✗ ", t.error()) } else { Span::raw("  ") };
+                Line::from(vec![lead, Span::styled(text, if failed { t.error() } else { t.subtle() })])
+            }
+            // A ✓ in the brand colour, a ✗ when it failed.
+            Look::Molten => {
+                let mut spans =
+                    vec![if failed { Span::styled("✗ ", t.error()) } else { Span::styled("✓ ", t.accent()) }];
+                spans.extend(tool_header(&t, &r.name, &r.input, true));
+                Line::from(spans)
+            }
+            _ => {
+                let mut spans = vec![Span::styled(format!("{} ", glyphs::TOOL), dot)];
+                spans.extend(tool_header(&t, &r.name, &r.input, true));
+                Line::from(spans)
+            }
+        };
+        self.pending.push(line);
     }
 
     fn notice(&mut self, level: NoticeLevel, text: &str) {
@@ -756,6 +866,7 @@ impl App {
                 self.theme = Theme::named(&name, self.color_ok, self.theme.depth);
                 self.theme.accent = accent;
             }
+            UiEvent::Look(name) => self.look = super::look::Look::named(&name).unwrap_or_default(),
             UiEvent::Copy(text) => self.clipboard = Some(text),
             UiEvent::StatusLine(text) => self.status_text = text,
             UiEvent::Picker(picker) => self.open_picker(picker),
@@ -772,7 +883,7 @@ impl App {
                 self.flush_live();
                 for r in std::mem::take(&mut self.running) {
                     let dot = self.theme.dim();
-                    self.commit_tool(r, dot);
+                    self.commit_tool(r, dot, false);
                 }
                 self.busy = false;
                 self.busy_since = None;
@@ -898,7 +1009,7 @@ impl App {
                         if let Some(i) = self.running.iter().position(|r| r.id == *tool_use_id) {
                             let r = self.running.remove(i);
                             let dot = if failed { self.theme.error() } else { self.theme.success() };
-                            self.commit_tool(r, dot);
+                            self.commit_tool(r, dot, failed);
                         }
                         let lines = result_lines(
                             &self.theme,
@@ -907,6 +1018,22 @@ impl App {
                             *is_error == Some(true),
                             tool_use_result.as_ref(),
                         );
+                        // Plain styles drop the result's `└` and keep it quiet, under the step.
+                        let lines = if self.look.plain_steps() {
+                            lines
+                                .into_iter()
+                                .map(|mut l| {
+                                    if let Some(first) = l.spans.first_mut() {
+                                        if first.content == RESULT_MARK {
+                                            *first = Span::raw(RESULT_INDENT);
+                                        }
+                                    }
+                                    l
+                                })
+                                .collect()
+                        } else {
+                            lines
+                        };
                         self.pending.extend(lines);
                         self.activity = "Working".into();
                     }
@@ -2172,6 +2299,49 @@ mod tests {
         );
         assert!(a.running.is_empty());
         let _ = MessageContent::Text(String::new());
+    }
+
+    #[test]
+    fn each_style_writes_the_conversation_its_own_way() {
+        use crate::tui::look::Look;
+        let prompt_for = |look: Look| {
+            let mut a = app();
+            a.look = look;
+            a.echo_prompt("fix the cart");
+            texts(&a.take_pending())
+        };
+        assert_eq!(prompt_for(Look::Forgeframe).last().unwrap(), "❯ fix the cart ");
+        assert_eq!(prompt_for(Look::Bare).last().unwrap(), "› fix the cart");
+        let anvil = prompt_for(Look::Anvil);
+        assert!(anvil[anvil.len() - 2].starts_with("  you · "), "{anvil:?}");
+        let ledger = prompt_for(Look::Ledger);
+        assert!(ledger.last().unwrap().ends_with("you    fix the cart"), "{ledger:?}");
+        assert_eq!(prompt_for(Look::Molten).last().unwrap(), "  fix the cart  ");
+        // Steps: plain quiet lines in Bare and Ledger, a ✓ in Molten, the dot elsewhere.
+        let step_for = |look: Look| {
+            let mut a = app();
+            a.look = look;
+            let r = Running {
+                id: "t".into(),
+                header: vec![],
+                name: "Bash".into(),
+                input: json!({"command": "cargo test"}),
+                since: Instant::now(),
+            };
+            let dot = a.theme.success();
+            a.commit_tool(r, dot, false);
+            texts(&a.take_pending()).last().unwrap().clone()
+        };
+        assert_eq!(step_for(Look::Bare), "  ran cargo test");
+        assert_eq!(step_for(Look::Ledger), "  ran cargo test");
+        assert_eq!(step_for(Look::Molten), "✓ Ran cargo test");
+        assert_eq!(step_for(Look::Forgeframe), "● Ran cargo test");
+        // A style arrives from the session by name.
+        let mut a = app();
+        a.on_event(UiEvent::Look("ledger".into()));
+        assert_eq!(a.look, Look::Ledger);
+        a.on_event(UiEvent::Look("neon".into()));
+        assert_eq!(a.look, Look::Forgeframe, "an unknown name falls back to the first style");
     }
 
     #[test]

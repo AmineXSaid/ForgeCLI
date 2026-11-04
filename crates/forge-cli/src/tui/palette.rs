@@ -121,6 +121,8 @@ pub const REMOVED: Role = role(0xe27a68, 0xb4473a, Color::LightRed, Color::Red);
 pub const CODE: Role = role(0xe9c9a8, 0x7c4a22, Color::LightMagenta, Color::Magenta);
 /// The person's prompt: a raised surface.
 pub const PROMPT_BG: Role = role(0x1e1b18, 0xece5dc, Color::DarkGray, Color::Gray);
+/// The Molten style's band behind the person's words: a warm tint.
+pub const WARM_BG: Role = role(0x2a1d15, 0xf3e3d6, Color::DarkGray, Color::Gray);
 /// Text on [`PROMPT_BG`].
 pub const PROMPT_FG: Role = role(0xede8e3, 0x1f1b17, Color::White, Color::Black);
 /// The working shimmer's resting and brightest tones: warm grey up to copper.

@@ -18,7 +18,9 @@
 pub mod app;
 pub mod brand;
 pub mod editor;
+pub mod front;
 pub mod keys;
+pub mod look;
 pub mod palette;
 pub mod render;
 pub mod session;
@@ -233,14 +235,14 @@ pub struct Full<B: Backend> {
     /// Rows up from the transcript's end.
     pub scroll: usize,
     max_scroll: usize,
-    /// For the front screen's foot.
-    recent: Vec<(String, String)>,
+    /// What the front page shows about the session.
+    info: front::FrontInfo,
 }
 
 impl<B: Backend> Full<B> {
-    pub fn new(backend: B, recent: Vec<(String, String)>) -> std::io::Result<Self> {
+    pub fn new(backend: B, info: front::FrontInfo) -> std::io::Result<Self> {
         let terminal = Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Fullscreen })?;
-        Ok(Full { terminal, transcript: vec![], wrapped: vec![], wrapped_w: 0, scroll: 0, max_scroll: 0, recent })
+        Ok(Full { terminal, transcript: vec![], wrapped: vec![], wrapped_w: 0, scroll: 0, max_scroll: 0, info })
     }
 
     pub fn width(&self) -> u16 {
@@ -275,10 +277,8 @@ impl<B: Backend> Full<B> {
             self.wrapped = text::wrap(self.transcript.clone(), size.width);
             self.wrapped_w = size.width;
         }
-        let cols = size.width as usize;
-        let head = brand::front_head(&app.theme, cols);
-        let foot = brand::front_foot(&app.theme, &brand::Welcome { recent: &self.recent }, cols);
-        let (view, max) = render::full_view(app, size.width, size.height, &self.wrapped, &head, &foot, self.scroll);
+        let page = front::front_page(&app.theme, app.look, &self.info, size.width as usize);
+        let (view, max) = render::full_view(app, size.width, size.height, &self.wrapped, &page, self.scroll);
         self.max_scroll = max;
         self.scroll = self.scroll.min(max);
         self.terminal.draw(|f| {
@@ -306,7 +306,7 @@ impl<B: Backend> Full<B> {
 
 /// Where the UI draws: the whole window, or an inline viewport.
 enum Display {
-    Full(Full<CrosstermBackend<std::io::Stdout>>),
+    Full(Box<Full<CrosstermBackend<std::io::Stdout>>>),
     Inline(Screen<CrosstermBackend<std::io::Stdout>>),
 }
 
@@ -485,13 +485,30 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let warnings: Vec<String> = warnings.into_iter().chain(key_warnings).collect();
     let provider = driver.engine.provider();
     let endpoint = endpoint_label(provider.base_url().as_deref(), provider.origin().map(|o| o.backend));
-    let recent = forge_core::commands::recent_sessions(&driver, 1);
+    let recent = forge_core::commands::recent_sessions(&driver, 3);
     let full = full_screen();
+    let branch = forge_git::current_branch(&driver.info.cwd);
+    let info = front::FrontInfo {
+        version: forge_core::VERSION.to_string(),
+        model: driver.handle().model(),
+        endpoint: endpoint.clone(),
+        folder: short_path(&cwd),
+        branch: branch.clone(),
+        mcp: driver.info.init.mcp_servers.iter().map(|s| (s.name.clone(), s.status.clone())).collect(),
+        tools: driver.info.init.tools.len(),
+        recent: recent.clone(),
+    };
     app.front = true;
     app.endpoint = endpoint;
+    app.branch = branch.unwrap_or_default();
     if !full {
         let rows = crossterm::terminal::size().map(|(_, r)| r as usize).unwrap_or(24);
-        app.pending.extend(brand::welcome(&theme, &brand::Welcome { recent: &recent }, cols, rows));
+        app.pending.extend(brand::welcome(
+            &theme,
+            &brand::Welcome { recent: &recent[..recent.len().min(1)] },
+            cols,
+            rows,
+        ));
     }
     for w in warnings {
         app.on_event(UiEvent::Engine(forge_engine::EngineEvent::Notice {
@@ -512,7 +529,7 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let guard = setup(full).map_err(|e| Fail::config(format!("cannot set up the terminal: {e}")))?;
     let draw_fail = |e: std::io::Error| Fail::config(format!("cannot draw on the terminal: {e}"));
     let mut screen = if full {
-        Display::Full(Full::new(CrosstermBackend::new(std::io::stdout()), recent).map_err(draw_fail)?)
+        Display::Full(Box::new(Full::new(CrosstermBackend::new(std::io::stdout()), info).map_err(draw_fail)?))
     } else {
         Display::Inline(Screen::new(Box::new(|| CrosstermBackend::new(std::io::stdout())), 1).map_err(draw_fail)?)
     };

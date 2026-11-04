@@ -293,6 +293,10 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
     if let Some(t) = &theme {
         let _ = ui.send(UiEvent::Theme(t.clone()));
     }
+    let mut look = driver.info.settings.str("/tuiStyle").map(str::to_string);
+    if let Some(l) = &look {
+        let _ = ui.send(UiEvent::Look(l.clone()));
+    }
     let mut had_status_command = false;
     // Changes each time a subtask finishes (C20).
     let mut finished = driver.subtasks.watch();
@@ -317,6 +321,11 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         if now != theme {
             theme = now;
             let _ = ui.send(UiEvent::Theme(theme.clone().unwrap_or_else(|| "auto".into())));
+        }
+        let now = driver.info.settings.str("/tuiStyle").map(str::to_string);
+        if now != look {
+            look = now;
+            let _ = ui.send(UiEvent::Look(look.clone().unwrap_or_default()));
         }
         match status_command(&driver) {
             Some(cmd) => {

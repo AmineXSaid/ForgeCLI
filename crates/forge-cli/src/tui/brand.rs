@@ -13,7 +13,7 @@ use super::text::{width, Theme};
 /// rows); `.` is empty. `X` is a letter; the cube in place of the O has a
 /// copper top (`T`), a lit face (`L`), the edge between them (`E`) and a
 /// shaded face (`S`).
-const GLYPHS: [[&str; 10]; 5] = [
+pub(super) const GLYPHS: [[&str; 10]; 5] = [
     ["XXXXXXX", "XXXXXXX", "XX.....", "XX.....", "XXXXXX.", "XXXXXX.", "XX.....", "XX.....", "XX.....", "XX....."],
     ["..TTT..", "TTTTTTT", "LTTTTTS", "LLLTSSS", "LLLESSS", "LLLESSS", "LLLESSS", "LLLESSS", "LLLESSS", ".LLESS."],
     ["XXXXXX.", "XXXXXXX", "XX...XX", "XX...XX", "XXXXXXX", "XXXXXX.", "XX.XX..", "XX..XX.", "XX...XX", "XX...XX"],
@@ -106,7 +106,7 @@ fn sprite(rows: &[String], t: &Theme) -> Vec<Line<'static>> {
     out
 }
 
-fn fg(c: Color) -> Style {
+pub(super) fn fg(c: Color) -> Style {
     if c == Color::Reset {
         Style::default()
     } else {
@@ -125,7 +125,7 @@ fn wordmark_text(t: &Theme) -> Line<'static> {
 }
 
 /// A line centred in `cols` columns.
-fn centred(l: Line<'static>, cols: usize) -> Line<'static> {
+pub(super) fn centred(l: Line<'static>, cols: usize) -> Line<'static> {
     let w: usize = l.spans.iter().map(|s| width(&s.content)).sum();
     let mut spans = vec![Span::raw(" ".repeat(cols.saturating_sub(w) / 2))];
     spans.extend(l.spans);
