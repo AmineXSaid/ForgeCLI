@@ -282,12 +282,13 @@ with `{"text", "cwd"}`:
     tagline under them; then, in a centred column, the version, what KodAct
     does, the connected MCP servers, the last conversation, the folder and
     branch, and the input. Steps with a dot; approvals in lime corner marks.
-    The input is a raised panel rather than a box: its left edge and the
-    mode's name take the mode's colour (Build lime, Plan teal, Auto violet,
-    Accept edits amber, Bypass red), the text sits on a row of padding,
-    and under it the model, where it runs and the context meter with what
-    the session has spent. The status line under the panel keeps the folder
-    and branch on its left, and on its right the keys that help now: `/`,
+    The input is a raised panel rather than a box: the text on a row of
+    padding, a row of air, then the permission mode, the model, where it
+    runs, and the context meter with what the session has spent. The
+    panel's left edge and the mode's name take the mode's colour (Default
+    lime, Plan teal, Auto violet, Accept edits amber, Bypass permissions
+    red, Don't ask quiet). The status line under the panel keeps the folder
+    and branch on its left (the panel names the mode), and on its right the keys that help now: `/`,
     `@`, `shift+tab` and `?` with nothing typed; `enter` and `shift+enter`
     while typing; `↑↓`, `tab` and `esc` in a menu; `esc` while the model
     works.

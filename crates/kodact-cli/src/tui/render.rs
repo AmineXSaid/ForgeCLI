@@ -78,14 +78,16 @@ fn char_rows(chars: &[char], w: usize) -> Vec<(usize, usize)> {
     rows
 }
 
-fn status_left(app: &App, now: Instant) -> (String, Style) {
+fn status_left(app: &App, now: Instant, w: usize) -> (String, Style) {
     if let Some((h, at)) = &app.hint {
         if now.duration_since(*at) < HINT_FOR {
             return (h.clone(), app.theme.dim());
         }
     }
     let t = app.theme;
-    match app.status.mode.as_str() {
+    // The frame style's panel names the mode, so the line keeps the folder.
+    let mode = if frame_panel(app, w) { "" } else { app.status.mode.as_str() };
+    match mode {
         "acceptEdits" => (format!("{} accept edits on (shift+tab to cycle)", glyphs::MODE_ACCEPT_EDITS), t.warning()),
         "plan" => (format!("{} plan mode on (shift+tab to cycle)", glyphs::MODE_PLAN), t.success()),
         "bypassPermissions" => (format!("{} bypass permissions on", glyphs::MODE_BYPASS), t.error()),
@@ -432,19 +434,20 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
     (rows, cursor)
 }
 
-/// What a permission mode is called on the frame style's panel, and its colour:
-/// building in lime, planning in teal, auto in violet, accepting edits in
-/// amber, bypassing permissions in red.
-fn mode_mark(app: &App) -> (&'static str, Style) {
+/// The permission mode on the frame style's panel, by its name
+/// ([`mode_name`]), in its colour: default in lime, plan in teal, auto in
+/// violet, accept edits in amber, bypass permissions in red, don't ask quiet.
+fn mode_mark(app: &App) -> (String, Style) {
     let t = app.theme;
-    match app.status.mode.as_str() {
-        "acceptEdits" => ("Accept edits", t.warning()),
-        "plan" => ("Plan", t.teal()),
-        "auto" => ("Auto", t.violet()),
-        "dontAsk" => ("Don't ask", t.dim()),
-        "bypassPermissions" => ("Bypass", t.error()),
-        _ => ("Build", t.accent()),
-    }
+    let st = match app.status.mode.as_str() {
+        "acceptEdits" => t.warning(),
+        "plan" => t.teal(),
+        "auto" => t.violet(),
+        "dontAsk" => t.dim(),
+        "bypassPermissions" => t.error(),
+        _ => t.accent(),
+    };
+    (mode_name(&app.status.mode), st)
 }
 
 /// The frame style's input, `bw` columns wide from column `left`: a raised
@@ -481,7 +484,8 @@ fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) 
         }
         row(spans, &mut out);
     }
-    // The mode, the model and where it runs; the context in use on the right.
+    // A row of air, then the mode, the model and where it runs; the context in use on the right.
+    row(vec![], &mut out);
     let s = &app.status;
     let sep = || Span::raw("  ");
     let mut meta = vec![Span::raw("  "), Span::styled(mode, mode_st.add_modifier(ratatui::style::Modifier::BOLD))];
@@ -546,6 +550,11 @@ fn hints(app: &App, room: usize) -> Vec<Span<'static>> {
         out.push(Span::styled(format!(" {what}"), t.subtle()));
     }
     out
+}
+
+/// Whether the input is the frame style's panel: the frame style, with room for it.
+fn frame_panel(app: &App, w: usize) -> bool {
+    app.look == super::look::Look::Frame && w >= 40
 }
 
 /// The `@` menu: matching paths.
@@ -638,7 +647,7 @@ fn meter(t: &text::Theme, pct: u8) -> Vec<Span<'static>> {
 }
 
 fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
-    let (left, left_style) = status_left(app, now);
+    let (left, left_style) = status_left(app, now, w);
     let lead = 2;
     // The folder keeps its end and at most half the line, so the model and context stay in view.
     let folder = !app.status.cwd.is_empty() && left == super::short_path(&app.status.cwd);
@@ -650,7 +659,7 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     // The front screen shows the model under its input; the status line keeps the version.
     let right = if app.front && app.status_text.is_none() {
         vec![Span::styled(format!("v{}", kodact_core::VERSION), app.theme.subtle())]
-    } else if app.look == super::look::Look::Frame && app.status_text.is_none() && w >= 40 {
+    } else if frame_panel(app, w) && app.status_text.is_none() {
         // The panel shows the model and the context; the line keeps the keys that help now.
         hints(app, room)
     } else {
@@ -948,7 +957,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     };
     let (top, bottom) = (edge('╭', '╮'), edge('╰', '╯'));
     // The frame style: a raised panel instead of the box.
-    let panel = (app.look == Look::Frame && bw >= 40 && app.dialog.is_none()).then(|| panel(app, left, bw));
+    let panel = (frame_panel(app, bw) && app.dialog.is_none()).then(|| panel(app, left, bw));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, inner) } else { (vec![], (0, 0)) };
     let input_rows: Vec<Line<'static>> = input_rows
         .into_iter()
@@ -1277,28 +1286,30 @@ mod tests {
         let view = live_view(&a, 80, 12);
         let (rows, buf) = draw(&view, 80);
         let n = rows.len();
-        // A row of padding, the text, the mode line, a row of padding; then the keys.
-        assert_eq!(rows[n - 5].trim_end(), "▎", "{rows:#?}");
-        assert!(rows[n - 4].starts_with("▎   What shall we build today?"), "{rows:#?}");
-        assert!(rows[n - 3].starts_with("▎   Build  opus  127.0.0.1:11434"), "{rows:#?}");
+        // A row of padding, the text, a row of air, the mode line, a row of padding; then the keys.
+        assert_eq!(rows[n - 6].trim_end(), "▎", "{rows:#?}");
+        assert!(rows[n - 5].starts_with("▎   What shall we build today?"), "{rows:#?}");
+        assert_eq!(rows[n - 4].trim_end(), "▎", "a row between the text and the mode");
+        assert!(rows[n - 3].starts_with("▎   Default  opus  127.0.0.1:11434"), "{rows:#?}");
         assert!(rows[n - 3].trim_end().ends_with("12% · $0.25"), "{rows:#?}");
         assert_eq!(rows[n - 2].trim_end(), "▎");
         // Every cell of the panel on the raised surface: no stripes.
         let raised = Some(crate::tui::palette::PROMPT_BG.color(a.theme.depth, false));
-        for y in n - 5..n - 1 {
+        for y in n - 6..n - 1 {
             for x in 0..80u16 {
                 assert_eq!(Some(buf[(x, y as u16)].bg), raised, "({x}, {y})");
             }
         }
         assert!(rows[n - 1].contains("/ commands   @ files   shift+tab mode"), "{rows:#?}");
-        assert_eq!(view.cursor, Some((4, (n - 4) as u16)), "the cursor at the text");
+        assert_eq!(view.cursor, Some((4, (n - 5) as u16)), "the cursor at the text");
         let edge = |buf: &ratatui::buffer::Buffer, y: usize| buf[(0, y as u16)].fg;
-        let build = edge(&buf, n - 4);
+        let default = edge(&buf, n - 5);
         a.status.mode = "plan".into();
         let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
         assert!(rows[n - 3].starts_with("▎   Plan  opus"));
-        assert_ne!(edge(&buf, n - 4), build, "the edge takes the mode's colour");
-        assert_eq!(Some(edge(&buf, n - 4)), a.theme.teal().fg);
+        assert!(rows[n - 1].starts_with("  /p"), "the panel names the mode; the line keeps the folder");
+        assert_ne!(edge(&buf, n - 5), default, "the edge takes the mode's colour");
+        assert_eq!(Some(edge(&buf, n - 5)), a.theme.teal().fg);
         typed(&mut a, "fix it");
         let (rows, _) = draw(&live_view(&a, 80, 12), 80);
         assert!(rows.last().unwrap().contains("enter send   shift+enter new line"));
