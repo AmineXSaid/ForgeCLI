@@ -88,6 +88,8 @@ fn status_left(app: &App, now: Instant) -> (String, Style) {
         "plan" => (format!("{} plan mode on (shift+tab to cycle)", glyphs::MODE_PLAN), t.success()),
         "bypassPermissions" => (format!("{} bypass permissions on", glyphs::MODE_BYPASS), t.error()),
         "dontAsk" => ("don't ask mode on (shift+tab to cycle)".into(), t.dim()),
+        // The folder the session works in; `?` still lists the keys.
+        _ if !app.status.cwd.is_empty() => (super::short_path(&app.status.cwd), t.subtle()),
         _ => ("? for shortcuts".into(), t.subtle()),
     }
 }
@@ -121,6 +123,25 @@ fn spend(app: &App) -> Option<String> {
         (true, true) => Some(format!("${:.2}+", s.cost)),
         (true, false) => Some(app.context_tokens()).filter(|n| *n > 0).map(tokens),
     }
+}
+
+/// `s` in at most `max` columns, its end kept: `…/demo/proj`.
+fn keep_end(s: &str, max: usize) -> String {
+    if text_width(s) <= max {
+        return s.to_string();
+    }
+    let mut tail: Vec<char> = vec![];
+    let mut used = 1;
+    for c in s.chars().rev() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw > max {
+            break;
+        }
+        used += cw;
+        tail.push(c);
+    }
+    tail.reverse();
+    format!("…{}", tail.into_iter().collect::<String>())
 }
 
 /// A token count as people read it: `950 tokens`, `15.5k tokens`, `1.2M tokens`.
@@ -433,20 +454,15 @@ fn meter(t: &text::Theme, pct: u8) -> Vec<Span<'static>> {
 
 fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     let (left, left_style) = status_left(app, now);
-    // Forge's hammer leads the line; on a very narrow terminal it gives way to the hint.
-    let mark = if w >= 30 { super::brand::mark_inline(&app.theme) } else { vec![] };
-    let mark_w: usize = mark.iter().map(|s| text_width(&s.content)).sum();
-    let lead = 2 + if mark_w > 0 { mark_w + 2 } else { 0 };
-    let left = fit(&left, w.saturating_sub(lead));
+    let lead = 2;
+    // The folder keeps its end and at most half the line, so the model and context stay in view.
+    let folder = !app.status.cwd.is_empty() && left == super::short_path(&app.status.cwd);
+    let left = if folder { keep_end(&left, (w / 2).max(8)) } else { fit(&left, w.saturating_sub(lead)) };
     let room = w.saturating_sub(text_width(&left) + lead + 2);
     let right = status_right_spans(app, room);
     let right_w: usize = right.iter().map(|s| text_width(&s.content)).sum();
     let gap = w.saturating_sub(lead + text_width(&left) + right_w);
     let mut spans = vec![Span::raw("  ")];
-    if mark_w > 0 {
-        spans.extend(mark);
-        spans.push(Span::raw("  "));
-    }
     spans.extend([Span::styled(left, left_style), Span::raw(" ".repeat(gap))]);
     spans.extend(right);
     Line::from(spans)
@@ -698,7 +714,7 @@ mod tests {
         assert_eq!(rows[0], format!("╭{}╮", "─".repeat(58)));
         assert_eq!(rows[1], format!("│ ❯ {PLACEHOLDER:<54} │"));
         assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
-        assert_eq!(rows[3], "  ▀▀▀  ? for shortcuts           opus · ━─────── 12% · $0.25");
+        assert_eq!(rows[3], "  /p                             opus · ━─────── 12% · $0.25");
         assert_eq!(v.cursor, Some((4, 1)));
         // The placeholder is quiet; the prompt marker is Forge's copper.
         assert_eq!(buf[(6, 1)].fg, crate::tui::palette::SUBTLE.color(Default::default(), false));
@@ -782,7 +798,7 @@ mod tests {
                 "│ Enter or y·a·n to answer · Esc to    │",
                 "│ deny                                 │",
                 "╰──────────────────────────────────────╯",
-                "  ▀█▀  ? for shortcuts  opus · 12% cont…",
+                "  /p         opus · ━─────── 12% · $0.25",
             ]
         );
         assert_eq!(v.cursor, None, "no cursor while a dialog is open");
@@ -834,13 +850,13 @@ mod tests {
         let mut a = app(true);
         a.status.mode = "plan".into();
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
-        assert!(rows.last().unwrap().starts_with("  ▀▀▀  ‖ plan mode on (shift+tab to cycle)"));
+        assert!(rows.last().unwrap().starts_with("  ‖ plan mode on (shift+tab to cycle)"));
         a.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         let (rows, _) = draw(&live_view(&a, 70, 10), 70);
-        assert!(rows.last().unwrap().starts_with("  ▀▀▀  Press Ctrl-C again to exit"));
+        assert!(rows.last().unwrap().starts_with("  Press Ctrl-C again to exit"));
         let later = Instant::now() + HINT_FOR;
         let (rows, _) = draw(&live_view_at(&a, 70, 10, later), 70);
-        assert!(rows.last().unwrap().starts_with("  ▀▀▀  ‖ plan mode"));
+        assert!(rows.last().unwrap().starts_with("  ‖ plan mode"));
     }
 
     #[test]
@@ -1090,10 +1106,20 @@ mod tests {
     }
 
     #[test]
+    fn a_long_folder_keeps_its_end_and_leaves_room_for_the_model() {
+        let mut a = app(false);
+        a.status.cwd = "/tmp/a/very/long/path/that/goes/on/to/the/project/demo/proj2".into();
+        let (rows, _) = draw(&live_view(&a, 60, 10), 60);
+        let last = rows.last().unwrap();
+        assert!(last.starts_with("  …") && last.contains("/demo/proj2"), "{last}");
+        assert!(last.contains("opus"), "the model stays: {last}");
+    }
+
+    #[test]
     fn a_status_line_command_replaces_the_right_side() {
         let mut a = app(false);
         a.on_event(UiEvent::StatusLine(Some("main · 3 files".into())));
         let (rows, _) = draw(&live_view(&a, 40, 10), 40);
-        assert_eq!(rows.last().unwrap(), "  ▀█▀  ? for shortcuts    main · 3 files");
+        assert_eq!(rows.last().unwrap(), "  /p                      main · 3 files");
     }
 }

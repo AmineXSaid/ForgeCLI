@@ -369,16 +369,10 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let warnings: Vec<String> = warnings.into_iter().chain(key_warnings).collect();
     let provider = driver.engine.provider();
     let endpoint = endpoint_label(provider.base_url().as_deref(), provider.origin().map(|o| o.backend));
-    let short = short_path(&cwd);
-    let recent = forge_core::commands::recent_sessions(&driver, 3);
-    let welcome = brand::Welcome {
-        version: forge_core::VERSION,
-        model: &model,
-        endpoint: &endpoint,
-        cwd: &short,
-        recent: &recent,
-    };
-    app.pending.extend(brand::welcome(&theme, &welcome, cols));
+    let recent = forge_core::commands::recent_sessions(&driver, 1);
+    let welcome = brand::Welcome { model: &model, endpoint: &endpoint, recent: &recent };
+    let rows = crossterm::terminal::size().map(|(_, r)| r as usize).unwrap_or(24);
+    app.pending.extend(brand::welcome(&theme, &welcome, cols, rows));
     for w in warnings {
         app.on_event(UiEvent::Engine(forge_engine::EngineEvent::Notice {
             level: forge_engine::NoticeLevel::Warning,

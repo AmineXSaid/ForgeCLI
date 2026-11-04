@@ -1,8 +1,7 @@
-//! Forge's mark in the terminal: the F-and-cube logo, drawn as a pixel sprite
-//! in half blocks (each cell is two pixels stacked, so the pixels come out
-//! square), and the two screens it heads: the welcome banner and the
-//! first-run card. The F with a cube for its lower arm, flat, in paper (or
-//! ink), warm grey and Forge's copper.
+//! Forge's name in the terminal: the FORGE wordmark, its O a cube, drawn as
+//! pixels in half blocks (each cell is two pixels stacked, so the pixels come
+//! out square), and the two screens it heads: the front screen and the
+//! first-run card.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,73 +9,72 @@ use ratatui::text::{Line, Span};
 use super::palette;
 use super::text::{width, Theme};
 
-/// The logo: a smith's hammer, one character per pixel, lit from above;
-/// `.` is empty. The head is steel (`a` its lit top edge, `b` its body, `c`
-/// its shadow) with a rounded peen on the left and a striking face on the
-/// right that glows copper (`k`), hot from the forge; a copper collar holds
-/// it on a wooden handle (`w` lit, `d` shaded) wrapped in a leather grip
-/// (`e`) with a copper band.
-pub const MARK: [&str; 16] = [
-    "................",
-    "...aaaaaaaaaa...",
-    "..abbbbbbbbbbbk.",
-    ".abbbbbbbbbbbbkk",
-    ".bbbbbbbbbbbbbkk",
-    ".cbbbbbbbbbbbbkk",
-    "..ccccccccccccc.",
-    "......kkkk......",
-    ".......wd.......",
-    ".......wd.......",
-    ".......wd.......",
-    ".......ee.......",
-    ".......kk.......",
-    ".......ee.......",
-    ".......ee.......",
-    ".......dd.......",
+/// The wordmark's letters, seven pixels wide and ten tall (five terminal
+/// rows); `.` is empty. `X` is a letter; the cube in place of the O has a
+/// copper top (`T`), a lit face (`L`), the edge between them (`E`) and a
+/// shaded face (`S`).
+const GLYPHS: [[&str; 10]; 5] = [
+    ["XXXXXXX", "XXXXXXX", "XX.....", "XX.....", "XXXXXX.", "XXXXXX.", "XX.....", "XX.....", "XX.....", "XX....."],
+    ["..TTT..", "TTTTTTT", "LTTTTTS", "LLLTSSS", "LLLESSS", "LLLESSS", "LLLESSS", "LLLESSS", "LLLESSS", ".LLESS."],
+    ["XXXXXX.", "XXXXXXX", "XX...XX", "XX...XX", "XXXXXXX", "XXXXXX.", "XX.XX..", "XX..XX.", "XX...XX", "XX...XX"],
+    [".XXXXXX", "XXXXXXX", "XX.....", "XX.....", "XX..XXX", "XX..XXX", "XX...XX", "XX...XX", "XXXXXXX", ".XXXXX."],
+    ["XXXXXXX", "XXXXXXX", "XX.....", "XX.....", "XXXXXX.", "XXXXXX.", "XX.....", "XX.....", "XXXXXXX", "XXXXXXX"],
 ];
 
-/// The 12-pixel cut, for narrow terminals.
-pub const MARK_SMALL: [&str; 12] = [
-    "............",
-    "..aaaaaaaa..",
-    ".abbbbbbbbk.",
-    ".bbbbbbbbbkk",
-    ".cbbbbbbbbkk",
-    "..ccccccccc.",
-    ".....kk.....",
-    ".....wd.....",
-    ".....wd.....",
-    ".....ee.....",
-    ".....kk.....",
-    ".....dd.....",
-];
+/// Columns between letters: the wordmark is spaced, as the name is said.
+const GAP: usize = 3;
 
-/// The logo's inks for a light or dark background: hex, and the ANSI colour
-/// for 16-colour terminals. Steel in three tones, Forge's copper for the hot
-/// face, the collar and the band, and warm wood and leather.
-fn mark_ink(c: char, light: bool) -> Option<(u32, Color)> {
+/// The wordmark's width in columns.
+pub const WORDMARK_W: usize = 5 * 7 + 4 * GAP;
+
+/// The tagline under the wordmark.
+pub const TAGLINE: &str = "A coding agent, reforged, on the model you choose.";
+
+/// The wordmark's pixel rows. Letters are lit from above: `H` in their top
+/// half, `h` a step darker below.
+fn wordmark_rows() -> Vec<String> {
+    (0..10)
+        .map(|y| {
+            let mut row = String::new();
+            for (i, g) in GLYPHS.iter().enumerate() {
+                if i > 0 {
+                    row.push_str(&".".repeat(GAP));
+                }
+                row.extend(g[y].chars().map(|c| match c {
+                    'X' if y < 5 => 'H',
+                    'X' => 'h',
+                    other => other,
+                }));
+            }
+            row
+        })
+        .collect()
+}
+
+/// The wordmark's inks for a light or dark background: hex, and the ANSI
+/// colour for 16-colour terminals. Paper letters (ink on a light background)
+/// and the cube as Forge's: a copper top, its faces apart by lightness.
+fn ink(c: char, light: bool) -> Option<(u32, Color)> {
     Some(match (c, light) {
-        ('a', false) => (0xf2eee9, Color::White),
-        ('b', false) => (0xbcb5ad, Color::Gray),
-        ('c', false) => (0x7a736b, Color::DarkGray),
-        ('k', false) => (0xe2895b, Color::LightYellow),
-        ('w', false) => (0xc48d5c, Color::Yellow),
-        ('d', false) => (0x8c5c36, Color::Yellow),
-        ('e', false) => (0x7a4a2c, Color::Red),
-        ('a', true) => (0x9a948d, Color::Gray),
-        ('b', true) => (0x67615b, Color::DarkGray),
-        ('c', true) => (0x3d3833, Color::Black),
-        ('k', true) => (0xb4532a, Color::Yellow),
-        ('w', true) => (0xa8743f, Color::Yellow),
-        ('d', true) => (0x7a4f28, Color::Yellow),
-        ('e', true) => (0x5a3520, Color::Red),
+        ('H', false) => (0xefe9e4, Color::White),
+        ('h', false) => (0xc9c0b7, Color::Gray),
+        ('T', false) => (0xe2895b, Color::LightYellow),
+        ('L', false) => (0xc4bbb3, Color::Gray),
+        ('E', false) => (0x8f877f, Color::DarkGray),
+        ('S', false) => (0x6f6963, Color::DarkGray),
+        ('H', true) => (0x2b2825, Color::Black),
+        ('h', true) => (0x4f4842, Color::DarkGray),
+        ('T', true) => (0xb4532a, Color::Yellow),
+        ('L', true) => (0x5a544e, Color::DarkGray),
+        ('E', true) => (0x433e39, Color::Black),
+        ('S', true) => (0xa59e97, Color::Gray),
         _ => return None,
     })
 }
 
-/// A sprite in half blocks. Without colour the shape is drawn in the
+/// Pixel rows in half blocks. Without colour the shape is drawn in the
 /// terminal's own colour.
-fn sprite(rows: &[&str], ink: fn(char, bool) -> Option<(u32, Color)>, t: &Theme) -> Vec<Line<'static>> {
+fn sprite(rows: &[String], t: &Theme) -> Vec<Line<'static>> {
     let color_of = |c: Option<char>| -> Option<Color> {
         let (hex, ansi) = ink(c?, t.light)?;
         if !t.color {
@@ -116,28 +114,14 @@ fn fg(c: Color) -> Style {
     }
 }
 
-/// The logo: 16 columns by 8 rows, or 12 by 6 when `small`.
-pub fn mark(t: &Theme, small: bool) -> Vec<Line<'static>> {
-    if small {
-        sprite(&MARK_SMALL, mark_ink, t)
-    } else {
-        sprite(&MARK, mark_ink, t)
-    }
+/// The wordmark: [`WORDMARK_W`] columns by 5 rows.
+pub fn wordmark(t: &Theme) -> Vec<Line<'static>> {
+    sprite(&wordmark_rows(), t)
 }
 
-/// Forge at text size, for one-line places: the hammer three cells wide, in
-/// half blocks so its pixels are square: a steel head with its copper face
-/// over the handle. Without colour, the same shape in the terminal's colour.
-pub fn mark_inline(t: &Theme) -> Vec<Span<'static>> {
-    let ink = |c| mark_ink(c, t.light).map(|(hex, ansi)| palette::ink(hex, t.depth, ansi));
-    match (t.color, ink('b'), ink('k'), ink('w')) {
-        (true, Some(steel), Some(copper), Some(wood)) => vec![
-            Span::styled("▀", Style::default().fg(steel)),
-            Span::styled("▀", Style::default().fg(steel).bg(wood)),
-            Span::styled("▀", Style::default().fg(copper)),
-        ],
-        _ => vec![Span::raw("▀█▀")],
-    }
+/// The name in one row, for terminals too narrow for the wordmark: `F O R G E`.
+fn wordmark_text(t: &Theme) -> Line<'static> {
+    Line::from(Span::styled("F O R G E", t.brand_strong().add_modifier(Modifier::BOLD)))
 }
 
 /// A line centred in `cols` columns.
@@ -146,30 +130,6 @@ fn centred(l: Line<'static>, cols: usize) -> Line<'static> {
     let mut spans = vec![Span::raw(" ".repeat(cols.saturating_sub(w) / 2))];
     spans.extend(l.spans);
     trim_end(Line::from(spans))
-}
-
-/// Art beside text, top-aligned, with a two-column margin and a three-column gap.
-fn beside(art: Vec<Line<'static>>, art_w: usize, text: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let rows = art.len().max(text.len());
-    let mut art = art.into_iter();
-    let mut text = text.into_iter();
-    (0..rows)
-        .map(|_| {
-            let mut spans = vec![Span::raw("  ")];
-            match art.next() {
-                Some(a) => {
-                    let w: usize = a.spans.iter().map(|s| width(&s.content)).sum();
-                    spans.extend(a.spans);
-                    spans.push(Span::raw(" ".repeat(art_w.saturating_sub(w) + 3)));
-                }
-                None => spans.push(Span::raw(" ".repeat(art_w + 3))),
-            }
-            if let Some(l) = text.next() {
-                spans.extend(l.spans);
-            }
-            trim_end(Line::from(spans))
-        })
-        .collect()
 }
 
 fn trim_end(mut l: Line<'static>) -> Line<'static> {
@@ -198,114 +158,51 @@ fn keep_end(s: &str, max: usize) -> String {
     format!("…{}", tail.into_iter().collect::<String>())
 }
 
-/// What the welcome banner says.
+/// What the front screen says.
 pub struct Welcome<'a> {
-    pub version: &'a str,
     pub model: &'a str,
     /// Where requests go: a host, or the kind of endpoint.
     pub endpoint: &'a str,
-    /// The working directory, as people write it (`~/proj`).
-    pub cwd: &'a str,
     /// The newest other conversations here: (what it was about, how long ago).
     pub recent: &'a [(String, String)],
 }
 
-/// The keys worth knowing on the first screen, key first.
-pub const KEYS: [(&str, &str); 4] = [("/", "commands"), ("@", "files"), ("!", "shell"), ("?", "shortcuts")];
+/// Rows the live region takes under the front screen: a gap, the input box and the status line.
+const LIVE_ROWS: usize = 5;
 
-/// The line under the banner, as Forge's welcome page says it.
-pub const WELCOME_LINE: &str = "What to do first? Ask about this codebase or we can start writing code.";
-
-fn keys_line(t: &Theme, gap: usize) -> Line<'static> {
-    keys_of(t, &KEYS, gap)
-}
-
-fn keys_of(t: &Theme, keys: &[(&str, &str)], gap: usize) -> Line<'static> {
-    let mut spans = vec![];
-    for (i, (k, what)) in keys.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" ".repeat(gap)));
-        }
-        spans.push(Span::styled(k.to_string(), t.accent().add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled(format!(" {what}"), t.dim()));
-    }
-    Line::from(spans)
-}
-
-/// The front screen printed once at the top of a session, centred: the
-/// hammer, ForgeCLI and its version, the model and where it runs, the
-/// directory; then the recent conversations here, the keys to know and the
-/// welcome line. `cols` is the terminal's width; narrow terminals get the
-/// small hammer, or none, and lines keep their ends rather than wrap.
-pub fn welcome(t: &Theme, w: &Welcome, cols: usize) -> Vec<Line<'static>> {
-    let room = cols.saturating_sub(4).max(8);
-    let mut out = vec![Line::default()];
-    let art = if cols >= 41 { Some(mark(t, cols < 60)) } else { None };
-    let line = |out: &mut Vec<Line<'static>>, l: Line<'static>| {
-        out.push(if art.is_some() { centred(l, cols) } else { indent(l) })
-    };
-    if let Some(a) = &art {
-        for l in a {
-            out.push(centred(l.clone(), cols));
-        }
-        out.push(Line::default());
-    }
-    line(
-        &mut out,
-        Line::from(vec![
-            Span::styled("ForgeCLI", t.brand_strong().add_modifier(Modifier::BOLD)),
-            Span::styled(format!("  {}", w.version), t.dim()),
-        ]),
-    );
-    let endpoint = keep_end(w.endpoint, room.saturating_sub(width(w.model) + 4).max(8));
-    line(
-        &mut out,
-        Line::from(vec![
-            Span::styled(w.model.to_string(), t.bold()),
-            Span::styled(" on ", t.dim()),
-            Span::styled(endpoint, t.dim()),
-        ]),
-    );
-    line(&mut out, Line::from(Span::styled(keep_end(w.cwd, room), t.subtle())));
-    // The recent conversations: a block as wide as its longest row, centred as one.
-    if !w.recent.is_empty() {
-        out.push(Line::default());
-        let bw = room.min(60);
-        let block_x = if art.is_some() { cols.saturating_sub(bw) / 2 } else { 2 };
-        let pad = " ".repeat(block_x);
-        let head_r = "/resume";
-        out.push(Line::from(vec![
-            Span::raw(pad.clone()),
-            Span::styled("Recent", t.dim().add_modifier(Modifier::BOLD)),
-            Span::raw(" ".repeat(bw.saturating_sub(6 + head_r.len()))),
-            Span::styled(head_r, t.accent()),
+/// The front screen, printed once at the top of a session: the wordmark,
+/// the tagline and a way back to the newest conversation here, centred
+/// across `cols` and down the `rows` above the input. A terminal too narrow
+/// for the wordmark gets the name in one row.
+pub fn welcome(t: &Theme, w: &Welcome, cols: usize, rows: usize) -> Vec<Line<'static>> {
+    let mut block: Vec<Line<'static>> = if cols >= WORDMARK_W + 4 { wordmark(t) } else { vec![wordmark_text(t)] };
+    block.push(Line::default());
+    block.push(Line::from(Span::styled(TAGLINE, t.dim())));
+    // Where the session runs, quietly: which model, and on what.
+    let endpoint = keep_end(w.endpoint, cols.saturating_sub(width(w.model) + 8).max(8));
+    block.push(Line::from(vec![
+        Span::styled(w.model.to_string(), t.subtle()),
+        Span::styled(format!(" on {endpoint}"), t.subtle()),
+    ]));
+    if let Some((what, ago)) = w.recent.first() {
+        block.push(Line::default());
+        block.push(Line::default());
+        let room = cols.saturating_sub(4 + "/resume  ".len() + "  ·  ".len() + width(ago)).max(8);
+        block.push(Line::from(vec![
+            Span::styled("/resume", t.accent()),
+            Span::raw("  "),
+            Span::styled(super::render::fit(what, room), Style::default()),
+            Span::styled("  ·  ", t.hairline()),
+            Span::styled(ago.clone(), t.subtle()),
         ]));
-        for (what, ago) in w.recent.iter().take(3) {
-            let what = super::render::fit(what, bw.saturating_sub(width(ago) + 2));
-            out.push(Line::from(vec![
-                Span::raw(pad.clone()),
-                Span::styled(what.clone(), Style::default()),
-                Span::raw(" ".repeat(bw.saturating_sub(width(&what) + width(ago)))),
-                Span::styled(ago.clone(), t.subtle()),
-            ]));
-        }
     }
+    let block = super::text::wrap(block, cols.saturating_sub(2).max(1) as u16);
+    // Down the screen: centred in the room above the input, never off its top.
+    let pad = rows.saturating_sub(block.len() + LIVE_ROWS) / 2;
+    let mut out = vec![Line::default(); pad.max(1)];
+    out.extend(block.into_iter().map(|l| centred(l, cols)));
     out.push(Line::default());
-    if cols >= 52 {
-        line(&mut out, keys_line(t, 3));
-    } else {
-        line(&mut out, keys_of(t, &KEYS[..2], 2));
-        line(&mut out, keys_of(t, &KEYS[2..], 2));
-    }
-    line(&mut out, Line::from(Span::styled(WELCOME_LINE, t.subtle())));
-    out.push(Line::default());
-    super::text::wrap(out, cols as u16)
-}
-
-fn indent(l: Line<'static>) -> Line<'static> {
-    let mut spans = vec![Span::raw("  ")];
-    spans.extend(l.spans);
-    Line::from(spans)
+    out
 }
 
 /// Ways to give Forge an endpoint, for the first-run card: what to set, then why.
@@ -344,22 +241,25 @@ fn setup_lines(t: &Theme) -> Vec<Line<'static>> {
     out
 }
 
-/// The card's text beside the F logo, or alone when the terminal is narrow.
-fn text_beside_mark(t: &Theme, cols: usize, text: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    if cols >= 16 + 5 + 40 {
-        return beside(mark(t, false), 16, text);
+/// The card's text under the wordmark, both two columns in; the wordmark
+/// only where it fits.
+fn text_under_wordmark(t: &Theme, cols: usize, text: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let indent = |l: Line<'static>| {
+        let mut spans = vec![Span::raw("  ")];
+        spans.extend(l.spans);
+        trim_end(Line::from(spans))
+    };
+    let mut out = vec![];
+    if cols >= WORDMARK_W + 4 {
+        out.extend(wordmark(t).into_iter().map(indent));
+        out.push(Line::default());
     }
-    text.into_iter()
-        .map(|l| {
-            let mut spans = vec![Span::raw("  ")];
-            spans.extend(l.spans);
-            Line::from(spans)
-        })
-        .collect()
+    out.extend(text.into_iter().map(indent));
+    out
 }
 
 /// The first-run card, shown instead of a session when no endpoint is set
-/// up: the F logo beside what ForgeCLI is, the servers it works with, how to
+/// up: the wordmark over what ForgeCLI is, the servers it works with, how to
 /// set one up, and what Forge found.
 pub fn first_run(t: &Theme, version: &str, problem: &str, cols: usize) -> Vec<Line<'static>> {
     let eyebrow = Line::from(Span::styled(format!("FORGECLI  v{version}"), t.dim().add_modifier(Modifier::BOLD)));
@@ -371,8 +271,8 @@ pub fn first_run(t: &Theme, version: &str, problem: &str, cols: usize) -> Vec<Li
     let headline2 = Line::from(Span::styled("on the model you choose.", t.bold()));
     let lede = Line::from(Span::styled("Set up an endpoint and run forge again.", t.dim()));
     let mut out = vec![Line::default()];
-    let text = vec![Line::default(), eyebrow, Line::default(), headline, headline2, Line::default(), lede];
-    out.extend(text_beside_mark(t, cols, text));
+    let text = vec![eyebrow, Line::default(), headline, headline2, Line::default(), lede];
+    out.extend(text_under_wordmark(t, cols, text));
     out.push(Line::default());
     // Forge's runtime statement: the names stand out, the rest is quiet.
     let mut runtimes = vec![Span::raw("  ")];
@@ -476,105 +376,75 @@ mod tests {
     const DARK: Theme = Theme { color: true, light: false, accent: None, depth: Depth::True };
 
     #[test]
-    fn sprites_are_square_pixels_in_half_blocks() {
-        for rows in [&MARK[..], &MARK_SMALL[..]] {
-            assert!(rows.iter().all(|r| r.chars().count() == rows.len()), "square");
-            assert!(
-                rows.iter().flat_map(|r| r.chars()).all(|c| c == '.' || mark_ink(c, false).is_some()),
-                "every pixel has an ink"
-            );
-        }
-        let m = mark(&DARK, false);
-        assert_eq!(m.len(), 8);
-        assert!(m.iter().all(|l| l.spans.iter().map(|s| width(&s.content)).sum::<usize>() <= 16));
-        assert_eq!(mark(&DARK, true).len(), 6);
-        // The head's lit top edge, then its body, in steel; the striking face in copper.
+    fn the_wordmark_is_forge_with_a_cube_for_its_o() {
+        let rows = wordmark_rows();
+        assert_eq!(rows.len(), 10);
+        assert!(rows.iter().all(|r| r.chars().count() == WORDMARK_W));
+        assert!(
+            rows.iter().flat_map(|r| r.chars()).all(|c| c == '.' || ink(c, false).is_some()),
+            "every pixel has an ink"
+        );
+        let m = wordmark(&DARK);
+        assert_eq!(m.len(), 5, "five rows");
+        assert!(m.iter().all(|l| l.spans.iter().map(|s| width(&s.content)).sum::<usize>() <= WORDMARK_W));
+        // The F's top bar in paper; the cube's top, letters 10 to 16, in copper.
         let cells = |l: &Line| l.spans.iter().flat_map(|s| s.content.chars().map(move |_| s.style)).collect::<Vec<_>>();
-        let top = cells(&m[0]);
-        assert_eq!(top[5].fg, Some(Color::Rgb(0xf2, 0xee, 0xe9)), "{top:?}");
+        assert_eq!(cells(&m[0])[0].fg, Some(Color::Rgb(0xef, 0xe9, 0xe4)));
         let copper = Some(Color::Rgb(0xe2, 0x89, 0x5b));
-        assert!(m.iter().flat_map(|l| &l.spans).any(|s| s.style.fg == copper || s.style.bg == copper));
-        // On a light background the steel darkens and the copper deepens.
-        let light = mark(&Theme { light: true, ..DARK }, false);
-        let deep = Some(Color::Rgb(0xb4, 0x53, 0x2a));
-        assert!(light.iter().flat_map(|l| &l.spans).any(|s| s.style.fg == deep || s.style.bg == deep));
+        assert!(cells(&m[0])[10..17].iter().any(|s| s.fg == copper || s.bg == copper), "the cube's top");
+        // Letters are lit from above: their lower half a step darker.
+        let lower = Some(Color::Rgb(0xc9, 0xc0, 0xb7));
+        assert!(cells(&m[4])[..2].iter().all(|s| s.fg == lower));
+        // On a light background the letters are ink.
+        let light = wordmark(&Theme { light: true, ..DARK });
+        assert_eq!(cells(&light[0])[0].fg, Some(Color::Rgb(0x2b, 0x28, 0x25)));
     }
 
     #[test]
-    fn without_colour_the_mark_keeps_its_shape() {
+    fn without_colour_the_wordmark_keeps_its_shape() {
         let mono = Theme { color: false, ..DARK };
-        let m = plain(&mark(&mono, false));
-        assert!(m[1].contains("██████"), "the head: {m:?}");
-        assert_eq!(m[5].trim(), "██", "the handle: {m:?}");
-        assert!(mark(&mono, false)
-            .iter()
-            .all(|l| l.spans.iter().all(|s| s.style.fg.is_none() && s.style.bg.is_none())));
+        let m = plain(&wordmark(&mono));
+        assert!(m[0].starts_with("███████"), "the F's bar: {m:?}");
+        assert!(wordmark(&mono).iter().all(|l| l.spans.iter().all(|s| s.style.fg.is_none() && s.style.bg.is_none())));
     }
 
     #[test]
-    fn the_inline_mark_is_a_small_hammer() {
-        let m = mark_inline(&DARK);
-        assert_eq!(plain(&[Line::from(m.clone())]), ["▀▀▀"]);
-        assert_eq!(m[2].style.fg, Some(Color::Rgb(0xe2, 0x89, 0x5b)), "the copper face");
-        assert!(m[1].style.bg.is_some() && m[0].style.bg.is_none(), "the handle under the middle");
-        assert_eq!(plain(&[Line::from(mark_inline(&Theme { color: false, ..DARK }))]), ["▀█▀"]);
-    }
-
-    #[test]
-    fn the_front_screen_is_centred_and_fits() {
+    fn the_front_screen_is_quiet_and_centred() {
         let recent = vec![("checkout rounding".to_string(), "2h ago".to_string())];
-        let w = Welcome {
-            version: "0.1.0",
-            model: "deep-thinking",
-            endpoint: "localhost:11434",
-            cwd: "~/proj",
-            recent: &recent,
-        };
-        for cols in [120, 80, 60, 50, 40] {
-            let lines = welcome(&DARK, &w, cols);
+        let w = Welcome { model: "deep-thinking", endpoint: "localhost:11434", recent: &recent };
+        for cols in [120, 80, 60, 50, 40, 30] {
+            let lines = welcome(&DARK, &w, cols, 40);
             for l in &lines {
                 let lw: usize = l.spans.iter().map(|s| width(&s.content)).sum();
                 assert!(lw <= cols, "{cols}: {lw} {:?}", plain(std::slice::from_ref(l)));
             }
-            // Words, so a line wrapped on a narrow terminal still counts.
             let text = plain(&lines).join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
-            for want in [
-                "ForgeCLI 0.1.0",
-                "deep-thinking on localhost:11434",
-                "~/proj",
-                "Recent",
-                "/resume",
-                "checkout rounding",
-                "2h ago",
-                WELCOME_LINE,
-            ] {
+            for want in
+                ["A coding agent, reforged, on the model you choose.", "deep-thinking on", "/resume", "check", "2h ago"]
+            {
                 assert!(text.contains(want), "{cols}: {want}\n{text}");
             }
+            // Only the name, the tagline and the way back: no keys, no welcome line.
+            assert!(!text.contains("shortcuts") && !text.contains("commands"), "{text}");
         }
-        // Wide: the whole hammer and the title, both centred.
-        let wide = plain(&welcome(&DARK, &w, 100));
-        let title = wide.iter().find(|l| l.contains("ForgeCLI")).unwrap();
-        let lead = title.len() - title.trim_start().len();
-        assert!((lead as i32 - (100 - 15) / 2).abs() <= 1, "centred: {title:?}");
-        assert_eq!(wide.iter().filter(|l| l.contains('▀') || l.contains('▄') || l.contains('█')).count(), 8);
-        assert!(wide.iter().any(|l| l.trim() == "/ commands   @ files   ! shell   ? shortcuts"));
-        // A side pane: the small hammer, the keys two to a line.
-        let side = plain(&welcome(&DARK, &w, 48));
-        assert_eq!(
-            side.iter().filter(|l| l.contains('▀') || l.contains('▄') || l.contains('█')).count(),
-            6,
-            "{side:?}"
-        );
-        assert!(side.iter().any(|l| l.trim() == "/ commands  @ files"));
-        // Narrow: no art, lines from the left.
-        assert!(plain(&welcome(&DARK, &w, 40)).iter().all(|l| !l.contains('▀')), "no logo when narrow");
-        // A long folder keeps its end.
-        let deep = Welcome { cwd: "/tmp/claude-0/-home-user-forge-gpui/3b3af639/scratchpad/live/proj", ..w };
-        assert!(plain(&welcome(&DARK, &deep, 54)).iter().any(|l| l.ends_with("/live/proj") && l.contains('…')));
-        // No other conversations: no Recent block.
-        let none = Welcome { recent: &[], ..w };
-        assert!(!plain(&welcome(&DARK, &none, 80)).join("\n").contains("Recent"));
+        // Wide: the wordmark, centred across and down.
+        let wide = plain(&welcome(&DARK, &w, 100, 40));
+        let art: Vec<&String> = wide.iter().filter(|l| l.contains('█') || l.contains('▀') || l.contains('▄')).collect();
+        assert_eq!(art.len(), 5);
+        let lead = art[0].len() - art[0].trim_start().len();
+        assert_eq!(lead, (100 - WORDMARK_W) / 2);
+        let first = wide.iter().position(|l| !l.trim().is_empty()).unwrap();
+        let last = wide.iter().rposition(|l| !l.trim().is_empty()).unwrap();
+        let below = 40 - LIVE_ROWS - (last + 1);
+        assert!((first as i32 - below as i32).abs() <= 2, "centred down: {first} above, {below} below");
         assert_eq!(keep_end("abcdef", 4), "…def");
+        // Too narrow for the wordmark: the name in one row.
+        let narrow = plain(&welcome(&DARK, &w, 40, 30));
+        assert!(narrow.iter().any(|l| l.trim() == "F O R G E"), "{narrow:?}");
+        assert!(narrow.iter().all(|l| !l.contains('█')));
+        // A short terminal still starts on screen; no other conversations, no resume line.
+        assert_eq!(welcome(&DARK, &w, 100, 5)[0], Line::default());
+        assert!(!plain(&welcome(&DARK, &Welcome { recent: &[], ..w }, 80, 30)).join(" ").contains("/resume"));
     }
 
     #[test]
