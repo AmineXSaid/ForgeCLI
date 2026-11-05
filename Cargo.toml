@@ -6,8 +6,12 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.87"
 repository = "https://github.com/AmineXSaid/KodAct"
+homepage = "https://github.com/AmineXSaid/KodAct"
+readme = "README.md"
+keywords = ["agent", "llm", "cli", "coding-assistant", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -38,23 +42,24 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
-kodact-types = { path = "crates/kodact-types" }
-kodact-platform = { path = "crates/kodact-platform" }
-kodact-api = { path = "crates/kodact-api" }
-kodact-config = { path = "crates/kodact-config" }
-kodact-permissions = { path = "crates/kodact-permissions" }
-kodact-hooks = { path = "crates/kodact-hooks" }
-kodact-tools = { path = "crates/kodact-tools" }
-kodact-session = { path = "crates/kodact-session" }
-kodact-git = { path = "crates/kodact-git" }
-kodact-engine = { path = "crates/kodact-engine" }
-kodact-compact = { path = "crates/kodact-compact" }
-kodact-mcp = { path = "crates/kodact-mcp" }
-kodact-agents = { path = "crates/kodact-agents" }
-kodact-core = { path = "crates/kodact-core" }
-kodact-cli = { path = "crates/kodact-cli" }
+kodact-types = { path = "crates/kodact-types", version = "0.1.0" }
+kodact-platform = { path = "crates/kodact-platform", version = "0.1.0" }
+kodact-api = { path = "crates/kodact-api", version = "0.1.0" }
+kodact-config = { path = "crates/kodact-config", version = "0.1.0" }
+kodact-permissions = { path = "crates/kodact-permissions", version = "0.1.0" }
+kodact-hooks = { path = "crates/kodact-hooks", version = "0.1.0" }
+kodact-tools = { path = "crates/kodact-tools", version = "0.1.0" }
+kodact-session = { path = "crates/kodact-session", version = "0.1.0" }
+kodact-git = { path = "crates/kodact-git", version = "0.1.0" }
+kodact-engine = { path = "crates/kodact-engine", version = "0.1.0" }
+kodact-compact = { path = "crates/kodact-compact", version = "0.1.0" }
+kodact-mcp = { path = "crates/kodact-mcp", version = "0.1.0" }
+kodact-agents = { path = "crates/kodact-agents", version = "0.1.0" }
+kodact-core = { path = "crates/kodact-core", version = "0.1.0" }
+kodact-cli = { path = "crates/kodact-cli", version = "0.1.0" }
+# Test support only (publish = false): no version, so it stays out of published manifests.
 kodact-test-host = { path = "crates/kodact-test-host" }
-kodact-eval = { path = "crates/kodact-eval" }
+kodact-eval = { path = "crates/kodact-eval", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"

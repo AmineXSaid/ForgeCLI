@@ -2,6 +2,11 @@
 
 ## 0.1.0 (unreleased)
 
+### On crates.io
+- `cargo install kodact-cli` installs the `kodact` command (and
+  `cargo install kodact-eval` the eval harness); the other `kodact-*` crates
+  are published as its libraries. `/release-notes` shows this file there too.
+
 ### ForgeCLI is now KodAct
 - The command is `kodact`, the crates are `kodact-*`, the settings are
   `KODACT_*` variables, `.kodact/` and `KODACT.md`, and the user folders are

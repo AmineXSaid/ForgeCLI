@@ -4,6 +4,12 @@ description = "The query loop: streaming turns, tool batches, permissions, hooks
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 kodact-types.workspace = true
