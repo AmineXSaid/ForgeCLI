@@ -388,7 +388,7 @@ fn small_name(t: &Theme) -> Vec<Span<'static>> {
     super::brand::wordmark_text(t).spans
 }
 
-/// 1 · Essentials: the mark and the compact wordmark centred together (four rows), "Code, then act." under them, then the
+/// 1 · Essentials: the compact wordmark alone, centred (four rows), "Code, then act." under them, then the
 /// input (the frame style's panel, which names the mode, the model and where
 /// it runs) and one line to resume the last conversation. A server that failed
 /// to start says so; everything else (the folder, the branch, the version) is
@@ -399,16 +399,8 @@ fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
         // Too narrow for the letters: the name in one row.
         (vec![centred(Line::from(small_name(t)), cols)], 6)
     } else {
-        let word = compact_wordmark(t);
-        // The mark as tall as the letters, beside them where there is room; without
-        // colour its bar and triangle wouldn't show, so the letters go alone.
-        let mark_n = 2 * word.len();
-        let gap = 2;
-        let (logo, lw) = if t.color && cols >= one + gap + mark_n + 4 {
-            (beside(0, super::brand::mark(t, mark_n), mark_n + gap, word), mark_n + gap + one)
-        } else {
-            (word, one)
-        };
+        // The name alone: no mark beside it.
+        let (logo, lw) = (compact_wordmark(t), one);
         (centre_block(logo, lw, cols), lw)
     };
     // The panel at least as wide as the name above it, so the logo never overhangs the input.
@@ -780,10 +772,14 @@ mod tests {
         let narrow = plain(&front_page(&DARK, Look::Frame, &info(), 30).above).join("\n");
         assert!(narrow.contains("KodAct") && narrow.contains(SHORT_TAGLINE), "{narrow}");
         assert!(!narrow.contains("What shall we build"), "{narrow}");
-        // Without colour the mark's bar and triangle wouldn't show: the letters go alone.
+        // The name alone, in colour or not: no mark beside it, centred.
         let mono = Theme { color: false, ..DARK };
-        let with = front_page(&DARK, Look::Frame, &info(), 140).above;
-        let without = front_page(&mono, Look::Frame, &info(), 140).above;
-        assert!(line_w(&without[3]) < line_w(&with[3]), "no mark without colour");
+        for t in [DARK, mono] {
+            let above = front_page(&t, Look::Frame, &info(), 140).above;
+            let art: Vec<&Line> =
+                above.iter().filter(|l| plain(&[(*l).clone()])[0].contains(['▀', '▄', '█'])).collect();
+            let w = art.iter().map(|l| line_w(l)).max().unwrap();
+            assert!(w <= (140 + compact_w()) / 2 + 1, "only the letters, centred: {w}");
+        }
     }
 }
