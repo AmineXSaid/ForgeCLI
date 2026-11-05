@@ -981,8 +981,8 @@ mod snapshots {
         let area = buf.area;
         let mut s = String::from(
             "<!doctype html><meta charset=utf-8><style>body{margin:0;background:#0b0c0e}\
-             pre{margin:0;padding:8px;font:16px/1.15 'DejaVu Sans Mono',monospace;color:#d8d8d8;background:#0b0c0e}\
-             span{white-space:pre}</style><pre>",
+             pre{margin:0;padding:8px;font:16px/1.3 'DejaVu Sans Mono',monospace;color:#d8d8d8;background:#0b0c0e}\
+             span{white-space:pre;display:inline-block;height:1.3em;vertical-align:top}</style><pre>",
         );
         for y in 0..area.height {
             for x in 0..area.width {
@@ -1297,5 +1297,185 @@ mod snapshots {
             answer(&mut a, "Done with the session store; moving on to the transcript writer.");
             shot(name, &mut a, 140, 14);
         }
+    }
+
+    // ---- surface mockups: the real screens with surfaces painted on ----
+
+    fn row_text(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect()
+    }
+
+    /// Fill rows `y0..=y1`, columns `x0..x1`, with `bg`, and give the block half-height lips
+    /// on the blank rows above and below (`▄` / `▀` in the surface colour).
+    fn raise(buf: &mut ratatui::buffer::Buffer, y0: u16, y1: u16, x0: u16, x1: u16, bg: Color) {
+        for y in y0..=y1 {
+            for x in x0..x1 {
+                buf[(x, y)].set_bg(bg);
+            }
+        }
+        for (y, lip) in [(y0.wrapping_sub(1), "▄"), (y1 + 1, "▀")] {
+            if y < buf.area.height && row_text(buf, y)[..].trim().is_empty() {
+                for x in x0..x1 {
+                    buf[(x, y)].set_symbol(lip).set_fg(bg).set_bg(Color::Reset);
+                }
+            }
+        }
+    }
+
+    /// The input box as a surface: filled inside, its lime border hugging the fill.
+    fn raise_box(buf: &mut ratatui::buffer::Buffer, bg: Color) {
+        let h = buf.area.height;
+        let Some(top) = (0..h).rev().find(|y| row_text(buf, *y).contains('╭')) else { return };
+        let Some(bottom) = (top..h).find(|y| row_text(buf, *y).contains('╰')) else { return };
+        let row = row_text(buf, top);
+        let x0 = row.chars().position(|c| c == '╭').unwrap() as u16;
+        let x1 = row.chars().position(|c| c == '╮').unwrap() as u16;
+        for y in top..=bottom {
+            for x in x0..=x1 {
+                let c = &mut buf[(x, y)];
+                let edge = x == x0 || x == x1 || y == top || y == bottom;
+                if !edge {
+                    c.set_bg(bg);
+                    continue;
+                }
+                let sym = match (y == top, y == bottom, x == x0, x == x1) {
+                    (true, _, true, _) | (true, _, _, true) | (_, true, true, _) | (_, true, _, true) => " ",
+                    (true, ..) => "▁",
+                    (_, true, ..) => "▔",
+                    (_, _, true, _) => "▕",
+                    _ => "▏",
+                };
+                c.set_symbol(sym);
+            }
+        }
+    }
+
+    fn rows_matching(buf: &ratatui::buffer::Buffer, f: impl Fn(&str) -> bool) -> Vec<u16> {
+        (0..buf.area.height).filter(|y| f(&row_text(buf, *y))).collect()
+    }
+
+    fn mock(name: &str, a: &mut App, w: u16, h: u16, paint: impl Fn(&mut ratatui::buffer::Buffer)) {
+        let Ok(dir) = std::env::var("KODACT_SNAPSHOT_DIR") else { return };
+        let mut f = Full::new(TestBackend::new(w, h), info(true)).unwrap();
+        f.commit(a.take_pending());
+        f.draw(a).unwrap();
+        let mut buf = f.terminal.backend().buffer().clone();
+        paint(&mut buf);
+        std::fs::write(format!("{dir}/{name}.html"), html(&buf)).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn surface_mockups() {
+        use serde_json::json;
+        // KodAct's two levels over the terminal's own background (#0b0c0e here): raised, overlay.
+        let raised = Color::Rgb(0x17, 0x1a, 0x1e);
+        let overlay = Color::Rgb(0x20, 0x24, 0x29);
+        unsafe { std::env::set_var("HOME", "/home/kryptonite") };
+
+        // 1. The input box raised, over a conversation with tools.
+        let mut a = app();
+        a.submit("fix the subtraction bug in calc.py and run the tests".into());
+        a.front = false;
+        a.on_event(msg(
+            vec![call("e1", "Edit", json!({"file_path": "/home/kryptonite/KodAct/src/calc.py"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "e1",
+            "updated",
+            false,
+            Some(json!({"filePath": "/home/kryptonite/KodAct/src/calc.py", "structuredPatch": [{
+            "oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 2,
+            "lines": [" def add(a, b):", "-    return a - b", "+    return a + b"]}]})),
+        );
+        a.on_event(msg(
+            vec![call("b2", "Bash", json!({"command": "pytest -q tests/test_calc.py"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(&mut a, "b2", ".....\n5 passed in 0.03s", false, None);
+        answer(&mut a, "Fixed `add` (it subtracted). All 5 tests pass.");
+        mock("surface-1-input", &mut a, 140, 22, |b| raise_box(b, raised));
+
+        // 2. Code and a diff raised in an answer.
+        let mut a = app();
+        a.submit("how do I add an index in postgres?".into());
+        a.front = false;
+        answer(&mut a, "Use `CONCURRENTLY` on a live table, so writes aren't locked:\n\n```sql\nCREATE INDEX CONCURRENTLY idx_users_email\n  ON users (email);\n```\n\nThen check it was built:\n\n```sql\nSELECT indexname FROM pg_indexes WHERE tablename = 'users';\n```");
+        a.on_event(msg(
+            vec![call("e1", "Edit", json!({"file_path": "/home/kryptonite/KodAct/db/migrate.sql"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "e1",
+            "updated",
+            false,
+            Some(json!({"filePath": "/home/kryptonite/KodAct/db/migrate.sql", "structuredPatch": [{
+            "oldStart": 4, "oldLines": 1, "newStart": 4, "newLines": 2,
+            "lines": ["-CREATE INDEX idx_users_email ON users (email);", "+CREATE INDEX CONCURRENTLY idx_users_email", "+  ON users (email);"]}]})),
+        );
+        a.on_event(UiEvent::Idle);
+        mock("surface-2-code", &mut a, 140, 32, |b| {
+            raise_box(b, raised);
+            // Each code block: from its `╭─` to its `╰─`; each diff: its +/- rows.
+            let starts = rows_matching(b, |r| r.contains("╭─") && !r.contains("╮"));
+            let ends = rows_matching(b, |r| r.trim_start().starts_with("╰─") && !r.contains("╯"));
+            for (s, e) in starts.into_iter().zip(ends) {
+                raise(b, s, e, 4, 100, raised);
+            }
+            let diff = rows_matching(b, |r| r.contains(" - ") || r.contains(" + "));
+            if let (Some(&s), Some(&e)) = (diff.first(), diff.last()) {
+                raise(b, s, e, 4, 100, raised);
+            }
+        });
+
+        // 3. A permission question as an overlay, a level above the conversation.
+        let mut a = app();
+        a.submit("clean the build folder".into());
+        a.front = false;
+        a.on_event(msg(
+            vec![call("p1", "Bash", json!({"command": "rm -rf build/", "description": "Delete the build folder"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::mem::forget(rx);
+        a.on_event(UiEvent::Ask {
+            prompt: kodact_engine::PermissionPrompt {
+                tool_name: "Bash".into(),
+                tool_use_id: "p1".into(),
+                input: json!({"command": "rm -rf build/", "description": "Delete the build folder"}),
+                reason: String::new(),
+                suggestions: vec![],
+                blocked_path: None,
+            },
+            reply: tx,
+        });
+        mock("surface-3-dialog", &mut a, 140, 26, |b| {
+            let rows = rows_matching(b, |r| r.contains('┌') || r.contains('└') || r.contains('╭') || r.contains('╰'));
+            let top = rows_matching(b, |r| r.contains("Approve Bash"));
+            let foot = rows_matching(b, |r| r.contains("to deny"));
+            if let (Some(&t), Some(&f)) = (top.first(), foot.first()) {
+                // The corner marks give way to the panel itself.
+                let (y0, y1) = (
+                    rows.iter().copied().filter(|y| *y < t).max().unwrap_or(t),
+                    rows.iter().copied().filter(|y| *y > f).min().unwrap_or(f),
+                );
+                for y in [y0, y1] {
+                    for x in 0..b.area.width {
+                        let sym = b[(x, y)].symbol().to_string();
+                        if "┌┐└┘─╭╮╰╯".contains(sym.as_str()) {
+                            b[(x, y)].set_symbol(" ");
+                        }
+                    }
+                }
+                raise(b, y0 + 1, y1 - 1, 2, b.area.width - 2, overlay);
+            }
+        });
     }
 }
