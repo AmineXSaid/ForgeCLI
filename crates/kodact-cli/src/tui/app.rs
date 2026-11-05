@@ -171,6 +171,56 @@ pub fn human_api_error(text: &str, model: &str, endpoint: &str) -> Option<(Strin
     Some((head, next))
 }
 
+/// `spans` with paths under `cwd` written from it (`src/calc.py`) and the home
+/// folder as `~`, so a step's row shows what matters in the columns it has.
+pub fn relative_spans(spans: Vec<Span<'static>>, cwd: &str) -> Vec<Span<'static>> {
+    let cwd = cwd.trim_end_matches('/');
+    let home = std::env::var("HOME").ok().filter(|h| h.len() > 1).map(|h| h.trim_end_matches('/').to_string());
+    spans
+        .into_iter()
+        .map(|mut s| {
+            let mut c = s.content.to_string();
+            if cwd.len() > 1 && c.contains(&format!("{cwd}/")) {
+                c = c.replace(&format!("{cwd}/"), "");
+            }
+            if let Some(h) = &home {
+                if c.contains(&format!("{h}/")) {
+                    c = c.replace(&format!("{h}/"), "~/");
+                }
+            }
+            s.content = c.into();
+            s
+        })
+        .collect()
+}
+
+/// `s` in at most `max` characters, cut with `…`.
+fn fit_words(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Lines a failed result shows from its end.
+const FAILURE_LINES: usize = 5;
+
+/// A line of test-runner progress only (`....F.s`), which says nothing on its own.
+fn progress_only(l: &str) -> bool {
+    let l = l.trim();
+    !l.is_empty() && l.chars().all(|c| matches!(c, '.' | 'F' | 'E' | 's' | 'x' | 'X'))
+}
+
+/// A line that names an error, drawn in red in a failure's output.
+fn names_an_error(l: &str) -> bool {
+    let lower = l.to_lowercase();
+    ["error", "failed", "fail:", "panicked", "exception", "not found", "denied", "exit code", "traceback"]
+        .iter()
+        .any(|w| lower.contains(w))
+}
+
 /// How a tool call ended, for its row in the transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolEnd {
@@ -422,6 +472,8 @@ pub struct App {
     pub keymap: super::keys::Keymap,
     /// The UI's style.
     pub look: super::look::Look,
+    /// Sub-agents that finished this turn, for the line that waits on the rest.
+    pub agents_done: usize,
     /// Columns the full screen sets the transcript in (0 inline): the live rows follow it.
     pub transcript_indent: usize,
     /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
@@ -467,9 +519,23 @@ pub fn result_lines(
         text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(160).collect()
     };
     if is_error {
-        let more = text.lines().filter(|l| !l.trim().is_empty()).count().saturating_sub(1);
-        let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
-        return one(format!("{}{more}", first_line(text)), t.error());
+        // A failure shows its end, where the error is: the last lines, the ones that name
+        // the error in red, the rest quiet; what came before is counted.
+        let body: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty() && !progress_only(l)).collect();
+        if body.is_empty() {
+            return one("(no output)".into(), t.error());
+        }
+        let skip = body.len().saturating_sub(FAILURE_LINES);
+        let mut out = vec![];
+        if skip > 0 {
+            out.push(Line::from(vec![mark(), Span::styled(format!("… {skip} earlier lines"), t.dim())]));
+        }
+        for l in &body[skip..] {
+            let lead = if out.is_empty() { mark() } else { Span::raw(RESULT_INDENT) };
+            let st = if names_an_error(l) { t.error() } else { t.dim() };
+            out.push(Line::from(vec![lead, Span::styled(l.chars().take(200).collect::<String>(), st)]));
+        }
+        return out;
     }
     match (tool, structured) {
         ("Read", Some(v)) if v["type"] == "text" => {
@@ -544,18 +610,23 @@ pub fn result_lines(
             out
         }
         ("Bash", _) => {
-            let body: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            // A command that went well: its last lines, where the summary is, without
+            // progress dots (`....`); what came before is counted.
+            let all: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            let body: Vec<&str> = all.iter().copied().filter(|l| !progress_only(l)).collect();
+            let body = if body.is_empty() { all } else { body };
             if body.is_empty() {
                 return one("(no output)".into(), t.dim());
             }
+            let skip = body.len().saturating_sub(3);
             let mut out = vec![];
-            for (i, l) in body.iter().take(3).enumerate() {
-                let lead = if i == 0 { mark() } else { Span::raw(RESULT_INDENT) };
+            if skip > 0 {
+                out.push(Line::from(vec![mark(), Span::styled(format!("… {skip} earlier lines"), t.dim())]));
+            }
+            for l in &body[skip..] {
+                let lead = if out.is_empty() { mark() } else { Span::raw(RESULT_INDENT) };
                 let l: String = l.chars().take(200).collect();
                 out.push(Line::from(vec![lead, Span::styled(l, t.dim())]));
-            }
-            if body.len() > 3 {
-                out.push(Line::from(Span::styled(format!("{RESULT_INDENT}… +{} lines", body.len() - 3), t.dim())));
             }
             out
         }
@@ -755,6 +826,7 @@ impl App {
             keymap: Default::default(),
             look: Default::default(),
             transcript_indent: 0,
+            agents_done: 0,
             front: false,
             endpoint: String::new(),
             branch: String::new(),
@@ -978,7 +1050,7 @@ impl App {
             Look::Glow => {
                 let mut spans =
                     vec![if failed { Span::styled("✗ ", t.error()) } else { Span::styled("✓ ", t.accent()) }];
-                spans.extend(tool_header(&t, &r.name, &r.input, true));
+                spans.extend(self.header(&r.name, &r.input, true));
                 Line::from(spans)
             }
             // The state as a glyph and, unless it went well, a word: never colour alone.
@@ -989,7 +1061,7 @@ impl App {
                     ToolEnd::Stopped => ("■", t.dim()),
                 };
                 let mut spans = vec![Span::styled(format!("{mark} "), st)];
-                spans.extend(tool_header(&t, &r.name, &r.input, true));
+                spans.extend(self.header(&r.name, &r.input, true));
                 match end {
                     ToolEnd::Failed => spans.push(Span::styled(" · failed", t.error())),
                     ToolEnd::Stopped => spans.push(Span::styled(" · stopped", t.dim())),
@@ -1086,6 +1158,7 @@ impl App {
         self.busy_since = Some(Instant::now());
         self.activity = "Working".into();
         self.first_line = true;
+        self.agents_done = 0;
         text
     }
 
@@ -1114,7 +1187,7 @@ impl App {
                 if let Some(r) = self.running.iter_mut().find(|r| r.id == parent) {
                     for b in &message.content {
                         if let ContentBlock::ToolUse { name, input, .. } = b {
-                            let header = tool_header(&self.theme, name, input, false);
+                            let header = relative_spans(tool_header(&self.theme, name, input, false), &self.status.cwd);
                             r.step = Some(header.iter().map(|s| s.content.as_ref()).collect());
                             r.steps += 1;
                         }
@@ -1182,16 +1255,20 @@ impl App {
                         ContentBlock::ToolUse { name, .. } if self.focus => self.activity = format!("Running {name}"),
                         ContentBlock::ToolUse { id, name, input, .. } => {
                             self.calls.insert(id.clone(), (name.clone(), input.clone()));
+                            let header = self.header(name, input, false);
                             self.running.push(Running {
                                 id: id.clone(),
-                                header: tool_header(&self.theme, name, input, false),
+                                header,
                                 name: name.clone(),
                                 input: input.clone(),
                                 since: Instant::now(),
                                 step: None,
                                 steps: 0,
                             });
-                            self.activity = format!("Running {name}");
+                            // In words: "Running pytest -q", "Reading src/lib.rs".
+                            let words: String =
+                                self.header(name, input, false).iter().map(|s| s.content.as_ref()).collect();
+                            self.activity = fit_words(&words, 48);
                         }
                         _ => {}
                     }
@@ -1207,6 +1284,9 @@ impl App {
                     if let ContentBlock::ToolResult { tool_use_id, content, is_error, .. } = b {
                         let tool = self.calls.remove(tool_use_id).map(|(n, _)| n).unwrap_or_default();
                         let failed = *is_error == Some(true);
+                        if matches!(tool.as_str(), "Task" | "Agent") {
+                            self.agents_done += 1;
+                        }
                         if let Some(i) = self.running.iter().position(|r| r.id == *tool_use_id) {
                             let r = self.running.remove(i);
                             self.commit_tool(r, if failed { ToolEnd::Failed } else { ToolEnd::Done });
@@ -1393,6 +1473,11 @@ impl App {
 
     /// A question to the person is open (permission, plan approval, AskUserQuestion):
     /// the turn waits on them, not on the model.
+    /// A tool call's header with its paths relative to the session's folder.
+    fn header(&self, name: &str, input: &Value, done: bool) -> Vec<Span<'static>> {
+        relative_spans(tool_header(&self.theme, name, input, done), &self.status.cwd)
+    }
+
     /// The destructive effect of the command the open question is about, if any.
     pub fn dialog_danger(&self) -> Option<&str> {
         match &self.dialog.as_ref()?.kind {
@@ -2684,11 +2769,33 @@ mod tests {
         assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  └ 2 lines, a new file"]);
         assert_eq!(texts(&result_lines(&t, "Bash", "", false, None)), ["  └ (no output)"]);
         let long = (1..=6).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        // A command that went well: its last lines, where the summary is.
         assert_eq!(
             texts(&result_lines(&t, "Bash", &long, false, None)),
-            ["  └ line 1", "    line 2", "    line 3", "    … +3 lines"]
+            ["  └ … 3 earlier lines", "    line 4", "    line 5", "    line 6"]
         );
-        assert_eq!(texts(&result_lines(&t, "Bash", "boom\nmore", true, None)), ["  └ boom (+1 lines)"]);
+        assert_eq!(
+            texts(&result_lines(&t, "Bash", ".\n1 passed in 0.03s", false, None)),
+            ["  └ 1 passed in 0.03s"],
+            "no progress dots"
+        );
+        // A failure shows the error, in red, with what led to it.
+        let pytest =
+            "Exit code 1\n....F\nFAILED tests/test_calc.py::test_div - ZeroDivisionError\n1 failed, 4 passed in 0.12s";
+        let failed = result_lines(&t, "Bash", pytest, true, None);
+        assert_eq!(
+            texts(&failed),
+            [
+                "  └ Exit code 1",
+                "    FAILED tests/test_calc.py::test_div - ZeroDivisionError",
+                "    1 failed, 4 passed in 0.12s"
+            ]
+        );
+        assert_eq!(failed[1].spans[1].style, t.error(), "the error line in red");
+        let many = (1..=9).map(|i| format!("step {i}")).collect::<Vec<_>>().join("\n") + "\nerror: boom";
+        let lines = texts(&result_lines(&t, "Bash", &many, true, None));
+        assert_eq!(lines[0], "  └ … 5 earlier lines");
+        assert_eq!(lines.last().unwrap(), "    error: boom");
     }
 
     #[test]

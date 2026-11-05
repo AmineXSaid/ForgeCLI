@@ -30,7 +30,7 @@ const LIVE_ROWS: usize = 3;
 /// The composer's placeholder, as KodAct's says it.
 pub const PLACEHOLDER: &str = "What shall we build today?";
 /// The frame style's placeholder while the model works.
-pub const QUEUE_PLACEHOLDER: &str = "Type to queue a message; esc stops the turn";
+pub const QUEUE_PLACEHOLDER: &str = "Type to queue a message";
 /// What the spinner says while the model works, in KodAct's voice (its spinner verbs).
 pub const VERBS: [&str; 8] =
     ["Acting", "Reading the code", "Thinking", "Building", "Wiring it up", "Checking", "Shaping", "Polishing"];
@@ -477,6 +477,9 @@ fn hints(app: &App, room: usize) -> Vec<Span<'static>> {
         &[("esc", "stop"), ("enter", "queue a message")]
     } else if !app.menu().is_empty() || !app.file_menu().is_empty() {
         &[("↑↓", "choose"), ("tab", "complete"), ("esc", "close")]
+    } else if app.editor.is_empty() && app.status.mode == "plan" {
+        // Plan mode: how to leave it and act on the plan.
+        &[("shift+tab", "leave plan mode"), ("/", "commands"), ("?", "keys")]
     } else if app.editor.is_empty() {
         &[("/", "commands"), ("@", "files"), ("shift+tab", "mode"), ("?", "keys")]
     } else {
@@ -858,7 +861,9 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
             let face = glyphs::RUNNING[(ran.as_millis() / RUNNING_STEP.as_millis()) as usize % 4];
             vec![Span::styled(format!("{face} "), t.accent())]
         };
-        spans.extend(r.header.iter().cloned());
+        // A sub-agent's row says what it explores; the line below says they're agents.
+        let skip = usize::from(is_agent(&r.name) && r.header.len() > 1);
+        spans.extend(r.header.iter().skip(skip * 2).cloned());
         if is_agent(&r.name) {
             spans.push(Span::styled(format!("  {}s", ran.as_secs()), t.subtle()));
             if let Some(step) = &r.step {
@@ -886,12 +891,26 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
                 t.subtle(),
             ));
         } else {
-            let verb = match app.activity.as_str() {
-                "" | "Working" => VERBS[(since.as_secs() / VERB_FOR.as_secs()) as usize % VERBS.len()].to_string(),
-                a => a.to_string(),
+            // What it is doing, in words: waiting on its agents, running a step, writing,
+            // thinking; the default style keeps the esc key on the status line only.
+            let agents = app.running.iter().filter(|r| is_agent(&r.name)).count();
+            let verb = if agents > 0 {
+                format!("Waiting for {agents} {}", if agents == 1 { "agent" } else { "agents" })
+            } else {
+                match app.activity.as_str() {
+                    "" | "Working" if app.look == super::look::Look::Frame => "Thinking".to_string(),
+                    "" | "Working" => VERBS[(since.as_secs() / VERB_FOR.as_secs()) as usize % VERBS.len()].to_string(),
+                    a => a.to_string(),
+                }
             };
             line.extend(shimmer(&t, &format!("{verb}…"), since));
-            let rest = format!(" ({}s · esc to interrupt)", since.as_secs());
+            let done =
+                if agents > 0 && app.agents_done > 0 { format!("{} done · ", app.agents_done) } else { String::new() };
+            let rest = if app.look == super::look::Look::Frame {
+                format!(" ({done}{}s)", since.as_secs())
+            } else {
+                format!(" ({done}{}s · esc to interrupt)", since.as_secs())
+            };
             let room = w.saturating_sub(2 + text_width(&verb) + 1);
             line.push(Span::styled(fit(&rest, room), t.subtle()));
         }
@@ -905,7 +924,12 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     let mut queued: Vec<Line<'static>> = app
         .queued
         .iter()
-        .map(|q| Line::from(Span::styled(fit(&format!("  ⏎ {}", q.replace('\n', " ")), tw), t.dim())))
+        .map(|q| {
+            Line::from(vec![
+                Span::styled("queued ▸ ", t.warning()),
+                Span::styled(fit(&q.replace('\n', " "), tw.saturating_sub(9)), t.dim()),
+            ])
+        })
         .collect();
     // 5. The input box (hidden while a dialog is open).
     // The input sits in a rounded box; its rows are padded to the box's inside. On the
@@ -1263,7 +1287,7 @@ mod tests {
         assert_eq!(rows[0], "● partial answer");
         assert_eq!(rows[1], "");
         assert_eq!(rows[2], "⠦ Acting… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
-        assert_eq!(rows[3], "  ⏎ next");
+        assert_eq!(rows[3], "queued ▸ next", "a queued message says so");
         assert_eq!(rows[4], "", "a blank row above the input");
         assert!(rows[6].starts_with("│ ❯ ab ") && rows[6].ends_with('│'), "{}", rows[6]);
         assert_eq!(v.cursor, Some((6, 6)));
@@ -1304,6 +1328,35 @@ mod tests {
             },
             reply: tx,
         });
+    }
+
+    #[test]
+    fn the_default_style_says_what_it_does_once() {
+        let mut a = app(false);
+        a.look = crate::tui::look::Look::Frame;
+        typed(&mut a, "hello");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let start = a.busy_since.unwrap();
+        let (rows, _) = draw(&live_view_at(&a, 80, 20, start + Duration::from_millis(1300)), 80);
+        let text = rows.join("\n");
+        assert!(text.contains("Thinking… (1s)"), "a word for what it does, no key: {text}");
+        assert!(text.contains("Type to queue a message") && !text.contains("esc stops"), "{text}");
+        assert_eq!(text.matches("esc").count(), 1, "the esc key once, on the status line: {text}");
+        // Plan mode: the status line says how to leave it.
+        let mut b = app(false);
+        b.look = crate::tui::look::Look::Frame;
+        b.status.mode = "plan".into();
+        let (rows, _) = draw(&live_view(&b, 80, 12), 80);
+        assert!(rows.last().unwrap().contains("shift+tab leave plan mode"), "{rows:#?}");
+        // Paths from the session's folder; the home folder as ~.
+        use crate::tui::app::relative_spans;
+        let home = std::env::var("HOME").unwrap_or_default();
+        let spans = vec![Span::raw("/p/src/calc.py"), Span::raw(format!("{home}/notes.md"))];
+        let out: Vec<String> = relative_spans(spans, "/p").iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(out[0], "src/calc.py");
+        if home.len() > 1 {
+            assert_eq!(out[1], "~/notes.md");
+        }
     }
 
     #[test]
@@ -1887,14 +1940,16 @@ mod tests {
         let start = a.running[0].since;
         let v = live_view_at(&a, 100, 40, start + Duration::from_millis(250));
         let (rows, _) = draw(&v, 100);
-        let agents: Vec<&String> = rows.iter().filter(|r| r.contains("Delegating")).collect();
+        let agents: Vec<&String> = rows.iter().filter(|r| r.contains('━')).collect();
         assert_eq!(agents.len(), 5, "{rows:#?}");
-        assert!(agents.iter().all(|r| r.contains('━')), "each sub-agent's scanner moves: {agents:#?}");
-        assert!(agents[0].contains("1 step") && agents[0].contains("src/lib.rs"), "its latest step: {}", agents[0]);
+        assert!(agents.iter().all(|r| !r.contains("Delegating")), "the line below says they're agents: {agents:#?}");
+        assert!(agents[0].contains("1 step · Reading src/lib.rs"), "its latest step, from the folder: {}", agents[0]);
+        assert!(rows.iter().any(|r| r.contains("Waiting for 5 agents…")), "{rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains("Running Task")), "{rows:#?}");
         // The scanner moves: a later frame differs.
         let later = live_view_at(&a, 100, 40, start + Duration::from_millis(250 + 120));
         let (rows2, _) = draw(&later, 100);
-        let first = |rs: &[String]| rs.iter().find(|r| r.contains("Delegating")).cloned().unwrap();
+        let first = |rs: &[String]| rs.iter().find(|r| r.contains('━')).cloned().unwrap();
         assert_ne!(first(&rows), first(&rows2), "the segment sweeps");
     }
 
