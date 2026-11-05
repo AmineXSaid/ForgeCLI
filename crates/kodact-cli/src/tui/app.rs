@@ -97,6 +97,127 @@ pub enum UiEvent {
     Exit,
 }
 
+/// An `API Error: ...` notice as a person would say it: a headline (what went wrong,
+/// naming the model and the endpoint) and a next step with the short technical
+/// detail. `None` for anything else, which is shown as it is.
+pub fn human_api_error(text: &str, model: &str, endpoint: &str) -> Option<(String, String)> {
+    let rest = text.strip_prefix("API Error: ")?;
+    // "... Retrying in 6s (attempt 2)." stays as a tail on the headline.
+    let (rest, retry) = match rest.find(". Retrying in ") {
+        Some(i) => (&rest[..i], Some(rest[i + 2..].trim_end_matches('.').to_lowercase())),
+        None => (rest, None),
+    };
+    let host_of = |url: &str| {
+        let u = url.split("://").nth(1).unwrap_or(url);
+        let u = u.rsplit('@').next().unwrap_or(u);
+        u.split(['/', '?', ':']).next().unwrap_or(u).to_string()
+    };
+    let url = rest.split_whitespace().find(|w| w.starts_with("http://") || w.starts_with("https://"));
+    let host = url.map(|u| host_of(u.trim_end_matches(':'))).filter(|h| !h.is_empty()).unwrap_or_else(|| {
+        if endpoint.is_empty() {
+            "the endpoint".to_string()
+        } else {
+            endpoint.to_string()
+        }
+    });
+    let model = if model.is_empty() { "the model" } else { model };
+    // The server's own message, from a JSON body when there is one.
+    let body = rest.find('{').map(|i| &rest[i..]).unwrap_or("");
+    let said = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| {
+            ["/detail", "/error/message", "/message", "/error"]
+                .iter()
+                .find_map(|p| v.pointer(p).and_then(Value::as_str).map(str::to_string))
+        })
+        .unwrap_or_default();
+    let status: Option<u16> =
+        rest.strip_prefix("HTTP ").and_then(|r| r.split_whitespace().next()).and_then(|c| c.parse().ok());
+    let lower = format!("{rest} {said}").to_lowercase();
+    let detail = match (status, said.is_empty()) {
+        (Some(c), false) => format!("HTTP {c}: {said}"),
+        (Some(c), true) => format!("HTTP {c}"),
+        (None, _) => rest.split(':').next().unwrap_or(rest).trim().to_string(),
+    };
+    let (head, next) = if lower.contains("model not found")
+        || lower.contains("does not exist")
+        || lower.contains("unknown model")
+        || status == Some(404)
+    {
+        (format!("{model} isn't available on {host}"), format!("/model to choose another · {detail}"))
+    } else if matches!(status, Some(401) | Some(403)) {
+        (format!("{host} didn't accept the key"), format!("check KODACT_OPENAI_API_KEY or KODACT_API_KEY · {detail}"))
+    } else if status == Some(429) {
+        (format!("{host} is limiting requests"), format!("KodAct waits and retries · {detail}"))
+    } else if status.is_some_and(|c| c >= 500) {
+        (format!("{host} had an error"), format!("try again in a moment · {detail}"))
+    } else if lower.contains("could not connect")
+        || lower.contains("unreachable")
+        || lower.contains("lookup address")
+        || lower.contains("tls")
+        || lower.contains("timed out")
+        || lower.contains("error decoding")
+    {
+        (format!("Can't reach {host}"), format!("check the network and KODACT_OPENAI_BASE_URL · {detail}"))
+    } else {
+        let c = status?;
+        let why = if said.is_empty() { format!("HTTP {c}") } else { said.clone() };
+        (format!("{host} refused the request: {why}"), "/model or /status to check the setup".to_string())
+    };
+    let head = match retry {
+        Some(r) => format!("{head} · {r}"),
+        None => head,
+    };
+    Some((head, next))
+}
+
+/// How a tool call ended, for its row in the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEnd {
+    Done,
+    Failed,
+    /// The turn ended before it did (interrupted).
+    Stopped,
+}
+
+/// What a destructive command would do, in a few words, for the permission
+/// question: removing files, rewriting history, wiping a disk or a table.
+pub fn danger_of(tool: &str, input: &Value) -> Option<String> {
+    if tool != "Bash" {
+        return None;
+    }
+    let cmd = input["command"].as_str()?;
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let has = |w: &str| words.contains(&w);
+    for (i, w) in words.iter().enumerate() {
+        if *w == "rm" {
+            let args: Vec<&str> =
+                words[i + 1..].iter().take_while(|a| !matches!(**a, "&&" | ";" | "||" | "|")).copied().collect();
+            let forced =
+                args.iter().any(|a| a.starts_with('-') && (a.contains('r') || a.contains('R') || a.contains('f')));
+            let paths: Vec<&str> = args.iter().filter(|a| !a.starts_with('-')).copied().collect();
+            if forced || !paths.is_empty() {
+                return Some(format!("deletes files: {}", paths.join(" ")).trim_end_matches(": ").to_string());
+            }
+        }
+    }
+    let lower = cmd.to_ascii_lowercase();
+    let what = if has("git")
+        && (lower.contains("reset --hard") || lower.contains("clean -f") || lower.contains("checkout -- "))
+    {
+        "discards uncommitted changes"
+    } else if has("git") && lower.contains("push") && (lower.contains("--force") || has("-f")) {
+        "rewrites the remote branch"
+    } else if lower.contains("drop table") || lower.contains("drop database") || lower.contains("truncate table") {
+        "deletes data"
+    } else if has("mkfs") || words.iter().any(|w| w.starts_with("of=/dev/")) {
+        "overwrites a disk"
+    } else {
+        return None;
+    };
+    Some(what.to_string())
+}
+
 /// What the UI loop does for the app.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -120,6 +241,9 @@ struct Question {
 enum DialogKind {
     Permission {
         always: Option<String>,
+        /// What a destructive command would do (`deletes files: build/`): the answer
+        /// starts on Deny, and only `y` allows it.
+        danger: Option<String>,
     },
     Plan,
     Questions {
@@ -829,7 +953,8 @@ impl App {
     }
 
     /// A tool call's header into scrollback, its dot in the colour of how it ended.
-    fn commit_tool(&mut self, r: Running, dot: Style, failed: bool) {
+    fn commit_tool(&mut self, r: Running, end: ToolEnd) {
+        let failed = end == ToolEnd::Failed;
         use super::look::Look;
         self.gap();
         let t = self.theme;
@@ -856,9 +981,20 @@ impl App {
                 spans.extend(tool_header(&t, &r.name, &r.input, true));
                 Line::from(spans)
             }
+            // The state as a glyph and, unless it went well, a word: never colour alone.
             _ => {
-                let mut spans = vec![Span::styled(format!("{} ", glyphs::TOOL), dot)];
+                let (mark, st) = match end {
+                    ToolEnd::Done => ("✓", t.success()),
+                    ToolEnd::Failed => ("✗", t.error()),
+                    ToolEnd::Stopped => ("■", t.dim()),
+                };
+                let mut spans = vec![Span::styled(format!("{mark} "), st)];
                 spans.extend(tool_header(&t, &r.name, &r.input, true));
+                match end {
+                    ToolEnd::Failed => spans.push(Span::styled(" · failed", t.error())),
+                    ToolEnd::Stopped => spans.push(Span::styled(" · stopped", t.dim())),
+                    ToolEnd::Done => {}
+                }
                 Line::from(spans)
             }
         };
@@ -874,9 +1010,16 @@ impl App {
             NoticeLevel::Error => ("✕", t.error(), t.error()),
         };
         self.gap();
+        // An API error, rewritten for a person: what went wrong in a line, then what to do.
+        let human = human_api_error(text, &self.status.model, &self.endpoint);
+        let text = human.as_ref().map(|(head, _)| head.as_str()).unwrap_or(text);
+        // The mark in the column of every other mark (❯, ●, ✓), the words in the text's.
         for (i, l) in text.lines().enumerate() {
-            let lead = if i == 0 { Span::styled(format!("  {mark} "), mark_st) } else { Span::raw("    ") };
+            let lead = if i == 0 { Span::styled(format!("{mark} "), mark_st) } else { Span::raw("  ") };
             self.pending.push(Line::from(vec![lead, Span::styled(l.to_string(), st)]));
+        }
+        if let Some((_, next)) = human {
+            self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(next, t.dim())]));
         }
     }
 
@@ -917,8 +1060,7 @@ impl App {
             UiEvent::Idle => {
                 self.flush_live();
                 for r in std::mem::take(&mut self.running) {
-                    let dot = self.theme.dim();
-                    self.commit_tool(r, dot, false);
+                    self.commit_tool(r, ToolEnd::Stopped);
                 }
                 self.busy = false;
                 self.busy_since = None;
@@ -1067,8 +1209,7 @@ impl App {
                         let failed = *is_error == Some(true);
                         if let Some(i) = self.running.iter().position(|r| r.id == *tool_use_id) {
                             let r = self.running.remove(i);
-                            let dot = if failed { self.theme.error() } else { self.theme.success() };
-                            self.commit_tool(r, dot, failed);
+                            self.commit_tool(r, if failed { ToolEnd::Failed } else { ToolEnd::Done });
                         }
                         let lines = result_lines(
                             &self.theme,
@@ -1173,9 +1314,17 @@ impl App {
                 }
                 DialogKind::Plan
             }
-            _ => DialogKind::Permission { always: prompt.suggestions.first().and_then(rule_text) },
+            _ => DialogKind::Permission {
+                always: prompt.suggestions.first().and_then(rule_text),
+                danger: danger_of(&prompt.tool_name, &prompt.input),
+            },
         };
-        self.dialog = Some(Dialog { prompt: Some(prompt), reply: Some(reply), kind, selected: 0, typing: None });
+        // A destructive command starts on Deny, so a stray Enter never runs it.
+        let selected = match &kind {
+            DialogKind::Permission { always, danger: Some(_) } => 1 + usize::from(always.is_some()),
+            _ => 0,
+        };
+        self.dialog = Some(Dialog { prompt: Some(prompt), reply: Some(reply), kind, selected, typing: None });
         self.asked_at = Some(Instant::now());
     }
 
@@ -1205,7 +1354,7 @@ impl App {
     pub fn dialog_options(&self) -> Vec<(String, String)> {
         let Some(d) = &self.dialog else { return vec![] };
         match &d.kind {
-            DialogKind::Permission { always } => {
+            DialogKind::Permission { always, .. } => {
                 let mut v = vec![("Allow once".to_string(), "y".to_string())];
                 if let Some(r) = always {
                     v.push((r.clone(), "a".to_string()));
@@ -1244,6 +1393,20 @@ impl App {
 
     /// A question to the person is open (permission, plan approval, AskUserQuestion):
     /// the turn waits on them, not on the model.
+    /// The destructive effect of the command the open question is about, if any.
+    pub fn dialog_danger(&self) -> Option<&str> {
+        match &self.dialog.as_ref()?.kind {
+            DialogKind::Permission { danger, .. } => danger.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The tool call the open question is about.
+    pub fn asking_for(&self) -> Option<&str> {
+        let d = self.dialog.as_ref()?;
+        matches!(d.kind, DialogKind::Permission { .. }).then(|| d.prompt.as_ref().map(|p| p.tool_use_id.as_str()))?
+    }
+
     pub fn waiting_for_answer(&self) -> bool {
         self.dialog.as_ref().is_some_and(|d| {
             matches!(d.kind, DialogKind::Permission { .. } | DialogKind::Plan | DialogKind::Questions { .. })
@@ -1375,7 +1538,12 @@ impl App {
             }
             return vec![];
         }
-        if let DialogKind::Permission { always } = &d.kind {
+        if let DialogKind::Permission { always, danger } = &d.kind {
+            // A destructive command is allowed with `y` only: Enter on Allow just says so.
+            if danger.is_some() && key.code == KeyCode::Enter && d.selected + 1 < n {
+                self.hint = Some(("Press y to allow it; Enter or n denies".into(), Instant::now()));
+                return vec![];
+            }
             let pick = match key.code {
                 KeyCode::Char('y') => Some(0),
                 KeyCode::Char('a') if always.is_some() => Some(1),
@@ -1438,7 +1606,7 @@ impl App {
                 };
             }
             DialogKind::Viewer { .. } | DialogKind::Form { .. } => {}
-            DialogKind::Permission { always } => {
+            DialogKind::Permission { always, .. } => {
                 let always_row = always.is_some();
                 let suggestions = d.prompt.as_ref().map(|p| p.suggestions.clone()).unwrap_or_default();
                 let a = match (i, always_row) {
@@ -2126,11 +2294,11 @@ mod tests {
             text: "careful\nsecond".into(),
         }));
         let lines = a.take_pending();
-        assert_eq!(texts(&lines), ["", "  ▲ careful", "    second"]);
+        assert_eq!(texts(&lines), ["", "▲ careful", "  second"], "in the column of the other marks");
         assert_eq!(lines[1].spans[0].style, a.theme.warning());
         assert_eq!(lines[1].spans[1].style, Style::default(), "the words stay readable");
         a.on_event(UiEvent::Engine(EngineEvent::Notice { level: NoticeLevel::Error, text: "broke".into() }));
-        assert_eq!(texts(&a.take_pending()), ["", "  ✕ broke"]);
+        assert_eq!(texts(&a.take_pending()), ["", "✕ broke"]);
     }
 
     #[test]
@@ -2325,6 +2493,38 @@ mod tests {
     }
 
     #[test]
+    fn api_errors_read_as_a_person_would_say_them() {
+        let h = |t: &str| human_api_error(t, "quick-thinking", "gpt.example.net");
+        // The texts KodAct's engine sends, from a real gateway run.
+        let (head, next) = h(r#"API Error: HTTP 400 (error) from https://gpt.technica-engineering.net/api/v1/chat/completions: {"detail":"Model not found"}"#).unwrap();
+        assert_eq!(head, "quick-thinking isn't available on gpt.technica-engineering.net");
+        assert_eq!(next, "/model to choose another · HTTP 400: Model not found");
+        let (head, _) = h("API Error: network error: could not connect to https://gw.example.com/v1/chat/completions: Host is unreachable (os error 113). Retrying in 6s (attempt 1).").unwrap();
+        assert_eq!(head, "Can't reach gw.example.com · retrying in 6s (attempt 1)");
+        let (head, next) =
+            h(r#"API Error: HTTP 401 from https://u:p@gw.example.com/v1: {"error":{"message":"bad key"}}"#).unwrap();
+        assert_eq!(head, "gw.example.com didn't accept the key", "no credentials from the URL");
+        assert!(next.contains("HTTP 401: bad key"));
+        assert!(h("API Error: HTTP 503 from https://gw.example.com/v1").unwrap().0.ends_with("had an error"));
+        assert!(h("Something else entirely").is_none(), "other notices stay as they are");
+        // On screen: the mark in the marks' column, the headline, then the next step.
+        let mut a = app();
+        a.status.model = "quick-thinking".into();
+        a.on_event(UiEvent::Engine(EngineEvent::Notice {
+            level: NoticeLevel::Error,
+            text: r#"API Error: HTTP 400 (error) from https://gw.example.com/v1/chat/completions: {"detail":"Model not found"}"#.into(),
+        }));
+        assert_eq!(
+            texts(&a.take_pending()),
+            [
+                "",
+                "✕ quick-thinking isn't available on gw.example.com",
+                "  /model to choose another · HTTP 400: Model not found"
+            ]
+        );
+    }
+
+    #[test]
     fn the_persons_message_takes_the_input_mark_in_its_modes_colour() {
         let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
         a.look = crate::tui::look::Look::Frame;
@@ -2415,7 +2615,7 @@ mod tests {
         }));
         assert_eq!(
             texts(&a.take_pending()),
-            ["", "● Ran cargo test", "  └ ok", "    2 passed"],
+            ["", "✓ Ran cargo test", "  └ ok", "    2 passed"],
             "the header goes out with its result; a command shows its first lines"
         );
         assert!(a.running.is_empty());
@@ -2451,14 +2651,13 @@ mod tests {
                 step: None,
                 steps: 0,
             };
-            let dot = a.theme.success();
-            a.commit_tool(r, dot, false);
+            a.commit_tool(r, ToolEnd::Done);
             texts(&a.take_pending()).last().unwrap().clone()
         };
         assert_eq!(step_for(Look::Bare), "  ran cargo test");
         assert_eq!(step_for(Look::Ledger), "  ran cargo test");
         assert_eq!(step_for(Look::Glow), "✓ Ran cargo test");
-        assert_eq!(step_for(Look::Frame), "● Ran cargo test");
+        assert_eq!(step_for(Look::Frame), "✓ Ran cargo test");
         // A style arrives from the session by name.
         let mut a = app();
         a.on_event(UiEvent::Look("ledger".into()));

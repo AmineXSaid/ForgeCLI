@@ -357,6 +357,14 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
             }
         })
         .collect();
+    // What a destructive command would do, in red, with a glyph and a word.
+    if let Some(danger) = app.dialog_danger() {
+        rows.push(Line::default());
+        rows.push(Line::from(vec![
+            Span::styled("⚠ ", t.error()),
+            Span::styled(format!("This {danger}. It can't be undone."), t.error()),
+        ]));
+    }
     rows.push(Line::default());
     let selected = app.dialog_selected();
     for (i, (label, desc)) in app.dialog_options().into_iter().enumerate() {
@@ -369,9 +377,18 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
         rows.push(Line::from(spans));
     }
     rows.push(Line::default());
-    let permission = app.dialog_options().first().is_some_and(|(_, k)| k == "y");
-    let hint =
-        if permission { "Enter or y·a·n to answer · Esc to deny" } else { "Enter to select · Esc to cancel" };
+    let options = app.dialog_options();
+    let permission = options.first().is_some_and(|(_, k)| k == "y");
+    // The keys the rows show, and no others.
+    let keys: Vec<&str> = options.iter().map(|(_, k)| k.as_str()).filter(|k| k.len() == 1).collect();
+    let hint = if !permission {
+        "Enter to select · Esc to cancel".to_string()
+    } else if app.dialog_danger().is_some() {
+        let always = if keys.contains(&"a") { " · a always" } else { "" };
+        format!("y to allow{always} · Enter, n or Esc to deny")
+    } else {
+        format!("Enter or {} to answer · Esc to deny", keys.join("·"))
+    };
     rows.push(Line::from(Span::styled(hint, t.dim())));
     let title = if permission {
         Line::from(vec![Span::styled("◆ ", t.accent()), Span::styled(title, t.bold())])
@@ -826,6 +843,14 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     let mut spinner = vec![];
     for r in &app.running {
         let ran = now.duration_since(r.since);
+        // Asked about and not yet allowed: waiting, not running.
+        if app.asking_for() == Some(r.id.as_str()) {
+            let mut spans = vec![Span::styled("◇ ", t.warning()), Span::styled("Waiting", t.bold())];
+            spans.extend(r.header.iter().skip(1).cloned());
+            spinner.push(Line::default());
+            spinner.extend(text::wrap(vec![Line::from(spans)], tw as u16).into_iter().take(2));
+            continue;
+        }
         let mut spans = if is_agent(&r.name) {
             // A sub-agent: a lime segment sweeping a short track, its time, and its latest step.
             scanner(&t, ran)
@@ -845,7 +870,9 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         spinner.push(Line::default());
         spinner.extend(text::wrap(vec![Line::from(spans)], tw as u16).into_iter().take(2));
     }
-    if app.busy {
+    // A permission question shows its own waiting row: no second line saying so.
+    let asked_row = app.asking_for().is_some_and(|id| app.running.iter().any(|r| r.id == id));
+    if app.busy && !asked_row {
         let since = app.busy_since.map(|s| now.duration_since(s)).unwrap_or_default();
         let frame = SPINNER[(since.as_millis() / SPINNER_STEP.as_millis()) as usize % SPINNER.len()];
         let mut line = vec![Span::styled(format!("{frame} "), t.accent())];
@@ -1280,9 +1307,63 @@ mod tests {
     }
 
     #[test]
+    fn a_destructive_command_starts_on_deny_and_needs_y() {
+        let mut a = app(false);
+        a.look = crate::tui::look::Look::Frame;
+        // The call is shown while it waits: as waiting, not running.
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+            message: kodact_types::ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: kodact_types::Role::Assistant,
+                model: "m".into(),
+                content: vec![kodact_types::ContentBlock::ToolUse {
+                    id: "t".into(),
+                    name: "Bash".into(),
+                    input: json!({"command": "rm -rf build/"}),
+                    cache_control: None,
+                    provider: None,
+                }],
+                stop_reason: Some(kodact_types::StopReason::ToolUse),
+                stop_sequence: None,
+                usage: Default::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        a.busy = true;
+        ask(&mut a, "Bash", json!({"command": "rm -rf build/"}));
+        let (rows, _) = draw(&live_view(&a, 80, 40), 80);
+        let text = rows.join("\n");
+        assert!(text.contains("◇ Waiting rm -rf build/") && !text.contains("Running rm"), "{text}");
+        assert!(!text.contains("Waiting for your answer"), "said once: {text}");
+        assert!(text.contains("⚠ This deletes files: build/. It can't be undone."), "{text}");
+        assert!(text.contains("❯ 2. Deny"), "the cursor starts on Deny: {text}");
+        assert!(text.contains("y to allow · Enter, n or Esc to deny"), "{text}");
+        // Enter on Allow does nothing but say how to allow it.
+        a.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).is_empty());
+        assert!(a.dialog.is_some(), "still asking");
+        assert!(a.hint.as_ref().is_some_and(|(h, _)| h.contains("Press y")));
+        // y allows it.
+        a.on_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(a.dialog.is_none());
+        // What counts as destructive.
+        use crate::tui::app::danger_of;
+        let d = |c: &str| danger_of("Bash", &json!({ "command": c }));
+        assert_eq!(d("rm -rf build/ dist"), Some("deletes files: build/ dist".into()));
+        assert_eq!(d("git reset --hard HEAD~1"), Some("discards uncommitted changes".into()));
+        assert_eq!(d("git push --force origin main"), Some("rewrites the remote branch".into()));
+        assert_eq!(d("psql -c 'DROP TABLE users'"), Some("deletes data".into()));
+        assert_eq!(d("cargo test"), None);
+        assert_eq!(d("git push origin main"), None);
+        assert_eq!(danger_of("Read", &json!({"file_path": "/x"})), None);
+    }
+
+    #[test]
     fn dialogs_draw_in_a_box_without_the_input() {
         let mut a = app(false);
-        ask(&mut a, "Bash", json!({"command": "rm -rf build"}));
+        ask(&mut a, "Bash", json!({"command": "cargo build"}));
         let v = live_view(&a, 40, 30);
         let (rows, buf) = draw(&v, 40);
         assert_eq!(
@@ -1290,14 +1371,13 @@ mod tests {
             [
                 "╭──────────────────────────────────────╮",
                 "│ ◆ Approve Bash?                      │",
-                "│   rm -rf build                       │",
+                "│   cargo build                        │",
                 "│                                      │",
                 "│ ❯ 1. Allow once  y                   │",
                 "│   2. Deny, and tell KodAct what to   │",
                 "│      do  n                           │",
                 "│                                      │",
-                "│ Enter or y·a·n to answer · Esc to    │",
-                "│ deny                                 │",
+                "│ Enter or y·n to answer · Esc to deny │",
                 "╰──────────────────────────────────────╯",
                 "  /p           opus · ○ 88% left · $0.25",
             ]
