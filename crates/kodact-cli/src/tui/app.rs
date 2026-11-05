@@ -93,30 +93,6 @@ pub enum UiEvent {
     Exit,
 }
 
-/// The input box's shape: thin (one row of text between the borders), tall
-/// (a row of air above and below the text), filled (the raised surface inside),
-/// or both.
-/// Only the snapshot mockups pick a shape until one is chosen as the default.
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InputBox {
-    #[default]
-    Thin,
-    Tall,
-    Filled,
-    TallFilled,
-}
-
-impl InputBox {
-    pub fn tall(self) -> bool {
-        matches!(self, InputBox::Tall | InputBox::TallFilled)
-    }
-
-    pub fn filled(self) -> bool {
-        matches!(self, InputBox::Filled | InputBox::TallFilled)
-    }
-}
-
 /// What the UI loop does for the app.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -315,8 +291,6 @@ pub struct App {
     pub keymap: super::keys::Keymap,
     /// The UI's style.
     pub look: super::look::Look,
-    /// The input box's shape (`thin`, `tall`, `filled`, `tall-filled`).
-    pub input_box: InputBox,
     /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
     pub front: bool,
     /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
@@ -646,7 +620,6 @@ impl App {
             viewer_page: std::cell::Cell::new(10),
             keymap: Default::default(),
             look: Default::default(),
-            input_box: Default::default(),
             front: false,
             endpoint: String::new(),
             branch: String::new(),

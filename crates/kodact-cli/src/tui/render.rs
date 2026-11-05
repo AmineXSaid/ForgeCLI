@@ -909,57 +909,24 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
             ])
         }
     };
+    let (top, bottom) = (edge('╭', '╮'), edge('╰', '╯'));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, inner) } else { (vec![], (0, 0)) };
-    // The box's shape: filled with the raised surface, and/or a row of air above and below the text.
-    let shape = app.input_box;
-    let fill =
-        (!open && t.color && shape.filled()).then(|| Style::default().bg(palette::PROMPT_BG.color(t.depth, t.light)));
-    let on_fill = |st: Style| match fill {
-        Some(f) if st.bg.is_none() => st.patch(f),
-        _ => st,
-    };
-    // Filled: the border hugs the fill (edge blocks on the side that touches it), so no
-    // dark strip shows between them; the border cells themselves stay unfilled.
-    let (left_edge, right_edge) = if fill.is_some() { ("▕", "▏") } else { ("│", "│") };
-    let (top, bottom) = if fill.is_some() {
-        let rule = |c: &str| {
-            Line::from(vec![Span::raw(format!("{margin} ")), Span::styled(c.repeat(bw.saturating_sub(2)), border)])
-        };
-        (rule("▁"), rule("▔"))
-    } else {
-        (edge('╭', '╮'), edge('╰', '╯'))
-    };
-    let mut input_rows: Vec<Line<'static>> = input_rows
+    let input_rows: Vec<Line<'static>> = input_rows
         .into_iter()
         .map(|row| {
             let used: usize = row.spans.iter().map(|s| text_width(&s.content)).sum();
             let mut spans = vec![Span::raw(margin.clone())];
             if !open {
-                spans.push(Span::styled(left_edge, border));
-                spans.push(Span::styled(" ", on_fill(Style::default())));
+                spans.push(Span::styled("│ ", border));
             }
-            spans.extend(row.spans.into_iter().map(|s| Span::styled(s.content, on_fill(s.style))));
+            spans.extend(row.spans);
             if !open {
-                spans.push(Span::styled(" ".repeat(inner.saturating_sub(used) + 1), on_fill(Style::default())));
-                spans.push(Span::styled(right_edge, border));
+                spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+                spans.push(Span::styled(" │", border));
             }
             Line::from(spans)
         })
         .collect();
-    let mut cursor = cursor;
-    if !open && shape.tall() && !input_rows.is_empty() {
-        let air = || {
-            Line::from(vec![
-                Span::raw(margin.clone()),
-                Span::styled(left_edge, border),
-                Span::styled(" ".repeat(bw.saturating_sub(2)), on_fill(Style::default())),
-                Span::styled(right_edge, border),
-            ])
-        };
-        input_rows.insert(0, air());
-        input_rows.push(air());
-        cursor.1 += 1;
-    }
     let cursor = (cursor.0 + side as u16 + margin.len() as u16, cursor.1);
     let under: Vec<Line<'static>> = if front && fb.is_some_and(|b| b.under) && !input_rows.is_empty() {
         let mut parts = vec![Span::styled(mode_name(&app.status.mode), t.accent())];
