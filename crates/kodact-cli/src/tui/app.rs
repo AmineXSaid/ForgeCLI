@@ -770,15 +770,21 @@ impl App {
                         .push(Line::from(vec![Span::styled(mark, t.subtle()), Span::styled(l.to_string(), t.bold())]));
                 }
             }
-            // The panel's echo: its edge in the mode the words were sent in, on the raised surface.
+            // The input's own mark, in the colour of the mode the words were sent in, then
+            // the words, bright and bold: what was typed reads as typed, with no surface.
             Look::Frame => {
-                let st =
-                    if t.color { t.raised().fg(super::palette::PROMPT_FG.color(t.depth, t.light)) } else { t.user() };
-                let edge = if t.color { st.patch(t.mode(&self.status.mode)) } else { t.bold() };
-                let edge_char = if t.color { "▎ " } else { "│ " };
-                for l in text.lines() {
-                    self.pending
-                        .push(Line::from(vec![Span::styled(edge_char, edge), Span::styled(format!(" {l}  "), st)]));
+                let mark = if t.color { t.mode(&self.status.mode) } else { t.bold() };
+                let words = if t.color {
+                    Style::default()
+                        .fg(super::palette::PROMPT_FG.color(t.depth, t.light))
+                        .add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    t.bold()
+                };
+                for (i, l) in text.lines().enumerate() {
+                    let lead =
+                        if i == 0 { Span::styled(format!("{} ", glyphs::PROMPT), mark) } else { Span::raw("  ") };
+                    self.pending.push(Line::from(vec![lead, Span::styled(l.to_string(), words)]));
                 }
             }
             Look::Status => {
@@ -2059,7 +2065,7 @@ mod tests {
         typed(&mut a, "hello");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("hello".into())]);
         assert!(a.busy);
-        assert_eq!(texts(&a.take_pending()), ["", "│  hello  "]);
+        assert_eq!(texts(&a.take_pending()), ["", "❯ hello"]);
         typed(&mut a, "next");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "queued while a turn runs");
         assert_eq!(a.queued.len(), 1);
@@ -2212,7 +2218,7 @@ mod tests {
         typed(&mut a, "/usage");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/usage".into())], "sent, not queued");
         assert!(a.queued.is_empty() && a.busy, "the turn goes on");
-        assert_eq!(texts(&a.take_pending()), ["", "│  /usage  "], "echoed");
+        assert_eq!(texts(&a.take_pending()), ["", "❯ /usage"], "echoed");
         typed(&mut a, "/compact");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "not immediate: queued");
         assert_eq!(a.queued.len(), 1);
@@ -2265,6 +2271,24 @@ mod tests {
         assert_eq!(texts(&a.take_pending()), [""], "the blank line goes out with the first words");
         a.on_event(delta(" through it.\n"));
         assert_eq!(texts(&a.take_pending()), ["● I will walk through it."], "and isn't added twice");
+    }
+
+    #[test]
+    fn the_persons_message_takes_the_input_mark_in_its_modes_colour() {
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
+        a.look = crate::tui::look::Look::Frame;
+        a.echo_prompt("fix the cart\nand the tests");
+        let lines = a.take_pending();
+        assert_eq!(texts(&lines), ["", "❯ fix the cart", "  and the tests"], "later lines line up under the words");
+        let default_mark = lines[1].spans[0].style.fg;
+        assert_eq!(default_mark, a.theme.mode("default").fg);
+        assert!(lines[1].spans[1].style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        a.status.mode = "plan".into();
+        a.echo_prompt("plan it");
+        let lines = a.take_pending();
+        let plan = lines.iter().find(|l| plain(l).contains("plan it")).unwrap();
+        assert_eq!(plan.spans[0].style.fg, a.theme.mode("plan").fg);
+        assert_ne!(plan.spans[0].style.fg, default_mark, "the mark shows the mode it was sent in");
     }
 
     #[test]
@@ -2356,7 +2380,7 @@ mod tests {
             a.echo_prompt("fix the cart");
             texts(&a.take_pending())
         };
-        assert_eq!(prompt_for(Look::Frame).last().unwrap(), "│  fix the cart  ", "the panel's echo");
+        assert_eq!(prompt_for(Look::Frame).last().unwrap(), "❯ fix the cart", "the input's mark, then the words");
         assert_eq!(prompt_for(Look::Bare).last().unwrap(), "› fix the cart");
         let card = prompt_for(Look::Card);
         assert!(card[card.len() - 2].starts_with("  you · "), "{card:?}");

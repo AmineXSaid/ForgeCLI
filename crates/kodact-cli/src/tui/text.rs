@@ -216,17 +216,6 @@ impl Theme {
         }
     }
 
-    /// The frame style's raised surface (its panel, its menus, the echo of what
-    /// was sent): a shade off the background where the terminal has enough
-    /// colours, none in 16 colours, where the nearest grey is too light behind text.
-    pub fn raised(&self) -> Style {
-        if self.color && self.depth != Depth::Ansi16 {
-            Style::default().bg(palette::PROMPT_BG.color(self.depth, self.light))
-        } else {
-            Style::default()
-        }
-    }
-
     /// The person's own prompts in the transcript: a raised surface.
     pub fn user(&self) -> Style {
         if self.color {
