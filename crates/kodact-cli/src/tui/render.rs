@@ -812,8 +812,10 @@ pub fn live_view_at(app: &App, width: u16, max_height: u16, now: Instant) -> Liv
 fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_box: Option<FrontBox>) -> LiveView {
     let w = (width as usize).max(4);
     let t = app.theme;
+    // The width of the rows that join the transcript (set in by its indent on the full screen).
+    let tw = w.saturating_sub(app.transcript_indent).max(4);
     // 1. The unfinished answer line: its last rows.
-    let mut live: Vec<Line<'static>> = app.live_line().map(|l| text::wrap(vec![l], w as u16)).unwrap_or_default();
+    let mut live: Vec<Line<'static>> = app.live_line().map(|l| text::wrap(vec![l], tw as u16)).unwrap_or_default();
     if live.len() > LIVE_ROWS {
         live.drain(..live.len() - LIVE_ROWS);
     }
@@ -838,7 +840,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
             }
         }
         spinner.push(Line::default());
-        spinner.extend(text::wrap(vec![Line::from(spans)], w as u16).into_iter().take(2));
+        spinner.extend(text::wrap(vec![Line::from(spans)], tw as u16).into_iter().take(2));
     }
     if app.busy {
         let since = app.busy_since.map(|s| now.duration_since(s)).unwrap_or_default();
@@ -873,7 +875,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     let mut queued: Vec<Line<'static>> = app
         .queued
         .iter()
-        .map(|q| Line::from(Span::styled(fit(&format!("  ⏎ {}", q.replace('\n', " ")), w), t.dim())))
+        .map(|q| Line::from(Span::styled(fit(&format!("  ⏎ {}", q.replace('\n', " ")), tw), t.dim())))
         .collect();
     // 5. The input box (hidden while a dialog is open).
     // The input sits in a rounded box; its rows are padded to the box's inside. On the
@@ -1001,10 +1003,26 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         }
     }
 
-    let mut lines = live;
-    lines.extend(spinner);
+    // On the full screen the transcript is set in by its indent: what is still live joins it there.
+    let set_in = |v: Vec<Line<'static>>| -> Vec<Line<'static>> {
+        if app.transcript_indent == 0 {
+            return v;
+        }
+        v.into_iter()
+            .map(|l| {
+                if l.spans.is_empty() {
+                    return l;
+                }
+                let mut spans = vec![Span::raw(" ".repeat(app.transcript_indent))];
+                spans.extend(l.spans);
+                Line::from(spans)
+            })
+            .collect()
+    };
+    let mut lines = set_in(live);
+    lines.extend(set_in(spinner));
     lines.extend(dialog);
-    lines.extend(queued);
+    lines.extend(set_in(queued));
     lines.extend(search);
     lines.extend(std::iter::repeat_n(Line::default(), gap));
     let mut cur = None;

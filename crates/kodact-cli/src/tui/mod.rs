@@ -223,6 +223,36 @@ impl<B: Backend> Screen<B> {
     }
 }
 
+/// Columns left empty on each side of the full screen: 2, or none on a terminal too
+/// narrow to spare them.
+fn gutter(width: u16) -> u16 {
+    if width >= 40 {
+        2
+    } else {
+        0
+    }
+}
+
+/// Columns the transcript is set in from the input box's edge, so its marks (`●`, `❯`)
+/// line up with the box's `❯` and its text with the text typed in the box.
+const TRANSCRIPT_INDENT: u16 = 2;
+
+/// `lines` wrapped to `width` less the transcript's indent, each row indented.
+fn indented(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let indent = TRANSCRIPT_INDENT.min(width.saturating_sub(4));
+    text::wrap(lines, width - indent)
+        .into_iter()
+        .map(|l| {
+            if indent == 0 || l.spans.is_empty() {
+                return l;
+            }
+            let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent as usize))];
+            spans.extend(l.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// The full-screen UI: the whole window, and the transcript it keeps itself
 /// (wrapped once per width, as lines arrive).
 pub struct Full<B: Backend> {
@@ -245,8 +275,10 @@ impl<B: Backend> Full<B> {
         Ok(Full { terminal, transcript: vec![], wrapped: vec![], wrapped_w: 0, scroll: 0, max_scroll: 0, info })
     }
 
+    /// The width text is laid out in: the window less its gutters.
     pub fn width(&self) -> u16 {
-        self.terminal.size().map(|s| s.width).unwrap_or(80)
+        let w = self.terminal.size().map(|s| s.width).unwrap_or(80);
+        w - 2 * gutter(w)
     }
 
     pub fn rows(&self) -> u16 {
@@ -256,7 +288,7 @@ impl<B: Backend> Full<B> {
     /// Finished lines join the transcript. A view scrolled up stays where it is.
     pub fn commit(&mut self, lines: Vec<Line<'static>>) {
         let w = self.width();
-        let rows = text::wrap(lines.clone(), w);
+        let rows = indented(lines.clone(), w);
         if self.scroll > 0 {
             self.scroll += rows.len();
         }
@@ -273,16 +305,20 @@ impl<B: Backend> Full<B> {
 
     pub fn draw(&mut self, app: &App) -> std::io::Result<()> {
         let size = self.terminal.size()?;
-        if size.width != self.wrapped_w {
-            self.wrapped = text::wrap(self.transcript.clone(), size.width);
-            self.wrapped_w = size.width;
+        // A gutter on both sides, so text never touches the terminal's edge.
+        let pad = gutter(size.width);
+        let width = size.width - 2 * pad;
+        if width != self.wrapped_w {
+            self.wrapped = indented(self.transcript.clone(), width);
+            self.wrapped_w = width;
         }
-        let page = front::front_page(&app.theme, app.look, &self.info, size.width as usize);
-        let (view, max) = render::full_view(app, size.width, size.height, &self.wrapped, &page, self.scroll);
+        let page = front::front_page(&app.theme, app.look, &self.info, width as usize);
+        let (view, max) = render::full_view(app, width, size.height, &self.wrapped, &page, self.scroll);
         self.max_scroll = max;
         self.scroll = self.scroll.min(max);
         self.terminal.draw(|f| {
-            let area = f.area();
+            let full = f.area();
+            let area = ratatui::layout::Rect { x: full.x + pad, width, ..full };
             f.render_widget(Paragraph::new(view.lines.clone()), area);
             if let Some((x, y)) = view.cursor {
                 if x < area.width && y < area.height {
@@ -528,6 +564,9 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let task = tokio::spawn(session::run(driver, rx, ui_tx));
     let guard = setup(full).map_err(|e| Fail::config(format!("cannot set up the terminal: {e}")))?;
     let draw_fail = |e: std::io::Error| Fail::config(format!("cannot draw on the terminal: {e}"));
+    if full {
+        app.transcript_indent = TRANSCRIPT_INDENT as usize;
+    }
     let mut screen = if full {
         Display::Full(Box::new(Full::new(CrosstermBackend::new(std::io::stdout()), info).map_err(draw_fail)?))
     } else {
@@ -823,6 +862,34 @@ mod tests {
     }
 
     #[test]
+    fn the_full_screen_keeps_a_gutter_on_both_sides() {
+        let theme = text::Theme { color: false, light: false, accent: None, depth: Default::default() };
+        let mut a = app::App::new(theme, vec![]);
+        a.submit("fix it".into());
+        a.front = false;
+        let mut f = Full::new(TestBackend::new(60, 24), front::FrontInfo::default()).unwrap();
+        assert_eq!(f.width(), 56, "text is laid out between the gutters");
+        f.commit(a.take_pending());
+        f.commit(vec![Line::from("x".repeat(70))]);
+        f.draw(&a).unwrap();
+        let rows = rows(f.terminal.backend());
+        for r in &rows {
+            let cells: Vec<char> = r.chars().collect();
+            assert!(cells.len() <= 58, "nothing in the right gutter: {r:?}");
+            assert!(cells.iter().take(2).all(|c| *c == ' '), "nothing in the left gutter: {r:?}");
+        }
+        // The transcript's marks line up with the box's `❯`, its text with the typed text.
+        let col = |r: &String, c: char| r.chars().position(|x| x == c);
+        let echoed = rows.iter().find(|r| r.contains("fix it")).expect("the message");
+        let boxed = rows.iter().find(|r| r.starts_with("  │ ❯")).expect("the box");
+        assert_eq!(col(echoed, '❯'), col(boxed, '❯'), "{rows:#?}");
+        assert!(rows.iter().any(|r| r == &format!("    {}", "x".repeat(54))), "long lines wrap inside: {rows:#?}");
+        // Too narrow to spare the columns: no gutter.
+        let f = Full::new(TestBackend::new(30, 8), front::FrontInfo::default()).unwrap();
+        assert_eq!(f.width(), 30);
+    }
+
+    #[test]
     fn commit_wraps_into_scrollback_above_the_viewport() {
         let mut s = Screen::new(Box::new(|| TestBackend::new(10, 6)), 2).unwrap();
         let view = LiveView { lines: vec![Line::from("> input")], cursor: Some((2, 0)) };
@@ -941,6 +1008,7 @@ mod snapshots {
     fn app() -> App {
         let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
         a.front = true;
+        a.transcript_indent = TRANSCRIPT_INDENT as usize;
         a.endpoint = "gpt.technica-engineering.net".into();
         a.branch = "main".into();
         a.on_event(UiEvent::Status(StatusView {
