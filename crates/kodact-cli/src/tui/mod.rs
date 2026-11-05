@@ -1211,4 +1211,27 @@ mod snapshots {
         let mut a = app();
         shot("12-front-small-terminal", &mut a, 80, 24);
     }
+
+    /// The input box in each shape, on the front page and in a conversation, for choosing one.
+    #[test]
+    #[ignore]
+    fn input_box_shapes() {
+        use super::app::InputBox;
+        for (name, shape) in [
+            ("thin", InputBox::Thin),
+            ("tall", InputBox::Tall),
+            ("filled", InputBox::Filled),
+            ("tall-filled", InputBox::TallFilled),
+        ] {
+            let mut a = app();
+            a.input_box = shape;
+            shot(&format!("box-{name}-front"), &mut a, 140, 30);
+            let mut a = app();
+            a.input_box = shape;
+            a.submit("how do I add an index in postgres?".into());
+            a.front = false;
+            answer(&mut a, "Use `CREATE INDEX CONCURRENTLY idx_users_email ON users (email);` on a live table: it doesn't lock writes.");
+            shot(&format!("box-{name}-chat"), &mut a, 140, 14);
+        }
+    }
 }
