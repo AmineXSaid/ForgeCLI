@@ -618,7 +618,7 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     if folder && app.look == super::look::Look::Frame && !app.branch.is_empty() {
         left = format!("{left}  ⎇ {}", fit(&app.branch, 24));
     }
-    let room = w.saturating_sub(text_width(&left) + lead + 2);
+    let room = w.saturating_sub(text_width(&left) + 2 * lead + 2);
     // The front screen shows the model under its input; the status line keeps the version.
     let right = if app.look == super::look::Look::Frame && app.status_text.is_none() {
         // The box shows the model and the context; the line keeps the keys that help now.
@@ -629,7 +629,8 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
         status_right_spans(app, room)
     };
     let right_w: usize = right.iter().map(|s| text_width(&s.content)).sum();
-    let gap = w.saturating_sub(lead + text_width(&left) + right_w);
+    // As far from the right edge as the folder is from the left, under the box's text.
+    let gap = w.saturating_sub(lead + text_width(&left) + right_w + lead);
     let mut spans = vec![Span::raw("  ")];
     spans.extend([Span::styled(left, left_style), Span::raw(" ".repeat(gap))]);
     spans.extend(right);
@@ -1147,7 +1148,7 @@ fn session_row(app: &App, room: usize) -> Vec<Span<'static>> {
     let t = app.theme;
     let s = &app.status;
     let w_of = |v: &[Span<'static>]| v.iter().map(|s| text_width(&s.content)).sum::<usize>();
-    let sep = || Span::styled("  ·  ", t.hairline());
+    let sep = || Span::styled("  ·  ", t.subtle());
     let mode = vec![Span::styled(mode_name(&s.mode), t.mode(&s.mode).add_modifier(ratatui::style::Modifier::BOLD))];
     let mut right = vec![];
     if s.context_pct.is_some_and(|p| p > 0 || s.context_used) {
@@ -1265,7 +1266,7 @@ mod tests {
         assert_eq!(rows[0], format!("╭{}╮", "─".repeat(58)));
         assert_eq!(rows[1], format!("│ ❯ {PLACEHOLDER:<54} │"));
         assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
-        assert_eq!(rows[3], "  /p                               opus · ○ 88% left · $0.25");
+        assert_eq!(rows[3], "  /p                             opus · ○ 88% left · $0.25");
         assert_eq!(v.cursor, Some((4, 1)));
         // The placeholder is quiet but readable (muted, over 4.5:1); the prompt marker is KodAct's lime.
         assert_eq!(buf[(6, 1)].fg, crate::tui::palette::MUTED.color(Default::default(), false));
@@ -1432,7 +1433,7 @@ mod tests {
                 "│                                      │",
                 "│ Enter or y·n to answer · Esc to deny │",
                 "╰──────────────────────────────────────╯",
-                "  /p           opus · ○ 88% left · $0.25",
+                "  /p         opus · ○ 88% left · $0.25",
             ]
         );
         assert_eq!(v.cursor, None, "no cursor while a dialog is open");
@@ -1563,7 +1564,7 @@ mod tests {
         }));
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[1], "│ Select a model                       │");
-        assert_eq!(rows[2], "│ Type to filter                       │");
+        assert_eq!(rows[2], "│ ❯ type to filter                     │", "a field to type in");
         assert_eq!(rows[4], "│   1. Opus  big                       │");
         assert_eq!(rows[5], "│ ❯ 2. Haiku ✔  small                  │");
         a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -2026,6 +2027,6 @@ mod tests {
         let mut a = app(false);
         a.on_event(UiEvent::StatusLine(Some("main · 3 files".into())));
         let (rows, _) = draw(&live_view(&a, 40, 10), 40);
-        assert_eq!(rows.last().unwrap(), "  /p                      main · 3 files");
+        assert_eq!(rows.last().unwrap(), "  /p                    main · 3 files");
     }
 }

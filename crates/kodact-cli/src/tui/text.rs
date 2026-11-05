@@ -380,6 +380,10 @@ impl Markdown {
                 }
                 let c = r.get(i).map(String::as_str).unwrap_or("");
                 let mut cell = inline(c, t);
+                // Code in a cell keeps its colour, not its shade: shaded blocks break the columns.
+                for s in &mut cell {
+                    s.style.bg = None;
+                }
                 if header {
                     for s in &mut cell {
                         s.style = s.style.patch(t.teal().add_modifier(Modifier::BOLD));
@@ -405,7 +409,8 @@ impl Markdown {
     /// One line. A code fence opens with its language on a gutter line and
     /// closes with the gutter's foot; code inside is highlighted.
     pub fn line(&mut self, raw: &str, t: &Theme) -> Option<Line<'static>> {
-        let gutter = |s: &'static str| Span::styled(s, t.hairline());
+        // The fence's rule in a quiet grey that still reads, so the frame never looks half-drawn.
+        let gutter = |s: &'static str| Span::styled(s, t.subtle());
         let trimmed = raw.trim_start();
         if let Some((marker, lang)) = self.fence.clone() {
             if trimmed.starts_with(marker.as_str())

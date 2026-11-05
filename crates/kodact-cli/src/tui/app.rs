@@ -1515,9 +1515,9 @@ impl App {
         match &d.kind {
             DialogKind::Picker { picker, filter } => {
                 let body = if filter.is_empty() {
-                    vec!["Type to filter".to_string()]
+                    vec!["❯ type to filter".to_string()]
                 } else {
-                    vec![format!("Filter: {filter}")]
+                    vec![format!("❯ {filter}▏")]
                 };
                 (picker.title.clone(), body)
             }
@@ -2986,7 +2986,7 @@ mod tests {
         assert_eq!(a.dialog_options()[1].0, "Haiku ✔");
         typed(&mut a, "op");
         assert_eq!(a.dialog_options().len(), 1);
-        assert_eq!(a.dialog_text().1, ["Filter: op"]);
+        assert_eq!(a.dialog_text().1, ["❯ op▏"]);
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/model opus".into())]);
         assert!(a.dialog.is_none());
         a.on_event(UiEvent::Idle);

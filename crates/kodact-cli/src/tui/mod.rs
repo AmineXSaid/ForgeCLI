@@ -1014,7 +1014,7 @@ mod snapshots {
         a.on_event(UiEvent::Status(StatusView {
             model: "quick-thinking".into(),
             mode: "default".into(),
-            cwd: "~/KodAct".into(),
+            cwd: "/home/kryptonite/KodAct".into(),
             cost: 0.0,
             cost_unknown: true,
             context_pct: Some(4),
@@ -1092,6 +1092,9 @@ mod snapshots {
     #[ignore]
     fn snapshots() {
         use serde_json::json;
+        // The screens as on the user's machine: their home folder, for `~` in paths.
+        // SAFETY: an ignored test run on its own; nothing else reads HOME meanwhile.
+        unsafe { std::env::set_var("HOME", "/home/kryptonite") };
         // 1. First run here.
         let mut a = app();
         shot_with("01-front-first-run", &mut a, 140, 40, false);
@@ -1120,7 +1123,7 @@ mod snapshots {
         a.on_event(msg(
             vec![
                 ContentBlock::text("I'll look at the file first."),
-                call("r1", "Read", json!({"file_path": "/home/kryptonite/proj/src/calc.py"})),
+                call("r1", "Read", json!({"file_path": "/home/kryptonite/KodAct/src/calc.py"})),
             ],
             StopReason::ToolUse,
             None,
@@ -1131,14 +1134,14 @@ mod snapshots {
             "     1\tdef add(a, b):\n     2\t    return a - b",
             false,
             Some(
-                json!({"type": "text", "file": {"filePath": "/home/kryptonite/proj/src/calc.py", "numLines": 2, "startLine": 1, "totalLines": 2}}),
+                json!({"type": "text", "file": {"filePath": "/home/kryptonite/KodAct/src/calc.py", "numLines": 2, "startLine": 1, "totalLines": 2}}),
             ),
         );
         a.on_event(msg(
             vec![call(
                 "e1",
                 "Edit",
-                json!({"file_path": "/home/kryptonite/proj/src/calc.py", "old_string": "a - b", "new_string": "a + b"}),
+                json!({"file_path": "/home/kryptonite/KodAct/src/calc.py", "old_string": "a - b", "new_string": "a + b"}),
             )],
             StopReason::ToolUse,
             None,
@@ -1148,7 +1151,7 @@ mod snapshots {
             "e1",
             "The file was updated",
             false,
-            Some(json!({"filePath": "/home/kryptonite/proj/src/calc.py", "structuredPatch": [{
+            Some(json!({"filePath": "/home/kryptonite/KodAct/src/calc.py", "structuredPatch": [{
             "oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 2,
             "lines": [" def add(a, b):", "-    return a - b", "+    return a + b"]}]})),
         );
@@ -1261,7 +1264,10 @@ mod snapshots {
         }));
         a.submit("hi".into());
         a.front = false;
-        a.on_event(UiEvent::Reply { text: "API Error: HTTP 400 from https://gpt.technica-engineering.net/api/v1/chat/completions: {\"detail\":\"Model not found\"}".into(), is_error: true });
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Notice {
+            level: kodact_engine::NoticeLevel::Error,
+            text: "API Error: HTTP 400 (error) from https://gpt.technica-engineering.net/api/v1/chat/completions: {\"detail\":\"Model not found\"}".into(),
+        }));
         a.on_event(UiEvent::Idle);
         shot("09-warning-and-error", &mut a, 140, 20);
 
