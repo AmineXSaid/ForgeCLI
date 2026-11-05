@@ -69,6 +69,8 @@ pub fn status(d: &Driver) -> StatusView {
         context_pct,
         context_used: used > 0,
         window,
+        context_tokens: used,
+        compact_at: d.engine.autocompact_at(&d.handle().model()),
         window_guessed: d.engine.cfg.autocompact_window.is_none()
             && kodact_api::models::limits_source(&d.handle().model()) == kodact_api::models::LimitsSource::Guessed,
         session_tokens: d.engine.state.total_usage.context_tokens(),

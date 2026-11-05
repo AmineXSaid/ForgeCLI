@@ -111,8 +111,7 @@ fn status_right(app: &App) -> String {
     }
     match s.context_pct {
         // Some context in use, under 1%: "0%" would read as empty.
-        Some(0) if s.context_used => parts.push(format!("{}<1% context", guess(s))),
-        Some(p) => parts.push(format!("{}{p}% context", guess(s))),
+        Some(_) => parts.push(format!("{}{}% left", guess(s), room_left(s))),
         None => {}
     }
     parts.extend(spend(app));
@@ -125,15 +124,6 @@ fn guess(s: &StatusView) -> &'static str {
         "~"
     } else {
         ""
-    }
-}
-
-/// The context label after the meter: ` 12%`, ` <1%`, or ` ~4%` for a guessed window.
-fn pct_label(s: &StatusView, pct: u8) -> String {
-    if pct == 0 && s.context_used {
-        format!(" {}<1%", guess(s))
-    } else {
-        format!(" {}{pct}%", guess(s))
     }
 }
 
@@ -567,20 +557,38 @@ fn shimmer(t: &text::Theme, text: &str, since: Duration) -> Vec<Span<'static>> {
     out
 }
 
-/// The context meter: `━━━─────` (box-drawing bars, which every monospace font
-/// has), brand while there is room, amber from 70%, red from 90%.
-fn meter(t: &text::Theme, pct: u8) -> Vec<Span<'static>> {
-    const CELLS: usize = 8;
-    // Anything in use fills a cell, so 4% never reads as an empty bar.
-    let filled = ((pct as usize * CELLS + 50) / 100).clamp(usize::from(pct > 0), CELLS);
-    let tone = if pct >= 90 {
+/// The room left before automatic compaction, in percent (100 when nothing is in use).
+/// Measured against the compaction point when the session gave one, else the window.
+fn room_left(s: &StatusView) -> u8 {
+    if s.compact_at > 0 {
+        let used = s.context_tokens.min(s.compact_at);
+        ((s.compact_at - used) * 100 / s.compact_at) as u8
+    } else {
+        100u8.saturating_sub(s.context_pct.unwrap_or(0))
+    }
+}
+
+/// The context gauge: a shape that fills as the conversation nears compaction
+/// (`○ ◔ ◑ ◕ ●`), then the room left: `◔ 72% left`. Lime while there is room,
+/// amber from 30% left, red from 10%; `~` when the window is a guess.
+fn gauge(t: &text::Theme, s: &StatusView) -> Vec<Span<'static>> {
+    let left = room_left(s);
+    let used = 100 - left;
+    let shape = match used {
+        0..=12 => "○",
+        13..=37 => "◔",
+        38..=62 => "◑",
+        63..=87 => "◕",
+        _ => "●",
+    };
+    let tone = if left <= 10 {
         t.error()
-    } else if pct >= 70 {
+    } else if left <= 30 {
         t.warning()
     } else {
         t.accent()
     };
-    vec![Span::styled("━".repeat(filled), tone), Span::styled("─".repeat(CELLS - filled), t.subtle())]
+    vec![Span::styled(shape, tone), Span::styled(format!(" {}{left}% left", guess(s)), t.dim())]
 }
 
 fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
@@ -625,10 +633,7 @@ fn status_right_spans(app: &App, room: usize) -> Vec<Span<'static>> {
         out.push(Span::styled(s.model.clone(), t.dim()));
         out.push(sep());
     }
-    let pct = s.context_pct.unwrap_or(0);
-    out.extend(meter(&t, pct));
-    let label = pct_label(s, pct);
-    out.push(Span::styled(label, t.dim()));
+    out.extend(gauge(&t, s));
     if let Some(cost) = spend(app) {
         out.push(sep());
         out.push(Span::styled(cost, t.dim()));
@@ -1096,9 +1101,8 @@ fn session_row(app: &App, room: usize) -> Vec<Span<'static>> {
     let sep = || Span::styled("  ·  ", t.hairline());
     let mode = vec![Span::styled(mode_name(&s.mode), t.mode(&s.mode).add_modifier(ratatui::style::Modifier::BOLD))];
     let mut right = vec![];
-    if let Some(pct) = s.context_pct.filter(|p| *p > 0 || s.context_used) {
-        right.extend(meter(&t, pct));
-        right.push(Span::styled(pct_label(s, pct), t.dim()));
+    if s.context_pct.is_some_and(|p| p > 0 || s.context_used) {
+        right.extend(gauge(&t, s));
     }
     if let Some(cost) = spend(app).filter(|_| !right.is_empty()) {
         right.push(Span::styled(format!("  ·  {cost}"), t.subtle()));
@@ -1151,11 +1155,11 @@ mod tests {
             window: 200_000,
             ..Default::default()
         }));
-        assert_eq!(status_right(&a), "local · 3% context", "no price and nothing used yet: nothing to show");
+        assert_eq!(status_right(&a), "local · 97% left", "no price and nothing used yet: nothing to show");
         a.status.context_pct = Some(0);
-        assert_eq!(status_right(&a), "local · <1% context");
+        assert_eq!(status_right(&a), "local · 100% left");
         a.status.context_used = false;
-        assert_eq!(status_right(&a), "local · 0% context");
+        assert_eq!(status_right(&a), "local · 100% left");
         // A model with no price shows the tokens it used.
         assert_eq!(tokens(950), "950 tokens");
         assert_eq!(tokens(15_500), "15.5k tokens");
@@ -1212,7 +1216,7 @@ mod tests {
         assert_eq!(rows[0], format!("╭{}╮", "─".repeat(58)));
         assert_eq!(rows[1], format!("│ ❯ {PLACEHOLDER:<54} │"));
         assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
-        assert_eq!(rows[3], "  /p                             opus · ━─────── 12% · $0.25");
+        assert_eq!(rows[3], "  /p                               opus · ○ 88% left · $0.25");
         assert_eq!(v.cursor, Some((4, 1)));
         // The placeholder is quiet but readable (muted, over 4.5:1); the prompt marker is KodAct's lime.
         assert_eq!(buf[(6, 1)].fg, crate::tui::palette::MUTED.color(Default::default(), false));
@@ -1297,7 +1301,7 @@ mod tests {
                 "│ Enter or y·a·n to answer · Esc to    │",
                 "│ deny                                 │",
                 "╰──────────────────────────────────────╯",
-                "  /p         opus · ━─────── 12% · $0.25",
+                "  /p           opus · ○ 88% left · $0.25",
             ]
         );
         assert_eq!(v.cursor, None, "no cursor while a dialog is open");
@@ -1367,7 +1371,7 @@ mod tests {
         );
         let session = &rows[n - 3];
         assert!(session.starts_with("│ Default  ·  quick-thinking  ·  gpt.example.net"), "{session}");
-        assert!(session.ends_with("━─────── ~4%  ·  25.3k tokens used │"), "the context on the right: {session}");
+        assert!(session.ends_with("○ ~96% left  ·  25.3k tokens used │"), "the room left on the right: {session}");
         assert_eq!(buf[(0, (n - 6) as u16)].fg, a.theme.accent().fg.unwrap());
         assert_eq!(buf[(2, (n - 3) as u16)].fg, a.theme.mode("default").fg.unwrap(), "the mode in its colour");
         // The status line: the folder and the keys that help; the box has the rest.
@@ -1376,7 +1380,7 @@ mod tests {
         // At 80 columns the endpoint is the first to go, so the context still fits.
         let (rows, _) = draw(&live_view(&a, 80, 12), 80);
         assert!(rows[n - 3].starts_with("│ Default  ·  quick-thinking  ") && !rows[n - 3].contains("gpt.example.net"));
-        assert!(rows[n - 3].contains("~4%"), "{rows:#?}");
+        assert!(rows[n - 3].contains("~96% left"), "{rows:#?}");
         // Plan mode: named in the box in its colour, not repeated on the line.
         a.status.mode = "plan".into();
         let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
@@ -1395,7 +1399,7 @@ mod tests {
         a.status.cost = 0.25;
         a.status.cost_unknown = false;
         let (rows, _) = draw(&live_view(&a, 80, 12), 80);
-        assert!(rows[n - 3].ends_with("━─────── 4%  ·  $0.25 │"), "{rows:#?}");
+        assert!(rows[n - 3].ends_with("○ 96% left  ·  $0.25 │"), "{rows:#?}");
     }
 
     #[test]
@@ -1651,11 +1655,25 @@ mod tests {
         assert_ne!(bright(&at(500)), bright(&at(700)), "the highlight moves");
         let text: String = at(500).iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "Acting…");
-        assert_eq!(meter(&t, 50)[0].content, "━━━━");
-        assert_eq!(meter(&t, 50)[0].style, t.accent());
-        assert_eq!(meter(&t, 75)[0].style, t.warning());
-        assert_eq!(meter(&t, 95)[0].style, t.error());
-        assert_eq!(meter(&t, 0)[0].content, "");
+        // The gauge: room left before compaction, as a shape that fills and a number.
+        let at = |used: u64| StatusView {
+            context_tokens: used,
+            compact_at: 100_000,
+            context_pct: Some(1),
+            ..Default::default()
+        };
+        let g = |used| gauge(&t, &at(used)).iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(g(4_000), "○ 96% left");
+        assert_eq!(g(25_000), "◔ 75% left");
+        assert_eq!(g(50_000), "◑ 50% left");
+        assert_eq!(g(75_000), "◕ 25% left");
+        assert_eq!(g(95_000), "● 5% left");
+        assert_eq!(g(140_000), "● 0% left", "past the point: nothing left, never negative");
+        assert_eq!(gauge(&t, &at(4_000))[0].style, t.accent());
+        assert_eq!(gauge(&t, &at(75_000))[0].style, t.warning(), "amber from 30% left");
+        assert_eq!(gauge(&t, &at(95_000))[0].style, t.error(), "red from 10% left");
+        let guessed = StatusView { window_guessed: true, ..at(4_000) };
+        assert!(gauge(&t, &guessed)[1].content.contains("~96% left"));
     }
 
     #[test]

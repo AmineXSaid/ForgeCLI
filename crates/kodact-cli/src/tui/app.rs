@@ -49,6 +49,10 @@ pub struct StatusView {
     pub context_used: bool,
     /// The model's context window, so the meter can follow a turn's requests.
     pub window: u64,
+    /// Tokens in context now, and where automatic compaction runs: the gauge shows the
+    /// room left between them.
+    pub context_tokens: u64,
+    pub compact_at: u64,
     /// The window is KodAct's guess (an unknown model the endpoint gave no size for).
     pub window_guessed: bool,
     /// Tokens this session has used so far (every request's input and output), for
@@ -951,6 +955,9 @@ impl App {
         let input = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
         let shown = u.output_tokens.saturating_sub(u.reasoning_output_tokens);
         let used = if self.request_thought { input } else { input + shown };
+        if used > 0 {
+            self.status.context_tokens = used;
+        }
         if used > 0 && self.status.window > 0 {
             self.status.context_pct = Some((used * 100 / self.status.window).min(100) as u8);
             self.status.context_used = true;

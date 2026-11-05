@@ -1020,6 +1020,9 @@ mod snapshots {
             context_pct: Some(4),
             context_used: true,
             window: 200_000,
+            context_tokens: 8_800,
+            compact_at: 155_000,
+            window_guessed: true,
             ..Default::default()
         }));
         a
@@ -1278,5 +1281,15 @@ mod snapshots {
         shot("11-small-terminal", &mut a, 80, 24);
         let mut a = app();
         shot("12-front-small-terminal", &mut a, 80, 24);
+
+        // 13. A long session nearing compaction: the gauge fills and turns amber, then red.
+        for (name, used) in [("13-context-amber", 118_000), ("14-context-red", 146_000)] {
+            let mut a = app();
+            a.status.context_tokens = used;
+            a.submit("keep going with the refactor".into());
+            a.front = false;
+            answer(&mut a, "Done with the session store; moving on to the transcript writer.");
+            shot(name, &mut a, 140, 14);
+        }
     }
 }
