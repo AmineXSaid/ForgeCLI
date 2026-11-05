@@ -241,12 +241,18 @@ pub struct Usage {
     pub server_tool_use: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// Of `output_tokens`, the reasoning an endpoint reports without sending it
+    /// (OpenAI-compatible `completion_tokens_details.reasoning_tokens`). KodAct's own
+    /// book-keeping: never on the wire.
+    #[serde(skip)]
+    pub reasoning_output_tokens: u64,
 }
 
 impl Usage {
     pub fn add(&mut self, other: &Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.cache_creation_input_tokens += other.cache_creation_input_tokens;
         self.cache_read_input_tokens += other.cache_read_input_tokens;
     }

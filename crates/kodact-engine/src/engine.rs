@@ -1229,8 +1229,11 @@ impl Engine {
             let msg = [reply.to_message()];
             let all = kodact_compact::estimate_sent_tokens(&msg, true);
             let sent = kodact_compact::estimate_sent_tokens(&msg, false);
-            let carried =
-                if all == 0 { u.output_tokens } else { (u.output_tokens as u128 * sent as u128 / all as u128) as u64 };
+            // Reasoning the endpoint counted but never sent isn't in the reply's text either:
+            // leave it out before sharing the rest by characters.
+            let shown =
+                if all == sent { u.output_tokens.saturating_sub(u.reasoning_output_tokens) } else { u.output_tokens };
+            let carried = if all == 0 { shown } else { (shown as u128 * sent as u128 / all as u128) as u64 };
             input + carried
         };
         self.state.counted = self.state.messages.len() + 1;

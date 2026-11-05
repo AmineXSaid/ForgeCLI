@@ -263,6 +263,9 @@ pub struct App {
     streamed: bool,
     /// The usage the current request reported so far (its start, then its deltas).
     request_usage: kodact_types::Usage,
+    /// The current request's reply has thinking in it: its output isn't carried into the next
+    /// request (over chat completions), so the live meter leaves it out.
+    request_thought: bool,
     /// When the open question was asked: the wait shown is the person's, not the turn's.
     pub asked_at: Option<Instant>,
     /// The last line already written to the terminal is blank.
@@ -291,6 +294,8 @@ pub struct App {
     pub keymap: super::keys::Keymap,
     /// The UI's style.
     pub look: super::look::Look,
+    /// Columns the full screen sets the transcript in (0 inline): the live rows follow it.
+    pub transcript_indent: usize,
     /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
     pub front: bool,
     /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
@@ -601,6 +606,7 @@ impl App {
             first_line: true,
             streamed: false,
             request_usage: Default::default(),
+            request_thought: false,
             asked_at: None,
             printed_blank: false,
             dialog: None,
@@ -620,6 +626,7 @@ impl App {
             viewer_page: std::cell::Cell::new(10),
             keymap: Default::default(),
             look: Default::default(),
+            transcript_indent: 0,
             front: false,
             endpoint: String::new(),
             branch: String::new(),
@@ -938,7 +945,12 @@ impl App {
 
     /// The context meter follows each request of a turn, not only its end.
     fn meter(&mut self) {
-        let used = self.request_usage.context_tokens();
+        // What the next request carries: the input, and the output unless it was thinking.
+        // The engine's own measure replaces this when the turn ends.
+        let u = &self.request_usage;
+        let input = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+        let shown = u.output_tokens.saturating_sub(u.reasoning_output_tokens);
+        let used = if self.request_thought { input } else { input + shown };
         if used > 0 && self.status.window > 0 {
             self.status.context_pct = Some((used * 100 / self.status.window).min(100) as u8);
             self.status.context_used = true;
@@ -965,6 +977,7 @@ impl App {
             EngineEvent::Stream { event, .. } => match event {
                 StreamEvent::MessageStart { message } => {
                     self.streamed = false;
+                    self.request_thought = false;
                     self.request_usage = message.usage;
                     self.meter();
                 }
@@ -977,6 +990,7 @@ impl App {
                         u.cache_creation_input_tokens = usage.cache_creation_input_tokens;
                     }
                     u.output_tokens = u.output_tokens.max(usage.output_tokens);
+                    u.reasoning_output_tokens = u.reasoning_output_tokens.max(usage.reasoning_output_tokens);
                     self.meter();
                 }
                 StreamEvent::ContentBlockStart { content_block: ContentBlock::Text { .. }, .. } => {
@@ -1000,6 +1014,7 @@ impl App {
                 }
                 StreamEvent::ContentBlockDelta { delta: Delta::ThinkingDelta { .. }, .. } => {
                     self.activity = "Thinking".into();
+                    self.request_thought = true;
                 }
                 StreamEvent::ContentBlockStop { .. } | StreamEvent::MessageStop => self.flush_live(),
                 _ => {}
@@ -2256,6 +2271,35 @@ mod tests {
             usage: Usage { input_tokens: 300, output_tokens: 20, ..Default::default() },
         }));
         assert_eq!(b.status.context_pct, Some(32));
+        // A reply that thought: its output is reasoning the next request won't carry.
+        let mut c = app();
+        c.status.window = 1000;
+        c.on_event(ev(StreamEvent::MessageStart {
+            message: ApiMessage { usage: Usage::default(), ..start_message() },
+        }));
+        c.on_event(ev(StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThinkingDelta { thinking: "let me think".into() },
+        }));
+        let body: kodact_types::MessageDeltaBody = serde_json::from_str("{}").unwrap();
+        c.on_event(ev(StreamEvent::MessageDelta {
+            delta: body,
+            usage: Usage { input_tokens: 300, output_tokens: 400, ..Default::default() },
+        }));
+        assert_eq!(c.status.context_pct, Some(30), "the thinking isn't counted: 30%, not 70%");
+    }
+
+    fn start_message() -> ApiMessage {
+        ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: Role::Assistant,
+            model: "x".into(),
+            content: vec![],
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage::default(),
+        }
     }
 
     #[test]
