@@ -87,8 +87,8 @@ fn status_left(app: &App, now: Instant) -> (String, Style) {
         }
     }
     let t = app.theme;
-    // The frame style's panel names the mode, so the line keeps the folder.
-    let mode = app.status.mode.as_str();
+    // The default style's box names the mode, so the line keeps the folder.
+    let mode = if app.look == super::look::Look::Frame { "" } else { app.status.mode.as_str() };
     match mode {
         "acceptEdits" => (format!("{} accept edits on (shift+tab to cycle)", glyphs::MODE_ACCEPT_EDITS), t.warning()),
         "plan" => (format!("{} plan mode on (shift+tab to cycle)", glyphs::MODE_PLAN), t.success()),
@@ -594,8 +594,8 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     }
     let room = w.saturating_sub(text_width(&left) + lead + 2);
     // The front screen shows the model under its input; the status line keeps the version.
-    let right = if app.front && app.look == super::look::Look::Frame && app.status_text.is_none() {
-        // The keys that help now, on the front page: it is where they are needed most.
+    let right = if app.look == super::look::Look::Frame && app.status_text.is_none() {
+        // The box shows the model and the context; the line keeps the keys that help now.
         hints(app, room)
     } else if app.front && app.status_text.is_none() {
         vec![Span::styled(format!("v{}", kodact_core::VERSION), app.theme.subtle())]
@@ -928,7 +928,23 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         })
         .collect();
     let cursor = (cursor.0 + side as u16 + margin.len() as u16, cursor.1);
-    let under: Vec<Line<'static>> = if front && fb.is_some_and(|b| b.under) && !input_rows.is_empty() {
+    // The default style keeps the session in the box, under the text: a row of air, then
+    // the mode, the model and where it runs on the left, the context on the right.
+    let frame = app.look == Look::Frame && !open;
+    let mut input_rows = input_rows;
+    if frame && !input_rows.is_empty() {
+        let boxed = |content: Vec<Span<'static>>| {
+            let used: usize = content.iter().map(|s| text_width(&s.content)).sum();
+            let mut spans = vec![Span::raw(margin.clone()), Span::styled("│ ", border)];
+            spans.extend(content);
+            spans.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+            spans.push(Span::styled(" │", border));
+            Line::from(spans)
+        };
+        input_rows.push(boxed(vec![]));
+        input_rows.push(boxed(session_row(app, inner)));
+    }
+    let under: Vec<Line<'static>> = if !frame && front && fb.is_some_and(|b| b.under) && !input_rows.is_empty() {
         let mut parts = vec![Span::styled(mode_name(&app.status.mode), t.accent())];
         for p in [app.status.model.as_str(), app.endpoint.as_str()].into_iter().filter(|p| !p.is_empty()) {
             parts.push(Span::styled("  ·  ", t.hairline()));
@@ -1049,6 +1065,46 @@ fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
     }
     out.push(Span::raw(" "));
     out
+}
+
+/// The session row inside the default style's box, `room` columns: the mode in
+/// its colour, the model and where it runs on the left; the context meter and
+/// the spend on the right. The endpoint goes first when space runs out, then the
+/// model is shortened, then the meter goes; the mode always stays.
+fn session_row(app: &App, room: usize) -> Vec<Span<'static>> {
+    let t = app.theme;
+    let s = &app.status;
+    let w_of = |v: &[Span<'static>]| v.iter().map(|s| text_width(&s.content)).sum::<usize>();
+    let sep = || Span::styled("  ·  ", t.hairline());
+    let mode = vec![Span::styled(mode_name(&s.mode), t.mode(&s.mode).add_modifier(ratatui::style::Modifier::BOLD))];
+    let mut right = vec![];
+    if let Some(pct) = s.context_pct.filter(|p| *p > 0 || s.context_used) {
+        right.extend(meter(&t, pct));
+        right.push(Span::styled(pct_label(s, pct), t.dim()));
+    }
+    if let Some(cost) = spend(app).filter(|_| !right.is_empty()) {
+        right.push(Span::styled(format!("  ·  {cost}"), t.subtle()));
+    }
+    let endpoint = (!app.endpoint.is_empty()).then(|| vec![sep(), Span::styled(app.endpoint.clone(), t.subtle())]);
+    let fits = |left: usize, right: &[Span<'static>]| left + 2 + w_of(right) <= room;
+    let mut left = mode.clone();
+    let model_w = if s.model.is_empty() { 0 } else { 5 + text_width(&s.model) };
+    let endpoint_w = endpoint.as_ref().map(|e| w_of(e)).unwrap_or(0);
+    if !fits(w_of(&mode) + model_w + endpoint_w, &right) && !fits(w_of(&mode) + model_w.min(12), &right) {
+        right.clear();
+    }
+    let free = room.saturating_sub(w_of(&mode) + w_of(&right) + if right.is_empty() { 0 } else { 2 });
+    if !s.model.is_empty() && free >= 9 {
+        let model = fit(&s.model, free - 5);
+        left.extend([sep(), Span::styled(model.clone(), Style::default())]);
+        if let Some(e) = endpoint.filter(|e| 5 + text_width(&model) + w_of(e) <= free) {
+            left.extend(e);
+        }
+    }
+    let gap = room.saturating_sub(w_of(&left) + w_of(&right));
+    left.push(Span::raw(" ".repeat(gap)));
+    left.extend(right);
+    left
 }
 
 #[cfg(test)]
@@ -1271,35 +1327,57 @@ mod tests {
     }
 
     #[test]
-    fn the_default_style_draws_a_lime_box_and_an_honest_meter() {
+    fn the_default_style_keeps_the_session_in_its_box() {
         let mut a = app(true);
         a.look = crate::tui::look::Look::Frame;
+        a.endpoint = "gpt.example.net".into();
         a.status.model = "quick-thinking".into();
         a.status.cost = 0.0;
         a.status.cost_unknown = true;
         a.status.context_pct = Some(4);
         a.status.window_guessed = true;
         a.status.session_tokens = 25_300;
-        let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
+        let (rows, buf) = draw(&live_view(&a, 110, 12), 110);
         let n = rows.len();
-        assert!(rows[n - 4].starts_with('╭') && rows[n - 2].starts_with('╰'), "a rounded box: {rows:#?}");
-        assert!(rows[n - 3].starts_with(&format!("│ ❯ {PLACEHOLDER}")), "{rows:#?}");
-        // Its border is KodAct's lime, empty or not.
-        assert_eq!(buf[(0, (n - 4) as u16)].fg, a.theme.accent().fg.unwrap());
-        // The status line: the folder, then the model and an honest meter.
+        // The box: the text, a row of air, the session row; lime all round.
+        assert!(rows[n - 6].starts_with('╭') && rows[n - 2].starts_with('╰'), "{rows:#?}");
+        assert!(rows[n - 5].starts_with(&format!("│ ❯ {PLACEHOLDER}")), "{rows:#?}");
+        assert!(
+            rows[n - 4].starts_with('│')
+                && rows[n - 4].ends_with('│')
+                && rows[n - 4][3..rows[n - 4].len() - 3].trim().is_empty()
+        );
+        let session = &rows[n - 3];
+        assert!(session.starts_with("│ Default  ·  quick-thinking  ·  gpt.example.net"), "{session}");
+        assert!(session.ends_with("━─────── ~4%  ·  25.3k tokens used │"), "the context on the right: {session}");
+        assert_eq!(buf[(0, (n - 6) as u16)].fg, a.theme.accent().fg.unwrap());
+        assert_eq!(buf[(2, (n - 3) as u16)].fg, a.theme.mode("default").fg.unwrap(), "the mode in its colour");
+        // The status line: the folder and the keys that help; the box has the rest.
         let last = rows[n - 1].trim_end();
-        assert!(last.starts_with("  /p"), "{last}");
-        assert!(last.ends_with("quick-thinking · ━─────── ~4% · 25.3k tokens used"), "{last}");
-        // A known window drops the `~`; a priced model shows its cost.
+        assert!(last.starts_with("  /p") && last.contains("/ commands") && !last.contains("quick-thinking"), "{last}");
+        // At 80 columns the endpoint is the first to go, so the context still fits.
+        let (rows, _) = draw(&live_view(&a, 80, 12), 80);
+        assert!(rows[n - 3].starts_with("│ Default  ·  quick-thinking  ") && !rows[n - 3].contains("gpt.example.net"));
+        assert!(rows[n - 3].contains("~4%"), "{rows:#?}");
+        // Plan mode: named in the box in its colour, not repeated on the line.
+        a.status.mode = "plan".into();
+        let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
+        assert!(rows[n - 3].starts_with("│ Plan  ·  quick-thinking"), "{rows:#?}");
+        assert_eq!(buf[(2, (n - 3) as u16)].fg, a.theme.mode("plan").fg.unwrap());
+        assert!(!rows[n - 1].contains("plan mode on"), "{rows:#?}");
+        // Narrow: the endpoint goes first, then the model shortens; the mode always stays.
+        a.status.model = "accounts/fireworks/models/a-very-long-model-name-that-goes-on-and-on".into();
+        let (rows, _) = draw(&live_view(&a, 60, 12), 60);
+        let session = rows.iter().find(|r| r.contains("Plan")).expect("the mode stays");
+        assert!(!session.contains("gpt.example.net") && session.contains('…'), "{session}");
+        assert!(rows.iter().all(|r| text_width(r) <= 60), "{rows:#?}");
+        // A priced model shows its cost.
+        a.status.model = "opus".into();
         a.status.window_guessed = false;
         a.status.cost = 0.25;
         a.status.cost_unknown = false;
         let (rows, _) = draw(&live_view(&a, 80, 12), 80);
-        assert!(rows.last().unwrap().trim_end().ends_with("━─────── 4% · $0.25"), "{rows:#?}");
-        // A long model name never pushes the line past the screen.
-        a.status.model = "accounts/fireworks/models/a-very-long-model-name-that-goes-on-and-on".into();
-        let (rows, _) = draw(&live_view(&a, 60, 12), 60);
-        assert!(rows.iter().all(|r| text_width(r) <= 60), "{rows:#?}");
+        assert!(rows[n - 3].ends_with("━─────── 4%  ·  $0.25 │"), "{rows:#?}");
     }
 
     #[test]
