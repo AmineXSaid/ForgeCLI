@@ -123,7 +123,7 @@ def make_job(tmp: Path, trials: list[tuple[str, float, int, list[dict]]]) -> rep
     return report.Job(job)
 
 
-def test_forge_reminders_are_counted_per_trial_and_job(tmp_path):
+def test_kodact_reminders_are_counted_per_trial_and_job(tmp_path):
     # Shaped like corewars 231fd6b: a verification reminder, and loop warnings by kind, among other
     # harness events that are not reminders (api_retry, compact_boundary).
     events = [
