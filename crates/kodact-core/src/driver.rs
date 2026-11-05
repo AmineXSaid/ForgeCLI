@@ -126,7 +126,13 @@ pub struct Driver {
     pub subtasks: crate::subtask::Subtasks,
     /// The models the endpoint lists, once asked (`/model`); empty when it lists none.
     models: Option<Vec<String>>,
+    /// When the last listing failed: it isn't asked again for a while, so a
+    /// slow or broken endpoint doesn't hold up every `/model`.
+    models_failed: Option<Instant>,
 }
+
+/// How long a failed model listing is not asked again.
+const MODELS_RETRY: Duration = Duration::from_secs(30);
 
 /// Book-keeping for a self-paced loop: did the iteration reschedule or stop?
 #[derive(Debug, Clone)]
@@ -199,6 +205,7 @@ impl Driver {
             agent_rt: s.agent_rt,
             subtasks: Default::default(),
             models: None,
+            models_failed: None,
         };
         d.sync_view();
         d
@@ -273,14 +280,27 @@ impl Driver {
         if self.models.is_some() {
             return None;
         }
-        let (list, failure) = match self.engine.provider().list_models().await {
+        if self.models_failed.is_some_and(|at| at.elapsed() < MODELS_RETRY) {
+            return Some("the endpoint's model list failed a moment ago".into());
+        }
+        let listing = self.engine.provider().list_models().await;
+        self.accept_models(listing)
+    }
+
+    /// Take a model listing made elsewhere (the UI asks in the background at
+    /// startup). Returns why it failed, when it did.
+    pub fn accept_models(&mut self, listing: Option<Result<Vec<String>, kodact_api::ApiError>>) -> Option<String> {
+        let (list, failure) = match listing {
             None => (vec![], None),
             Some(Ok(ids)) => (ids, None),
             Some(Err(e)) => (vec![], Some(format!("could not list the endpoint's models: {}", e.describe()))),
         };
-        // A failed listing is asked again next time.
+        // A failed listing is asked again, after a pause.
         if failure.is_none() {
             self.models = Some(list);
+            self.models_failed = None;
+        } else {
+            self.models_failed = Some(Instant::now());
         }
         failure
     }

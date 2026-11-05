@@ -49,6 +49,11 @@ pub struct StatusView {
     pub context_used: bool,
     /// The model's context window, so the meter can follow a turn's requests.
     pub window: u64,
+    /// The window is KodAct's guess (an unknown model the endpoint gave no size for).
+    pub window_guessed: bool,
+    /// Tokens this session has used so far (every request's input and output), for
+    /// a model without a price.
+    pub session_tokens: u64,
 }
 
 /// From the session task to the UI.
@@ -439,6 +444,9 @@ pub struct Running {
     pub name: String,
     pub input: Value,
     pub since: Instant,
+    /// A sub-agent's latest step (`Reading src/lib.rs`) and how many it has taken.
+    pub step: Option<String>,
+    pub steps: usize,
 }
 
 /// What a tool call does, as a verb: past tense once it is done (`Ran`,
@@ -620,11 +628,6 @@ impl App {
         }
     }
 
-    /// The tokens the last request held in context.
-    pub fn context_tokens(&self) -> u64 {
-        self.request_usage.context_tokens()
-    }
-
     // ---- scrollback ----
 
     /// A blank line between items, unless one is already there.
@@ -671,6 +674,11 @@ impl App {
         use super::look::Look;
         let t = self.theme;
         for line in lines {
+            // Blank lines before the answer's first words (models often open with "\n\n")
+            // would get the answer mark alone on its row.
+            if self.first_line && blank(&line) {
+                continue;
+            }
             let marker = if self.first_line { self.answer_mark() } else { Span::raw("  ") };
             if self.first_line {
                 self.gap();
@@ -933,9 +941,20 @@ impl App {
 
     fn on_engine(&mut self, e: EngineEvent) {
         match e {
-            // Sub-agents' own messages stay in their transcripts.
+            // Sub-agents' own messages stay in their transcripts; their steps show on the
+            // row of the call that runs them, so delegated work is never a silent wait.
+            EngineEvent::Assistant { message, parent_tool_use_id: Some(parent), .. } => {
+                if let Some(r) = self.running.iter_mut().find(|r| r.id == parent) {
+                    for b in &message.content {
+                        if let ContentBlock::ToolUse { name, input, .. } = b {
+                            let header = tool_header(&self.theme, name, input, false);
+                            r.step = Some(header.iter().map(|s| s.content.as_ref()).collect());
+                            r.steps += 1;
+                        }
+                    }
+                }
+            }
             EngineEvent::Stream { parent_tool_use_id: Some(_), .. }
-            | EngineEvent::Assistant { parent_tool_use_id: Some(_), .. }
             | EngineEvent::User { parent_tool_use_id: Some(_), .. } => {}
             EngineEvent::Stream { event, .. } => match event {
                 StreamEvent::MessageStart { message } => {
@@ -999,6 +1018,8 @@ impl App {
                                 name: name.clone(),
                                 input: input.clone(),
                                 since: Instant::now(),
+                                step: None,
+                                steps: 0,
                             });
                             self.activity = format!("Running {name}");
                         }
@@ -2247,6 +2268,21 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_that_opens_with_blank_lines_keeps_its_mark_on_the_words() {
+        // Reasoning models behind OpenAI-compatible gateways often start the text with "\n\n".
+        let mut a = app();
+        a.echo_prompt("hi");
+        a.take_pending();
+        a.on_event(UiEvent::Engine(EngineEvent::Stream {
+            event: StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlock::text("") },
+            parent_tool_use_id: None,
+        }));
+        a.on_event(delta("\n\n"));
+        a.on_event(delta("Hi there.\nSecond line.\n"));
+        assert_eq!(texts(&a.take_pending()), ["", "● Hi there.", "  Second line."]);
+    }
+
+    #[test]
     fn streamed_text_moves_to_scrollback_line_by_line() {
         let mut a = app();
         a.on_event(UiEvent::Engine(EngineEvent::Stream {
@@ -2337,6 +2373,8 @@ mod tests {
                 name: "Bash".into(),
                 input: json!({"command": "cargo test"}),
                 since: Instant::now(),
+                step: None,
+                steps: 0,
             };
             let dot = a.theme.success();
             a.commit_tool(r, dot, false);

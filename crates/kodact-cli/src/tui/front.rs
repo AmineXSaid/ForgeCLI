@@ -100,6 +100,59 @@ fn half_blocks(grid: &[Vec<Px>], t: &Theme) -> Vec<Line<'static>> {
     out
 }
 
+/// The compact wordmark's letters: one-pixel strokes, eight pixels tall (four
+/// terminal rows), so the name sits at the size of a heading and its pixels
+/// stay fine. Capitals K and A, lowercase o, d, c and t on one baseline.
+const COMPACT: [&[&str; 8]; 6] = [
+    // K
+    &["X...X", "X..X.", "X.X..", "XX...", "XX...", "X.X..", "X..X.", "X...X"],
+    // o
+    &[".....", ".....", ".....", ".XXX.", "X...X", "X...X", "X...X", ".XXX."],
+    // d
+    &["....X", "....X", "....X", ".XXXX", "X...X", "X...X", "X...X", ".XXXX"],
+    // A
+    &[".XXX.", "X...X", "X...X", "X...X", "XXXXX", "X...X", "X...X", "X...X"],
+    // c
+    &[".....", ".....", ".....", ".XXXX", "X....", "X....", "X....", ".XXXX"],
+    // t
+    &[".....", ".X...", ".X...", "XXXX.", ".X...", ".X...", ".X...", "..XX."],
+];
+
+/// Columns between the compact letters.
+const COMPACT_GAP: usize = 1;
+
+/// The compact wordmark's pixels: "Kod" in paper, "Act" in lime.
+fn compact_grid(light: bool) -> Vec<Vec<Px>> {
+    let (paper, lime) = if light {
+        ((0x101214, Color::Black), (0x4a7200, Color::Green))
+    } else {
+        ((0xf2f0e9, Color::White), (0xc6ff3d, Color::LightGreen))
+    };
+    (0..8)
+        .map(|y| {
+            let mut row: Vec<Px> = vec![];
+            for (gi, g) in COMPACT.iter().enumerate() {
+                if gi > 0 {
+                    row.extend(std::iter::repeat_n(None, COMPACT_GAP));
+                }
+                let ink = if gi < 3 { paper } else { lime };
+                row.extend(g[y].chars().map(|c| (c == 'X').then_some(ink)));
+            }
+            row
+        })
+        .collect()
+}
+
+/// The compact wordmark: 4 rows.
+pub fn compact_wordmark(t: &Theme) -> Vec<Line<'static>> {
+    half_blocks(&compact_grid(t.light), t)
+}
+
+/// The compact wordmark's width in columns.
+pub fn compact_w() -> usize {
+    compact_grid(false)[0].len()
+}
+
 /// The wordmark's pixels in one of its looks: 52 by 10, 53 by 11 with a
 /// shadow. "Kod" is paper (ink on a light background) and "Act" lime.
 fn wordmark_grid(look: Letters, light: bool) -> Vec<Vec<Px>> {
@@ -158,16 +211,6 @@ fn wordmark_grid(look: Letters, light: bool) -> Vec<Vec<Px>> {
         }
     }
     grid
-}
-
-/// `grid` with each pixel drawn `k` by `k`.
-fn scaled(grid: &[Vec<Px>], k: usize) -> Vec<Vec<Px>> {
-    grid.iter()
-        .flat_map(|row| {
-            let wide: Vec<Px> = row.iter().flat_map(|p| std::iter::repeat_n(*p, k)).collect();
-            std::iter::repeat_n(wide, k)
-        })
-        .collect()
 }
 
 /// The wordmark in `look`: 5 rows (6 with a shadow).
@@ -345,32 +388,26 @@ fn small_name(t: &Theme) -> Vec<Span<'static>> {
     super::brand::wordmark_text(t).spans
 }
 
-/// 1 · Essentials: the mark and the wordmark centred together, twice the size
-/// where the terminal is wide enough, "Code, then act." under them, then the
+/// 1 · Essentials: the mark and the compact wordmark centred together (four rows), "Code, then act." under them, then the
 /// input (the frame style's panel, which names the mode, the model and where
 /// it runs) and one line to resume the last conversation. A server that failed
 /// to start says so; everything else (the folder, the branch, the version) is
 /// on the status line.
 fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
-    let one = wordmark_w(Letters::Shadow);
-    // Twice the size only on a first run here (no earlier conversation): after
-    // that the name steps back and the input leads.
-    let first_run = info.recent.is_empty();
+    let one = compact_w();
     let (mut above, lw) = if cols < one + 4 {
         // Too narrow for the letters: the name in one row.
         (vec![centred(Line::from(small_name(t)), cols)], 6)
     } else {
-        let k = if first_run && cols >= 2 * one + 4 { 2 } else { 1 };
-        let word = half_blocks(&scaled(&wordmark_grid(Letters::Shadow, t.light), k), t);
-        let ww = k * one;
+        let word = compact_wordmark(t);
         // The mark as tall as the letters, beside them where there is room; without
         // colour its bar and triangle wouldn't show, so the letters go alone.
         let mark_n = 2 * word.len();
-        let gap = 2 * k;
-        let (logo, lw) = if t.color && cols >= ww + gap + mark_n + 4 {
-            (beside(0, super::brand::mark(t, mark_n), mark_n + gap, word), mark_n + gap + ww)
+        let gap = 2;
+        let (logo, lw) = if t.color && cols >= one + gap + mark_n + 4 {
+            (beside(0, super::brand::mark(t, mark_n), mark_n + gap, word), mark_n + gap + one)
         } else {
-            (word, ww)
+            (word, one)
         };
         (centre_block(logo, lw, cols), lw)
     };
@@ -712,18 +749,17 @@ mod tests {
         }
         let frame = plain(&front_page(&DARK, Look::Frame, &info(), 120).above).join("\n");
         assert!(!frame.contains("Welcome to"), "the name speaks for itself");
-        // Twice the size on a first run only; after that the input leads.
+        // The compact name: four rows, whether or not there is history.
         let first = FrontInfo { recent: vec![], ..info() };
-        let big = front_page(&DARK, Look::Frame, &first, 140).above;
-        assert!(big.iter().filter(|l| line_w(l) > 2 * WORDMARK_W).count() >= 10, "twice the size on a first run");
-        assert!(big.iter().all(|l| line_w(l) <= 140));
-        let again = front_page(&DARK, Look::Frame, &info(), 140).above;
-        assert_eq!(big.len() - again.len(), 5, "normal size (6 rows, not 11) once there is history");
+        let art = |p: &FrontPage| plain(&p.above).iter().filter(|l| l.contains(['▀', '▄', '█'])).count();
+        assert_eq!(art(&front_page(&DARK, Look::Frame, &first, 140)), 4, "four rows on a first run");
+        assert_eq!(art(&front_page(&DARK, Look::Frame, &info(), 140)), 4, "and after");
+        assert!(front_page(&DARK, Look::Frame, &first, 140).above.iter().all(|l| line_w(l) <= 140));
         let first_below = plain(&front_page(&DARK, Look::Frame, &first, 120).below).join("\n");
         assert!(first_below.contains("/init writes KODACT.md"), "a first run says what to try: {first_below}");
         // The panel is never narrower than the name over it.
         let p = front_page(&DARK, Look::Frame, &first, 140);
-        assert!(p.box_w >= 2 * WORDMARK_W, "{}", p.box_w);
+        assert!(p.box_w >= compact_w(), "{}", p.box_w);
         assert!(frame.contains(SHORT_TAGLINE));
         // Essentials: what the panel or the status line already says is not repeated.
         for gone in ["Version", "tools ready", "KodAct reads", "~/acme/shop", "jira"] {
@@ -740,7 +776,8 @@ mod tests {
         let narrow = front_page(&DARK, Look::Card, &info(), 60);
         assert!(plain(&narrow.header).join("").contains("KodAct"));
         // Essentials keeps its layout on a narrow terminal: the name in one row, no second question.
-        let narrow = plain(&front_page(&DARK, Look::Frame, &info(), 50).above).join("\n");
+        assert_eq!(art(&front_page(&DARK, Look::Frame, &info(), 50)), 4, "the compact name fits 50 columns");
+        let narrow = plain(&front_page(&DARK, Look::Frame, &info(), 30).above).join("\n");
         assert!(narrow.contains("KodAct") && narrow.contains(SHORT_TAGLINE), "{narrow}");
         assert!(!narrow.contains("What shall we build"), "{narrow}");
         // Without colour the mark's bar and triangle wouldn't show: the letters go alone.

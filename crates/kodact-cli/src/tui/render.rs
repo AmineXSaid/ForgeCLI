@@ -9,7 +9,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use super::app::App;
+use super::app::{App, StatusView};
 use super::front::FrontPage;
 use super::palette;
 use super::text::{self, width as text_width};
@@ -80,7 +80,7 @@ fn char_rows(chars: &[char], w: usize) -> Vec<(usize, usize)> {
     rows
 }
 
-fn status_left(app: &App, now: Instant, w: usize) -> (String, Style) {
+fn status_left(app: &App, now: Instant) -> (String, Style) {
     if let Some((h, at)) = &app.hint {
         if now.duration_since(*at) < HINT_FOR {
             return (h.clone(), app.theme.dim());
@@ -88,7 +88,7 @@ fn status_left(app: &App, now: Instant, w: usize) -> (String, Style) {
     }
     let t = app.theme;
     // The frame style's panel names the mode, so the line keeps the folder.
-    let mode = if frame_panel(app, w) { "" } else { app.status.mode.as_str() };
+    let mode = app.status.mode.as_str();
     match mode {
         "acceptEdits" => (format!("{} accept edits on (shift+tab to cycle)", glyphs::MODE_ACCEPT_EDITS), t.warning()),
         "plan" => (format!("{} plan mode on (shift+tab to cycle)", glyphs::MODE_PLAN), t.success()),
@@ -111,23 +111,42 @@ fn status_right(app: &App) -> String {
     }
     match s.context_pct {
         // Some context in use, under 1%: "0%" would read as empty.
-        Some(0) if s.context_used => parts.push("<1% context".into()),
-        Some(p) => parts.push(format!("{p}% context")),
+        Some(0) if s.context_used => parts.push(format!("{}<1% context", guess(s))),
+        Some(p) => parts.push(format!("{}{p}% context", guess(s))),
         None => {}
     }
     parts.extend(spend(app));
     parts.join(" · ")
 }
 
+/// `~` before a percentage of a window KodAct guessed.
+fn guess(s: &StatusView) -> &'static str {
+    if s.window_guessed {
+        "~"
+    } else {
+        ""
+    }
+}
+
+/// The context label after the meter: ` 12%`, ` <1%`, or ` ~4%` for a guessed window.
+fn pct_label(s: &StatusView, pct: u8) -> String {
+    if pct == 0 && s.context_used {
+        format!(" {}<1%", guess(s))
+    } else {
+        format!(" {}{pct}%", guess(s))
+    }
+}
+
 /// What the session has spent: its cost, or, for a model with no known
-/// price, the tokens in context (nothing before the first request).
+/// price, the tokens it has used (nothing before the first request).
 fn spend(app: &App) -> Option<String> {
     let s = &app.status;
     match (s.cost_unknown, s.cost > 0.0) {
         (false, _) => Some(format!("${:.2}", s.cost)),
         // Part of the spend has no known price: show what is known as a lower bound.
         (true, true) => Some(format!("${:.2}+", s.cost)),
-        (true, false) => Some(app.context_tokens()).filter(|n| *n > 0).map(tokens),
+        // No price: what the session has used, not the context again (the meter shows that).
+        (true, false) => Some(s.session_tokens).filter(|n| *n > 0).map(|n| format!("{} used", tokens(n))),
     }
 }
 
@@ -441,87 +460,6 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
     (rows, cursor)
 }
 
-/// The permission mode on the frame style's panel, by its name
-/// ([`mode_name`]), in its colour: default in lime, plan in teal, auto in
-/// violet, accept edits in amber, bypass permissions in red, don't ask quiet.
-fn mode_mark(app: &App) -> (String, Style) {
-    (mode_name(&app.status.mode), app.theme.mode(&app.status.mode))
-}
-
-/// The frame style's input, `bw` columns wide from column `left`: a raised
-/// panel, its left edge in the mode's colour, the text, then the mode, the
-/// model, where it runs and the context in use, with a row of padding above
-/// and below: one solid block, whatever the terminal's font. The cursor's
-/// (column, row) inside it.
-fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) {
-    let t = app.theme;
-    let margin = || Span::raw(" ".repeat(left));
-    let raised = t.raised();
-    let (mode, mode_st) = mode_mark(app);
-    let edge = if t.color { Span::styled("▎", mode_st.patch(raised)) } else { Span::styled("│", t.bold()) };
-    let inner = bw.saturating_sub(4).max(1);
-    let mut out = vec![];
-    let row = |spans: Vec<Span<'static>>, out: &mut Vec<Line<'static>>| {
-        let used: usize = spans.iter().map(|s| text_width(&s.content)).sum();
-        let mut line = vec![margin(), edge.clone(), Span::styled(" ", raised)];
-        line.extend(spans.into_iter().map(|s| Span::styled(s.content, raised.patch(s.style))));
-        line.push(Span::styled(" ".repeat((inner + 2).saturating_sub(used)), raised));
-        out.push(Line::from(line));
-    };
-    let (rows, cur) = input(app, inner);
-    if t.color {
-        row(vec![], &mut out);
-    }
-    let first = out.len() as u16;
-    for r in rows {
-        // The edge is the prompt: the marker gives way to two spaces. What is
-        // typed takes the person's colour; the placeholder keeps its own.
-        let mut spans: Vec<Span<'static>> =
-            r.spans.into_iter().map(|s| Span::styled(s.content, t.user_text().patch(s.style))).collect();
-        if !spans.is_empty() {
-            spans[0] = Span::raw("  ");
-        }
-        row(spans, &mut out);
-    }
-    // A row of air, then the mode, the model and where it runs; the context in use on the right.
-    row(vec![], &mut out);
-    let s = &app.status;
-    let sep = || Span::raw("  ");
-    let mut meta = vec![Span::raw("  "), Span::styled(mode, mode_st.add_modifier(ratatui::style::Modifier::BOLD))];
-    // The mode is what this row is for: never dropped. The endpoint goes first,
-    // then the context, then the model is shortened to what is left.
-    let model_room = (inner + 2).saturating_sub(meta.iter().map(|s| text_width(&s.content)).sum::<usize>() + 2);
-    if !s.model.is_empty() && model_room >= 4 {
-        meta.extend([sep(), Span::raw(fit(&s.model, model_room))]);
-    }
-    let endpoint = vec![sep(), Span::styled(app.endpoint.clone(), t.subtle())];
-    let mut right = vec![];
-    if let Some(pct) = s.context_pct.filter(|p| *p > 0 || s.context_used) {
-        right.extend(meter(&t, pct));
-        let label = if pct == 0 && s.context_used { " <1%".to_string() } else { format!(" {pct}%") };
-        right.push(Span::styled(label, t.dim()));
-    }
-    if let Some(cost) = spend(app).filter(|_| !right.is_empty()) {
-        right.push(Span::styled(format!(" · {cost}"), t.subtle()));
-    }
-    let w_of = |v: &[Span<'static>]| v.iter().map(|s| text_width(&s.content)).sum::<usize>();
-    let room = inner + 2;
-    if !app.endpoint.is_empty() && w_of(&meta) + w_of(&endpoint) + w_of(&right) + 4 <= room {
-        meta.extend(endpoint);
-    }
-    if w_of(&meta) + w_of(&right) + 2 > room {
-        right.clear();
-    }
-    let gap = room.saturating_sub(w_of(&meta) + w_of(&right));
-    meta.push(Span::raw(" ".repeat(gap.saturating_sub(2))));
-    meta.extend(right);
-    row(meta, &mut out);
-    if t.color {
-        row(vec![], &mut out);
-    }
-    (out, (left as u16 + 2 + cur.0, first + cur.1))
-}
-
 /// The keys that help now, for the frame style's status line: while the model
 /// works, how to stop it; in a menu, how to choose; with nothing typed, the
 /// commands, files and modes; while typing, how to send.
@@ -553,44 +491,6 @@ fn hints(app: &App, room: usize) -> Vec<Span<'static>> {
         out.push(Span::styled(format!(" {what}"), t.subtle()));
     }
     out
-}
-
-/// Menu rows under the frame style's panel, `bw` wide from column `left`: on
-/// the panel's raised surface, past a hairline edge, so they read as part of it.
-fn attached(app: &App, rows: Vec<Line<'static>>, left: usize, bw: usize) -> Vec<Line<'static>> {
-    let t = app.theme;
-    if rows.is_empty() || !t.color {
-        return rows.into_iter().map(|l| at_col(left, l)).collect();
-    }
-    let raised = t.raised();
-    let mut out: Vec<Line<'static>> = rows
-        .into_iter()
-        .map(|l| {
-            let used: usize = l.spans.iter().map(|s| text_width(&s.content)).sum();
-            let mut spans = vec![Span::raw(" ".repeat(left)), Span::styled("▎ ", t.hairline().patch(raised))];
-            spans.extend(l.spans.into_iter().map(|s| Span::styled(s.content, raised.patch(s.style))));
-            spans.push(Span::styled(" ".repeat(bw.saturating_sub(2 + used)), raised));
-            Line::from(spans)
-        })
-        .collect();
-    // A row of padding under the last choice, like the panel's own.
-    out.push(Line::from(vec![
-        Span::raw(" ".repeat(left)),
-        Span::styled("▎ ", t.hairline().patch(raised)),
-        Span::styled(" ".repeat(bw.saturating_sub(2)), raised),
-    ]));
-    out
-}
-
-fn at_col(x: usize, l: Line<'static>) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ".repeat(x))];
-    spans.extend(l.spans);
-    Line::from(spans)
-}
-
-/// Whether the input is the frame style's panel: the frame style, with room for it.
-fn frame_panel(app: &App, w: usize) -> bool {
-    app.look == super::look::Look::Frame && w >= 40
 }
 
 /// The `@` menu: matching paths.
@@ -671,7 +571,8 @@ fn shimmer(t: &text::Theme, text: &str, since: Duration) -> Vec<Span<'static>> {
 /// has), brand while there is room, amber from 70%, red from 90%.
 fn meter(t: &text::Theme, pct: u8) -> Vec<Span<'static>> {
     const CELLS: usize = 8;
-    let filled = ((pct as usize * CELLS + 50) / 100).min(CELLS);
+    // Anything in use fills a cell, so 4% never reads as an empty bar.
+    let filled = ((pct as usize * CELLS + 50) / 100).clamp(usize::from(pct > 0), CELLS);
     let tone = if pct >= 90 {
         t.error()
     } else if pct >= 70 {
@@ -683,7 +584,7 @@ fn meter(t: &text::Theme, pct: u8) -> Vec<Span<'static>> {
 }
 
 fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
-    let (left, left_style) = status_left(app, now, w);
+    let (left, left_style) = status_left(app, now);
     let lead = 2;
     // The folder keeps its end and at most half the line, so the model and context stay in view.
     let folder = !app.status.cwd.is_empty() && left == super::short_path(&app.status.cwd);
@@ -693,14 +594,11 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     }
     let room = w.saturating_sub(text_width(&left) + lead + 2);
     // The front screen shows the model under its input; the status line keeps the version.
-    let right = if frame_panel(app, w) && app.status_text.is_none() {
-        // The keys that help now, on the front page too: it is where they are needed most.
+    let right = if app.front && app.look == super::look::Look::Frame && app.status_text.is_none() {
+        // The keys that help now, on the front page: it is where they are needed most.
         hints(app, room)
     } else if app.front && app.status_text.is_none() {
         vec![Span::styled(format!("v{}", kodact_core::VERSION), app.theme.subtle())]
-    } else if frame_panel(app, w) && app.status_text.is_none() {
-        // The panel shows the model and the context; the line keeps the keys that help now.
-        hints(app, room)
     } else {
         status_right_spans(app, room)
     };
@@ -729,7 +627,7 @@ fn status_right_spans(app: &App, room: usize) -> Vec<Span<'static>> {
     }
     let pct = s.context_pct.unwrap_or(0);
     out.extend(meter(&t, pct));
-    let label = if pct == 0 && s.context_used { " <1%".to_string() } else { format!(" {pct}%") };
+    let label = pct_label(s, pct);
     out.push(Span::styled(label, t.dim()));
     if let Some(cost) = spend(app) {
         out.push(sep());
@@ -824,8 +722,10 @@ pub fn full_view_at(
     // The status style: a bar of the session's readouts across the top.
     let bar: Vec<Line<'static>> =
         if app.look == super::look::Look::Status { vec![readouts(app, width as usize)] } else { vec![] };
-    // The conversation: the transcript down to the live region.
-    let avail = h.saturating_sub(live.lines.len() + bar.len());
+    // The conversation: the transcript down to the live region, with a blank row
+    // between its last line and the input so the answer doesn't touch the box.
+    let gap = usize::from(!rows.is_empty() && !rows.last().is_some_and(|l| line_blank(l)));
+    let avail = h.saturating_sub(live.lines.len() + bar.len() + gap);
     let max_scroll = rows.len().saturating_sub(avail);
     let scroll = scroll.min(max_scroll);
     let end = rows.len() - scroll;
@@ -844,8 +744,9 @@ pub fn full_view_at(
         out = padded;
     }
     let mut lines = bar;
-    let cursor = live.cursor.map(|(x, y)| (x, y + (lines.len() + avail) as u16));
+    let cursor = live.cursor.map(|(x, y)| (x, y + (lines.len() + avail + gap) as u16));
     lines.extend(out);
+    lines.extend(std::iter::repeat_n(Line::default(), gap));
     lines.extend(live.lines);
     (LiveView { lines, cursor }, max_scroll)
 }
@@ -919,9 +820,23 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     // 2. Tool calls still running, each with its dot turning; then the spinner.
     let mut spinner = vec![];
     for r in &app.running {
-        let face = glyphs::RUNNING[(now.duration_since(r.since).as_millis() / RUNNING_STEP.as_millis()) as usize % 4];
-        let mut spans = vec![Span::styled(format!("{face} "), t.accent())];
+        let ran = now.duration_since(r.since);
+        let mut spans = if is_agent(&r.name) {
+            // A sub-agent: a lime segment sweeping a short track, its time, and its latest step.
+            scanner(&t, ran)
+        } else {
+            let face = glyphs::RUNNING[(ran.as_millis() / RUNNING_STEP.as_millis()) as usize % 4];
+            vec![Span::styled(format!("{face} "), t.accent())]
+        };
         spans.extend(r.header.iter().cloned());
+        if is_agent(&r.name) {
+            spans.push(Span::styled(format!("  {}s", ran.as_secs()), t.subtle()));
+            if let Some(step) = &r.step {
+                let n = if r.steps == 1 { "1 step".to_string() } else { format!("{} steps", r.steps) };
+                spans.push(Span::styled(format!(" · {n} · "), t.subtle()));
+                spans.push(Span::styled(step.clone(), t.dim()));
+            }
+        }
         spinner.push(Line::default());
         spinner.extend(text::wrap(vec![Line::from(spans)], w as u16).into_iter().take(2));
     }
@@ -978,7 +893,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     // Bare and Ledger draw the input under a rule, without a box; Glow's box glows lime.
     let open = matches!(app.look, Look::Bare | Look::Ledger);
     let border = match app.look {
-        Look::Glow => t.accent(),
+        Look::Glow | Look::Frame => t.accent(),
         _ if app.editor.is_empty() => t.hairline(),
         _ => t.subtle(),
     };
@@ -995,8 +910,6 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         }
     };
     let (top, bottom) = (edge('╭', '╮'), edge('╰', '╯'));
-    // The frame style: a raised panel instead of the box.
-    let panel = (frame_panel(app, bw) && app.dialog.is_none()).then(|| panel(app, left, bw));
     let (input_rows, cursor) = if app.dialog.is_none() { input(app, inner) } else { (vec![], (0, 0)) };
     let input_rows: Vec<Line<'static>> = input_rows
         .into_iter()
@@ -1015,8 +928,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         })
         .collect();
     let cursor = (cursor.0 + side as u16 + margin.len() as u16, cursor.1);
-    let under: Vec<Line<'static>> = if panel.is_none() && front && fb.is_some_and(|b| b.under) && !input_rows.is_empty()
-    {
+    let under: Vec<Line<'static>> = if front && fb.is_some_and(|b| b.under) && !input_rows.is_empty() {
         let mut parts = vec![Span::styled(mode_name(&app.status.mode), t.accent())];
         for p in [app.status.model.as_str(), app.endpoint.as_str()].into_iter().filter(|p| !p.is_empty()) {
             parts.push(Span::styled("  ·  ", t.hairline()));
@@ -1039,7 +951,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         .as_ref()
         .map(|s| {
             let miss = if s.hit.is_none() && !s.query.is_empty() { " (no match)" } else { "" };
-            let pad = if frame_panel(app, bw) { left } else { 0 };
+            let pad = 0;
             Line::from(vec![
                 Span::raw(" ".repeat(pad)),
                 Span::styled(fit(&format!("  search history: {}{miss}", s.query), w.saturating_sub(pad)), t.accent()),
@@ -1047,22 +959,18 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         })
         .into_iter()
         .collect();
-    // 6. The `/` or `@` menu, 7. the status line. Under the frame style's panel,
-    // the menu continues it: the same column, the same raised surface.
-    let menu = match &panel {
-        Some(_) => attached(app, menu(app, bw.saturating_sub(4)), left, bw),
-        None => menu(app, w),
-    };
+    // 6. The `/` or `@` menu, 7. the status line.
+    let menu = menu(app, w);
     let status = status(app, w, now);
 
+    // The spinner, running steps and queued messages keep a blank row above the input,
+    // as the transcript does, so they never touch the box.
+    let gap = usize::from(dialog.is_empty() && (!spinner.is_empty() || !queued.is_empty()));
     let fixed = spinner.len()
+        + gap
         + search.len()
         + dialog.len()
-        + match &panel {
-            Some((rows, _)) => rows.len(),
-            None if input_rows.is_empty() => 0,
-            None => input_rows.len() + if open { 1 } else { 2 },
-        }
+        + if input_rows.is_empty() { 0 } else { input_rows.len() + if open { 1 } else { 2 } }
         + under.len()
         + menu.len()
         + 1;
@@ -1082,11 +990,9 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     lines.extend(dialog);
     lines.extend(queued);
     lines.extend(search);
+    lines.extend(std::iter::repeat_n(Line::default(), gap));
     let mut cur = None;
-    if let Some((rows, c)) = panel {
-        cur = Some((c.0, lines.len() as u16 + c.1));
-        lines.extend(rows);
-    } else if !input_rows.is_empty() {
+    if !input_rows.is_empty() {
         lines.push(top);
         cur = Some((cursor.0, (lines.len() as u16) + cursor.1));
         lines.extend(input_rows);
@@ -1107,6 +1013,42 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         cur = cur.filter(|(_, y)| (*y as usize) < lines.len());
     }
     LiveView { lines, cursor: cur }
+}
+
+/// A row with nothing but spaces.
+fn line_blank(l: &Line) -> bool {
+    l.spans.iter().all(|s| s.content.trim().is_empty())
+}
+
+/// The tools that run a sub-agent.
+fn is_agent(name: &str) -> bool {
+    matches!(name, "Task" | "Agent")
+}
+
+/// How long the sub-agent scanner's segment takes per cell.
+const SCAN_STEP: Duration = Duration::from_millis(120);
+
+/// Cells in the sub-agent scanner's track.
+const SCAN_W: usize = 4;
+
+/// A sub-agent's working sign: a two-cell lime segment sweeping a quiet
+/// track and back (`━━──`, `─━━─`, `──━━`, ...), then a space.
+fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
+    let span = SCAN_W - 1; // positions 0..SCAN_W-2 for a 2-cell head
+    let period = 2 * (span - 1);
+    let i = (ran.as_millis() / SCAN_STEP.as_millis()) as usize % period.max(1);
+    let at = if i < span { i } else { period - i };
+    let mut out = vec![];
+    if at > 0 {
+        out.push(Span::styled("─".repeat(at), t.hairline()));
+    }
+    out.push(Span::styled("━━", t.accent()));
+    let rest = SCAN_W - at - 2;
+    if rest > 0 {
+        out.push(Span::styled("─".repeat(rest), t.hairline()));
+    }
+    out.push(Span::raw(" "));
+    out
 }
 
 #[cfg(test)]
@@ -1133,6 +1075,7 @@ mod tests {
             context_pct: Some(3),
             context_used: true,
             window: 200_000,
+            ..Default::default()
         }));
         assert_eq!(status_right(&a), "local · 3% context", "no price and nothing used yet: nothing to show");
         a.status.context_pct = Some(0);
@@ -1159,6 +1102,7 @@ mod tests {
             context_pct: Some(12),
             context_used: true,
             window: 200_000,
+            ..Default::default()
         }));
         a.on_event(UiEvent::Commands(vec![
             CommandInfo { name: "clear".into(), args: "[name]".into(), description: "Start a new conversation".into() },
@@ -1217,8 +1161,9 @@ mod tests {
         assert_eq!(rows[1], "");
         assert_eq!(rows[2], "⠦ Acting… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
         assert_eq!(rows[3], "  ⏎ next");
-        assert!(rows[5].starts_with("│ ❯ ab ") && rows[5].ends_with('│'), "{}", rows[5]);
-        assert_eq!(v.cursor, Some((6, 5)));
+        assert_eq!(rows[4], "", "a blank row above the input");
+        assert!(rows[6].starts_with("│ ❯ ab ") && rows[6].ends_with('│'), "{}", rows[6]);
+        assert_eq!(v.cursor, Some((6, 6)));
         // Too short a screen drops the answer line first, then queued messages, never the input.
         let v = live_view_at(&a, 50, 6, start);
         let (rows, _) = draw(&v, 50);
@@ -1326,77 +1271,35 @@ mod tests {
     }
 
     #[test]
-    fn the_frame_style_draws_a_panel_in_the_mode_colour_with_helpful_keys() {
+    fn the_default_style_draws_a_lime_box_and_an_honest_meter() {
         let mut a = app(true);
         a.look = crate::tui::look::Look::Frame;
-        a.endpoint = "127.0.0.1:11434".into();
-        let view = live_view(&a, 80, 12);
-        let (rows, buf) = draw(&view, 80);
+        a.status.model = "quick-thinking".into();
+        a.status.cost = 0.0;
+        a.status.cost_unknown = true;
+        a.status.context_pct = Some(4);
+        a.status.window_guessed = true;
+        a.status.session_tokens = 25_300;
+        let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
         let n = rows.len();
-        // A row of padding, the text, a row of air, the mode line, a row of padding; then the keys.
-        assert_eq!(rows[n - 6].trim_end(), "▎", "{rows:#?}");
-        assert!(rows[n - 5].starts_with("▎   What shall we build today?"), "{rows:#?}");
-        assert_eq!(rows[n - 4].trim_end(), "▎", "a row between the text and the mode");
-        assert!(rows[n - 3].starts_with("▎   Default  opus  127.0.0.1:11434"), "{rows:#?}");
-        assert!(rows[n - 3].trim_end().ends_with("12% · $0.25"), "{rows:#?}");
-        assert_eq!(rows[n - 2].trim_end(), "▎");
-        // Every cell of the panel on the raised surface: no stripes.
-        let raised = Some(crate::tui::palette::PROMPT_BG.color(a.theme.depth, false));
-        for y in n - 6..n - 1 {
-            for x in 0..80u16 {
-                assert_eq!(Some(buf[(x, y as u16)].bg), raised, "({x}, {y})");
-            }
-        }
-        assert!(rows[n - 1].contains("/ commands   @ files   shift+tab mode"), "{rows:#?}");
-        assert_eq!(view.cursor, Some((4, (n - 5) as u16)), "the cursor at the text");
-        let edge = |buf: &ratatui::buffer::Buffer, y: usize| buf[(0, y as u16)].fg;
-        let default = edge(&buf, n - 5);
-        a.status.mode = "plan".into();
-        let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
-        assert!(rows[n - 3].starts_with("▎   Plan  opus"));
-        assert!(rows[n - 1].starts_with("  /p"), "the panel names the mode; the line keeps the folder");
-        assert_ne!(edge(&buf, n - 5), default, "the edge takes the mode's colour");
-        assert_eq!(Some(edge(&buf, n - 5)), a.theme.teal().fg);
-        typed(&mut a, "fix it");
+        assert!(rows[n - 4].starts_with('╭') && rows[n - 2].starts_with('╰'), "a rounded box: {rows:#?}");
+        assert!(rows[n - 3].starts_with(&format!("│ ❯ {PLACEHOLDER}")), "{rows:#?}");
+        // Its border is KodAct's lime, empty or not.
+        assert_eq!(buf[(0, (n - 4) as u16)].fg, a.theme.accent().fg.unwrap());
+        // The status line: the folder, then the model and an honest meter.
+        let last = rows[n - 1].trim_end();
+        assert!(last.starts_with("  /p"), "{last}");
+        assert!(last.ends_with("quick-thinking · ━─────── ~4% · 25.3k tokens used"), "{last}");
+        // A known window drops the `~`; a priced model shows its cost.
+        a.status.window_guessed = false;
+        a.status.cost = 0.25;
+        a.status.cost_unknown = false;
         let (rows, _) = draw(&live_view(&a, 80, 12), 80);
-        assert!(rows.last().unwrap().contains("enter send   shift+enter new line"));
-    }
-
-    #[test]
-    fn the_panel_in_sixteen_colours_and_with_a_dialog() {
-        let mut a = app(true);
-        a.look = crate::tui::look::Look::Frame;
-        // 16 colours: no grey behind the text (the nearest is too light), the edge still in the mode's colour.
-        a.theme.depth = crate::tui::palette::Depth::Ansi16;
-        let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
-        let y = rows.iter().position(|r| r.contains("What shall we build")).unwrap();
-        assert_eq!(buf[(10, y as u16)].bg, ratatui::style::Color::Reset, "{rows:#?}");
-        assert_eq!(Some(buf[(0, y as u16)].fg), a.theme.accent().fg);
-        // While the model works: the panel says what typing does; the line, how to stop.
-        a.busy = true;
-        let (rows, _) = draw(&live_view(&a, 80, 12), 80);
-        assert!(rows.iter().any(|r| r.contains(QUEUE_PLACEHOLDER)), "{rows:#?}");
-        assert!(rows.last().unwrap().contains("esc stop"));
-        // A question open: it says its own keys, so the line names none.
-        a.theme.depth = crate::tui::palette::Depth::True;
-        ask(&mut a, "Bash", json!({"command": "cargo test"}));
-        let (rows, _) = draw(&live_view(&a, 80, 30), 80);
-        let last = rows.last().unwrap();
-        assert!(!last.contains("esc stop") && !last.contains("queue"), "{last}");
-    }
-
-    #[test]
-    fn a_long_model_name_never_hides_the_mode() {
-        let mut a = app(true);
-        a.look = crate::tui::look::Look::Frame;
-        a.endpoint = "127.0.0.1:11434".into();
+        assert!(rows.last().unwrap().trim_end().ends_with("━─────── 4% · $0.25"), "{rows:#?}");
+        // A long model name never pushes the line past the screen.
         a.status.model = "accounts/fireworks/models/a-very-long-model-name-that-goes-on-and-on".into();
-        a.status.mode = "bypassPermissions".into();
         let (rows, _) = draw(&live_view(&a, 60, 12), 60);
-        let meta = rows.iter().find(|r| r.contains("Bypass permissions")).expect("the mode stays");
-        assert!(meta.contains("accounts/fireworks/") && meta.contains('…'), "the model shortened: {meta}");
-        assert!(!meta.contains("127.0.0.1"), "the endpoint goes first: {meta}");
-        assert!(rows.iter().all(|r| text_width(r) <= 60));
+        assert!(rows.iter().all(|r| text_width(r) <= 60), "{rows:#?}");
     }
 
     #[test]
@@ -1443,7 +1346,7 @@ mod tests {
         typed(&mut a, "car");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: car");
-        assert!(rows[1].starts_with("│   cargo test"), "the frame style's panel: {}", rows[1]);
+        assert!(rows[2].starts_with('│') && rows[2].contains("cargo test"), "the match in the box: {rows:#?}");
         typed(&mut a, "zz");
         let (rows, _) = draw(&live_view(&a, 40, 30), 40);
         assert_eq!(rows[0], "  search history: carzz (no match)");
@@ -1707,7 +1610,100 @@ mod tests {
         let (rows, _) = draw(&v, 100);
         let at = rows.iter().position(|r| r == "line 2").unwrap();
         assert_eq!(rows[0], "");
-        assert!(rows[at + 1..].iter().take(3).any(|r| r.contains('╭')), "{rows:#?}");
+        assert_eq!(rows[at + 1], "", "a blank row between the answer and the input");
+        assert!(rows[at + 1..].iter().take(6).any(|r| r.contains('╭')), "{rows:#?}");
+    }
+
+    fn stream(a: &mut App, ev: kodact_types::StreamEvent) {
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Stream { event: ev, parent_tool_use_id: None }));
+    }
+
+    /// A streamed text block, delivered in `parts`.
+    fn streamed_text(a: &mut App, parts: &[&str]) {
+        use kodact_types::{ContentBlock, Delta, StreamEvent};
+        stream(a, StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlock::text("") });
+        for p in parts {
+            stream(a, StreamEvent::ContentBlockDelta { index: 0, delta: Delta::TextDelta { text: p.to_string() } });
+        }
+        stream(a, StreamEvent::ContentBlockStop { index: 0 });
+    }
+
+    fn assistant(content: Vec<kodact_types::ContentBlock>, parent: Option<&str>) -> UiEvent {
+        use kodact_types::{ApiMessage, Role, StopReason, Usage};
+        UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+            message: ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: Role::Assistant,
+                model: "m".into(),
+                content,
+                stop_reason: Some(StopReason::ToolUse),
+                stop_sequence: None,
+                usage: Usage::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: parent.map(str::to_string),
+        })
+    }
+
+    fn task(id: &str, what: &str) -> kodact_types::ContentBlock {
+        kodact_types::ContentBlock::ToolUse {
+            id: id.into(),
+            name: "Task".into(),
+            input: json!({"description": what, "prompt": "look", "subagent_type": "Explore"}),
+            cache_control: None,
+            provider: None,
+        }
+    }
+
+    /// The turn from a real session on an OpenAI-compatible gateway: answers that open
+    /// with blank lines, answers that are only blank lines before tool calls, and five
+    /// sub-agents. No answer mark may stand alone on its row, and every sub-agent shows
+    /// it is working and what it does.
+    #[test]
+    fn a_gateway_turn_with_sub_agents_renders_cleanly() {
+        let mut a = app(false);
+        a.look = crate::tui::look::Look::Frame;
+        typed(&mut a, "run multiple sub agents");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        streamed_text(&mut a, &["\n\n", "Let me get a quick view first.", "\n"]);
+        a.on_event(assistant(vec![kodact_types::ContentBlock::text("\n\nLet me get a quick view first.\n")], None));
+        // Blank-only text before each delegation.
+        let areas = ["core crates", "tools crates", "supporting crates", "evals and docs", "jobs and git"];
+        for (i, what) in areas.iter().enumerate() {
+            streamed_text(&mut a, &["\n", "\n"]);
+            a.on_event(assistant(vec![kodact_types::ContentBlock::text("\n\n"), task(&format!("t{i}"), what)], None));
+        }
+        // The first sub-agent reads a file.
+        let read = kodact_types::ContentBlock::ToolUse {
+            id: "s1".into(),
+            name: "Read".into(),
+            input: json!({"file_path": "/p/src/lib.rs"}),
+            cache_control: None,
+            provider: None,
+        };
+        a.on_event(assistant(vec![read], Some("t0")));
+
+        let scroll: Vec<String> = a.take_pending().iter().map(crate::tui::text::plain).collect();
+        assert!(
+            !scroll.iter().any(|l| l.trim() == kodact_core::glyphs::ANSWER),
+            "no answer mark alone on a row:\n{}",
+            scroll.join("\n")
+        );
+        assert!(scroll.iter().any(|l| l.starts_with("● Let me get a quick view first.")), "{scroll:#?}");
+
+        let start = a.running[0].since;
+        let v = live_view_at(&a, 100, 40, start + Duration::from_millis(250));
+        let (rows, _) = draw(&v, 100);
+        let agents: Vec<&String> = rows.iter().filter(|r| r.contains("Delegating")).collect();
+        assert_eq!(agents.len(), 5, "{rows:#?}");
+        assert!(agents.iter().all(|r| r.contains('━')), "each sub-agent's scanner moves: {agents:#?}");
+        assert!(agents[0].contains("1 step") && agents[0].contains("src/lib.rs"), "its latest step: {}", agents[0]);
+        // The scanner moves: a later frame differs.
+        let later = live_view_at(&a, 100, 40, start + Duration::from_millis(250 + 120));
+        let (rows2, _) = draw(&later, 100);
+        let first = |rs: &[String]| rs.iter().find(|r| r.contains("Delegating")).cloned().unwrap();
+        assert_ne!(first(&rows), first(&rows2), "the segment sweeps");
     }
 
     #[test]

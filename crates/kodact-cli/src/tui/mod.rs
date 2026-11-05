@@ -884,3 +884,182 @@ mod tests {
         assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
     }
 }
+
+/// Screens drawn to HTML, to look at the full-screen UI without a terminal:
+/// `KODACT_SNAPSHOT_DIR=/tmp/s cargo test -p kodact-cli --bin kodact snapshots -- --ignored`.
+#[cfg(test)]
+mod snapshots {
+    use super::app::{App, StatusView, UiEvent};
+    use super::text::Theme;
+    use super::*;
+    use kodact_types::{ApiMessage, ContentBlock, Role, StopReason, Usage};
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+
+    fn css(c: Color, default: &str) -> String {
+        match c {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Reset => default.into(),
+            Color::White => "#e5e5e5".into(),
+            Color::Black => "#101214".into(),
+            Color::Gray | Color::DarkGray => "#8a8a8a".into(),
+            Color::LightGreen | Color::Green => "#9fe870".into(),
+            Color::Red | Color::LightRed => "#ff6b6b".into(),
+            Color::Yellow | Color::LightYellow => "#f5d76e".into(),
+            _ => default.into(),
+        }
+    }
+
+    fn html(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area;
+        let mut s = String::from(
+            "<!doctype html><meta charset=utf-8><style>body{margin:0;background:#0b0c0e}\
+             pre{margin:0;padding:8px;font:16px/1.15 'DejaVu Sans Mono',monospace;color:#d8d8d8;background:#0b0c0e}\
+             span{white-space:pre}</style><pre>",
+        );
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let c = &buf[(x, y)];
+                let mut st = format!("color:{};", css(c.fg, "#d8d8d8"));
+                if c.bg != Color::Reset {
+                    st.push_str(&format!("background:{};", css(c.bg, "transparent")));
+                }
+                if c.modifier.contains(ratatui::style::Modifier::BOLD) {
+                    st.push_str("font-weight:bold;");
+                }
+                if c.modifier.contains(ratatui::style::Modifier::DIM) {
+                    st.push_str("opacity:.6;");
+                }
+                let sym = c.symbol().replace('&', "&amp;").replace('<', "&lt;");
+                s.push_str(&format!("<span style=\"{st}\">{sym}</span>"));
+            }
+            s.push('\n');
+        }
+        s + "</pre>"
+    }
+
+    fn app() -> App {
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
+        a.front = true;
+        a.endpoint = "gpt.technica-engineering.net".into();
+        a.branch = "main".into();
+        a.on_event(UiEvent::Status(StatusView {
+            model: "quick-thinking".into(),
+            mode: "default".into(),
+            cwd: "~/KodAct".into(),
+            cost: 0.0,
+            cost_unknown: true,
+            context_pct: Some(4),
+            context_used: true,
+            window: 200_000,
+            ..Default::default()
+        }));
+        a
+    }
+
+    fn info() -> front::FrontInfo {
+        front::FrontInfo {
+            version: "0.1.0".into(),
+            model: "quick-thinking".into(),
+            endpoint: "gpt.technica-engineering.net".into(),
+            folder: "~/KodAct".into(),
+            branch: Some("main".into()),
+            recent: vec![("fix the token meter".into(), "1m ago".into())],
+            ..Default::default()
+        }
+    }
+
+    fn shot(name: &str, a: &mut App, w: u16, h: u16) {
+        let Ok(dir) = std::env::var("KODACT_SNAPSHOT_DIR") else { return };
+        let mut f = Full::new(TestBackend::new(w, h), info()).unwrap();
+        f.commit(a.take_pending());
+        f.draw(a).unwrap();
+        std::fs::write(format!("{dir}/{name}.html"), html(f.terminal.backend().buffer())).unwrap();
+    }
+
+    fn answer(a: &mut App, text: &str) {
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+            message: ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: Role::Assistant,
+                model: "m".into(),
+                content: vec![ContentBlock::text(text)],
+                stop_reason: Some(StopReason::EndTurn),
+                stop_sequence: None,
+                usage: Usage::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        a.on_event(UiEvent::Idle);
+    }
+
+    #[test]
+    #[ignore]
+    fn snapshots() {
+        let mut a = app();
+        shot("front", &mut a, 140, 40);
+        a.submit("hi".into());
+        a.front = false;
+        answer(&mut a, "Hi! What would you like to work on in the KodAct project?");
+        shot("chat", &mut a, 140, 24);
+        // Five sub-agents at work, one with a step.
+        let mut content = vec![ContentBlock::text("I'll fan out 5 parallel agents.")];
+        for (i, what) in [
+            "Explore core crates",
+            "Explore tools crates",
+            "Explore supporting crates",
+            "Explore evals and docs",
+            "Skim jobs and git",
+        ]
+        .iter()
+        .enumerate()
+        {
+            content.push(ContentBlock::ToolUse {
+                id: format!("t{i}"),
+                name: "Task".into(),
+                input: serde_json::json!({"description": what, "prompt": "p", "subagent_type": "Explore"}),
+                cache_control: None,
+                provider: None,
+            });
+        }
+        a.submit("run multiple sub agents".into());
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+            message: ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: Role::Assistant,
+                model: "m".into(),
+                content,
+                stop_reason: Some(StopReason::ToolUse),
+                stop_sequence: None,
+                usage: Usage::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        let read = ContentBlock::ToolUse {
+            id: "s".into(),
+            name: "Read".into(),
+            input: serde_json::json!({"file_path": "/p/crates/kodact-engine/src/engine.rs"}),
+            cache_control: None,
+            provider: None,
+        };
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+            message: ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: Role::Assistant,
+                model: "m".into(),
+                content: vec![read],
+                stop_reason: Some(StopReason::ToolUse),
+                stop_sequence: None,
+                usage: Usage::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: Some("t0".into()),
+        }));
+        shot("agents", &mut a, 140, 30);
+    }
+}

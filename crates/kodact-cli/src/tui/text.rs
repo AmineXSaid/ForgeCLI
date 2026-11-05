@@ -207,15 +207,6 @@ impl Theme {
         line
     }
 
-    /// The person's own words (typed, and echoed into the conversation).
-    pub fn user_text(&self) -> Style {
-        if self.color && self.depth != Depth::Ansi16 {
-            Style::default().fg(palette::PROMPT_FG.color(self.depth, self.light))
-        } else {
-            Style::default()
-        }
-    }
-
     /// The highlighted row of a menu or dialog.
     pub fn selected(&self) -> Style {
         if self.color {
@@ -1129,7 +1120,6 @@ mod tests {
         assert_eq!(line.spans[1].style.fg, Some(palette::STRONG.color(Depth::True, false)));
         assert_eq!(line.spans[2].style.fg, T.code().fg, "a span's own colour stays");
         assert!(T.code().bg.is_some(), "inline code on its own shade");
-        assert_ne!(T.user_text().fg, line.spans[0].style.fg, "the person's words are not the model's colour");
         let sixteen = Theme { depth: Depth::Ansi16, ..T };
         assert_eq!(sixteen.answer(Line::from("x")).spans[0].style.fg, None, "16 colours keep the terminal's own");
     }
