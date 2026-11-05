@@ -104,7 +104,8 @@ pub const BRAND_STRONG: Role = role(0xdcff85, 0x3d5f00, Color::LightGreen, Color
 /// Secondary text.
 pub const MUTED: Role = role(0xa9adb2, 0x55595e, Color::Gray, Color::DarkGray);
 /// Placeholders, hints, details.
-pub const SUBTLE: Role = role(0x767b82, 0x83878d, Color::DarkGray, Color::DarkGray);
+/// (At least 4.5:1 on both the page and the raised panel, in both themes.)
+pub const SUBTLE: Role = role(0x868b92, 0x63676d, Color::DarkGray, Color::DarkGray);
 /// Rules, gutters and box edges.
 pub const HAIRLINE: Role = role(0x2d3238, 0xd2d4d6, Color::DarkGray, Color::Gray);
 /// Links and paths.
@@ -128,6 +129,13 @@ pub const VIOLET: Role = role(0xb4a2ff, 0x5a44c0, Color::LightMagenta, Color::Ma
 /// Inline code: a warm peach, the one warm accent, apart from the blue of
 /// links and the lime of the brand.
 pub const CODE: Role = role(0xffb98f, 0xa4461c, Color::LightRed, Color::Red);
+/// The model's words: a soft paper, a step below the person's own, so long
+/// answers read without glare and the two voices stay apart.
+pub const ANSWER: Role = role(0xd9d7cf, 0x2b2e33, Color::Reset, Color::Reset);
+/// Bold in an answer: the brightest paper, so emphasis carries.
+pub const STRONG: Role = role(0xfbf9f3, 0x08090b, Color::White, Color::Black);
+/// Behind inline `code`: a shade off the page, so code reads as code without backticks.
+pub const CODE_BG: Role = role(0x22262b, 0xece6db, Color::Reset, Color::Reset);
 /// The person's prompt: a raised surface (the logo's tile).
 pub const PROMPT_BG: Role = role(0x1b1f23, 0xebeae4, Color::DarkGray, Color::Gray);
 /// The glow style's band behind the person's words: a lime tint.
@@ -149,7 +157,7 @@ pub const CODE_STRING: Role = role(0xc9ec7a, 0x4f7000, Color::LightGreen, Color:
 /// Numbers and constants.
 pub const CODE_NUMBER: Role = role(0xf0c25e, 0x8f6200, Color::LightYellow, Color::Yellow);
 /// Comments.
-pub const CODE_COMMENT: Role = role(0x767b82, 0x83878d, Color::DarkGray, Color::DarkGray);
+pub const CODE_COMMENT: Role = role(0x868b92, 0x63676d, Color::DarkGray, Color::DarkGray);
 /// Type names.
 pub const CODE_TYPE: Role = role(0x5fd8c4, 0x0e7568, Color::LightCyan, Color::Cyan);
 

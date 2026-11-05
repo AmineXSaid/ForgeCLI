@@ -670,7 +670,7 @@ impl App {
     fn commit_answer_lines(&mut self, lines: Vec<Line<'static>>) {
         use super::look::Look;
         let t = self.theme;
-        for mut line in lines {
+        for line in lines {
             let marker = if self.first_line { self.answer_mark() } else { Span::raw("  ") };
             if self.first_line {
                 self.gap();
@@ -685,6 +685,7 @@ impl App {
                 }
             }
             self.first_line = false;
+            let mut line = t.answer(line);
             line.spans.insert(0, marker);
             self.pending.push(line);
         }
@@ -696,7 +697,7 @@ impl App {
             return None;
         }
         let t = self.theme;
-        let mut line = self.md.clone().line(&self.live, &t)?;
+        let mut line = t.answer(self.md.clone().line(&self.live, &t)?);
         let marker = if self.first_line { self.answer_mark() } else { Span::raw("  ") };
         line.spans.insert(0, marker);
         Some(line)

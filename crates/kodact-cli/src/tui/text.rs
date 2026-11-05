@@ -181,9 +181,39 @@ impl Theme {
         }
     }
 
-    /// Inline `code`.
+    /// Inline `code`: peach, on a shade of its own where there are enough colours.
     pub fn code(&self) -> Style {
-        self.role(palette::CODE)
+        let st = self.role(palette::CODE);
+        if self.color && self.depth != Depth::Ansi16 {
+            st.bg(palette::CODE_BG.color(self.depth, self.light))
+        } else {
+            st
+        }
+    }
+
+    /// The model's words in a line of an answer: soft paper for plain text,
+    /// the brightest paper for bold; spans with a colour of their own keep it.
+    pub fn answer(&self, mut line: Line<'static>) -> Line<'static> {
+        if !self.color || self.depth == Depth::Ansi16 {
+            return line;
+        }
+        let body = palette::ANSWER.color(self.depth, self.light);
+        let strong = palette::STRONG.color(self.depth, self.light);
+        for s in &mut line.spans {
+            if s.style.fg.is_none() && !s.content.trim().is_empty() {
+                s.style.fg = Some(if s.style.add_modifier.contains(Modifier::BOLD) { strong } else { body });
+            }
+        }
+        line
+    }
+
+    /// The person's own words (typed, and echoed into the conversation).
+    pub fn user_text(&self) -> Style {
+        if self.color && self.depth != Depth::Ansi16 {
+            Style::default().fg(palette::PROMPT_FG.color(self.depth, self.light))
+        } else {
+            Style::default()
+        }
     }
 
     /// The highlighted row of a menu or dialog.
@@ -1086,6 +1116,22 @@ mod tests {
 
     fn one(raw: &str) -> String {
         plain(&Markdown::default().line(raw, &T).unwrap())
+    }
+
+    #[test]
+    fn answers_and_the_persons_words_have_their_own_colours() {
+        let line = T.answer(Line::from(vec![
+            Span::raw("plain "),
+            Span::styled("bold", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("code", T.code()),
+        ]));
+        assert_eq!(line.spans[0].style.fg, Some(palette::ANSWER.color(Depth::True, false)));
+        assert_eq!(line.spans[1].style.fg, Some(palette::STRONG.color(Depth::True, false)));
+        assert_eq!(line.spans[2].style.fg, T.code().fg, "a span's own colour stays");
+        assert!(T.code().bg.is_some(), "inline code on its own shade");
+        assert_ne!(T.user_text().fg, line.spans[0].style.fg, "the person's words are not the model's colour");
+        let sixteen = Theme { depth: Depth::Ansi16, ..T };
+        assert_eq!(sixteen.answer(Line::from("x")).spans[0].style.fg, None, "16 colours keep the terminal's own");
     }
 
     #[test]

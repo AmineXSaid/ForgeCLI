@@ -104,7 +104,7 @@ fn half_blocks(grid: &[Vec<Px>], t: &Theme) -> Vec<Line<'static>> {
 /// shadow. "Kod" is paper (ink on a light background) and "Act" lime.
 fn wordmark_grid(look: Letters, light: bool) -> Vec<Vec<Px>> {
     let (paper, lime, shadow) = if light {
-        ((0x101214, Color::Black), (0x4a7200, Color::Green), (0xc9dca0, Color::Gray))
+        ((0x101214, Color::Black), (0x4a7200, Color::Green), (0xa9c172, Color::Gray))
     } else {
         ((0xf2f0e9, Color::White), (0xc6ff3d, Color::LightGreen), (0x3d5a10, Color::Green))
     };
@@ -265,7 +265,7 @@ fn resume_spans(t: &Theme, what: &str, ago: &str, room: usize) -> Vec<Span<'stat
         Span::styled("/resume", t.accent()),
         Span::raw("  "),
         Span::styled(fit(what, room.saturating_sub(width(ago) + 14).max(8)), t.dim()),
-        Span::styled("  ·  ", t.hairline()),
+        Span::styled("  ·  ", t.subtle()),
         Span::styled(ago.to_string(), t.subtle()),
     ]
 }
@@ -352,14 +352,15 @@ fn small_name(t: &Theme) -> Vec<Span<'static>> {
 /// to start says so; everything else (the folder, the branch, the version) is
 /// on the status line.
 fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
-    let fw = cols.saturating_sub(8).clamp(cols.min(20), 96);
-    let m = (cols - fw) / 2;
     let one = wordmark_w(Letters::Shadow);
-    let mut above = if cols < one + 4 {
+    // Twice the size only on a first run here (no earlier conversation): after
+    // that the name steps back and the input leads.
+    let first_run = info.recent.is_empty();
+    let (mut above, lw) = if cols < one + 4 {
         // Too narrow for the letters: the name in one row.
-        vec![centred(Line::from(small_name(t)), cols)]
+        (vec![centred(Line::from(small_name(t)), cols)], 6)
     } else {
-        let k = if cols >= 2 * one + 4 { 2 } else { 1 };
+        let k = if first_run && cols >= 2 * one + 4 { 2 } else { 1 };
         let word = half_blocks(&scaled(&wordmark_grid(Letters::Shadow, t.light), k), t);
         let ww = k * one;
         // The mark as tall as the letters, beside them where there is room; without
@@ -371,28 +372,50 @@ fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
         } else {
             (word, ww)
         };
-        centre_block(logo, lw, cols)
+        (centre_block(logo, lw, cols), lw)
     };
+    // The panel at least as wide as the name above it, so the logo never overhangs the input.
+    let fw = cols.saturating_sub(8).clamp(cols.min(20), 96.max(lw));
+    let m = (cols - fw) / 2;
+    // The text column inside the panel: the lines under it start there too.
+    let col = m + 4;
+    let room = fw.saturating_sub(4);
     above.push(Line::default());
     above.push(centred(Line::from(Span::styled(SHORT_TAGLINE, t.dim())), cols));
     above.push(Line::default());
     above.push(Line::default());
     let mut below = vec![];
-    if let Some((what, ago)) = info.recent.first() {
-        below.push(Line::default());
-        below.push(centred(Line::from(resume_spans(t, what, ago, fw)), cols));
+    match info.recent.first() {
+        Some((what, ago)) => {
+            below.push(Line::default());
+            below.push(at(col, Line::from(resume_spans(t, what, ago, room))));
+        }
+        // A first run: one thing to try, and where the project's instructions go.
+        None => {
+            below.push(Line::default());
+            below.push(at(
+                col,
+                Line::from(vec![
+                    Span::styled("Try ", t.subtle()),
+                    Span::styled("\"explain this project\"", t.dim()),
+                    Span::styled("  ·  ", t.subtle()),
+                    Span::styled("/init", t.accent()),
+                    Span::styled(" writes KODACT.md for it", t.subtle()),
+                ]),
+            ));
+        }
     }
     let failed: Vec<&str> = info.mcp.iter().filter(|(_, s)| s == "failed").map(|(n, _)| n.as_str()).collect();
     if !failed.is_empty() {
         below.push(Line::default());
-        below.push(centred(
+        below.push(at(
+            col,
             Line::from(vec![
                 Span::styled("● ", t.warning()),
-                Span::styled(fit(&failed.join(", "), fw.saturating_sub(30)), t.dim()),
+                Span::styled(fit(&failed.join(", "), room.saturating_sub(24)), t.dim()),
                 Span::styled(" didn't start  ·  ", t.subtle()),
                 Span::styled("/mcp", t.accent()),
             ]),
-            cols,
         ));
     }
     // The panel names the model and where it runs.
@@ -689,9 +712,18 @@ mod tests {
         }
         let frame = plain(&front_page(&DARK, Look::Frame, &info(), 120).above).join("\n");
         assert!(!frame.contains("Welcome to"), "the name speaks for itself");
-        let big = front_page(&DARK, Look::Frame, &info(), 140).above;
-        assert!(big.iter().filter(|l| line_w(l) > 2 * WORDMARK_W).count() >= 10, "twice the size when wide");
+        // Twice the size on a first run only; after that the input leads.
+        let first = FrontInfo { recent: vec![], ..info() };
+        let big = front_page(&DARK, Look::Frame, &first, 140).above;
+        assert!(big.iter().filter(|l| line_w(l) > 2 * WORDMARK_W).count() >= 10, "twice the size on a first run");
         assert!(big.iter().all(|l| line_w(l) <= 140));
+        let again = front_page(&DARK, Look::Frame, &info(), 140).above;
+        assert_eq!(big.len() - again.len(), 5, "normal size (6 rows, not 11) once there is history");
+        let first_below = plain(&front_page(&DARK, Look::Frame, &first, 120).below).join("\n");
+        assert!(first_below.contains("/init writes KODACT.md"), "a first run says what to try: {first_below}");
+        // The panel is never narrower than the name over it.
+        let p = front_page(&DARK, Look::Frame, &first, 140);
+        assert!(p.box_w >= 2 * WORDMARK_W, "{}", p.box_w);
         assert!(frame.contains(SHORT_TAGLINE));
         // Essentials: what the panel or the status line already says is not repeated.
         for gone in ["Version", "tools ready", "KodAct reads", "~/acme/shop", "jira"] {

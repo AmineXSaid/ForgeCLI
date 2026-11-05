@@ -411,12 +411,12 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
         }
     };
     if app.editor.is_empty() && !app.busy {
-        let row = Line::from(vec![prompt(), Span::styled(fit(PLACEHOLDER, text_w), t.subtle())]);
+        let row = Line::from(vec![prompt(), Span::styled(fit(PLACEHOLDER, text_w), t.dim())]);
         return (vec![row], (2, 0));
     }
     // While the model works, the frame style's panel says what typing does.
     if app.editor.is_empty() && app.look == super::look::Look::Frame {
-        let row = Line::from(vec![prompt(), Span::styled(fit(QUEUE_PLACEHOLDER, text_w), t.subtle())]);
+        let row = Line::from(vec![prompt(), Span::styled(fit(QUEUE_PLACEHOLDER, text_w), t.dim())]);
         return (vec![row], (2, 0));
     }
     let (cur_line, cur_col) = app.editor.position();
@@ -474,8 +474,10 @@ fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) 
     }
     let first = out.len() as u16;
     for r in rows {
-        // The edge is the prompt: the marker gives way to two spaces.
-        let mut spans = r.spans;
+        // The edge is the prompt: the marker gives way to two spaces. What is
+        // typed takes the person's colour; the placeholder keeps its own.
+        let mut spans: Vec<Span<'static>> =
+            r.spans.into_iter().map(|s| Span::styled(s.content, t.user_text().patch(s.style))).collect();
         if !spans.is_empty() {
             spans[0] = Span::raw("  ");
         }
@@ -486,8 +488,11 @@ fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) 
     let s = &app.status;
     let sep = || Span::raw("  ");
     let mut meta = vec![Span::raw("  "), Span::styled(mode, mode_st.add_modifier(ratatui::style::Modifier::BOLD))];
-    if !s.model.is_empty() {
-        meta.extend([sep(), Span::raw(s.model.clone())]);
+    // The mode is what this row is for: never dropped. The endpoint goes first,
+    // then the context, then the model is shortened to what is left.
+    let model_room = (inner + 2).saturating_sub(meta.iter().map(|s| text_width(&s.content)).sum::<usize>() + 2);
+    if !s.model.is_empty() && model_room >= 4 {
+        meta.extend([sep(), Span::raw(fit(&s.model, model_room))]);
     }
     let endpoint = vec![sep(), Span::styled(app.endpoint.clone(), t.subtle())];
     let mut right = vec![];
@@ -507,12 +512,10 @@ fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) 
     if w_of(&meta) + w_of(&right) + 2 > room {
         right.clear();
     }
-    if w_of(&meta) <= room {
-        let gap = room - w_of(&meta) - w_of(&right);
-        meta.push(Span::raw(" ".repeat(gap.saturating_sub(2))));
-        meta.extend(right);
-        row(meta, &mut out);
-    }
+    let gap = room.saturating_sub(w_of(&meta) + w_of(&right));
+    meta.push(Span::raw(" ".repeat(gap.saturating_sub(2))));
+    meta.extend(right);
+    row(meta, &mut out);
     if t.color {
         row(vec![], &mut out);
     }
@@ -690,7 +693,10 @@ fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
     }
     let room = w.saturating_sub(text_width(&left) + lead + 2);
     // The front screen shows the model under its input; the status line keeps the version.
-    let right = if app.front && app.status_text.is_none() {
+    let right = if frame_panel(app, w) && app.status_text.is_none() {
+        // The keys that help now, on the front page too: it is where they are needed most.
+        hints(app, room)
+    } else if app.front && app.status_text.is_none() {
         vec![Span::styled(format!("v{}", kodact_core::VERSION), app.theme.subtle())]
     } else if frame_panel(app, w) && app.status_text.is_none() {
         // The panel shows the model and the context; the line keeps the keys that help now.
@@ -1190,8 +1196,8 @@ mod tests {
         assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
         assert_eq!(rows[3], "  /p                             opus · ━─────── 12% · $0.25");
         assert_eq!(v.cursor, Some((4, 1)));
-        // The placeholder is quiet; the prompt marker is KodAct's lime.
-        assert_eq!(buf[(6, 1)].fg, crate::tui::palette::SUBTLE.color(Default::default(), false));
+        // The placeholder is quiet but readable (muted, over 4.5:1); the prompt marker is KodAct's lime.
+        assert_eq!(buf[(6, 1)].fg, crate::tui::palette::MUTED.color(Default::default(), false));
         assert_eq!(buf[(2, 1)].fg, crate::tui::palette::BRAND.color(Default::default(), false));
     }
 
@@ -1377,6 +1383,20 @@ mod tests {
         let (rows, _) = draw(&live_view(&a, 80, 30), 80);
         let last = rows.last().unwrap();
         assert!(!last.contains("esc stop") && !last.contains("queue"), "{last}");
+    }
+
+    #[test]
+    fn a_long_model_name_never_hides_the_mode() {
+        let mut a = app(true);
+        a.look = crate::tui::look::Look::Frame;
+        a.endpoint = "127.0.0.1:11434".into();
+        a.status.model = "accounts/fireworks/models/a-very-long-model-name-that-goes-on-and-on".into();
+        a.status.mode = "bypassPermissions".into();
+        let (rows, _) = draw(&live_view(&a, 60, 12), 60);
+        let meta = rows.iter().find(|r| r.contains("Bypass permissions")).expect("the mode stays");
+        assert!(meta.contains("accounts/fireworks/") && meta.contains('…'), "the model shortened: {meta}");
+        assert!(!meta.contains("127.0.0.1"), "the endpoint goes first: {meta}");
+        assert!(rows.iter().all(|r| text_width(r) <= 60));
     }
 
     #[test]

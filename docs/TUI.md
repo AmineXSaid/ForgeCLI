@@ -278,17 +278,24 @@ with `{"text", "cwd"}`:
   input (`render.rs`); colours (`/theme dark|light|none`) apply to all:
   - `frame` (Essentials): only what is used before the first message. The
     mark beside the wordmark (`Kod` in paper, `Act` in lime, over an olive
-    shadow), twice the size from 110 columns (the mark beside it from 136;
-    without colour the letters alone; under 57 columns the name in one
-    row), "Code, then act.", the input, and one `/resume` line for the last
-    conversation here. An MCP server that failed to start adds one line
-    (`● figma didn't start · /mcp`). The folder, the branch and the version
-    are on the status line; the model and where it runs are in the panel.
-    Steps with a dot; approvals in lime corner marks; what you sent is
-    echoed as the panel is drawn, its edge in the mode it was sent in.
+    shadow); twice the size only on a first run in a folder (no earlier
+    conversation there) from 110 columns, normal size after that, so the
+    input leads (without colour the letters alone; under 57 columns the
+    name in one row). "Code, then act, on the model you choose.", the
+    input (at least as wide as the name above it), then, in the panel's
+    text column, one `/resume` line for the last conversation, or on a
+    first run `Try "explain this project" · /init writes KODACT.md for it`.
+    An MCP server that failed to start adds one line (`● figma didn't
+    start · /mcp`). The status line shows the folder and branch and the
+    keys that help now, on the front page too; the version is in
+    `/status`. Steps with a dot; approvals in lime corner marks; what you
+    sent is echoed as the panel is drawn, its edge in the mode it was sent
+    in.
     The input is a raised panel rather than a box: the text on a row of
     padding, a row of air, then the permission mode, the model, where it
-    runs, and the context meter with what the session has spent. The
+    runs, and the context meter with what the session has spent. The mode is
+    never dropped: a narrow panel loses the endpoint, then the context,
+    then shortens the model. The
     panel's left edge and the mode's name take the mode's colour (Default
     lime, Plan teal, Auto violet, Accept edits amber, Bypass permissions
     red, Don't ask quiet). The status line under the panel keeps the folder
@@ -364,6 +371,12 @@ with `{"text", "cwd"}`:
   - table rows are held until the table ends, then drawn with aligned
     columns (`--:` aligns right), `│` between cells, a `─┼─` rule and a
     bold teal header.
+- **Text colours**: the model's words in a soft paper (`ANSWER`, 13:1),
+  bold in the brightest paper (`STRONG`), inline code in peach on a shade of
+  its own (`CODE_BG`); the person's words, typed and echoed, in the brighter
+  `PROMPT_FG`, so the two voices stay apart. Quiet text (`SUBTLE`) is at
+  least 4.5:1 on the page and on the panel in both themes; the placeholder
+  is `MUTED`. In 16 colours the terminal's own text colour is kept.
 - **Colours** (`palette.rs`): KodAct's ink, paper and lime, with teal and
   violet beside it. Ink and paper for text and surfaces, lime for the brand
   and for what needs the person; teal and violet for the structure of an
