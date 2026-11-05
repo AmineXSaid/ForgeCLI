@@ -981,8 +981,8 @@ mod snapshots {
         let area = buf.area;
         let mut s = String::from(
             "<!doctype html><meta charset=utf-8><style>body{margin:0;background:#0b0c0e}\
-             pre{margin:0;padding:8px;font:16px/1.3 'DejaVu Sans Mono',monospace;color:#d8d8d8;background:#0b0c0e}\
-             span{white-space:pre;display:inline-block;height:1.3em;vertical-align:top}</style><pre>",
+             pre{margin:0;padding:8px;font:16px/1.15 'DejaVu Sans Mono',monospace;color:#d8d8d8;background:#0b0c0e}\
+             span{white-space:pre;display:inline-block;height:1.15em;vertical-align:top}</style><pre>",
         );
         for y in 0..area.height {
             for x in 0..area.width {
@@ -1069,8 +1069,28 @@ mod snapshots {
         })
     }
 
+    /// A model turn: a request, the answer, then the turn ends a few seconds and some
+    /// tokens later, as in a real session.
     fn answer(a: &mut App, text: &str) {
+        let start = ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: Role::Assistant,
+            model: "m".into(),
+            content: vec![],
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage::default(),
+        };
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Stream {
+            event: kodact_types::StreamEvent::MessageStart { message: start },
+            parent_tool_use_id: None,
+        }));
         a.on_event(msg(vec![ContentBlock::text(text)], StopReason::EndTurn, None));
+        a.busy_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(7));
+        let mut s = a.status.clone();
+        s.session_tokens += 9_400;
+        a.on_event(UiEvent::Status(s));
         a.on_event(UiEvent::Idle);
     }
 
@@ -1210,6 +1230,7 @@ mod snapshots {
         a.submit("summarize the README".into());
         a.front = false;
         a.live = "KodAct is a terminal coding agent that runs on the model you choose. It reads".into();
+        a.activity = "Writing".into();
         a.submit("then list the open TODOs".into());
         shot("06-working-with-queue", &mut a, 140, 24);
 

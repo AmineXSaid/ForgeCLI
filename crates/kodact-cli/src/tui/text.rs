@@ -954,8 +954,8 @@ fn hanging_indent(cells: &[(char, Style)], max: usize) -> usize {
     let lead = text.len() - text.trim_start_matches(' ').len();
     let rest = &text[lead..];
     let marker = [
-        "● ", "└ ", "❯ ", "▲ ", "✕ ", "· ", "• ", "◦ ", "▪ ", "✓ ", "○ ", "│ ", "› ", "↳ ", "- ", "* ", "> ", "‖ ",
-        "» ",
+        "● ", "└ ", "❯ ", "▲ ", "✕ ", "✗ ", "◆ ", "■ ", "· ", "• ", "◦ ", "▪ ", "✓ ", "○ ", "│ ", "› ", "↳ ", "- ",
+        "* ", "> ", "‖ ", "» ",
     ]
     .iter()
     .find(|m| rest.starts_with(**m))

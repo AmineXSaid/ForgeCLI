@@ -30,6 +30,20 @@ const LIVE_ROWS: usize = 3;
 /// The composer's placeholder, as KodAct's says it.
 pub const PLACEHOLDER: &str = "What shall we build today?";
 /// The frame style's placeholder while the model works.
+/// What the empty input says, for the moment: the welcome on the front page, the way
+/// on after an error or a plan, else a reply.
+fn placeholder(app: &App) -> &'static str {
+    if app.look != super::look::Look::Frame || !app.talked {
+        PLACEHOLDER
+    } else if app.model_down {
+        "Try again, or /model to choose another"
+    } else if app.status.mode == "plan" {
+        "Refine the plan, or shift+tab to leave plan mode"
+    } else {
+        "Reply…"
+    }
+}
+
 pub const QUEUE_PLACEHOLDER: &str = "Type to queue a message";
 /// What the spinner says while the model works, in KodAct's voice (its spinner verbs).
 pub const VERBS: [&str; 8] =
@@ -361,7 +375,7 @@ fn dialog(app: &App, w: usize, room: usize) -> Vec<Line<'static>> {
     if let Some(danger) = app.dialog_danger() {
         rows.push(Line::default());
         rows.push(Line::from(vec![
-            Span::styled("⚠ ", t.error()),
+            Span::styled("▲ ", t.error()),
             Span::styled(format!("This {danger}. It can't be undone."), t.error()),
         ]));
     }
@@ -435,7 +449,7 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
         }
     };
     if app.editor.is_empty() && !app.busy {
-        let row = Line::from(vec![prompt(), Span::styled(fit(PLACEHOLDER, text_w), t.dim())]);
+        let row = Line::from(vec![prompt(), Span::styled(fit(placeholder(app), text_w), t.dim())]);
         return (vec![row], (2, 0));
     }
     // While the model works, the frame style's panel says what typing does.
@@ -606,7 +620,18 @@ fn gauge(t: &text::Theme, s: &StatusView) -> Vec<Span<'static>> {
     } else {
         t.accent()
     };
-    vec![Span::styled(shape, tone), Span::styled(format!(" {}{left}% left", guess(s)), t.dim())]
+    let mut out = vec![Span::styled(shape, tone), Span::styled(format!(" {}{left}% left", guess(s)), t.dim())];
+    // Low: what happens next, and what to do about it.
+    if left <= 10 {
+        out.extend([
+            Span::styled(" · ", t.subtle()),
+            Span::styled("/compact", t.accent()),
+            Span::styled(" now", t.dim()),
+        ]);
+    } else if left <= 25 {
+        out.push(Span::styled(" · summarizes at 0%", t.dim()));
+    }
+    out
 }
 
 fn status(app: &App, w: usize, now: Instant) -> Line<'static> {
@@ -847,17 +872,16 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
     let mut spinner = vec![];
     for r in &app.running {
         let ran = now.duration_since(r.since);
-        // Asked about and not yet allowed: waiting, not running.
+        // Asked about and not yet allowed: the dialog shows the command, so no row here.
         if app.asking_for() == Some(r.id.as_str()) {
-            let mut spans = vec![Span::styled("◇ ", t.warning()), Span::styled("Waiting", t.bold())];
-            spans.extend(r.header.iter().skip(1).cloned());
-            spinner.push(Line::default());
-            spinner.extend(text::wrap(vec![Line::from(spans)], tw as u16).into_iter().take(2));
             continue;
         }
         let mut spans = if is_agent(&r.name) {
-            // A sub-agent: a lime segment sweeping a short track, its time, and its latest step.
-            scanner(&t, ran)
+            // A sub-agent: a lime segment sweeping a short track and the word for it, so
+            // its state never rests on the motion or the colour alone.
+            let mut v = scanner(&t, ran);
+            v.push(Span::styled("running  ", t.dim()));
+            v
         } else {
             let face = glyphs::RUNNING[(ran.as_millis() / RUNNING_STEP.as_millis()) as usize % 4];
             vec![Span::styled(format!("{face} "), t.accent())]
@@ -905,8 +929,11 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
                 }
             };
             line.extend(shimmer(&t, &format!("{verb}…"), since));
-            let done =
-                if agents > 0 && app.agents_done > 0 { format!("{} done · ", app.agents_done) } else { String::new() };
+            let done = if agents > 0 {
+                format!("{} of {} done · ", app.agents_done, agents + app.agents_done)
+            } else {
+                String::new()
+            };
             let rest = if app.look == super::look::Look::Frame {
                 format!(" ({done}{}s)", since.as_secs())
             } else {
@@ -1168,7 +1195,12 @@ fn session_row(app: &App, room: usize) -> Vec<Span<'static>> {
     let free = room.saturating_sub(w_of(&mode) + w_of(&right) + if right.is_empty() { 0 } else { 2 });
     if !s.model.is_empty() && free >= 9 {
         let model = fit(&s.model, free - 5);
-        left.extend([sep(), Span::styled(model.clone(), Style::default())]);
+        let model_span = if app.model_down {
+            Span::styled(format!("✗ {model}"), t.error())
+        } else {
+            Span::styled(model.clone(), Style::default())
+        };
+        left.extend([sep(), model_span]);
         if let Some(e) = endpoint.filter(|e| 5 + text_width(&model) + w_of(e) <= free) {
             left.extend(e);
         }
@@ -1285,7 +1317,7 @@ mod tests {
         typed(&mut a, "ab");
         let v = live_view_at(&a, 50, 20, start + Duration::from_millis(1300));
         let (rows, _) = draw(&v, 50);
-        assert_eq!(rows[0], "● partial answer");
+        assert_eq!(rows[0], "• partial answer");
         assert_eq!(rows[1], "");
         assert_eq!(rows[2], "⠦ Acting… (1s · esc to interrupt)", "1.3 s is step 16: frame 7 of 10");
         assert_eq!(rows[3], "queued ▸ next", "a queued message says so");
@@ -1361,6 +1393,87 @@ mod tests {
     }
 
     #[test]
+    fn the_session_says_what_happened_and_what_next() {
+        use kodact_engine::{EngineEvent, NoticeLevel};
+        let mut a = app(false);
+        a.look = crate::tui::look::Look::Frame;
+        a.status.model = "quick-thinking".into();
+        // Before anything is sent: the welcome. After: a reply.
+        assert!(draw(&live_view(&a, 80, 12), 80).0.join("\n").contains(PLACEHOLDER));
+        typed(&mut a, "hi");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // The model isn't there: marked in the box, and the input says what to do.
+        a.on_event(UiEvent::Engine(EngineEvent::Notice {
+            level: NoticeLevel::Error,
+            text: r#"API Error: HTTP 400 from https://gw.example.com/v1: {"detail":"Model not found"}"#.into(),
+        }));
+        a.on_event(UiEvent::Idle);
+        let text = draw(&live_view(&a, 100, 12), 100).0.join("\n");
+        assert!(text.contains("✗ quick-thinking"), "{text}");
+        assert!(text.contains("Try again, or /model to choose another"), "{text}");
+        // Another model clears it.
+        let mut s = a.status.clone();
+        s.model = "deep-thinking".into();
+        a.on_event(UiEvent::Status(s));
+        let text = draw(&live_view(&a, 100, 12), 100).0.join("\n");
+        assert!(!text.contains('✗') && text.contains("Reply…"), "{text}");
+        // A turn that reached the model ends with what it took.
+        typed(&mut a, "again");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        a.take_pending();
+        let start = kodact_types::ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: kodact_types::Role::Assistant,
+            model: "m".into(),
+            content: vec![],
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Default::default(),
+        };
+        a.on_event(UiEvent::Engine(EngineEvent::Stream {
+            event: kodact_types::StreamEvent::MessageStart { message: start },
+            parent_tool_use_id: None,
+        }));
+        let mut s = a.status.clone();
+        s.cost = a.status.cost + 0.004;
+        s.cost_unknown = false;
+        a.on_event(UiEvent::Status(s));
+        a.on_event(UiEvent::Idle);
+        let lines: Vec<String> = a.take_pending().iter().map(crate::tui::text::plain).collect();
+        assert_eq!(lines.last().unwrap(), "  0s · $0.004", "{lines:?}");
+        // Sub-agents: the word, and how many are done.
+        let mut b = app(false);
+        b.look = crate::tui::look::Look::Frame;
+        typed(&mut b, "go");
+        b.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        b.on_event(UiEvent::Engine(EngineEvent::Assistant {
+            message: kodact_types::ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: kodact_types::Role::Assistant,
+                model: "m".into(),
+                content: vec![kodact_types::ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "Task".into(),
+                    input: json!({"description": "Explore core"}),
+                    cache_control: None,
+                    provider: None,
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: Default::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        b.agents_done = 2;
+        let text = draw(&live_view(&b, 100, 14), 100).0.join("\n");
+        assert!(text.contains("running  Explore core"), "{text}");
+        assert!(text.contains("Waiting for 1 agent… (2 of 3 done · 0s)"), "{text}");
+    }
+
+    #[test]
     fn a_destructive_command_starts_on_deny_and_needs_y() {
         let mut a = app(false);
         a.look = crate::tui::look::Look::Frame;
@@ -1389,9 +1502,10 @@ mod tests {
         ask(&mut a, "Bash", json!({"command": "rm -rf build/"}));
         let (rows, _) = draw(&live_view(&a, 80, 40), 80);
         let text = rows.join("\n");
-        assert!(text.contains("◇ Waiting rm -rf build/") && !text.contains("Running rm"), "{text}");
+        assert!(!text.contains("Waiting rm") && !text.contains("Running rm"), "the dialog shows the command: {text}");
         assert!(!text.contains("Waiting for your answer"), "said once: {text}");
-        assert!(text.contains("⚠ This deletes files: build/. It can't be undone."), "{text}");
+        assert!(text.contains("Run this command?") && text.contains("in /p"), "where it runs: {text}");
+        assert!(text.contains("▲ This deletes files: build/. It can't be undone."), "{text}");
         assert!(text.contains("❯ 2. Deny"), "the cursor starts on Deny: {text}");
         assert!(text.contains("y to allow · Enter, n or Esc to deny"), "{text}");
         // Enter on Allow does nothing but say how to allow it.
@@ -1404,14 +1518,20 @@ mod tests {
         assert!(a.dialog.is_none());
         // What counts as destructive.
         use crate::tui::app::danger_of;
-        let d = |c: &str| danger_of("Bash", &json!({ "command": c }));
+        let d = |c: &str| danger_of("Bash", &json!({ "command": c }), "");
         assert_eq!(d("rm -rf build/ dist"), Some("deletes files: build/ dist".into()));
         assert_eq!(d("git reset --hard HEAD~1"), Some("discards uncommitted changes".into()));
         assert_eq!(d("git push --force origin main"), Some("rewrites the remote branch".into()));
         assert_eq!(d("psql -c 'DROP TABLE users'"), Some("deletes data".into()));
         assert_eq!(d("cargo test"), None);
         assert_eq!(d("git push origin main"), None);
-        assert_eq!(danger_of("Read", &json!({"file_path": "/x"})), None);
+        assert_eq!(danger_of("Read", &json!({"file_path": "/x"}), ""), None);
+        // Outside the project, said so.
+        let out = |c: &str| danger_of("Bash", &json!({ "command": c }), "/home/k/proj");
+        assert_eq!(out("rm -rf /home/k/other"), Some("deletes files outside the project: /home/k/other".into()));
+        assert_eq!(out("rm -rf ../shared"), Some("deletes files outside the project: ../shared".into()));
+        assert_eq!(out("rm -rf build/"), Some("deletes files: build/".into()));
+        assert_eq!(out("rm -rf /home/k/proj/build"), Some("deletes files: /home/k/proj/build".into()));
     }
 
     #[test]
@@ -1424,8 +1544,9 @@ mod tests {
             rows,
             [
                 "╭──────────────────────────────────────╮",
-                "│ ◆ Approve Bash?                      │",
+                "│ ◆ Run this command?                  │",
                 "│   cargo build                        │",
+                "│   in /p                              │",
                 "│                                      │",
                 "│ ❯ 1. Allow once  y                   │",
                 "│   2. Deny, and tell KodAct what to   │",
@@ -1438,7 +1559,7 @@ mod tests {
         );
         assert_eq!(v.cursor, None, "no cursor while a dialog is open");
         // Without colour the selection is reversed.
-        assert!(buf[(4, 4)].modifier.contains(ratatui::style::Modifier::REVERSED));
+        assert!(buf[(4, 5)].modifier.contains(ratatui::style::Modifier::REVERSED));
 
         let mut a = app(false);
         ask(&mut a, "ExitPlanMode", json!({"plan": "1. Do it"}));
@@ -1798,9 +1919,9 @@ mod tests {
         assert_eq!(g(4_000), "○ 96% left");
         assert_eq!(g(25_000), "◔ 75% left");
         assert_eq!(g(50_000), "◑ 50% left");
-        assert_eq!(g(75_000), "◕ 25% left");
-        assert_eq!(g(95_000), "● 5% left");
-        assert_eq!(g(140_000), "● 0% left", "past the point: nothing left, never negative");
+        assert_eq!(g(75_000), "◕ 25% left · summarizes at 0%", "low: what happens next");
+        assert_eq!(g(95_000), "● 5% left · /compact now", "very low: what to do");
+        assert_eq!(g(140_000), "● 0% left · /compact now", "past the point: nothing left, never negative");
         assert_eq!(gauge(&t, &at(4_000))[0].style, t.accent());
         assert_eq!(gauge(&t, &at(75_000))[0].style, t.warning(), "amber from 30% left");
         assert_eq!(gauge(&t, &at(95_000))[0].style, t.error(), "red from 10% left");
@@ -1936,7 +2057,7 @@ mod tests {
             "no answer mark alone on a row:\n{}",
             scroll.join("\n")
         );
-        assert!(scroll.iter().any(|l| l.starts_with("● Let me get a quick view first.")), "{scroll:#?}");
+        assert!(scroll.iter().any(|l| l.starts_with("• Let me get a quick view first.")), "{scroll:#?}");
 
         let start = a.running[0].since;
         let v = live_view_at(&a, 100, 40, start + Duration::from_millis(250));

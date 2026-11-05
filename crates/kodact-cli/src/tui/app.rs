@@ -194,6 +194,15 @@ pub fn relative_spans(spans: Vec<Span<'static>>, cwd: &str) -> Vec<Span<'static>
         .collect()
 }
 
+/// A count of tokens in a few characters: `950`, `3.1k`, `1.2M`.
+fn short_count(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{:.1}k", n as f64 / 1e3).replace(".0k", "k"),
+        _ => format!("{:.1}M", n as f64 / 1e6).replace(".0M", "M"),
+    }
+}
+
 /// `s` in at most `max` characters, cut with `…`.
 fn fit_words(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -232,7 +241,8 @@ pub enum ToolEnd {
 
 /// What a destructive command would do, in a few words, for the permission
 /// question: removing files, rewriting history, wiping a disk or a table.
-pub fn danger_of(tool: &str, input: &Value) -> Option<String> {
+/// Files outside `cwd` (the project) are named as such.
+pub fn danger_of(tool: &str, input: &Value, cwd: &str) -> Option<String> {
     if tool != "Bash" {
         return None;
     }
@@ -247,6 +257,15 @@ pub fn danger_of(tool: &str, input: &Value) -> Option<String> {
                 args.iter().any(|a| a.starts_with('-') && (a.contains('r') || a.contains('R') || a.contains('f')));
             let paths: Vec<&str> = args.iter().filter(|a| !a.starts_with('-')).copied().collect();
             if forced || !paths.is_empty() {
+                let cwd = cwd.trim_end_matches('/');
+                let outside = |p: &str| {
+                    let rooted = p.starts_with('~') || p.starts_with('/');
+                    rooted && !p.starts_with(&format!("{cwd}/")) && p != cwd || p.starts_with("..")
+                };
+                let out: Vec<&str> = paths.iter().copied().filter(|p| outside(p)).collect();
+                if !out.is_empty() && !cwd.is_empty() {
+                    return Some(format!("deletes files outside the project: {}", out.join(" ")));
+                }
                 return Some(format!("deletes files: {}", paths.join(" ")).trim_end_matches(": ").to_string());
             }
         }
@@ -474,6 +493,15 @@ pub struct App {
     pub look: super::look::Look,
     /// Sub-agents that finished this turn, for the line that waits on the rest.
     pub agents_done: usize,
+    /// The endpoint said the model isn't there: the session row marks it until a
+    /// request gets through or the model changes.
+    pub model_down: bool,
+    /// The turn so far: model requests, and the spend and tokens when it began.
+    turn_requests: usize,
+    turn_cost_from: f64,
+    turn_tokens_from: u64,
+    /// Something has been sent this session (the placeholder then asks for a reply).
+    pub talked: bool,
     /// Columns the full screen sets the transcript in (0 inline): the live rows follow it.
     pub transcript_indent: usize,
     /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
@@ -827,6 +855,11 @@ impl App {
             look: Default::default(),
             transcript_indent: 0,
             agents_done: 0,
+            model_down: false,
+            turn_requests: 0,
+            turn_cost_from: 0.0,
+            turn_tokens_from: 0,
+            talked: false,
             front: false,
             endpoint: String::new(),
             branch: String::new(),
@@ -1079,11 +1112,14 @@ impl App {
         let (mark, mark_st, st) = match level {
             NoticeLevel::Info => ("·", t.dim(), t.dim()),
             NoticeLevel::Warning => ("▲", t.warning(), Style::default()),
-            NoticeLevel::Error => ("✕", t.error(), t.error()),
+            NoticeLevel::Error => ("✗", t.error(), t.error()),
         };
         self.gap();
         // An API error, rewritten for a person: what went wrong in a line, then what to do.
         let human = human_api_error(text, &self.status.model, &self.endpoint);
+        if human.as_ref().is_some_and(|(head, _)| head.contains("isn't available on")) {
+            self.model_down = true;
+        }
         let text = human.as_ref().map(|(head, _)| head.as_str()).unwrap_or(text);
         // The mark in the column of every other mark (❯, ●, ✓), the words in the text's.
         for (i, l) in text.lines().enumerate() {
@@ -1107,7 +1143,12 @@ impl App {
                     self.reply_lines(&text, is_error);
                 }
             }
-            UiEvent::Status(s) => self.status = s,
+            UiEvent::Status(s) => {
+                if s.model != self.status.model {
+                    self.model_down = false;
+                }
+                self.status = s;
+            }
             UiEvent::Commands(c) => self.commands = c,
             UiEvent::Files(f) => self.files = f,
             UiEvent::Theme(name) => {
@@ -1134,6 +1175,7 @@ impl App {
                 for r in std::mem::take(&mut self.running) {
                     self.commit_tool(r, ToolEnd::Stopped);
                 }
+                self.turn_summary();
                 self.busy = false;
                 self.busy_since = None;
                 self.activity.clear();
@@ -1159,6 +1201,10 @@ impl App {
         self.activity = "Working".into();
         self.first_line = true;
         self.agents_done = 0;
+        self.turn_requests = 0;
+        self.turn_cost_from = self.status.cost;
+        self.turn_tokens_from = self.status.session_tokens;
+        self.talked = true;
         text
     }
 
@@ -1200,6 +1246,8 @@ impl App {
                 StreamEvent::MessageStart { message } => {
                     self.streamed = false;
                     self.request_thought = false;
+                    self.model_down = false;
+                    self.turn_requests += 1;
                     self.request_usage = message.usage;
                     self.meter();
                 }
@@ -1396,7 +1444,7 @@ impl App {
             }
             _ => DialogKind::Permission {
                 always: prompt.suggestions.first().and_then(rule_text),
-                danger: danger_of(&prompt.tool_name, &prompt.input),
+                danger: danger_of(&prompt.tool_name, &prompt.input, &self.status.cwd),
             },
         };
         // A destructive command starts on Deny, so a stray Enter never runs it.
@@ -1473,6 +1521,35 @@ impl App {
 
     /// A question to the person is open (permission, plan approval, AskUserQuestion):
     /// the turn waits on them, not on the model.
+    /// After a turn that reached the model: what it took, quietly under it
+    /// (`12s · $0.004`, or tokens for a model with no price); in plan mode,
+    /// how to go on.
+    fn turn_summary(&mut self) {
+        let (Some(since), true) = (self.busy_since, self.turn_requests > 0) else { return };
+        let t = self.theme;
+        let secs = since.elapsed().as_secs();
+        let spent = if self.status.cost_unknown {
+            let n = self.status.session_tokens.saturating_sub(self.turn_tokens_from);
+            (n > 0).then(|| format!("{} tokens", short_count(n)))
+        } else {
+            let c = self.status.cost - self.turn_cost_from;
+            (c > 0.0).then(|| if c < 0.01 { format!("${c:.3}") } else { format!("${c:.2}") })
+        };
+        let mut text = format!("{secs}s");
+        if let Some(s) = spent {
+            text.push_str(&format!(" · {s}"));
+        }
+        self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(text, t.subtle())]));
+        if self.status.mode == "plan" && self.dialog.is_none() {
+            self.gap();
+            self.pending.push(Line::from(vec![
+                Span::styled("◆ ", t.teal()),
+                Span::styled("Plan ready", t.bold()),
+                Span::styled(" · shift+tab to leave plan mode and run it · type to revise", t.dim()),
+            ]));
+        }
+    }
+
     /// A tool call's header with its paths relative to the session's folder.
     fn header(&self, name: &str, input: &Value, done: bool) -> Vec<Span<'static>> {
         relative_spans(tool_header(&self.theme, name, input, done), &self.status.cwd)
@@ -1527,6 +1604,10 @@ impl App {
                 let mut body = vec![];
                 if p.tool_name == "Bash" {
                     body.extend(p.input["command"].as_str().unwrap_or("").lines().take(6).map(|l| format!("  {l}")));
+                    // Where it runs: a relative path means nothing without it.
+                    if !self.status.cwd.is_empty() {
+                        body.push(format!("  in {}", super::short_path(&self.status.cwd)));
+                    }
                     if let Some(d) = p.input["description"].as_str().filter(|d| !d.trim().is_empty()) {
                         body.push(format!("  {d}"));
                     }
@@ -1552,7 +1633,12 @@ impl App {
                 if !p.reason.is_empty() && p.reason != "this tool requires permission" {
                     body.push(p.reason.clone());
                 }
-                (format!("Approve {}?", tool_display_name(&p.tool_name)), body)
+                let title = if p.tool_name == "Bash" {
+                    "Run this command?".to_string()
+                } else {
+                    format!("Approve {}?", tool_display_name(&p.tool_name))
+                };
+                (title, body)
             }
             DialogKind::Plan => ("Go ahead with this plan?".into(), vec![]),
             DialogKind::Viewer { screen, .. } => (screen.title.clone(), vec![]),
@@ -2383,7 +2469,7 @@ mod tests {
         assert_eq!(lines[1].spans[0].style, a.theme.warning());
         assert_eq!(lines[1].spans[1].style, Style::default(), "the words stay readable");
         a.on_event(UiEvent::Engine(EngineEvent::Notice { level: NoticeLevel::Error, text: "broke".into() }));
-        assert_eq!(texts(&a.take_pending()), ["", "✕ broke"]);
+        assert_eq!(texts(&a.take_pending()), ["", "✗ broke"]);
     }
 
     #[test]
@@ -2477,7 +2563,7 @@ mod tests {
         // /context typed mid-turn comes back as a screen while the question is open.
         let screen = kodact_core::commands::screens::Screen { title: "Context".into(), rows: vec![] };
         a.on_event(UiEvent::Screen(screen));
-        assert_eq!(a.dialog_text().0, "Approve Bash?", "the question stays");
+        assert_eq!(a.dialog_text().0, "Run this command?", "the question stays");
         assert!(rx.try_recv().is_err(), "and isn't answered");
         a.on_key(key(KeyCode::Char('1')));
         assert!(matches!(rx.try_recv(), Ok(PermissionAnswer::Allow { .. })));
@@ -2574,7 +2660,7 @@ mod tests {
         a.on_event(delta("I will walk"));
         assert_eq!(texts(&a.take_pending()), [""], "the blank line goes out with the first words");
         a.on_event(delta(" through it.\n"));
-        assert_eq!(texts(&a.take_pending()), ["● I will walk through it."], "and isn't added twice");
+        assert_eq!(texts(&a.take_pending()), ["• I will walk through it."], "and isn't added twice");
     }
 
     #[test]
@@ -2603,7 +2689,7 @@ mod tests {
             texts(&a.take_pending()),
             [
                 "",
-                "✕ quick-thinking isn't available on gw.example.com",
+                "✗ quick-thinking isn't available on gw.example.com",
                 "  /model to choose another · HTTP 400: Model not found"
             ]
         );
@@ -2639,7 +2725,7 @@ mod tests {
         }));
         a.on_event(delta("\n\n"));
         a.on_event(delta("Hi there.\nSecond line.\n"));
-        assert_eq!(texts(&a.take_pending()), ["", "● Hi there.", "  Second line."]);
+        assert_eq!(texts(&a.take_pending()), ["", "• Hi there.", "  Second line."]);
     }
 
     #[test]
@@ -2650,7 +2736,7 @@ mod tests {
             parent_tool_use_id: None,
         }));
         a.on_event(delta("Here is **the** plan:\n- step"));
-        assert_eq!(texts(&a.pending), ["", "● Here is the plan:"]);
+        assert_eq!(texts(&a.pending), ["", "• Here is the plan:"]);
         assert_eq!(a.live, "- step");
         a.on_event(delta(" one\n```sh\nls\n"));
         a.on_event(UiEvent::Engine(EngineEvent::Stream {
@@ -2892,7 +2978,7 @@ mod tests {
             destination: "localSettings".into(),
         }];
         a.on_event(UiEvent::Ask { prompt: p, reply: tx });
-        assert_eq!(a.dialog_text().0, "Approve Bash?");
+        assert_eq!(a.dialog_text().0, "Run this command?");
         assert_eq!(a.dialog_options()[1].0, "Always allow Bash(npm test)");
         a.on_key(key(KeyCode::Char('2')));
         match rx.try_recv().unwrap() {
