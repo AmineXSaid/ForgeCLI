@@ -61,7 +61,7 @@ ca=""
 case "${KODACT_HARBOR_AUTONOMOUS:-1}" in 0|false|no|off) ca="${ca}-noauto" ;; esac
 model="${KODACT_HARBOR_MODEL:-deep-thinking}"
 model_tag="$(printf '%s' "${model#*/}" | tr -c 'A-Za-z0-9._-' '-')"
-job="forgecli-${mode}-${model_tag}-${commit}${dirty}${custom}${ca}-$(date +%Y%m%d-%H%M%S)"
+job="kodact-${mode}-${model_tag}-${commit}${dirty}${custom}${ca}-$(date +%Y%m%d-%H%M%S)"
 echo "job: $job"
 
 # The report is written even when harbor fails part way.

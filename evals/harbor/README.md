@@ -173,7 +173,7 @@ evals/harbor/run.sh subset
 evals/harbor/run-forgecode.sh subset
 evals/harbor/run-ante.sh subset
 evals/harbor/run-pi.sh subset
-python3 evals/harbor/report.py jobs/forgecli-subset-* jobs/pi-subset-*   # side by side
+python3 evals/harbor/report.py jobs/kodact-subset-* jobs/pi-subset-*   # side by side
 ```
 
 `run-forgecode.sh` downloads Forge Code's static Linux build
