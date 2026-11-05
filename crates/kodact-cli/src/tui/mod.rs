@@ -957,109 +957,258 @@ mod snapshots {
         a
     }
 
-    fn info() -> front::FrontInfo {
+    fn info(recent: bool) -> front::FrontInfo {
         front::FrontInfo {
             version: "0.1.0".into(),
             model: "quick-thinking".into(),
             endpoint: "gpt.technica-engineering.net".into(),
             folder: "~/KodAct".into(),
             branch: Some("main".into()),
-            recent: vec![("fix the token meter".into(), "1m ago".into())],
+            recent: if recent { vec![("fix the token meter".into(), "1m ago".into())] } else { vec![] },
             ..Default::default()
         }
     }
 
-    fn shot(name: &str, a: &mut App, w: u16, h: u16) {
+    fn shot_with(name: &str, a: &mut App, w: u16, h: u16, recent: bool) {
         let Ok(dir) = std::env::var("KODACT_SNAPSHOT_DIR") else { return };
-        let mut f = Full::new(TestBackend::new(w, h), info()).unwrap();
+        let mut f = Full::new(TestBackend::new(w, h), info(recent)).unwrap();
         f.commit(a.take_pending());
         f.draw(a).unwrap();
         std::fs::write(format!("{dir}/{name}.html"), html(f.terminal.backend().buffer())).unwrap();
     }
 
-    fn answer(a: &mut App, text: &str) {
-        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
-            message: ApiMessage {
-                id: "m".into(),
-                kind: "message".into(),
-                role: Role::Assistant,
-                model: "m".into(),
-                content: vec![ContentBlock::text(text)],
-                stop_reason: Some(StopReason::EndTurn),
-                stop_sequence: None,
-                usage: Usage::default(),
-            },
-            uuid: "u".into(),
-            parent_tool_use_id: None,
-        }));
-        a.on_event(UiEvent::Idle);
+    fn shot(name: &str, a: &mut App, w: u16, h: u16) {
+        shot_with(name, a, w, h, true)
     }
 
-    #[test]
-    #[ignore]
-    fn snapshots() {
-        let mut a = app();
-        shot("front", &mut a, 140, 40);
-        a.submit("hi".into());
-        a.front = false;
-        answer(&mut a, "Hi! What would you like to work on in the KodAct project?");
-        shot("chat", &mut a, 140, 24);
-        // Five sub-agents at work, one with a step.
-        let mut content = vec![ContentBlock::text("I'll fan out 5 parallel agents.")];
-        for (i, what) in [
-            "Explore core crates",
-            "Explore tools crates",
-            "Explore supporting crates",
-            "Explore evals and docs",
-            "Skim jobs and git",
-        ]
-        .iter()
-        .enumerate()
-        {
-            content.push(ContentBlock::ToolUse {
-                id: format!("t{i}"),
-                name: "Task".into(),
-                input: serde_json::json!({"description": what, "prompt": "p", "subagent_type": "Explore"}),
-                cache_control: None,
-                provider: None,
-            });
-        }
-        a.submit("run multiple sub agents".into());
-        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+    fn msg(content: Vec<ContentBlock>, stop: StopReason, parent: Option<&str>) -> UiEvent {
+        UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
             message: ApiMessage {
                 id: "m".into(),
                 kind: "message".into(),
                 role: Role::Assistant,
                 model: "m".into(),
                 content,
-                stop_reason: Some(StopReason::ToolUse),
+                stop_reason: Some(stop),
                 stop_sequence: None,
                 usage: Usage::default(),
             },
             uuid: "u".into(),
+            parent_tool_use_id: parent.map(str::to_string),
+        })
+    }
+
+    fn answer(a: &mut App, text: &str) {
+        a.on_event(msg(vec![ContentBlock::text(text)], StopReason::EndTurn, None));
+        a.on_event(UiEvent::Idle);
+    }
+
+    fn call(id: &str, name: &str, input: serde_json::Value) -> ContentBlock {
+        ContentBlock::ToolUse { id: id.into(), name: name.into(), input, cache_control: None, provider: None }
+    }
+
+    fn done(a: &mut App, id: &str, out: &str, failed: bool, result: Option<serde_json::Value>) {
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::User {
+            message: kodact_types::Message::user(vec![ContentBlock::tool_result(id.to_string(), out, failed)]),
+            uuid: "r".into(),
+            tool_use_result: result,
+            is_meta: false,
             parent_tool_use_id: None,
         }));
-        let read = ContentBlock::ToolUse {
-            id: "s".into(),
-            name: "Read".into(),
-            input: serde_json::json!({"file_path": "/p/crates/kodact-engine/src/engine.rs"}),
-            cache_control: None,
-            provider: None,
-        };
-        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
-            message: ApiMessage {
-                id: "m".into(),
-                kind: "message".into(),
-                role: Role::Assistant,
-                model: "m".into(),
-                content: vec![read],
-                stop_reason: Some(StopReason::ToolUse),
-                stop_sequence: None,
-                usage: Usage::default(),
+    }
+
+    #[test]
+    #[ignore]
+    fn snapshots() {
+        use serde_json::json;
+        // 1. First run here.
+        let mut a = app();
+        shot_with("01-front-first-run", &mut a, 140, 40, false);
+        // 2. Coming back: one conversation to resume.
+        let mut a = app();
+        shot("02-front-returning", &mut a, 140, 40);
+
+        // 3. A formatted answer: heading, list, code and a table.
+        let mut a = app();
+        a.submit("how do I add an index in postgres?".into());
+        a.front = false;
+        answer(
+            &mut a,
+            "## Adding an index\n\nTwo ways, depending on whether the table is busy:\n\n\
+             - **Plain**: locks writes while it builds.\n- **Concurrently**: no write lock, slower.\n\n\
+             ```sql\nCREATE INDEX CONCURRENTLY idx_users_email ON users (email);\n```\n\n\
+             | Option | Locks writes | Speed |\n|---|---|---|\n| `CREATE INDEX` | yes | fast |\n\
+             | `CREATE INDEX CONCURRENTLY` | no | slower |\n\nUse `CONCURRENTLY` on a live table.",
+        );
+        shot("03-answer-markdown", &mut a, 140, 36);
+
+        // 4. Tools: read, edit with its diff, a passing and a failing command, then the answer.
+        let mut a = app();
+        a.submit("fix the subtraction bug in calc.py and run the tests".into());
+        a.front = false;
+        a.on_event(msg(
+            vec![
+                ContentBlock::text("I'll look at the file first."),
+                call("r1", "Read", json!({"file_path": "/home/kryptonite/proj/src/calc.py"})),
+            ],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "r1",
+            "     1\tdef add(a, b):\n     2\t    return a - b",
+            false,
+            Some(
+                json!({"type": "text", "file": {"filePath": "/home/kryptonite/proj/src/calc.py", "numLines": 2, "startLine": 1, "totalLines": 2}}),
+            ),
+        );
+        a.on_event(msg(
+            vec![call(
+                "e1",
+                "Edit",
+                json!({"file_path": "/home/kryptonite/proj/src/calc.py", "old_string": "a - b", "new_string": "a + b"}),
+            )],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "e1",
+            "The file was updated",
+            false,
+            Some(json!({"filePath": "/home/kryptonite/proj/src/calc.py", "structuredPatch": [{
+            "oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 2,
+            "lines": [" def add(a, b):", "-    return a - b", "+    return a + b"]}]})),
+        );
+        a.on_event(msg(
+            vec![call("b1", "Bash", json!({"command": "pytest -q", "description": "Run the tests"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "b1",
+            "....F\nFAILED tests/test_calc.py::test_div - ZeroDivisionError\n1 failed, 4 passed in 0.12s",
+            true,
+            None,
+        );
+        a.on_event(msg(
+            vec![call("b2", "Bash", json!({"command": "pytest -q tests/test_calc.py::test_add"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(&mut a, "b2", ".\n1 passed in 0.03s", false, None);
+        answer(&mut a, "Fixed `add` (it subtracted). `test_add` passes; `test_div` was already failing on division by zero and is unrelated.");
+        shot("04-tools", &mut a, 140, 40);
+
+        // 5. Sub-agents at work.
+        let mut a = app();
+        a.submit("explore this repo with several agents".into());
+        a.front = false;
+        let mut content = vec![ContentBlock::text("I'll fan out 4 agents across the repo's areas.")];
+        for (i, what) in ["Explore core crates", "Explore tools crates", "Explore evals and docs", "Skim jobs and git"]
+            .iter()
+            .enumerate()
+        {
+            content.push(call(
+                &format!("t{i}"),
+                "Task",
+                json!({"description": what, "prompt": "p", "subagent_type": "Explore"}),
+            ));
+        }
+        a.on_event(msg(content, StopReason::ToolUse, None));
+        for (i, path) in [
+            (0, "crates/kodact-engine/src/engine.rs"),
+            (1, "crates/kodact-tools/src/bash.rs"),
+            (1, "crates/kodact-tools/src/edit.rs"),
+        ] {
+            a.on_event(msg(
+                vec![call("s", "Read", json!({"file_path": format!("/home/kryptonite/KodAct/{path}")}))],
+                StopReason::ToolUse,
+                Some(&format!("t{i}")),
+            ));
+        }
+        shot("05-subagents", &mut a, 140, 30);
+
+        // 6. Working: an answer streaming in, the spinner, a queued message.
+        let mut a = app();
+        a.submit("summarize the README".into());
+        a.front = false;
+        a.live = "KodAct is a terminal coding agent that runs on the model you choose. It reads".into();
+        a.submit("then list the open TODOs".into());
+        shot("06-working-with-queue", &mut a, 140, 24);
+
+        // 7. A permission question.
+        let mut a = app();
+        a.submit("clean the build folder".into());
+        a.front = false;
+        a.on_event(msg(
+            vec![call("p1", "Bash", json!({"command": "rm -rf build/", "description": "Delete the build folder"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::mem::forget(rx);
+        a.on_event(UiEvent::Ask {
+            prompt: kodact_engine::PermissionPrompt {
+                tool_name: "Bash".into(),
+                tool_use_id: "p1".into(),
+                input: json!({"command": "rm -rf build/", "description": "Delete the build folder"}),
+                reason: String::new(),
+                suggestions: vec![],
+                blocked_path: None,
             },
-            uuid: "u".into(),
-            parent_tool_use_id: Some("t0".into()),
+            reply: tx,
+        });
+        shot("07-permission", &mut a, 140, 30);
+
+        // 8. The /model picker.
+        let mut a = app();
+        a.front = false;
+        let c = |l: &str, d: &str, cur: bool| kodact_core::commands::picker::Choice {
+            label: l.into(),
+            detail: d.into(),
+            pick: kodact_core::commands::picker::Pick::Run(String::new()),
+            current: cur,
+        };
+        a.on_event(UiEvent::Picker(kodact_core::commands::picker::Picker {
+            title: "Choose a model".into(),
+            choices: vec![
+                c("quick-thinking", "fast answers", true),
+                c("deep-thinking", "slower, reasons longer", false),
+                c("code-large", "long files", false),
+            ],
         }));
-        shot("agents", &mut a, 140, 30);
+        shot("08-model-picker", &mut a, 140, 24);
+
+        // 9. A warning and an error.
+        let mut a = app();
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Notice {
+            level: kodact_engine::NoticeLevel::Warning,
+            text: "KodAct doesn't know the model quick-thinking: it assumes a 200,000-token context window. Set its limits with \"modelLimits\" in settings.".into(),
+        }));
+        a.submit("hi".into());
+        a.front = false;
+        a.on_event(UiEvent::Reply { text: "API Error: HTTP 400 from https://gpt.technica-engineering.net/api/v1/chat/completions: {\"detail\":\"Model not found\"}".into(), is_error: true });
+        a.on_event(UiEvent::Idle);
+        shot("09-warning-and-error", &mut a, 140, 20);
+
+        // 10. Plan mode, mid-conversation.
+        let mut a = app();
+        a.status.mode = "plan".into();
+        a.submit("plan a refactor of the session store".into());
+        a.front = false;
+        answer(&mut a, "Here's the plan:\n\n1. Split `store.rs` into reading and listing.\n2. Move titles into their own module.\n3. Add tests for each.");
+        shot("10-plan-mode", &mut a, 140, 22);
+
+        // 11. A small terminal: 80 by 24.
+        let mut a = app();
+        a.submit("what does this repo do?".into());
+        a.front = false;
+        answer(&mut a, "It's **KodAct**, a terminal coding agent written in Rust: a CLI, an engine that runs turns, tools, MCP, sessions and an eval harness.");
+        shot("11-small-terminal", &mut a, 80, 24);
+        let mut a = app();
+        shot("12-front-small-terminal", &mut a, 80, 24);
     }
 }
