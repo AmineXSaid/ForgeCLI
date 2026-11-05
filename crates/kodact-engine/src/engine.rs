@@ -1045,9 +1045,15 @@ impl Engine {
 
     /// How long to wait before trying a failed model call again, or `None` to give up. Only
     /// unattended runs retry: a person at the prompt decides for themselves. A stream that
-    /// broke before its first event counts as a lost connection.
+    /// broke before its first event counts as a lost connection; an endpoint that says it is
+    /// down for maintenance is waited out; and a "model not found" after the model has already
+    /// answered in this run is the endpoint losing it for a moment, not a wrong name.
     fn api_retry_wait(&self, e: &ApiError, retries: u32) -> Option<Duration> {
-        let passes = e.is_retryable() || matches!(e, ApiError::Parse(m) if m.starts_with("stream ended"));
+        let answered = || self.state.messages.iter().any(|m| m.role == kodact_types::Role::Assistant);
+        let passes = e.is_retryable()
+            || e.is_outage()
+            || (e.is_model_missing() && answered())
+            || matches!(e, ApiError::Parse(m) if m.starts_with("stream ended"));
         if !self.cfg.autonomous || !passes {
             return None;
         }

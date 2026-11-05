@@ -85,10 +85,36 @@ impl ApiError {
 
     /// The endpoint refused the credentials (or none were set): the user must fix a key.
     pub fn is_auth_failure(&self) -> bool {
+        if self.is_outage() {
+            return false;
+        }
         match self {
             ApiError::MissingCredentials => true,
             ApiError::Http { status, kind, .. } => {
                 matches!(status, 401 | 403) || matches!(kind.as_str(), "authentication_error" | "permission_error")
+            }
+            _ => false,
+        }
+    }
+
+    /// The endpoint is down for a while and says so (scheduled maintenance, an outage
+    /// page): a 403 or 503 whose message says it is temporarily unavailable. Waiting can fix it.
+    pub fn is_outage(&self) -> bool {
+        match self {
+            ApiError::Http { status: 403 | 503, message, .. } => {
+                let m = message.to_ascii_lowercase();
+                m.contains("maintenance") || m.contains("temporarily unavailable")
+            }
+            _ => false,
+        }
+    }
+
+    /// The endpoint says the model doesn't exist. Fatal on a first call (a wrong name);
+    /// in the middle of a run where the model has answered, the endpoint lost it for a moment.
+    pub fn is_model_missing(&self) -> bool {
+        match self {
+            ApiError::Http { status: 400 | 404, kind, message, .. } => {
+                kind == "model_not_found" || message.to_ascii_lowercase().contains("model not found")
             }
             _ => false,
         }
@@ -106,6 +132,9 @@ impl ApiError {
 
     /// An error retrying won't fix: credentials, billing, a missing model.
     pub fn is_unrecoverable(&self) -> bool {
+        if self.is_outage() {
+            return false;
+        }
         match self {
             ApiError::MissingCredentials => true,
             ApiError::Http { status, kind, message, .. } => {
@@ -275,4 +304,35 @@ pub fn backoff_delay(attempt: u32, retry_after: Option<Duration>) -> Duration {
     }
     let base = 500u64.saturating_mul(1u64 << attempt.min(6));
     Duration::from_millis(base.min(32_000))
+}
+
+#[cfg(test)]
+mod outage_tests {
+    use super::ApiError;
+
+    fn http(status: u16, message: &str) -> ApiError {
+        ApiError::Http {
+            status,
+            kind: "error".into(),
+            message: message.into(),
+            retry_after: None,
+            url: String::new(),
+            origin: None,
+        }
+    }
+
+    #[test]
+    fn maintenance_is_an_outage_not_a_refused_key() {
+        let m = http(403, "This service is temporarily unavailable while we perform scheduled maintenance");
+        assert!(m.is_outage() && !m.is_auth_failure() && !m.is_unrecoverable());
+        let key = http(403, "Forbidden");
+        assert!(!key.is_outage() && key.is_auth_failure() && key.is_unrecoverable());
+        assert!(http(503, "Service temporarily unavailable").is_outage());
+        let gone = http(400, r#"{"detail":"Model not found"}"#);
+        assert!(
+            gone.is_model_missing() && !gone.is_retryable(),
+            "not retried unless the engine knows the model answered"
+        );
+        assert!(!http(400, "bad request").is_model_missing());
+    }
 }

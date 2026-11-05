@@ -1532,6 +1532,41 @@ async fn unattended_runs_retry_failed_model_calls() {
     assert!(retries[0]["error"].as_str().unwrap().contains("429"), "{}", retries[0]);
 }
 
+fn http(status: u16, kind: &str, message: &str) -> MockTurn {
+    MockTurn::HttpError { status, kind: kind.into(), message: message.into() }
+}
+
+#[tokio::test]
+async fn an_endpoint_outage_mid_run_is_waited_out() {
+    // Seen on Terminal-Bench (job 9489f93, 2026-11-05): the endpoint answered "Model not
+    // found" twice for a minute in the middle of runs 37 turns in, then went down for
+    // scheduled maintenance. Each ended its run at once and lost the work.
+    let maintenance = "This service is temporarily unavailable while we perform scheduled maintenance";
+    let h = Harness::new(vec![
+        MockTurn::tool("Bash", json!({"command": "echo step"})),
+        http(400, "error", "{\"detail\":\"Model not found\"}"),
+        http(403, "maintenance", maintenance),
+        http(403, "maintenance", maintenance),
+        MockTurn::text("done"),
+    ]);
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("task")).await;
+    assert_eq!(r.result.as_deref(), Some("done"), "{r:?}");
+    assert_eq!(h.provider.requests().len(), 5);
+
+    // "Model not found" on the first call is a wrong name: the run ends with it.
+    let h = Harness::new(vec![http(400, "error", "Model not found"), MockTurn::text("no")]);
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    assert_eq!(e.submit(prompt("task")).await.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(h.provider.requests().len(), 1);
+    // A 403 that isn't an outage is still a refused key.
+    let h = Harness::new(vec![http(403, "permission_error", "key not allowed"), MockTurn::text("no")]);
+    let mut e = h.engine_with(retrying(None), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("task")).await;
+    assert_eq!(r.subtype, ResultSubtype::ErrorDuringExecution);
+    assert_eq!(h.provider.requests().len(), 1);
+}
+
 #[tokio::test]
 async fn api_retries_stop_at_their_limits() {
     // Without --max-time: a fixed number of tries, then the run ends with the error.
