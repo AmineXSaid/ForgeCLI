@@ -1211,4 +1211,88 @@ mod snapshots {
         let mut a = app();
         shot("12-front-small-terminal", &mut a, 80, 24);
     }
+
+    /// The person's message in four candidate looks, for choosing one.
+    fn prompt_variant(v: char, t: &Theme, text: &str, w: usize) -> Vec<ratatui::text::Line<'static>> {
+        use ratatui::style::{Modifier, Style};
+        use ratatui::text::{Line, Span};
+        let fg = super::palette::PROMPT_FG.color(t.depth, t.light);
+        let bg = super::palette::PROMPT_BG.color(t.depth, t.light);
+        match v {
+            // A: the input's own mark, the words bright; nothing else.
+            'a' => vec![
+                Line::from(vec![
+                    Span::styled("❯ ", t.accent()),
+                    Span::styled(text.to_string(), Style::default().fg(fg).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::default(),
+            ],
+            // B: a full-width band, the mark in lime.
+            'b' => {
+                let body = format!(" {text}");
+                let pad = w.saturating_sub(2 + 1 + body.chars().count());
+                vec![
+                    Line::from(Span::styled(" ".repeat(w), Style::default().bg(bg))),
+                    Line::from(vec![
+                        Span::styled(" ❯", t.accent().bg(bg)),
+                        Span::styled(format!("{body}{}", " ".repeat(pad + 1)), Style::default().fg(fg).bg(bg)),
+                    ]),
+                    Line::from(Span::styled(" ".repeat(w), Style::default().bg(bg))),
+                    Line::default(),
+                ]
+            }
+            // C: the box it was typed in, kept in a quiet line.
+            'c' => {
+                let inner = text.chars().count() + 4;
+                let rule = "─".repeat(inner);
+                vec![
+                    Line::from(Span::styled(format!("╭{rule}╮"), t.hairline())),
+                    Line::from(vec![
+                        Span::styled("│ ", t.hairline()),
+                        Span::styled("❯ ", t.accent()),
+                        Span::styled(text.to_string(), Style::default().fg(fg)),
+                        Span::styled(" │", t.hairline()),
+                    ]),
+                    Line::from(Span::styled(format!("╰{rule}╯"), t.hairline())),
+                    Line::default(),
+                ]
+            }
+            // D: "you" in lime over the words, like a speaker's name.
+            _ => vec![
+                Line::from(Span::styled("you", t.accent().add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled(text.to_string(), Style::default().fg(fg))),
+                Line::default(),
+            ],
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn prompt_variants() {
+        use serde_json::json;
+        for v in ['a', 'b', 'c', 'd'] {
+            let mut a = app();
+            a.submit("explore this repo with several agents".into());
+            a.front = false;
+            a.take_pending();
+            let t = a.theme;
+            let lines = prompt_variant(v, &t, "explore this repo with several agents", 140);
+            a.pending.push(ratatui::text::Line::default());
+            a.pending.extend(lines);
+            let mut content = vec![ContentBlock::text("I'll fan out 4 agents across the repo's areas.")];
+            for (i, what) in
+                ["Explore core crates", "Explore tools crates", "Explore evals and docs", "Skim jobs and git"]
+                    .iter()
+                    .enumerate()
+            {
+                content.push(call(
+                    &format!("t{i}"),
+                    "Task",
+                    json!({"description": what, "prompt": "p", "subagent_type": "Explore"}),
+                ));
+            }
+            a.on_event(msg(content, StopReason::ToolUse, None));
+            shot(&format!("prompt-{v}"), &mut a, 140, 22);
+        }
+    }
 }
