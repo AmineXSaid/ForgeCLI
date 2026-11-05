@@ -109,10 +109,8 @@ fn status_right(app: &App) -> String {
     if !s.model.is_empty() {
         parts.push(s.model.clone());
     }
-    match s.context_pct {
-        // Some context in use, under 1%: "0%" would read as empty.
-        Some(_) => parts.push(format!("{}{}% left", guess(s), room_left(s))),
-        None => {}
+    if s.context_pct.is_some() {
+        parts.push(format!("{}{}% left", guess(s), room_left(s)));
     }
     parts.extend(spend(app));
     parts.join(" · ")
