@@ -33,6 +33,9 @@ pub(super) const GAP: usize = 2;
 /// The wordmark's width in columns.
 pub const WORDMARK_W: usize = 6 * 7 + 5 * GAP;
 
+/// The short tagline, for the default front page.
+pub const SHORT_TAGLINE: &str = "Code, then act.";
+
 /// The tagline under the wordmark.
 pub const TAGLINE: &str = "Code, then act: a coding agent on the model you choose.";
 

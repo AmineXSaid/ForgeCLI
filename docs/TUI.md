@@ -276,22 +276,30 @@ with `{"text", "cwd"}`:
   first is the default). Each sets the full-screen front page (`front.rs`),
   how the conversation is written (`app.rs`), the approval's frame and the
   input (`render.rs`); colours (`/theme dark|light|none`) apply to all:
-  - `frame`: the name first, centred: KodAct's mark beside the wordmark
-    (`Kod` in paper, `Act` in lime, over an olive shadow), twice the size on
-    a terminal at least 110 columns wide (the mark beside it from 136), the
-    tagline under them; then, in a centred column, the version, what KodAct
-    does, the connected MCP servers, the last conversation, the folder and
-    branch, and the input. Steps with a dot; approvals in lime corner marks.
+  - `frame` (Essentials): only what is used before the first message. The
+    mark beside the wordmark (`Kod` in paper, `Act` in lime, over an olive
+    shadow), twice the size from 110 columns (the mark beside it from 136;
+    without colour the letters alone; under 57 columns the name in one
+    row), "Code, then act.", the input, and one `/resume` line for the last
+    conversation here. An MCP server that failed to start adds one line
+    (`● figma didn't start · /mcp`). The folder, the branch and the version
+    are on the status line; the model and where it runs are in the panel.
+    Steps with a dot; approvals in lime corner marks; what you sent is
+    echoed as the panel is drawn, its edge in the mode it was sent in.
     The input is a raised panel rather than a box: the text on a row of
     padding, a row of air, then the permission mode, the model, where it
     runs, and the context meter with what the session has spent. The
     panel's left edge and the mode's name take the mode's colour (Default
     lime, Plan teal, Auto violet, Accept edits amber, Bypass permissions
     red, Don't ask quiet). The status line under the panel keeps the folder
-    and branch on its left (the panel names the mode), and on its right the keys that help now: `/`,
-    `@`, `shift+tab` and `?` with nothing typed; `enter` and `shift+enter`
+    and branch on its left (the panel names the mode), and on its right the
+    keys that help now: `/`, `@`, `shift+tab` and `?` with nothing typed; `enter` and `shift+enter`
     while typing; `↑↓`, `tab` and `esc` in a menu; `esc` while the model
-    works.
+    works; nothing while a dialog is open (it says its own keys). The `/`
+    and `@` menus hang under the panel, on its surface; Ctrl+R's search
+    sits in its column. While the model works the empty panel says "Type to
+    queue a message; esc stops the turn". In 16 colours the panel has no
+    grey (the nearest is too light behind text), only its edge.
   - `glow`: centred, the wordmark lit from the top with sparks and a glowing
     seam, a lime-framed input with the mode and model under it. Your words
     on a tinted band, finished steps with a ✓, answers plain.

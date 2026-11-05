@@ -29,6 +29,8 @@ const MENU_ROWS: usize = 8;
 const LIVE_ROWS: usize = 3;
 /// The composer's placeholder, as KodAct's says it.
 pub const PLACEHOLDER: &str = "What shall we build today?";
+/// The frame style's placeholder while the model works.
+pub const QUEUE_PLACEHOLDER: &str = "Type to queue a message; esc stops the turn";
 /// What the spinner says while the model works, in KodAct's voice (its spinner verbs).
 pub const VERBS: [&str; 8] =
     ["Acting", "Reading the code", "Thinking", "Building", "Wiring it up", "Checking", "Shaping", "Polishing"];
@@ -412,6 +414,11 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
         let row = Line::from(vec![prompt(), Span::styled(fit(PLACEHOLDER, text_w), t.subtle())]);
         return (vec![row], (2, 0));
     }
+    // While the model works, the frame style's panel says what typing does.
+    if app.editor.is_empty() && app.look == super::look::Look::Frame {
+        let row = Line::from(vec![prompt(), Span::styled(fit(QUEUE_PLACEHOLDER, text_w), t.subtle())]);
+        return (vec![row], (2, 0));
+    }
     let (cur_line, cur_col) = app.editor.position();
     let mut rows = vec![];
     let mut cursor = (2u16, 0u16);
@@ -438,16 +445,7 @@ fn input(app: &App, w: usize) -> (Vec<Line<'static>>, (u16, u16)) {
 /// ([`mode_name`]), in its colour: default in lime, plan in teal, auto in
 /// violet, accept edits in amber, bypass permissions in red, don't ask quiet.
 fn mode_mark(app: &App) -> (String, Style) {
-    let t = app.theme;
-    let st = match app.status.mode.as_str() {
-        "acceptEdits" => t.warning(),
-        "plan" => t.teal(),
-        "auto" => t.violet(),
-        "dontAsk" => t.dim(),
-        "bypassPermissions" => t.error(),
-        _ => t.accent(),
-    };
-    (mode_name(&app.status.mode), st)
+    (mode_name(&app.status.mode), app.theme.mode(&app.status.mode))
 }
 
 /// The frame style's input, `bw` columns wide from column `left`: a raised
@@ -458,8 +456,7 @@ fn mode_mark(app: &App) -> (String, Style) {
 fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) {
     let t = app.theme;
     let margin = || Span::raw(" ".repeat(left));
-    let raised =
-        if t.color { Style::default().bg(palette::PROMPT_BG.color(t.depth, t.light)) } else { Style::default() };
+    let raised = t.raised();
     let (mode, mode_st) = mode_mark(app);
     let edge = if t.color { Span::styled("▎", mode_st.patch(raised)) } else { Span::styled("│", t.bold()) };
     let inner = bw.saturating_sub(4).max(1);
@@ -527,7 +524,10 @@ fn panel(app: &App, left: usize, bw: usize) -> (Vec<Line<'static>>, (u16, u16)) 
 /// commands, files and modes; while typing, how to send.
 fn hints(app: &App, room: usize) -> Vec<Span<'static>> {
     let t = app.theme;
-    let keys: &[(&str, &str)] = if app.busy {
+    let keys: &[(&str, &str)] = if app.dialog.is_some() {
+        // The dialog says its own keys.
+        &[]
+    } else if app.busy {
         &[("esc", "stop"), ("enter", "queue a message")]
     } else if !app.menu().is_empty() || !app.file_menu().is_empty() {
         &[("↑↓", "choose"), ("tab", "complete"), ("esc", "close")]
@@ -550,6 +550,39 @@ fn hints(app: &App, room: usize) -> Vec<Span<'static>> {
         out.push(Span::styled(format!(" {what}"), t.subtle()));
     }
     out
+}
+
+/// Menu rows under the frame style's panel, `bw` wide from column `left`: on
+/// the panel's raised surface, past a hairline edge, so they read as part of it.
+fn attached(app: &App, rows: Vec<Line<'static>>, left: usize, bw: usize) -> Vec<Line<'static>> {
+    let t = app.theme;
+    if rows.is_empty() || !t.color {
+        return rows.into_iter().map(|l| at_col(left, l)).collect();
+    }
+    let raised = t.raised();
+    let mut out: Vec<Line<'static>> = rows
+        .into_iter()
+        .map(|l| {
+            let used: usize = l.spans.iter().map(|s| text_width(&s.content)).sum();
+            let mut spans = vec![Span::raw(" ".repeat(left)), Span::styled("▎ ", t.hairline().patch(raised))];
+            spans.extend(l.spans.into_iter().map(|s| Span::styled(s.content, raised.patch(s.style))));
+            spans.push(Span::styled(" ".repeat(bw.saturating_sub(2 + used)), raised));
+            Line::from(spans)
+        })
+        .collect();
+    // A row of padding under the last choice, like the panel's own.
+    out.push(Line::from(vec![
+        Span::raw(" ".repeat(left)),
+        Span::styled("▎ ", t.hairline().patch(raised)),
+        Span::styled(" ".repeat(bw.saturating_sub(2)), raised),
+    ]));
+    out
+}
+
+fn at_col(x: usize, l: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ".repeat(x))];
+    spans.extend(l.spans);
+    Line::from(spans)
 }
 
 /// Whether the input is the frame style's panel: the frame style, with room for it.
@@ -1000,12 +1033,20 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         .as_ref()
         .map(|s| {
             let miss = if s.hit.is_none() && !s.query.is_empty() { " (no match)" } else { "" };
-            Line::from(Span::styled(fit(&format!("  search history: {}{miss}", s.query), w), t.accent()))
+            let pad = if frame_panel(app, bw) { left } else { 0 };
+            Line::from(vec![
+                Span::raw(" ".repeat(pad)),
+                Span::styled(fit(&format!("  search history: {}{miss}", s.query), w.saturating_sub(pad)), t.accent()),
+            ])
         })
         .into_iter()
         .collect();
-    // 6. The `/` or `@` menu, 7. the status line.
-    let menu = menu(app, w);
+    // 6. The `/` or `@` menu, 7. the status line. Under the frame style's panel,
+    // the menu continues it: the same column, the same raised surface.
+    let menu = match &panel {
+        Some(_) => attached(app, menu(app, bw.saturating_sub(4)), left, bw),
+        None => menu(app, w),
+    };
     let status = status(app, w, now);
 
     let fixed = spinner.len()
@@ -1313,6 +1354,29 @@ mod tests {
         typed(&mut a, "fix it");
         let (rows, _) = draw(&live_view(&a, 80, 12), 80);
         assert!(rows.last().unwrap().contains("enter send   shift+enter new line"));
+    }
+
+    #[test]
+    fn the_panel_in_sixteen_colours_and_with_a_dialog() {
+        let mut a = app(true);
+        a.look = crate::tui::look::Look::Frame;
+        // 16 colours: no grey behind the text (the nearest is too light), the edge still in the mode's colour.
+        a.theme.depth = crate::tui::palette::Depth::Ansi16;
+        let (rows, buf) = draw(&live_view(&a, 80, 12), 80);
+        let y = rows.iter().position(|r| r.contains("What shall we build")).unwrap();
+        assert_eq!(buf[(10, y as u16)].bg, ratatui::style::Color::Reset, "{rows:#?}");
+        assert_eq!(Some(buf[(0, y as u16)].fg), a.theme.accent().fg);
+        // While the model works: the panel says what typing does; the line, how to stop.
+        a.busy = true;
+        let (rows, _) = draw(&live_view(&a, 80, 12), 80);
+        assert!(rows.iter().any(|r| r.contains(QUEUE_PLACEHOLDER)), "{rows:#?}");
+        assert!(rows.last().unwrap().contains("esc stop"));
+        // A question open: it says its own keys, so the line names none.
+        a.theme.depth = crate::tui::palette::Depth::True;
+        ask(&mut a, "Bash", json!({"command": "cargo test"}));
+        let (rows, _) = draw(&live_view(&a, 80, 30), 80);
+        let last = rows.last().unwrap();
+        assert!(!last.contains("esc stop") && !last.contains("queue"), "{last}");
     }
 
     #[test]

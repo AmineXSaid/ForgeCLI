@@ -5,7 +5,7 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-use super::brand::{centred, GAP, GLYPHS, TAGLINE, WORDMARK_W};
+use super::brand::{centred, GAP, GLYPHS, SHORT_TAGLINE, TAGLINE, WORDMARK_W};
 use super::look::Look;
 use super::palette;
 use super::render::fit;
@@ -270,13 +270,6 @@ fn resume_spans(t: &Theme, what: &str, ago: &str, room: usize) -> Vec<Span<'stat
     ]
 }
 
-fn wrap_at(x: usize, text: &str, w: usize, st: Style) -> Vec<Line<'static>> {
-    super::text::wrap(vec![Line::from(Span::styled(text.to_string(), st))], w as u16)
-        .into_iter()
-        .map(|l| at(x, l))
-        .collect()
-}
-
 /// `l` cut to `w` columns.
 fn clip(l: Line<'static>, w: usize) -> Line<'static> {
     let mut used = 0;
@@ -328,7 +321,9 @@ fn boxed(x: usize, w: usize, rows: Vec<Line<'static>>, border: Style) -> Vec<Lin
 /// layout gets the bare one.
 pub fn front_page(t: &Theme, look: Look, info: &FrontInfo, cols: usize) -> FrontPage {
     let need = match look {
-        Look::Frame | Look::Card => 84,
+        Look::Card => 84,
+        // Essentials draws the name in one row on a narrow terminal.
+        Look::Frame => 0,
         Look::Ledger | Look::Status => 80,
         Look::Glow | Look::Bare => 0,
     };
@@ -350,74 +345,58 @@ fn small_name(t: &Theme) -> Vec<Span<'static>> {
     super::brand::wordmark_text(t).spans
 }
 
-/// 1 · The name first: the mark and the wordmark centred together, twice the
-/// size where the terminal is wide enough, the tagline under them; then the
-/// version, what KodAct does, what is connected, and the folder, in a centred
-/// column with the input under it.
+/// 1 · Essentials: the mark and the wordmark centred together, twice the size
+/// where the terminal is wide enough, "Code, then act." under them, then the
+/// input (the frame style's panel, which names the mode, the model and where
+/// it runs) and one line to resume the last conversation. A server that failed
+/// to start says so; everything else (the folder, the branch, the version) is
+/// on the status line.
 fn frame(t: &Theme, info: &FrontInfo, cols: usize) -> FrontPage {
-    let fw = (cols - 8).min(104);
+    let fw = cols.saturating_sub(8).clamp(cols.min(20), 96);
     let m = (cols - fw) / 2;
     let one = wordmark_w(Letters::Shadow);
-    let k = if cols >= 2 * one + 4 { 2 } else { 1 };
-    let word = half_blocks(&scaled(&wordmark_grid(Letters::Shadow, t.light), k), t);
-    let ww = k * one;
-    // The mark as tall as the letters, beside them where there is room.
-    let mark_n = 2 * word.len();
-    let gap = 2 * k;
-    let (logo, lw) = if cols >= ww + gap + mark_n + 4 {
-        (beside(0, super::brand::mark(t, mark_n), mark_n + gap, word), mark_n + gap + ww)
+    let mut above = if cols < one + 4 {
+        // Too narrow for the letters: the name in one row.
+        vec![centred(Line::from(small_name(t)), cols)]
     } else {
-        (word, ww)
+        let k = if cols >= 2 * one + 4 { 2 } else { 1 };
+        let word = half_blocks(&scaled(&wordmark_grid(Letters::Shadow, t.light), k), t);
+        let ww = k * one;
+        // The mark as tall as the letters, beside them where there is room; without
+        // colour its bar and triangle wouldn't show, so the letters go alone.
+        let mark_n = 2 * word.len();
+        let gap = 2 * k;
+        let (logo, lw) = if t.color && cols >= ww + gap + mark_n + 4 {
+            (beside(0, super::brand::mark(t, mark_n), mark_n + gap, word), mark_n + gap + ww)
+        } else {
+            (word, ww)
+        };
+        centre_block(logo, lw, cols)
     };
-    let mut above = vec![Line::default()];
-    above.extend(centre_block(logo, lw, cols));
     above.push(Line::default());
-    above.push(centred(Line::from(Span::styled(TAGLINE, t.dim())), cols));
+    above.push(centred(Line::from(Span::styled(SHORT_TAGLINE, t.dim())), cols));
     above.push(Line::default());
-    above.push(at(
-        m,
-        Line::from(vec![
-            Span::styled(format!("Version {}  ·  ", info.version), t.subtle()),
-            Span::styled(info.model.clone(), t.dim()),
-            Span::styled(format!(" on {}", info.endpoint), t.subtle()),
-        ]),
-    ));
     above.push(Line::default());
-    above.extend(wrap_at(
-        m,
-        "KodAct reads, edits and runs code in this folder, on the model you choose. Describe a task to begin; it asks before it changes anything outside your files.",
-        fw.min(100),
-        Style::default(),
-    ));
-    above.push(Line::default());
-    let bullet = |c: Style, text: Vec<Span<'static>>| {
-        let mut spans = vec![Span::styled("●  ", c)];
-        spans.extend(text);
-        at(m, Line::from(spans))
-    };
-    match mcp_text(info) {
-        Some(names) => above.push(bullet(t.success(), vec![Span::raw("Connected to "), Span::styled(names, t.dim())])),
-        None => above.push(bullet(t.success(), vec![Span::raw(format!("{} tools ready", info.tools))])),
-    }
+    let mut below = vec![];
     if let Some((what, ago)) = info.recent.first() {
-        above.push(bullet(
-            t.accent(),
-            vec![
-                Span::raw("Last time: "),
-                Span::styled(fit(what, fw.saturating_sub(40)), t.dim()),
-                Span::styled(format!("  ·  {ago}  ·  "), t.subtle()),
-                Span::styled("/resume", t.accent()),
-            ],
+        below.push(Line::default());
+        below.push(centred(Line::from(resume_spans(t, what, ago, fw)), cols));
+    }
+    let failed: Vec<&str> = info.mcp.iter().filter(|(_, s)| s == "failed").map(|(n, _)| n.as_str()).collect();
+    if !failed.is_empty() {
+        below.push(Line::default());
+        below.push(centred(
+            Line::from(vec![
+                Span::styled("● ", t.warning()),
+                Span::styled(fit(&failed.join(", "), fw.saturating_sub(30)), t.dim()),
+                Span::styled(" didn't start  ·  ", t.subtle()),
+                Span::styled("/mcp", t.accent()),
+            ]),
+            cols,
         ));
     }
-    above.push(Line::default());
-    let mut folder = vec![Span::styled(keep_end(&info.folder, fw.saturating_sub(40)), t.bold())];
-    if let Some(b) = &info.branch {
-        folder.push(Span::styled(format!("  [⎇ {b}]"), t.dim()));
-    }
-    above.push(at(m, Line::from(folder)));
-    above.push(Line::default());
-    FrontPage { above, box_left: m, box_w: fw, ..Default::default() }
+    // The panel names the model and where it runs.
+    FrontPage { above, below, box_left: m, box_w: fw, under: true, ..Default::default() }
 }
 
 /// 2 · Centred, the name as hot metal with sparks over it and a glowing seam under it.
@@ -713,22 +692,29 @@ mod tests {
         let big = front_page(&DARK, Look::Frame, &info(), 140).above;
         assert!(big.iter().filter(|l| line_w(l) > 2 * WORDMARK_W).count() >= 10, "twice the size when wide");
         assert!(big.iter().all(|l| line_w(l) <= 140));
-        for want in [
-            TAGLINE,
-            "Connected to jira",
-            "Last time: checkout rounding",
-            "/resume",
-            "~/acme/shop  [⎇ fix/cart-rounding]",
-        ] {
-            assert!(frame.contains(want), "{want}\n{frame}");
+        assert!(frame.contains(SHORT_TAGLINE));
+        // Essentials: what the panel or the status line already says is not repeated.
+        for gone in ["Version", "tools ready", "KodAct reads", "~/acme/shop", "jira"] {
+            assert!(!frame.contains(gone), "{gone}\n{frame}");
         }
-        assert!(!frame.contains("figma"), "only connected servers");
+        let below = plain(&front_page(&DARK, Look::Frame, &info(), 120).below).join("\n");
+        assert!(below.contains("/resume  checkout rounding"), "{below}");
+        assert!(below.contains("figma didn't start  ·  /mcp"), "a server that failed says so: {below}");
         let ledger = front_page(&DARK, Look::Ledger, &info(), 120);
         assert!(ledger.dock && plain(&ledger.above).join("\n").contains("1   checkout rounding"));
         let board = plain(&front_page(&DARK, Look::Status, &info(), 120).above).join("\n");
         assert!(board.contains("Model") && board.contains("Tools") && board.contains("Folder"));
         // Too narrow for a style's layout: the bare page.
-        let narrow = front_page(&DARK, Look::Frame, &info(), 60);
+        let narrow = front_page(&DARK, Look::Card, &info(), 60);
         assert!(plain(&narrow.header).join("").contains("KodAct"));
+        // Essentials keeps its layout on a narrow terminal: the name in one row, no second question.
+        let narrow = plain(&front_page(&DARK, Look::Frame, &info(), 50).above).join("\n");
+        assert!(narrow.contains("KodAct") && narrow.contains(SHORT_TAGLINE), "{narrow}");
+        assert!(!narrow.contains("What shall we build"), "{narrow}");
+        // Without colour the mark's bar and triangle wouldn't show: the letters go alone.
+        let mono = Theme { color: false, ..DARK };
+        let with = front_page(&DARK, Look::Frame, &info(), 140).above;
+        let without = front_page(&mono, Look::Frame, &info(), 140).above;
+        assert!(line_w(&without[3]) < line_w(&with[3]), "no mark without colour");
     }
 }

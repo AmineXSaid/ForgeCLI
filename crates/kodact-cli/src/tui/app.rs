@@ -761,7 +761,18 @@ impl App {
                         .push(Line::from(vec![Span::styled(mark, t.subtle()), Span::styled(l.to_string(), t.bold())]));
                 }
             }
-            Look::Frame | Look::Status => {
+            // The panel's echo: its edge in the mode the words were sent in, on the raised surface.
+            Look::Frame => {
+                let st =
+                    if t.color { t.raised().fg(super::palette::PROMPT_FG.color(t.depth, t.light)) } else { t.user() };
+                let edge = if t.color { st.patch(t.mode(&self.status.mode)) } else { t.bold() };
+                let edge_char = if t.color { "▎ " } else { "│ " };
+                for l in text.lines() {
+                    self.pending
+                        .push(Line::from(vec![Span::styled(edge_char, edge), Span::styled(format!(" {l}  "), st)]));
+                }
+            }
+            Look::Status => {
                 let st = t.user();
                 // The mark in brand colour on the prompt's own surface.
                 let mark_st = if t.color { st.patch(t.accent()) } else { st };
@@ -2026,7 +2037,7 @@ mod tests {
         typed(&mut a, "hello");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("hello".into())]);
         assert!(a.busy);
-        assert_eq!(texts(&a.take_pending()), ["", "❯ hello "]);
+        assert_eq!(texts(&a.take_pending()), ["", "│  hello  "]);
         typed(&mut a, "next");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "queued while a turn runs");
         assert_eq!(a.queued.len(), 1);
@@ -2179,7 +2190,7 @@ mod tests {
         typed(&mut a, "/usage");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/usage".into())], "sent, not queued");
         assert!(a.queued.is_empty() && a.busy, "the turn goes on");
-        assert_eq!(texts(&a.take_pending()), ["", "❯ /usage "], "echoed");
+        assert_eq!(texts(&a.take_pending()), ["", "│  /usage  "], "echoed");
         typed(&mut a, "/compact");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "not immediate: queued");
         assert_eq!(a.queued.len(), 1);
@@ -2308,7 +2319,7 @@ mod tests {
             a.echo_prompt("fix the cart");
             texts(&a.take_pending())
         };
-        assert_eq!(prompt_for(Look::Frame).last().unwrap(), "❯ fix the cart ");
+        assert_eq!(prompt_for(Look::Frame).last().unwrap(), "│  fix the cart  ", "the panel's echo");
         assert_eq!(prompt_for(Look::Bare).last().unwrap(), "› fix the cart");
         let card = prompt_for(Look::Card);
         assert!(card[card.len() - 2].starts_with("  you · "), "{card:?}");

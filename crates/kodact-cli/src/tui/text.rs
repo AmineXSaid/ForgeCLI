@@ -168,6 +168,19 @@ impl Theme {
         self.role(palette::VIOLET)
     }
 
+    /// A permission mode's colour: default in the accent, plan in teal, auto
+    /// in violet, accept edits in amber, bypass permissions in red, don't ask quiet.
+    pub fn mode(&self, mode: &str) -> Style {
+        match mode {
+            "acceptEdits" => self.warning(),
+            "plan" => self.teal(),
+            "auto" => self.violet(),
+            "dontAsk" => self.dim(),
+            "bypassPermissions" => self.error(),
+            _ => self.accent(),
+        }
+    }
+
     /// Inline `code`.
     pub fn code(&self) -> Style {
         self.role(palette::CODE)
@@ -179,6 +192,17 @@ impl Theme {
             self.accent().add_modifier(Modifier::BOLD)
         } else {
             Style::default().add_modifier(Modifier::REVERSED)
+        }
+    }
+
+    /// The frame style's raised surface (its panel, its menus, the echo of what
+    /// was sent): a shade off the background where the terminal has enough
+    /// colours, none in 16 colours, where the nearest grey is too light behind text.
+    pub fn raised(&self) -> Style {
+        if self.color && self.depth != Depth::Ansi16 {
+            Style::default().bg(palette::PROMPT_BG.color(self.depth, self.light))
+        } else {
+            Style::default()
         }
     }
 
