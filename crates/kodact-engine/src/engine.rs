@@ -72,6 +72,13 @@ impl TimeLimit {
     }
 }
 
+/// Characters of the person's requests a compaction carries on: a tenth of the model's window
+/// (at about four characters a token), at least 2,000. Sized from the window, so a large model
+/// keeps every request whole and a small one keeps the task and the latest requests.
+pub(crate) fn request_budget(window: u64) -> usize {
+    (usize::try_from(window).unwrap_or(usize::MAX).saturating_mul(4) / 10).max(2_000)
+}
+
 /// "about 12 minutes", for time-limit notes.
 fn about(left: Duration) -> String {
     match left.as_secs() {
@@ -637,6 +644,9 @@ pub struct Engine {
     session_started: bool,
     /// Memory and environment context, re-attached after compaction.
     session_context: Option<String>,
+    /// The person's requests from the parts of the conversation compaction replaced, oldest
+    /// first: each later compaction carries them on, word for word.
+    carried_requests: Vec<String>,
     verify: crate::verify::Tracker,
     guard: crate::stuck::LoopGuard,
     /// This turn's raised output cap, after a `max_tokens` stop.
@@ -745,6 +755,7 @@ impl Engine {
             guard: Default::default(),
             output_cap: None,
             reattach_context: false,
+            carried_requests: vec![],
             reminders: vec![],
             start_source: "startup".into(),
             planning: false,
@@ -905,6 +916,7 @@ impl Engine {
             self.session_started = !self.state.messages.is_empty();
         }
         self.shared.transcript.continue_from(loaded);
+        self.carried_requests = loaded.requests.clone().unwrap_or_default();
         // The plan survives a resume: the last TodoWrite list becomes the current one.
         let last_todos = self.state.messages.iter().rev().flat_map(|m| m.tool_uses().collect::<Vec<_>>()).find_map(
             |(_, name, input)| {
@@ -1349,7 +1361,7 @@ impl Engine {
             compacted = self.compact_inner(Some(SUMMARY_RETRY), "auto", continue_work, model, cancel, turn).await;
         }
         if again(&compacted) {
-            compacted = Ok(self.compact_without_model("auto", continue_work));
+            compacted = Ok(self.compact_without_model("auto", continue_work, model));
         }
         compacted
     }
@@ -1423,12 +1435,22 @@ impl Engine {
             self.record_compact_failure(trigger, "empty_summary", Some(&msg));
             return Err(EMPTY_SUMMARY.into());
         }
-        Ok(self.install_summary(trigger, summary, continue_work))
+        Ok(self.install_summary(trigger, summary, continue_work, model))
     }
 
-    /// Replace the conversation with `summary` (a full compaction).
-    fn install_summary(&mut self, trigger: &str, summary: String, continue_work: bool) -> CompactInfo {
+    /// The person's requests carried through compactions, oldest first.
+    pub fn carried_requests(&self) -> &[String] {
+        &self.carried_requests
+    }
+
+    /// Replace the conversation with `summary` (a full compaction). The person's requests go
+    /// with it word for word, whatever the summary kept: a summary that lost the task left a
+    /// model rebuilding it from the last step it was on (video-processing, 090446d). The
+    /// requests are recorded (`system/requests`) so a resumed session carries them on too.
+    fn install_summary(&mut self, trigger: &str, summary: String, continue_work: bool, model: &str) -> CompactInfo {
         let pre_tokens = self.projected_context_tokens();
+        let mut requests = std::mem::take(&mut self.carried_requests);
+        requests.extend(self.prompt_points().into_iter().map(|p| p.text));
         self.shared.transcript.append_compact_boundary(json!({"trigger": trigger, "preTokens": pre_tokens}));
         self.emit(EngineEvent::System {
             subtype: "compact_boundary".into(),
@@ -1445,8 +1467,13 @@ impl Engine {
             .chain(self.handle.skills_context())
             .collect();
         let context = (!context.is_empty()).then(|| context.join("\n\n"));
-        let first = kodact_compact::summary_message(&summary, context.as_deref(), continue_work);
+        let block = kodact_compact::requests_block(&requests, request_budget(self.compact_window(model)));
+        let first = kodact_compact::summary_message(&summary, context.as_deref(), block.as_deref(), continue_work);
         self.push_user(first, true, None, false);
+        if !requests.is_empty() {
+            self.shared.transcript.append_system("requests", json!({"requests": requests}));
+        }
+        self.carried_requests = requests;
         let todos = self.shared.tool_ctx.todos.lock().unwrap().clone();
         if !todos.is_empty() {
             self.shared.transcript.append_system("todos", json!({"todos": todos}));
@@ -1479,7 +1506,7 @@ impl Engine {
     /// itself knows (the person's requests, the files changed, the task list, the last thing the
     /// model said) stands in for the model's summary. Less detail, but the run goes on, instead of
     /// ending or paying for another attempt before every request.
-    fn compact_without_model(&mut self, trigger: &str, continue_work: bool) -> CompactInfo {
+    fn compact_without_model(&mut self, trigger: &str, continue_work: bool, model: &str) -> CompactInfo {
         let clip = |t: &str, max: usize| {
             let t = t.trim();
             if t.chars().count() > max {
@@ -1489,38 +1516,11 @@ impl Engine {
             }
         };
         let points = self.prompt_points();
+        // The person's requests come with every summary, this note included (install_summary).
         let mut note = String::from(
             "The conversation could not be summarized, so this note was written without the model: earlier \
              messages are gone. Re-read any file you need before you change it.\n",
         );
-        if !points.is_empty() {
-            // Each request whole up to 8,000 characters (a task's description often runs to
-            // several thousand), 24,000 in all: the first request, then the latest ones.
-            let texts: Vec<String> = points.iter().map(|p| clip(&p.text, 8_000)).collect();
-            let mut keep = vec![false; texts.len()];
-            keep[0] = true;
-            let mut size = texts[0].len();
-            for i in (1..texts.len()).rev() {
-                if size + texts[i].len() > 24_000 {
-                    break;
-                }
-                keep[i] = true;
-                size += texts[i].len();
-            }
-            note.push_str("\nThe person's requests, oldest first:\n");
-            let mut left_out = 0;
-            for (t, kept) in texts.iter().zip(&keep) {
-                if !kept {
-                    left_out += 1;
-                    continue;
-                }
-                if left_out > 0 {
-                    note.push_str(&format!("- ({left_out} earlier requests left out)\n"));
-                    left_out = 0;
-                }
-                note.push_str(&format!("- {t}\n"));
-            }
-        }
         let changed = points.first().map(|p| p.changed_files.clone()).unwrap_or_default();
         if !changed.is_empty() {
             note.push_str("\nFiles changed in this session:\n");
@@ -1555,7 +1555,7 @@ impl Engine {
             note.push_str(&format!("\nThe last thing you wrote before this:\n{}\n", clip(&t, 2_000)));
         }
         self.system_event("compact_fallback", json!({"trigger": trigger}));
-        self.install_summary(trigger, note, continue_work)
+        self.install_summary(trigger, note, continue_work, model)
     }
 
     /// The person's prompts, oldest first: user messages with text that are
@@ -1753,6 +1753,7 @@ impl Engine {
         self.state.context_tokens = 0;
         self.state.counted = 0;
         self.shared.tool_ctx.todos.lock().unwrap().clear();
+        self.carried_requests.clear();
         self.forget_seen_results();
         self.handle.forget_skills();
         self.reattach_context = self.session_context.is_some();

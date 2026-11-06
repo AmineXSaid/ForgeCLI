@@ -79,7 +79,10 @@ Each pillar lists what KodAct does about it and what shows that it works.
     the result names the file;
   - no repeated reads: reading the same range of unchanged content returns a
     short note. That stops once the earlier result was cleared by compaction;
-  - memory files and the task list re-attached after compaction.
+  - memory files and the task list re-attached after compaction;
+  - the person's requests carried word for word through every compaction and
+    a resume, within a tenth of the model's window, whatever the summary kept
+    (task `deliverable-after-compaction`).
 - **Measured by:** pass rate and cost on long tasks, and context tokens per
   turn (task `log-needle`).
 

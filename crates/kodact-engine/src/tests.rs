@@ -1465,6 +1465,60 @@ async fn the_plan_survives_compaction_and_resume() {
     assert!(restored.iter().any(|t| t["content"] == "Add tests"), "{restored:?}");
 }
 
+/// video-processing (090446d): a summary that kept only the last step lost the task, and the
+/// model rebuilt a different one ("The context is thin. I need to reconstruct what this task
+/// is."). The person's requests now go with every summary word for word, through later
+/// compactions and a resume, whatever the summary kept.
+#[tokio::test]
+async fn the_persons_requests_survive_every_compaction_word_for_word() {
+    let task = "Write report.py that reads data/ and writes the totals to out.toml with keys rows and sum.";
+    let h = Harness::new(vec![
+        MockTurn::text("looking"),
+        MockTurn::text("<summary>Next: zoom in on the third file.</summary>"),
+        MockTurn::text("zooming"),
+        MockTurn::text("<summary>Still zooming.</summary>"),
+        MockTurn::text("continuing"),
+    ]);
+    let mut e = h.engine();
+    e.submit(prompt(task)).await;
+    e.compact(None).await.unwrap();
+    e.submit(prompt("also skip empty files")).await;
+    e.compact(None).await.unwrap();
+    e.submit(prompt("go on")).await;
+    let reqs = h.provider.requests();
+    // After two compactions both requests are there word for word, in order, before the summary.
+    let first = reqs[4].messages[0].text();
+    let at = |s: &str| first.find(s).unwrap_or_else(|| panic!("{s}: {first}"));
+    assert!(at(task) < at("also skip empty files") && at("also skip empty files") < at("Still zooming"));
+    // The summary is not asked to copy them.
+    assert!(reqs[1].messages.last().unwrap().text().contains("do not copy them"));
+    // A resumed session carries them on to its next compaction.
+    let path = SessionStore::new(h.dir.path().join("store")).session_path(&h.cwd(), SID).unwrap();
+    let loaded = kodact_session::LoadedSession::load(&path, None).unwrap();
+    let want = vec![task.to_string(), "also skip empty files".to_string()];
+    assert_eq!(loaded.requests.as_ref(), Some(&want));
+    let h2 = Harness::new(vec![]);
+    let mut resumed = h2.engine();
+    resumed.restore(&loaded);
+    assert_eq!(resumed.carried_requests(), want.as_slice());
+    // /clear forgets them with the conversation.
+    resumed.clear();
+    assert!(resumed.carried_requests().is_empty());
+}
+
+/// The requests kept are sized from the model's window, not from one endpoint: a large window
+/// keeps a long task whole; a small one keeps its beginning and says how much is cut.
+#[test]
+fn the_requests_kept_scale_with_the_models_window() {
+    use crate::engine::request_budget;
+    let task = format!("The task. {}", "Detail. ".repeat(3_000));
+    let big = kodact_compact::requests_block(std::slice::from_ref(&task), request_budget(1_000_000)).unwrap();
+    assert!(big.contains(task.trim()) && !big.contains("more characters"));
+    let small = kodact_compact::requests_block(std::slice::from_ref(&task), request_budget(32_000)).unwrap();
+    assert!(small.contains("The task.") && small.contains("more characters") && !small.contains(task.trim()));
+    assert_eq!(request_budget(0), 2_000, "a floor for windows too small to say");
+}
+
 #[tokio::test]
 async fn the_model_is_told_when_turns_run_low() {
     let mut turns: Vec<MockTurn> =

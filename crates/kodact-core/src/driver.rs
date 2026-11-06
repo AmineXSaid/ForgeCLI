@@ -392,6 +392,7 @@ impl Driver {
             model: Some(self.engine.handle().model()),
             worktree: None,
             todos: Some(self.engine.tool_ctx().todos.lock().unwrap().clone()).filter(|t| !t.is_empty()),
+            requests: Some(self.engine.carried_requests().to_vec()).filter(|r| !r.is_empty()),
             goal: self.goal.as_ref().map(Goal::record),
             schedule: self.scheduler.as_ref().map(|s| s.lock().unwrap().record()),
         }

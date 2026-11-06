@@ -107,7 +107,8 @@ pub fn summary_instruction(custom: Option<&str>) -> String {
          3. Files: every file read, created or changed, why it matters, and the essential code (signatures, the \
             exact lines changed) needed to continue without re-reading everything.\n\
          4. Problems: errors hit, their causes and fixes, and anything still unresolved.\n\
-         5. User messages: each message the user sent, in order, close to verbatim (not tool results).\n\
+         5. User messages: they are attached after this summary word for word, so do not copy them; note only \
+            what the summary needs about them (a change of mind, a clarification, which one is current).\n\
          6. Open tasks: work the user asked for that is not finished.\n\
          7. Current state: exactly what was being done right before this summary, with file names and code.\n\
          8. Next step: the immediate next action, only if it follows directly from the user's latest request; \
@@ -134,15 +135,62 @@ pub fn extract_summary(reply: &str) -> String {
     }
 }
 
-/// The user message that starts the conversation after compaction.
-pub fn summary_message(summary: &str, context: Option<&str>, continue_work: bool) -> Message {
+/// The person's requests, oldest first, for the message that starts the conversation after
+/// compaction: word for word, so the task never depends on how good a summary was. Within
+/// `budget` characters (the caller sizes it from the model's window): the first request, which
+/// usually states the task, then the latest ones; a request too long for the budget keeps its
+/// beginning. `None` when there are none.
+pub fn requests_block(requests: &[String], budget: usize) -> Option<String> {
+    let texts: Vec<&str> = requests.iter().map(|r| r.trim()).filter(|r| !r.is_empty()).collect();
+    if texts.is_empty() {
+        return None;
+    }
+    let clip = |t: &str, max: usize| -> String {
+        let n = t.chars().count();
+        if n <= max {
+            t.to_string()
+        } else {
+            let head: String = t.chars().take(max).collect();
+            format!("{head}… ({} more characters)", n - max)
+        }
+    };
+    let first = clip(texts[0], budget);
+    let mut room = budget.saturating_sub(first.chars().count());
+    let mut latest: Vec<(usize, &str)> = vec![];
+    for (i, t) in texts.iter().enumerate().skip(1).rev() {
+        let n = t.chars().count();
+        if n > room {
+            break;
+        }
+        room -= n;
+        latest.push((i, t));
+    }
+    latest.reverse();
+    let mut out = String::from("The person's requests in this session, oldest first, word for word:\n");
+    out.push_str(&format!("<request n=\"1\">\n{first}\n</request>\n"));
+    let left_out = latest.first().map_or(texts.len() - 1, |(i, _)| i - 1);
+    if left_out > 0 {
+        out.push_str(&format!("({left_out} earlier request{} left out)\n", if left_out == 1 { "" } else { "s" }));
+    }
+    for (i, t) in latest {
+        out.push_str(&format!("<request n=\"{}\">\n{t}\n</request>\n", i + 1));
+    }
+    Some(out)
+}
+
+/// The user message that starts the conversation after compaction: the context to re-attach,
+/// the person's requests word for word ([`requests_block`]), then the summary.
+pub fn summary_message(summary: &str, context: Option<&str>, requests: Option<&str>, continue_work: bool) -> Message {
     let mut text = String::new();
     if let Some(c) = context.filter(|c| !c.trim().is_empty()) {
         text.push_str(&format!("<system-reminder>\n{c}\n</system-reminder>\n\n"));
     }
-    text.push_str(
-        "This session continues an earlier conversation that ran out of context. Here is a summary of it:\n\n",
-    );
+    text.push_str("This session continues an earlier conversation that ran out of context.\n\n");
+    if let Some(r) = requests {
+        text.push_str(r);
+        text.push('\n');
+    }
+    text.push_str("Here is a summary of the conversation:\n\n");
     text.push_str(summary);
     if continue_work {
         text.push_str(
@@ -216,8 +264,33 @@ mod tests {
         assert_eq!(extract_summary("<analysis>thinking</analysis>\n<summary>\nThe gist\n</summary>"), "The gist");
         assert_eq!(extract_summary("<analysis>a</analysis> plain"), "plain");
         assert!(summary_instruction(Some("focus on tests")).ends_with("focus on tests"));
-        let m = summary_message("S", Some("memory"), true);
+        let m = summary_message("S", Some("memory"), None, true);
         let t = m.text();
         assert!(t.starts_with("<system-reminder>\nmemory") && t.contains("S\n\nContinue the work"));
+        // The requests come word for word, before the summary.
+        let block = requests_block(&["Write report.toml".into()], 1_000);
+        let t = summary_message("S", None, block.as_deref(), false).text();
+        let (req, sum) = (t.find("Write report.toml").unwrap(), t.find("summary of the conversation").unwrap());
+        assert!(req < sum, "{t}");
+    }
+
+    #[test]
+    fn requests_keep_the_first_and_the_latest_within_the_budget() {
+        let reqs: Vec<String> =
+            vec!["the task: ".to_string() + &"x".repeat(50), "a".repeat(30), "b".repeat(30), "c".repeat(30)];
+        // Room for everything: all four, in order.
+        let all = requests_block(&reqs, 10_000).unwrap();
+        assert!(all.contains("n=\"1\"") && all.contains("n=\"4\"") && !all.contains("left out"), "{all}");
+        // Room for the task and the two latest: the second is counted, not kept.
+        let some = requests_block(&reqs, 60 + 65).unwrap();
+        assert!(
+            some.contains("the task") && some.contains(&"c".repeat(30)) && some.contains(&"b".repeat(30)),
+            "{some}"
+        );
+        assert!(!some.contains(&"a".repeat(30)) && some.contains("(1 earlier request left out)"), "{some}");
+        // A task longer than the budget keeps its beginning and says how much is cut.
+        let long = requests_block(&["y".repeat(500)], 100).unwrap();
+        assert!(long.contains(&"y".repeat(100)) && long.contains("(400 more characters)"), "{long}");
+        assert_eq!(requests_block(&["  ".into()], 100), None);
     }
 }

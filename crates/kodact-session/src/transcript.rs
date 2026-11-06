@@ -33,6 +33,9 @@ pub struct LoadedSession {
     pub worktree: Option<Value>,
     /// The task list recorded at the last compaction (`system/todos`).
     pub todos: Option<Vec<Value>>,
+    /// The person's requests recorded at the last compaction (`system/requests`), oldest first:
+    /// the next compaction carries them on word for word.
+    pub requests: Option<Vec<String>>,
     /// The last `/goal` record. Kept outside the message chain, like the
     /// title, so compaction doesn't drop it.
     pub goal: Option<Value>,
@@ -377,6 +380,11 @@ pub fn load(path: &Path, leaf: Option<&str>) -> Result<LoadedSession, SessionErr
                 }
                 Some("permission_mode") => out.permission_mode = e["mode"].as_str().map(str::to_string),
                 Some("todos") => out.todos = e["todos"].as_array().cloned(),
+                Some("requests") => {
+                    out.requests = e["requests"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                }
                 _ => {}
             },
             _ => {}

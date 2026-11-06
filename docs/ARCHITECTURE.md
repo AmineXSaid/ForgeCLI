@@ -239,8 +239,18 @@ KodAct shrinks context in three ways.
   2. asks the model for a structured summary, with no tools and a reply's
      whole output budget (a model that reasons spends it before the summary);
   3. starts a new message chain: a compact-boundary `system` entry, then a user
-     message holding the summary, then the most recent user turn if one is
-     still pending.
+     message holding the person's requests and the summary, then the most recent
+     user turn if one is still pending.
+
+**The person's requests go with every summary, word for word**, ahead of it,
+whatever the summary kept: a summary that kept only the last step once left a
+model rebuilding its task from that step. They fill at most a tenth of the
+model's window (at about four characters a token, at least 2,000 characters):
+the first request, which usually states the task, then the latest ones, and a
+request too long for that keeps its beginning. A large window keeps them all
+whole. They are recorded as `system/requests`, so the next compaction and a
+resumed session carry them on; `/clear` forgets them. The summary prompt asks
+the model not to copy them.
 
 **`/compact [instructions]`** does the same with `trigger: "manual"` and
 passes the instructions to the summary prompt. It doesn't micro-compact first.
@@ -258,10 +268,10 @@ what follows it.
 - A summary that came back empty is never sent again unchanged. It is tried a
   second time at once, with a note that the first attempt returned no
   summary. If that fails too, KodAct compacts without the model: the summary is
-  replaced by a note of what it knows itself (the person's requests, the
-  files changed this session, the task list, the last thing the model wrote),
-  with `system/compact_fallback`. The note keeps each request whole up to
-  8,000 characters, and the first and the latest ones within 24,000.
+  replaced by a note of what it knows itself (the files changed this session,
+  the task list, the last thing the model wrote), with
+  `system/compact_fallback`. The person's requests come with it, as with every
+  summary.
 - Auto-compaction does this for an empty summary. An API error leaves the
   conversation unchanged, and the next request tries again.
 - When a request fails because the conversation no longer fits, any failure
@@ -276,6 +286,9 @@ Tests: `compact::c9_micro_clears_only_eligible_results`,
 `engine::a_summary_gets_a_whole_replys_output_budget`,
 `engine::an_empty_automatic_summary_is_not_sent_again_before_every_request`,
 `engine::the_note_without_the_model_keeps_the_first_and_latest_requests`,
+`engine::the_persons_requests_survive_every_compaction_word_for_word`,
+`engine::the_requests_kept_scale_with_the_models_window`,
+`compact::tests::requests_keep_the_first_and_the_latest_within_the_budget`,
 `engine::an_empty_summary_is_recorded_and_retried_when_the_conversation_no_longer_fits`,
 `openai::resends_reasoning_says_what_the_request_carries`.
 

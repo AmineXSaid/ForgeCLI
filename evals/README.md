@@ -45,6 +45,7 @@ and stderr.
 | fix-in-steps | recovery | One test command that stops at the first failure, three independent bugs: it fails three different ways before it passes. A fix-and-test cycle is progress, so the loop guard must stay quiet (`loop_guards`) |
 | log-needle | context | A 330 KB log with one error line in the middle; the fix is one setting |
 | verbose-stages | context | A four-stage build that traces every record and stops at the first failing stage, with a bug in each: every run adds up to 30,000 characters, so a typical fix brings the conversation near the compaction threshold of a 100k window (`--autocompact 100k`). Compactions should happen only once the conversation is that full, and a failed summary is tried at most twice (`compactions`, `compact_failures`) |
+| deliverable-after-compaction | context | The verbose-stages build, plus a deliverable the instruction names once, at the start: `FIXES.toml` listing the stages changed, in pipeline order. Each run of the build adds up to 30,000 characters, so the conversation reaches the compaction threshold of a 100k window (`--autocompact 100k`) before the work is done; the file must still be written, in the format asked, after any compaction |
 | env-default | context | Find one bug among many files from a vague report |
 | trace-discount | context | Trace a symptom through 40 modules to a casing bug two calls away (exercises sub-agents) |
 | build-recovery | recovery | Iterate on a build script's successive errors without editing it |
