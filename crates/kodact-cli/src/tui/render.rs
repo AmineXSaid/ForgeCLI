@@ -877,7 +877,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
             continue;
         }
         let mut spans = if is_agent(&r.name) {
-            // A sub-agent: a lime segment sweeping a short track and the word for it, so
+            // A sub-agent: a wave of dots and the word for it, so
             // its state never rests on the motion or the colour alone.
             let mut v = scanner(&t, ran);
             v.push(Span::styled("running  ", t.dim()));
@@ -1141,30 +1141,17 @@ fn is_agent(name: &str) -> bool {
     matches!(name, "Task" | "Agent")
 }
 
-/// How long the sub-agent scanner's segment takes per cell.
-const SCAN_STEP: Duration = Duration::from_millis(120);
+/// How long the sub-agent wave's bright dot rests on each dot.
+const WAVE_STEP: Duration = Duration::from_millis(160);
 
-/// Cells in the sub-agent scanner's track.
-const SCAN_W: usize = 4;
-
-/// A sub-agent's working sign: a two-cell lime segment sweeping a quiet
-/// track and back (`━━──`, `─━━─`, `──━━`, ...), then a space.
+/// A sub-agent's working sign: three dots with a bright lime one moving along
+/// them (`•••`), then a space.
 fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
-    let span = SCAN_W - 1; // positions 0..SCAN_W-2 for a 2-cell head
-    let period = 2 * (span - 1);
-    let i = (ran.as_millis() / SCAN_STEP.as_millis()) as usize % period.max(1);
-    let at = if i < span { i } else { period - i };
-    let mut out = vec![];
-    if at > 0 {
-        out.push(Span::styled("─".repeat(at), t.hairline()));
-    }
-    out.push(Span::styled("━━", t.accent()));
-    let rest = SCAN_W - at - 2;
-    if rest > 0 {
-        out.push(Span::styled("─".repeat(rest), t.hairline()));
-    }
-    out.push(Span::raw(" "));
-    out
+    let at = (ran.as_millis() / WAVE_STEP.as_millis()) as usize % 3;
+    (0..3)
+        .map(|i| Span::styled("•", if i == at { t.accent() } else { t.hairline() }))
+        .chain(std::iter::once(Span::raw(" ")))
+        .collect()
 }
 
 /// The session row inside the default style's box, `room` columns: the mode in
@@ -2062,17 +2049,22 @@ mod tests {
         let start = a.running[0].since;
         let v = live_view_at(&a, 100, 40, start + Duration::from_millis(250));
         let (rows, _) = draw(&v, 100);
-        let agents: Vec<&String> = rows.iter().filter(|r| r.contains('━')).collect();
+        let agents: Vec<&String> = rows.iter().filter(|r| r.contains("••• running")).collect();
         assert_eq!(agents.len(), 5, "{rows:#?}");
         assert!(agents.iter().all(|r| !r.contains("Delegating")), "the line below says they're agents: {agents:#?}");
         assert!(agents[0].contains("1 step · Reading src/lib.rs"), "its latest step, from the folder: {}", agents[0]);
         assert!(rows.iter().any(|r| r.contains("Waiting for 5 agents…")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("Running Task")), "{rows:#?}");
-        // The scanner moves: a later frame differs.
-        let later = live_view_at(&a, 100, 40, start + Duration::from_millis(250 + 120));
-        let (rows2, _) = draw(&later, 100);
-        let first = |rs: &[String]| rs.iter().find(|r| r.contains('━')).cloned().unwrap();
-        assert_ne!(first(&rows), first(&rows2), "the segment sweeps");
+        // The wave moves: its bright lime dot steps along the three.
+        let t = crate::tui::text::Theme { color: true, light: false, accent: None, depth: Default::default() };
+        let lit = |ms: u64| scanner(&t, Duration::from_millis(ms)).iter().position(|s| s.style == t.accent());
+        assert_eq!(
+            (lit(0), lit(160), lit(320), lit(480)),
+            (Some(0), Some(1), Some(2), Some(0)),
+            "dot by dot, then again"
+        );
+        let text: String = scanner(&t, Duration::ZERO).iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "••• ");
     }
 
     #[test]
