@@ -879,7 +879,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         let mut spans = if is_agent(&r.name) {
             // A sub-agent: a wave of dots and the word for it, so
             // its state never rests on the motion or the colour alone.
-            let mut v = scanner(&t, ran);
+            let mut v = wave(&t, ran).1;
             v.push(Span::styled("running  ", t.dim()));
             v
         } else {
@@ -897,7 +897,8 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
                 spans.push(Span::styled(step.clone(), t.dim()));
             }
         }
-        spinner.push(Line::default());
+        // A sub-agent's wave rises into the row above its own.
+        spinner.push(if is_agent(&r.name) { Line::from(wave(&t, ran).0) } else { Line::default() });
         spinner.extend(text::wrap(vec![Line::from(spans)], tw as u16).into_iter().take(2));
     }
     // A permission question shows its own waiting row: no second line saying so.
@@ -1142,28 +1143,47 @@ fn is_agent(name: &str) -> bool {
 }
 
 /// The time between frames of the sub-agent wave.
-const WAVE_STEP: Duration = Duration::from_millis(80);
+const WAVE_STEP: Duration = Duration::from_millis(100);
 
-/// Frames in one full rise and fall of a dot.
-const WAVE_FRAMES: usize = 12;
+/// Frames in one full rise and fall of a dot (1.6 s).
+const WAVE_FRAMES: usize = 16;
 
-/// A dot at each of the four heights of a braille cell, bottom to top.
-const WAVE_DOTS: [&str; 4] = ["⡀", "⠄", "⠂", "⠁"];
-
-/// A sub-agent's working sign: three lime dots bobbing up and down in a travelling
-/// wave, each a third of a cycle behind the one before, then a space.
-fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
-    let frame = (ran.as_millis() / WAVE_STEP.as_millis()) as usize;
-    let mut text = String::new();
-    for i in 0..3 {
-        let phase = (frame + WAVE_FRAMES - i * WAVE_FRAMES / 3 % WAVE_FRAMES) % WAVE_FRAMES;
+/// The wave's dots: a dot's height, 0 (the bottom of its row) to 3 (the top of the
+/// row above), at `frame`, each dot a quarter of a cycle behind the one before.
+fn wave_heights(frame: usize) -> [usize; 3] {
+    let mut out = [0; 3];
+    for (i, h) in out.iter_mut().enumerate() {
+        let phase = (frame + WAVE_FRAMES * 4 - i * WAVE_FRAMES / 4) % WAVE_FRAMES;
         let angle = phase as f64 / WAVE_FRAMES as f64 * std::f64::consts::TAU;
-        // 0 (bottom) to 3 (top), following a sine.
-        let height = ((angle.sin() + 1.0) * 1.5).round() as usize;
-        text.push_str(WAVE_DOTS[height.min(3)]);
+        *h = (((angle.sin() + 1.0) * 1.5).round() as usize).min(3);
     }
-    text.push(' ');
-    vec![Span::styled(text, t.accent())]
+    out
+}
+
+/// A sub-agent's working sign: three square lime dots (half blocks, a pixel each)
+/// bobbing up and down over two rows in a travelling wave, a space between them.
+/// Returns the row above's part and the row's own, each ending in a space; the
+/// dot at the crest is the brightest.
+fn wave(t: &text::Theme, ran: Duration) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let heights = wave_heights((ran.as_millis() / WAVE_STEP.as_millis()) as usize);
+    let (mut upper, mut lower) = (vec![], vec![]);
+    for (i, h) in heights.iter().enumerate() {
+        let st = if *h == 3 { t.accent().add_modifier(ratatui::style::Modifier::BOLD) } else { t.accent() };
+        let (u, l) = match h {
+            3 => ("▀", " "),
+            2 => ("▄", " "),
+            1 => (" ", "▀"),
+            _ => (" ", "▄"),
+        };
+        let gap = if i < 2 { " " } else { "" };
+        upper.push(Span::styled(u, st));
+        lower.push(Span::styled(l, st));
+        upper.push(Span::raw(gap));
+        lower.push(Span::raw(gap));
+    }
+    upper.push(Span::raw(" "));
+    lower.push(Span::raw(" "));
+    (upper, lower)
 }
 
 /// The session row inside the default style's box, `room` columns: the mode in
@@ -2067,23 +2087,37 @@ mod tests {
         assert!(agents[0].contains("1 step · Reading src/lib.rs"), "its latest step, from the folder: {}", agents[0]);
         assert!(rows.iter().any(|r| r.contains("Waiting for 5 agents…")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("Running Task")), "{rows:#?}");
-        // The wave: three dots bobbing up and down, each behind the one before, in lime.
+        // The wave: three square dots bobbing over two rows, out of step, slowly.
         let t = crate::tui::text::Theme { color: true, light: false, accent: None, depth: Default::default() };
-        let at = |ms: u64| -> String {
-            scanner(&t, Duration::from_millis(ms)).iter().map(|s| s.content.to_string()).collect()
-        };
-        let height = |c: char| WAVE_DOTS.iter().position(|d| d.starts_with(c)).unwrap();
-        let frames: Vec<Vec<usize>> =
-            (0..WAVE_FRAMES as u64).map(|f| at(f * 80).trim_end().chars().map(height).collect()).collect();
-        assert!(frames.iter().all(|f| f.len() == 3), "three dots: {frames:?}");
+        let frames: Vec<[usize; 3]> = (0..WAVE_FRAMES).map(wave_heights).collect();
         assert!(
             frames.iter().any(|f| f[0] == 3) && frames.iter().any(|f| f[0] == 0),
-            "each rises to the top and falls to the bottom"
+            "top of the row above to the foot of its own"
         );
-        assert!(frames.windows(2).all(|w| w[0][0].abs_diff(w[1][0]) <= 1), "one height at a time: smooth");
-        assert_ne!(frames[0][0], frames[0][1], "the dots are out of step: a wave");
-        assert_eq!(at(0), at(WAVE_FRAMES as u64 * 80), "it repeats");
-        assert_eq!(scanner(&t, Duration::ZERO)[0].style, t.accent());
+        assert!(
+            frames.windows(2).all(|w| (0..3).all(|i| w[0][i].abs_diff(w[1][i]) <= 1)),
+            "one half-row a step: smooth"
+        );
+        assert!(frames.iter().any(|f| f[0] != f[1]), "out of step: a wave");
+        assert_eq!(wave_heights(0), wave_heights(WAVE_FRAMES), "it repeats");
+        assert!(
+            WAVE_STEP * WAVE_FRAMES as u32 >= Duration::from_millis(1500),
+            "slow: a rise and fall takes 1.5 s or more"
+        );
+        // Drawn: each dot is one half block in one of the two rows; the other row is blank there.
+        for f in 0..WAVE_FRAMES as u64 {
+            let (up, low) = wave(&t, Duration::from_millis(f * 100));
+            let up: String = up.iter().map(|s| s.content.as_ref()).collect();
+            let low: String = low.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!((up.chars().count(), low.chars().count()), (6, 6), "{up:?} {low:?}");
+            for c in [0, 2, 4] {
+                let (u, l) = (up.chars().nth(c).unwrap(), low.chars().nth(c).unwrap());
+                assert!((u == ' ') != (l == ' '), "one dot per column: {up:?} {low:?}");
+            }
+        }
+        // The agent's row and the row above both carry the wave.
+        let rows_with_dots = rows.iter().filter(|r| r.contains('▀') || r.contains('▄')).count();
+        assert!(rows_with_dots >= 5, "{rows:#?}");
     }
 
     #[test]
