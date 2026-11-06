@@ -600,82 +600,280 @@ fn room_left(s: &StatusView) -> u8 {
 /// The sidebar's width, columns.
 pub const SIDEBAR_W: u16 = 34;
 
-/// The sidebar, `w` columns by `h` rows: the session's title, the room left in its
-/// context and what it has used, the model, its MCP servers, the plan (the active
-/// step in lime, done ones quiet), and at the foot the folder and the branch.
-pub fn sidebar(app: &App, w: usize, h: usize) -> Vec<Line<'static>> {
+/// The frames of a mark that fills while its work is in flight (a server connecting,
+/// a sub-agent working, the plan's step during a turn): empty to full and back, so
+/// it reads as filling, never as done.
+pub const FILL: [&str; 8] = ["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"];
+
+/// The time between frames of a filling mark.
+pub const FILL_STEP: Duration = Duration::from_millis(140);
+
+/// A filling mark, `ran` after its work began: each keeps its own phase, so several
+/// in flight never pulse in step.
+pub fn filling(ran: Duration) -> &'static str {
+    FILL[(ran.as_millis() / FILL_STEP.as_millis()) as usize % FILL.len()]
+}
+
+/// How long something has run, for a glance: `41s`, `2m 05s`, `1h 02m`.
+fn ran_for(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// When the UI started: the phase of marks whose work has no start of its own.
+fn epoch() -> Instant {
+    static AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *AT.get_or_init(Instant::now)
+}
+
+/// Sub-agents shown in the sidebar at most; the rest are counted.
+const SIDEBAR_AGENTS: usize = 4;
+
+/// Skills shown in the sidebar at most, the most recently used first; the rest are counted.
+const SIDEBAR_SKILLS: usize = 5;
+
+/// The sidebar, `w` columns by `h` rows, `now` for the marks that fill. Its
+/// sections keep one order, so the eye learns where things are: the session's
+/// title, its context, the plan, the MCP servers and the tools each brings, the
+/// skills (how many, and the ones this session used), the sub-agents at work,
+/// and at the foot the folder and the branch. Marks that fill tell work in flight
+/// from work done, and every state has a word or a shape as well as a colour. On a
+/// short window the lowest sections give way first; the plan never does.
+pub fn sidebar(app: &App, w: usize, h: usize, now: Instant) -> Vec<Line<'static>> {
     let t = app.theme;
     let s = &app.status;
-    let pad = |l: Line<'static>| {
-        let mut spans = vec![Span::raw(" ")];
-        spans.extend(l.spans);
+    let inner = w.saturating_sub(2).max(1);
+    let width_of = |spans: &[Span<'static>]| spans.iter().map(|s| text_width(&s.content)).sum::<usize>();
+    // A section's heading, with what it counts flush right: `MCP          1 failed`.
+    let heading = |name: &str, right: Vec<Span<'static>>| -> Line<'static> {
+        let gap = inner.saturating_sub(text_width(name) + width_of(&right)).max(1);
+        let mut spans = vec![Span::styled(name.to_string(), t.subtle()), Span::raw(" ".repeat(gap))];
+        spans.extend(right);
         Line::from(spans)
     };
-    let inner = w.saturating_sub(2).max(1);
-    let heading = |text: &str| Line::from(Span::styled(text.to_string(), t.subtle()));
-    let mut out: Vec<Line<'static>> = vec![Line::default()];
-    let title = if app.title.is_empty() { "New session".to_string() } else { app.title.clone() };
-    for l in text::wrap(vec![Line::from(Span::styled(title, t.bold()))], inner as u16).into_iter().take(3) {
-        out.push(l);
-    }
-    out.push(Line::default());
-    out.push(heading("Context"));
+    // A row: its mark, a name, and a quiet note flush right (`12 tools`, `failed`, `×2`).
+    let row = |mark: Span<'static>, name: &str, name_style: Style, note: Span<'static>| -> Line<'static> {
+        let note_w = text_width(&note.content);
+        let name = fit(name, inner.saturating_sub(2 + note_w + usize::from(note_w > 0)));
+        let gap = inner.saturating_sub(2 + text_width(&name) + note_w);
+        Line::from(vec![mark, Span::raw(" "), Span::styled(name, name_style), Span::raw(" ".repeat(gap)), note])
+    };
+
+    let name = if app.title.is_empty() { "New session".to_string() } else { app.title.clone() };
+    let title: Vec<Line<'static>> =
+        text::wrap(vec![Line::from(Span::styled(name, t.bold()))], inner as u16).into_iter().take(3).collect();
+
+    let mut context = vec![heading("Context", vec![])];
     if s.context_pct.is_some() {
-        out.push(Line::from(gauge(&t, s)));
+        context.push(Line::from(gauge(&t, s)));
     }
     if s.session_tokens > 0 {
-        out.push(Line::from(Span::styled(format!("{} used", tokens(s.session_tokens)), t.dim())));
+        context.push(Line::from(Span::styled(format!("{} used", tokens(s.session_tokens)), t.dim())));
     }
     if !s.model.is_empty() {
-        out.push(Line::from(Span::styled(fit(&s.model, inner), t.dim())));
+        context.push(Line::from(Span::styled(fit(&s.model, inner), t.dim())));
     }
-    if !app.mcp.is_empty() {
-        out.push(Line::default());
-        out.push(heading("MCP"));
-        for (name, status) in &app.mcp {
-            let (dot, st) = match status.as_str() {
-                "connected" => ("● ", t.success()),
-                "failed" => ("● ", t.error()),
-                _ => ("○ ", t.subtle()),
-            };
-            let word = if status == "connected" { String::new() } else { format!("  {status}") };
-            out.push(Line::from(vec![
-                Span::styled(dot, st),
-                Span::raw(fit(name, inner.saturating_sub(2 + word.len()))),
-                Span::styled(word, t.subtle()),
-            ]));
+
+    // The plan: done steps quiet with a check, the active one filling in lime while
+    // the turn runs (half full while it waits), the rest open. A long step takes the
+    // rows it needs while there is room, two when there isn't.
+    let plan_rows = |most: usize| -> Vec<Line<'static>> {
+        let mut plan = vec![];
+        if app.todos.is_empty() {
+            return plan;
         }
-    }
-    if !app.todos.is_empty() {
-        out.push(Line::default());
-        out.push(heading("Plan"));
+        let done = app.todos.iter().filter(|(st, _)| st == "completed").count();
+        plan.push(heading("Plan", vec![Span::styled(format!("{done}/{}", app.todos.len()), t.subtle())]));
+        let busy_for = app.busy_since.map(|b| now.saturating_duration_since(b));
         for (status, content) in &app.todos {
-            let (mark, st) = match status.as_str() {
-                "completed" => ("✓ ", t.subtle()),
-                "in_progress" => ("▸ ", t.accent()),
-                _ => ("○ ", t.dim()),
+            let (mark, mark_style, body) = match status.as_str() {
+                "completed" => ("✓", t.subtle(), t.subtle()),
+                "in_progress" => (busy_for.filter(|_| app.busy).map_or("◑", filling), t.accent(), t.accent()),
+                _ => ("○", t.dim(), t.dim()),
             };
-            let body = if status == "in_progress" { t.accent() } else { st };
             let rows =
                 text::wrap(vec![Line::from(Span::styled(content.clone(), body))], inner.saturating_sub(2) as u16);
-            for (i, r) in rows.into_iter().take(2).enumerate() {
-                let mut spans = vec![if i == 0 { Span::styled(mark, st) } else { Span::raw("  ") }];
+            for (i, r) in rows.into_iter().take(most).enumerate() {
+                let mut spans =
+                    vec![if i == 0 { Span::styled(format!("{mark} "), mark_style) } else { Span::raw("  ") }];
                 spans.extend(r.spans);
-                out.push(Line::from(spans));
+                plan.push(Line::from(spans));
             }
         }
+        plan
+    };
+
+    // The MCP servers: connected full and green with the tools it brings, a failed one
+    // a red cross with the word, one still connecting filling, a disabled one hollow.
+    let mut mcp = vec![];
+    if !app.mcp.is_empty() {
+        let failed = app.mcp.iter().filter(|(_, st)| st == "failed").count();
+        let summary = if failed > 0 {
+            Span::styled(format!("{failed} failed"), t.error())
+        } else {
+            let up = app.mcp.iter().filter(|(_, st)| st == "connected").count();
+            Span::styled(format!("{up}/{} up", app.mcp.len()), t.subtle())
+        };
+        mcp.push(heading("MCP", vec![summary]));
+        for (name, status) in &app.mcp {
+            let tools = app.mcp_tools.get(name).copied().unwrap_or(0);
+            let (mark, mark_style, note, note_style) = match status.as_str() {
+                "connected" if tools > 0 => {
+                    ("●", t.success(), format!("{tools} tool{}", if tools == 1 { "" } else { "s" }), t.dim())
+                }
+                "connected" => ("●", t.success(), String::new(), t.dim()),
+                "failed" => ("×", t.error(), "failed".to_string(), t.error()),
+                "pending" => {
+                    (filling(now.saturating_duration_since(epoch())), t.warning(), "connecting".into(), t.subtle())
+                }
+                "disabled" => ("○", t.subtle(), "off".to_string(), t.subtle()),
+                other => ("○", t.subtle(), other.to_string(), t.subtle()),
+            };
+            mcp.push(row(Span::styled(mark, mark_style), name, Style::default(), Span::styled(note, note_style)));
+        }
     }
+
+    // The skills: how many, and how to list them, then the ones used this session,
+    // the latest first (all of them while there is room); the whole list is one
+    // command away.
+    let skill_rows = |most: usize| -> Vec<Line<'static>> {
+        let mut skills = vec![];
+        if app.skills.is_empty() && app.skills_used.is_empty() {
+            return skills;
+        }
+        skills.push(heading(
+            "Skills",
+            vec![Span::styled(format!("{} · ", app.skills.len()), t.subtle()), Span::styled("/skills", t.dim())],
+        ));
+        for (name, times) in app.skills_used.iter().take(most) {
+            let note = if *times > 1 { Span::styled(format!("×{times}"), t.subtle()) } else { Span::raw("") };
+            skills.push(row(Span::styled("▸", t.subtle()), name, Style::default(), note));
+        }
+        if app.skills_used.len() > most {
+            skills.push(Line::from(Span::styled(format!("  {} more used", app.skills_used.len() - most), t.subtle())));
+        }
+        skills
+    };
+
+    // The sub-agents at work, while any run, so delegated work stays in view after the
+    // conversation has scrolled past it: each filling in lime with what it was asked,
+    // then its kind and its steps. While there is room, how long it has run and its
+    // latest steps as a small tree; when there isn't, only the latest step.
+    let working: Vec<&super::app::Running> = app.running.iter().filter(|r| is_agent(&r.name)).collect();
+    let agent_rows = |full: bool| -> Vec<Line<'static>> {
+        let mut agents = vec![];
+        if working.is_empty() {
+            return agents;
+        }
+        agents.push(heading("Agents", vec![Span::styled(format!("{} running", working.len()), t.subtle())]));
+        for r in working.iter().take(SIDEBAR_AGENTS) {
+            let kind =
+                r.input.get("subagent_type").and_then(|v| v.as_str()).filter(|k| !k.is_empty()).unwrap_or("Agent");
+            let asked = r.input.get("description").and_then(|v| v.as_str()).map(str::trim).filter(|d| !d.is_empty());
+            let ran = now.saturating_duration_since(r.since);
+            let steps = format!("{} step{}", r.steps, if r.steps == 1 { "" } else { "s" });
+            agents.push(row(
+                Span::styled(filling(ran), t.accent()),
+                asked.unwrap_or(kind),
+                Style::default(),
+                Span::styled(steps, t.subtle()),
+            ));
+            // With room: its kind and how long it has run, then the tree. Without: the
+            // latest step alone, which says the most in one row.
+            let second = if full {
+                format!("{kind} · {}", ran_for(ran))
+            } else {
+                r.step.clone().unwrap_or_else(|| format!("{kind} · starting"))
+            };
+            agents.push(Line::from(Span::styled(fit(&format!("  {second}"), inner), t.subtle())));
+            if full {
+                let last = &r.trail[r.trail.len().saturating_sub(3)..];
+                for (i, step) in last.iter().enumerate() {
+                    let branch = if i + 1 == last.len() { "  └ " } else { "  ├ " };
+                    agents.push(Line::from(vec![
+                        Span::styled(branch, t.hairline()),
+                        Span::styled(fit(step, inner.saturating_sub(4)), t.dim()),
+                    ]));
+                }
+            }
+        }
+        if working.len() > SIDEBAR_AGENTS {
+            agents.push(Line::from(Span::styled(format!("  {} more", working.len() - SIDEBAR_AGENTS), t.subtle())));
+        }
+        agents
+    };
+
     // The folder and the branch at the foot.
     let mut foot = vec![Line::from(Span::styled(keep_end(&super::short_path(&s.cwd), inner), t.subtle()))];
     if !app.branch.is_empty() {
         foot.push(Line::from(Span::styled(fit(&format!("⎇ {}", app.branch), inner), t.subtle())));
     }
+    // A blank row at the top and under the foot; the sections between, a blank row apart.
     let room = h.saturating_sub(foot.len() + 1);
+    // Each section as it shows with room to spare, and as it shows when space is short.
+    // The sidebar fills the window: every section at its fullest while they all fit.
+    // When they don't, the lowest sections tighten first, then give way, lowest first;
+    // the plan tightens but never gives way.
+    struct Section {
+        full: Vec<Line<'static>>,
+        tight: Vec<Line<'static>>,
+        tightened: bool,
+        gives_way: bool,
+    }
+    let section = |full: Vec<Line<'static>>, tight: Vec<Line<'static>>, gives_way: bool| Section {
+        tightened: false,
+        full,
+        tight,
+        gives_way,
+    };
+    let mut sections: Vec<Section> = vec![
+        section(title.clone(), title, true),
+        section(context.clone(), context, true),
+        section(plan_rows(usize::MAX), plan_rows(2), false),
+        section(mcp.clone(), mcp, true),
+        section(skill_rows(usize::MAX), skill_rows(SIDEBAR_SKILLS), true),
+        section(agent_rows(true), agent_rows(false), true),
+    ];
+    sections.retain(|s| !s.full.is_empty());
+    let rows_of = |s: &Section| if s.tightened { s.tight.len() } else { s.full.len() };
+    let height = |ss: &[Section]| 1 + ss.iter().map(|s| rows_of(s) + 1).sum::<usize>();
+    while height(&sections) > room {
+        if let Some(i) = sections.iter().rposition(|s| !s.tightened && s.tight.len() < s.full.len()) {
+            sections[i].tightened = true;
+        } else if let Some(i) = sections.iter().rposition(|s| s.gives_way) {
+            sections.remove(i);
+        } else {
+            break;
+        }
+    }
+    let mut out: Vec<Line<'static>> = vec![Line::default()];
+    for (i, s) in sections.into_iter().enumerate() {
+        if i > 0 {
+            out.push(Line::default());
+        }
+        out.extend(if s.tightened { s.tight } else { s.full });
+    }
     out.truncate(room);
     out.resize(room, Line::default());
     out.extend(foot);
     out.push(Line::default());
-    out.into_iter().map(pad).collect()
+    out.into_iter()
+        .map(|l| {
+            let mut spans = vec![Span::raw(" ")];
+            spans.extend(l.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The sidebar has a mark that fills with nothing else to redraw it: a server
+/// still connecting while the session is idle.
+pub fn sidebar_moving(app: &App) -> bool {
+    app.sidebar && !app.front && app.mcp.iter().any(|(_, st)| st == "pending")
 }
 
 /// The context gauge: a shape that fills as the conversation nears compaction
@@ -2266,5 +2464,173 @@ mod tests {
         a.on_event(UiEvent::StatusLine(Some("main · 3 files".into())));
         let (rows, _) = draw(&live_view(&a, 40, 10), 40);
         assert_eq!(rows.last().unwrap(), "  /p                    main · 3 files");
+    }
+
+    /// The sidebar's rows as text.
+    fn side(a: &App, h: usize, now: Instant) -> Vec<String> {
+        sidebar(a, SIDEBAR_W as usize, h, now)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// A session as the sidebar sees it mid-turn: a plan, two MCP servers (one failed),
+    /// skills (two used, one twice), and a sub-agent six steps in.
+    fn busy_session(started: Instant) -> App {
+        let mut a = app(false);
+        a.submit("add an age check to signups".into());
+        a.front = false;
+        a.mcp = vec![("jira".into(), "connected".into()), ("figma".into(), "failed".into())];
+        a.mcp_tools = [("jira".to_string(), 12), ("figma".to_string(), 0)].into_iter().collect();
+        a.todos = vec![
+            ("completed".into(), "Read the form".into()),
+            ("in_progress".into(), "Add the field".into()),
+            ("pending".into(), "Run the tests".into()),
+        ];
+        a.on_event(UiEvent::Skills(
+            (0..14).map(|i| format!("skill{i}")).chain(["simplify".into(), "verify".into()]).collect(),
+        ));
+        a.used_skill("verify");
+        a.used_skill("simplify");
+        a.used_skill("/verify");
+        a.running.push(crate::tui::app::Running {
+            id: "t1".into(),
+            header: vec![],
+            name: "Task".into(),
+            input: serde_json::json!({"subagent_type": "Explore", "description": "find the parser", "prompt": "…"}),
+            since: started,
+            step: Some("Reading src/parse.rs".into()),
+            steps: 6,
+            trail: ["Reading src/lexer.rs", "Searching for \"parse\"", "Reading src/parse.rs"]
+                .map(String::from)
+                .to_vec(),
+        });
+        a
+    }
+
+    #[test]
+    fn the_sidebar_keeps_one_order_and_says_what_each_part_brings() {
+        let now = Instant::now();
+        let a = busy_session(now);
+        let rows = side(&a, 60, now);
+        let all = rows.join("\n");
+        let at = |want: &str| rows.iter().position(|r| r.contains(want)).unwrap_or_else(|| panic!("{want}\n{all}"));
+        // Title, context, plan, MCP, skills, agents, then the folder at the foot.
+        let order = ["add an age check", "Context", "Plan", "MCP", "Skills", "Agents"].map(at);
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}\n{all}");
+        assert!(at("/p") > at("Agents"), "the folder at the foot\n{all}");
+        // Each heading counts what its section holds, flush right.
+        assert!(rows[at("Plan")].ends_with("1/3"), "{all}");
+        assert!(rows[at("MCP")].ends_with("1 failed"), "{all}");
+        assert!(rows[at("Skills")].ends_with("16 · /skills"), "{all}");
+        assert!(rows[at("Agents")].ends_with("1 running"), "{all}");
+        // A connected server shows the tools it brings; a failed one says so beside a cross.
+        let jira = &rows[at("jira")];
+        assert!(jira.starts_with(" ● jira") && jira.ends_with("12 tools"), "{jira}");
+        let figma = &rows[at("figma")];
+        assert!(figma.starts_with(" × figma") && figma.ends_with("failed"), "{figma}");
+        // The skills used, the latest first, with how often; never the whole list.
+        assert!(at("▸ verify") < at("▸ simplify"), "{all}");
+        assert!(rows[at("▸ verify")].ends_with("×2"), "{all}");
+        assert!(!all.contains("skill3"), "{all}");
+        // The sub-agent: what it was asked, then its kind, its steps and how long it has
+        // run, and with room to spare its latest steps as a tree.
+        assert!(rows[at("find the parser")].ends_with("6 steps"), "{all}");
+        assert!(all.contains("Explore · 0s"), "{all}");
+        assert!(at("├ Searching for \"parse\"") < at("└ Reading src/parse.rs"), "{all}");
+        // Short of room, the sections tighten before any gives way: the agent keeps one row
+        // for its latest step instead of the tree.
+        let tight = side(&a, 27, now);
+        let joined = tight.join("\n");
+        assert!(joined.contains("Agents") && tight.iter().any(|r| r == "   Reading src/parse.rs"), "{joined}");
+        assert!(!joined.contains("└"), "{joined}");
+        // Plan marks: done checked, the rest open.
+        assert!(all.contains("✓ Read the form") && all.contains("○ Run the tests"), "{all}");
+        // Every row fits the sidebar.
+        assert!(rows.iter().all(|r| text_width(r) <= SIDEBAR_W as usize), "{all}");
+    }
+
+    #[test]
+    fn work_in_flight_fills_and_settles_when_the_turn_ends() {
+        let start = Instant::now();
+        let mut a = busy_session(start);
+        a.busy_since = Some(start);
+        let mark = |a: &App, now: Instant, what: &str| -> String {
+            let rows = side(a, 60, now);
+            let r = rows.iter().find(|r| r.contains(what)).unwrap_or_else(|| panic!("{what}: {rows:#?}"));
+            r.trim_start().chars().next().unwrap().to_string()
+        };
+        // The sub-agent and the active step fill frame by frame, from empty to full and back.
+        let frames: Vec<String> =
+            (0..FILL.len() as u32).map(|i| mark(&a, start + FILL_STEP * i, "find the parser")).collect();
+        assert_eq!(frames, FILL.map(String::from).to_vec());
+        assert_eq!(mark(&a, start + FILL_STEP * 2, "Add the field"), "◑");
+        assert_eq!(mark(&a, start + FILL_STEP * 3, "Add the field"), "◕");
+        // Each mark keeps its own phase: a sub-agent that started later is a frame behind.
+        assert_eq!(filling(FILL_STEP * 9), filling(FILL_STEP));
+        // Idle: the open step waits half full, and the agents section is gone.
+        a.busy = false;
+        a.running.clear();
+        assert_eq!(mark(&a, start + FILL_STEP * 3, "Add the field"), "◑");
+        assert!(!side(&a, 60, start).join("\n").contains("Agents"));
+        // A server still connecting fills too, and keeps the window redrawing while idle.
+        a.mcp.push(("linear".into(), "pending".into()));
+        a.sidebar = true;
+        assert!(FILL.contains(&mark(&a, start, "linear").as_str()));
+        assert!(side(&a, 60, start).iter().any(|r| r.contains("linear") && r.ends_with("connecting")));
+        assert!(sidebar_moving(&a));
+    }
+
+    #[test]
+    fn on_a_short_window_the_lowest_sections_give_way_and_the_plan_never_does() {
+        let now = Instant::now();
+        let a = busy_session(now);
+        let has = |h: usize, what: &str| side(&a, h, now).join("\n").contains(what);
+        // Tall: everything.
+        assert!(["Context", "Plan", "MCP", "Skills", "Agents"].iter().all(|s| has(60, s)));
+        // Shorter and shorter: agents go first, then skills, then MCP, then the context.
+        let first_gone = |what: &str| (8..60).rev().find(|&h| !has(h, what)).unwrap();
+        let (agents, skills, mcp, context) =
+            (first_gone("Agents"), first_gone("Skills"), first_gone("MCP"), first_gone("Context"));
+        assert!(agents > skills && skills > mcp && mcp > context, "{agents} {skills} {mcp} {context}");
+        // The plan stays at every height that can hold it, and the folder stays at the foot.
+        for h in 10..60 {
+            let rows = side(&a, h, now);
+            assert_eq!(rows.len(), h);
+            assert!(rows.join("\n").contains("Add the field"), "height {h}: {rows:#?}");
+            assert!(rows.iter().any(|r| r.contains("/p")), "height {h}");
+        }
+    }
+
+    #[test]
+    fn a_skill_counts_as_used_when_the_model_calls_it_or_it_is_typed() {
+        let mut a = app(false);
+        a.on_event(UiEvent::Skills(vec!["simplify".into(), "verify".into()]));
+        // Typed as a command, with words after it.
+        a.echo_prompt("/simplify the parser");
+        // A command that isn't a skill is not counted.
+        a.echo_prompt("/compact");
+        // Called by the model.
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+            message: kodact_types::ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: kodact_types::Role::Assistant,
+                model: "m".into(),
+                content: vec![kodact_types::ContentBlock::ToolUse {
+                    id: "s1".into(),
+                    name: "Skill".into(),
+                    input: serde_json::json!({"skill": "verify"}),
+                    cache_control: None,
+                    provider: None,
+                }],
+                stop_reason: Some(kodact_types::StopReason::ToolUse),
+                stop_sequence: None,
+                usage: kodact_types::Usage::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: None,
+        }));
+        assert_eq!(a.skills_used, vec![("verify".to_string(), 1), ("simplify".to_string(), 1)]);
     }
 }

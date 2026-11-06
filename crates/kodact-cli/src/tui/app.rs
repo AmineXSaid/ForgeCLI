@@ -75,6 +75,8 @@ pub enum UiEvent {
     },
     Status(StatusView),
     Commands(Vec<CommandInfo>),
+    /// Every skill's name (at the start, and after `/reload-skills` or a plugin change).
+    Skills(Vec<String>),
     /// The project's files, for `@` completion.
     Files(Vec<String>),
     /// The `theme` setting changed (`/theme`).
@@ -516,6 +518,12 @@ pub struct App {
     pub title: String,
     /// MCP servers and their state: (name, status).
     pub mcp: Vec<(String, String)>,
+    /// How many tools each MCP server brings, by server name, for the sidebar.
+    pub mcp_tools: std::collections::HashMap<String, usize>,
+    /// Every skill's name: the sidebar counts them, and a typed `/name` that is one counts as used.
+    pub skills: Vec<String>,
+    /// Skills used this session, most recent first, with how many times.
+    pub skills_used: Vec<(String, usize)>,
     /// The model's latest plan (TodoWrite): (status, content).
     pub todos: Vec<(String, String)>,
     /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
@@ -859,6 +867,12 @@ pub fn todo_items(input: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The skill a tool call uses, if it is a `Skill` call: `{"skill": "simplify"}` → `simplify`.
+pub fn skill_of(name: &str, input: &Value) -> Option<String> {
+    let skill = input.get("skill").and_then(Value::as_str).filter(|_| name == "Skill")?;
+    Some(skill.trim_start_matches('/').to_string())
+}
+
 /// A sub-agent tool: the call that runs another agent.
 pub fn is_agent_tool(name: &str) -> bool {
     matches!(name, "Task" | "Agent")
@@ -1037,6 +1051,9 @@ impl App {
             sidebar: false,
             title: String::new(),
             mcp: vec![],
+            mcp_tools: Default::default(),
+            skills: vec![],
+            skills_used: vec![],
             todos: vec![],
             endpoint: String::new(),
             branch: String::new(),
@@ -1139,10 +1156,30 @@ impl App {
         self.commit_answer_lines(held);
     }
 
+    /// A skill was used (by the model, a sub-agent, or typed as `/name`): it goes to the
+    /// top of the sidebar's list, with how many times it has been used.
+    pub fn used_skill(&mut self, name: &str) {
+        let name = name.trim().trim_start_matches('/');
+        if name.is_empty() {
+            return;
+        }
+        let times = match self.skills_used.iter().position(|(s, _)| s == name) {
+            Some(i) => self.skills_used.remove(i).1 + 1,
+            None => 1,
+        };
+        self.skills_used.insert(0, (name.to_string(), times));
+    }
+
     /// Write the person's prompt into scrollback.
     pub fn echo_prompt(&mut self, text: &str) {
         if self.title.is_empty() {
             self.title = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+        }
+        // A skill typed as a command (`/simplify the parser`).
+        if let Some(word) = text.trim_start().strip_prefix('/').and_then(|r| r.split_whitespace().next()) {
+            if self.skills.iter().any(|s| s == word) {
+                self.used_skill(word);
+            }
         }
         use super::look::Look;
         self.gap();
@@ -1338,6 +1375,7 @@ impl App {
                 self.status = s;
             }
             UiEvent::Commands(c) => self.commands = c,
+            UiEvent::Skills(names) => self.skills = names,
             UiEvent::Files(f) => self.files = f,
             UiEvent::Theme(name) => {
                 // The session's /color stays.
@@ -1428,6 +1466,14 @@ impl App {
                         }
                     }
                 }
+                // A skill a sub-agent used is used in this session too.
+                for b in &message.content {
+                    if let ContentBlock::ToolUse { name, input, .. } = b {
+                        if let Some(skill) = skill_of(name, input) {
+                            self.used_skill(&skill);
+                        }
+                    }
+                }
             }
             EngineEvent::Stream { parent_tool_use_id: Some(_), .. }
             | EngineEvent::User { parent_tool_use_id: Some(_), .. } => {}
@@ -1501,10 +1547,13 @@ impl App {
             EngineEvent::Assistant { message, .. } => {
                 self.flush_live();
                 for b in &message.content {
-                    // The model's plan, for the sidebar.
+                    // The model's plan and the skills it uses, for the sidebar.
                     if let ContentBlock::ToolUse { name, input, .. } = b {
                         if name == "TodoWrite" {
                             self.todos = todo_items(input);
+                        }
+                        if let Some(skill) = skill_of(name, input) {
+                            self.used_skill(&skill);
                         }
                     }
                     match b {

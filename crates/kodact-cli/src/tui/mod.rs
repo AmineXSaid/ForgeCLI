@@ -326,7 +326,7 @@ impl<B: Backend> Full<B> {
             f.render_widget(Paragraph::new(view.lines.clone()), area);
             if side {
                 let rect = ratatui::layout::Rect { x: area.x + width + 2, width: side_w, ..full };
-                let lines = render::sidebar(app, side_w as usize, full.height as usize);
+                let lines = render::sidebar(app, side_w as usize, full.height as usize, Instant::now());
                 let t = app.theme;
                 let surface = if t.color && t.depth != palette::Depth::Ansi16 {
                     ratatui::style::Style::default().bg(palette::PROMPT_BG.color(t.depth, t.light))
@@ -552,6 +552,8 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     app.front = true;
     app.first_run = recent.is_empty();
     app.mcp = info.mcp.clone();
+    app.mcp_tools = mcp_tool_counts(&app.mcp, &driver.info.init.tools);
+    app.skills = driver.info.init.skills.clone();
     app.endpoint = endpoint;
     app.branch = branch.unwrap_or_default();
     if !full {
@@ -726,7 +728,7 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
                 }
                 None => break,
             },
-            _ = tick.tick(), if app.busy || hint => app.dirty = true,
+            _ = tick.tick(), if app.busy || hint || render::sidebar_moving(&app) => app.dirty = true,
             _ = tokio::time::sleep(frame_wait), if app.dirty && !frame_wait.is_zero() => {}
         }
     }
@@ -762,6 +764,18 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         eprintln!("Resume this conversation with: kodact --resume {}", live.session_id());
     }
     Ok(crate::exit::OK)
+}
+
+/// How many tools each MCP server brings, for the sidebar: the session's tools named
+/// `mcp__<server>__<tool>`, counted by server.
+fn mcp_tool_counts(servers: &[(String, String)], tools: &[String]) -> std::collections::HashMap<String, usize> {
+    servers
+        .iter()
+        .map(|(name, _)| {
+            let prefix = kodact_mcp::tools::tool_name(name, "");
+            (name.clone(), tools.iter().filter(|t| t.starts_with(&prefix)).count())
+        })
+        .collect()
 }
 
 /// Where requests go, for the welcome banner: the endpoint's host, or its kind.
@@ -907,6 +921,18 @@ mod tests {
     }
 
     #[test]
+    fn each_mcp_server_counts_its_own_tools() {
+        let servers = vec![("git".to_string(), "connected".to_string()), ("my server".into(), "connected".into())];
+        let tools: Vec<String> = ["Read", "mcp__git__log", "mcp__git__diff", "mcp__github__pr", "mcp__my_server__ping"]
+            .map(String::from)
+            .to_vec();
+        let counts = mcp_tool_counts(&servers, &tools);
+        // `github`'s tools aren't `git`'s; a name with a space is matched as tools are named.
+        assert_eq!(counts["git"], 2);
+        assert_eq!(counts["my server"], 1);
+    }
+
+    #[test]
     fn ctrl_b_opens_the_sidebar_on_a_wide_screen() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let theme = text::Theme { color: false, light: false, accent: None, depth: Default::default() };
@@ -931,10 +957,11 @@ mod tests {
             "Context",
             "MCP",
             "● jira",
-            "figma  failed",
+            "× figma",
+            "failed",
             "Plan",
             "✓ Read the form",
-            "▸ Add the field",
+            "Add the field",
             "○ Run the tests",
         ] {
             assert!(all.contains(want), "{want}\n{all}");
@@ -1386,6 +1413,72 @@ mod snapshots {
             a.front = false;
             answer(&mut a, "Done with the session store; moving on to the transcript writer.");
             shot(name, &mut a, 140, 14);
+        }
+
+        // 15. The sidebar mid-turn: the plan, MCP servers with their tools (one failed,
+        // one still connecting), the skills used, and two sub-agents at work.
+        let mut a = app();
+        a.submit("add an age check to signups".into());
+        a.front = false;
+        a.sidebar = true;
+        a.status.session_tokens = 41_000;
+        a.mcp = vec![
+            ("jira".into(), "connected".into()),
+            ("github".into(), "connected".into()),
+            ("figma".into(), "failed".into()),
+            ("linear".into(), "pending".into()),
+        ];
+        a.mcp_tools = [("jira", 12), ("github", 8)].into_iter().map(|(n, c)| (n.to_string(), c)).collect();
+        a.on_event(UiEvent::Skills((1..=14).map(|i| format!("skill{i}")).collect()));
+        for s in ["verify", "simplify", "verify"] {
+            a.used_skill(s);
+        }
+        a.on_event(msg(
+            vec![call(
+                "p",
+                "TodoWrite",
+                json!({"todos": [
+                    {"content": "Read the signup form", "status": "completed", "activeForm": "Reading"},
+                    {"content": "Add the age field and its check", "status": "in_progress", "activeForm": "Adding"},
+                    {"content": "Run the tests", "status": "pending", "activeForm": "Running"},
+                    {"content": "Update the changelog", "status": "pending", "activeForm": "Updating"}
+                ]}),
+            )],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(&mut a, "p", "ok", false, None);
+        a.on_event(msg(
+            vec![
+                call(
+                    "t1",
+                    "Task",
+                    json!({"subagent_type": "Explore", "description": "find the form validators", "prompt": "…"}),
+                ),
+                call(
+                    "t2",
+                    "Task",
+                    json!({"subagent_type": "general-purpose", "description": "check the API docs", "prompt": "…"}),
+                ),
+            ],
+            StopReason::ToolUse,
+            None,
+        ));
+        for (step, parent) in [("src/forms/signup.ts", "t1"), ("src/forms/rules.ts", "t1"), ("docs/api.md", "t2")] {
+            a.on_event(msg(vec![call("s", "Read", json!({"file_path": step}))], StopReason::ToolUse, Some(parent)));
+        }
+        let ago = |ms: u64| std::time::Instant::now() - std::time::Duration::from_millis(ms);
+        a.busy_since = Some(ago(41_000));
+        a.running[0].since = ago(41_000 + 280);
+        a.running[1].since = ago(12_000 + 700);
+        shot("15-sidebar", &mut a, 170, 40);
+        // The marks' frames, for an animation of the sidebar: each fills at its own phase.
+        let step = render::FILL_STEP.as_millis() as u64;
+        for f in 0..render::FILL.len() as u64 {
+            a.busy_since = Some(ago(41_000 + step * f));
+            a.running[0].since = ago(41_000 + 280 + step * f);
+            a.running[1].since = ago(12_000 + 700 + step * f);
+            shot(&format!("sidebar-{f:02}"), &mut a, 170, 40);
         }
     }
 }

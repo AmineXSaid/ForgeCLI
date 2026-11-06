@@ -415,11 +415,34 @@ with `{"text", "cwd"}`:
   the tokens the turn used. The UI shows no money anywhere; `/cost` and
   `/usage` give it when asked.
 - **The sidebar** (full screen from 140 columns, Ctrl+B, the
-  `toggleSidebar` action): the session's title (its first prompt), the room
-  left in the context, the tokens used and the model, the MCP servers (a
-  failed one in red and named), the plan from TodoWrite (done quiet, the
-  active step in lime, the rest open), and the folder and branch at its
-  foot. Never on the welcome page, inline, or on a narrower window.
+  `toggleSidebar` action). Its sections keep one order, so the eye learns
+  where things are; each heading counts what it holds, flush right:
+  - the session's title (its first prompt);
+  - **Context**: the room left, the tokens used and the model;
+  - **Plan** (`1/4`): the plan from TodoWrite, done steps quiet with `✓`, the
+    active one in lime, the rest open `○`;
+  - **MCP** (`2/3 up`, or `1 failed` in red): each server and what it
+    brings, `● jira  12 tools` in green, a failed one `× figma  failed` in
+    red, one still connecting `connecting`, a disabled one `○ … off`;
+  - **Skills** (`14 · /skills`): how many there are and the command that
+    lists them, then only the skills this session used, the latest first,
+    `▸ verify  ×2`; a skill counts as used when the model or a sub-agent calls
+    it, or when you type it as `/name`;
+  - **Agents** (`2 running`), only while sub-agents run: each with what it
+    was asked and its step count, then its kind and how long it has run, and
+    its last 3 steps as a tree;
+  - the folder and the branch at the foot.
+
+  Work in flight has a mark that fills, `○ ◔ ◑ ◕ ●` and back, each at its
+  own pace: the active plan step during a turn (half full `◑` while the
+  session waits), a server connecting, a sub-agent working. A finished state
+  is still: `●` connected, `✓` done. Every state has a word or a shape as
+  well as a colour. The sidebar fills the window: with room to spare every
+  section shows in full; short of room the lowest sections tighten first
+  (a sub-agent keeps only its latest step, the skills their five latest, a
+  long plan step two rows), then give way, lowest first: agents, skills,
+  MCP, context. The plan never gives way. Never on the welcome page,
+  inline, or on a narrower window.
 - **Approvals**: a box titled `◆ Approve <tool>?`. A command shows its lines
   and description, an edit its change, and any other tool every argument it
   will be sent (each line of each value). Choices: `Allow once` (y), the

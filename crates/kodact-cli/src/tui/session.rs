@@ -294,6 +294,9 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
     };
     let mut menu = commands(&driver);
     let _ = ui.send(UiEvent::Commands(menu.clone()));
+    let skill_names = |d: &Driver| -> Vec<String> { d.catalog.skills.iter().map(|s| s.name.clone()).collect() };
+    let mut skills = skill_names(&driver);
+    let _ = ui.send(UiEvent::Skills(skills.clone()));
     let mut theme = driver.info.settings.str("/theme").map(str::to_string);
     if let Some(t) = &theme {
         let _ = ui.send(UiEvent::Theme(t.clone()));
@@ -325,6 +328,11 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         if now_menu != menu {
             menu = now_menu;
             let _ = ui.send(UiEvent::Commands(menu.clone()));
+        }
+        let now_skills = skill_names(&driver);
+        if now_skills != skills {
+            skills = now_skills;
+            let _ = ui.send(UiEvent::Skills(skills.clone()));
         }
         let now = driver.info.settings.str("/theme").map(str::to_string);
         if now != theme {
