@@ -498,14 +498,17 @@ pub struct App {
     pub model_down: bool,
     /// The turn so far: model requests, and the spend and tokens when it began.
     turn_requests: usize,
-    turn_cost_from: f64,
     turn_tokens_from: u64,
+    /// The tool call the model is writing now: its name and its input so far.
+    preparing: Option<(String, String)>,
     /// Something has been sent this session (the placeholder then asks for a reply).
     pub talked: bool,
     /// Columns the full screen sets the transcript in (0 inline): the live rows follow it.
     pub transcript_indent: usize,
     /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
     pub front: bool,
+    /// No earlier conversation in this folder: the welcome shows an example request.
+    pub first_run: bool,
     /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
     pub endpoint: String,
     /// The git branch, for the status style's bar (empty outside a repository).
@@ -716,6 +719,11 @@ pub fn tool_display_name(name: &str) -> String {
 /// A tool call's header: a verb, then what it works on: a path in link
 /// colour, a command as written, an outside tool by its name.
 pub fn tool_header(t: &Theme, name: &str, input: &Value, done: bool) -> Vec<Span<'static>> {
+    // A command with a description reads as its purpose; the command itself follows
+    // on its own line (`$ cargo test`), as a terminal would show it.
+    if let Some(d) = shell_description(name, input) {
+        return vec![Span::styled(d, t.bold())];
+    }
     let arg = summarize(name, input);
     let mut spans = vec![Span::styled(tool_verb(name, done).to_string(), t.bold())];
     let builtin = tool_verb(name, true) != "Called";
@@ -735,6 +743,29 @@ pub fn tool_header(t: &Theme, name: &str, input: &Value, done: bool) -> Vec<Span
         _ => spans.push(Span::styled(arg, t.dim())),
     }
     spans
+}
+
+/// A shell command's description, when the model gave one: what the command is for.
+pub fn shell_description(name: &str, input: &Value) -> Option<String> {
+    if !matches!(name, "Bash" | "PowerShell") {
+        return None;
+    }
+    let d = input["description"].as_str()?.lines().next()?.trim();
+    (!d.is_empty() && input["command"].as_str().is_some_and(|c| !c.trim().is_empty())).then(|| fit_words(d, 100))
+}
+
+/// The line under a described command's header: `$ cargo test -q`, in the code colour.
+pub fn shell_command_line(t: &Theme, input: &Value) -> Line<'static> {
+    let cmd = input["command"].as_str().unwrap_or("");
+    let first = cmd.lines().next().unwrap_or("").trim_end();
+    let more = if cmd.lines().nth(1).is_some() { " …" } else { "" };
+    let shown: String = first.chars().take(160).collect();
+    let cut = if first.chars().count() > 160 { "…" } else { "" };
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled("$ ", t.subtle()),
+        Span::styled(format!("{shown}{cut}{more}"), t.role(super::palette::CODE_TEXT)),
+    ])
 }
 
 /// The main argument of a tool call, for one line.
@@ -857,10 +888,11 @@ impl App {
             agents_done: 0,
             model_down: false,
             turn_requests: 0,
-            turn_cost_from: 0.0,
             turn_tokens_from: 0,
+            preparing: None,
             talked: false,
             front: false,
+            first_run: false,
             endpoint: String::new(),
             branch: String::new(),
             focus: false,
@@ -1104,6 +1136,10 @@ impl App {
             }
         };
         self.pending.push(line);
+        // A described command: the command itself under its purpose, as a terminal shows it.
+        if !self.look.plain_steps() && shell_description(&r.name, &r.input).is_some() {
+            self.pending.push(shell_command_line(&t, &r.input));
+        }
     }
 
     fn notice(&mut self, level: NoticeLevel, text: &str) {
@@ -1202,7 +1238,6 @@ impl App {
         self.first_line = true;
         self.agents_done = 0;
         self.turn_requests = 0;
-        self.turn_cost_from = self.status.cost;
         self.turn_tokens_from = self.status.session_tokens;
         self.talked = true;
         text
@@ -1282,11 +1317,31 @@ impl App {
                         self.commit_text_line(&line);
                     }
                 }
+                // A tool call the model is still writing: say what it is preparing, and
+                // for which file once its path has arrived, so a long Write or a big edit
+                // reads as work in progress, not as a stall.
+                StreamEvent::ContentBlockStart { content_block: ContentBlock::ToolUse { name, .. }, .. } => {
+                    self.flush_live();
+                    self.activity = Self::preparing(&name, None);
+                    self.preparing = Some((name, String::new()));
+                }
+                StreamEvent::ContentBlockDelta { delta: Delta::InputJsonDelta { partial_json }, .. } => {
+                    if let Some((name, json)) = self.preparing.as_mut() {
+                        json.push_str(&partial_json);
+                        let target = ["file_path", "notebook_path", "path"]
+                            .iter()
+                            .find_map(|k| Self::json_string_value(json, k));
+                        self.activity = Self::preparing(name, target.as_deref());
+                    }
+                }
                 StreamEvent::ContentBlockDelta { delta: Delta::ThinkingDelta { .. }, .. } => {
                     self.activity = "Thinking".into();
                     self.request_thought = true;
                 }
-                StreamEvent::ContentBlockStop { .. } | StreamEvent::MessageStop => self.flush_live(),
+                StreamEvent::ContentBlockStop { .. } | StreamEvent::MessageStop => {
+                    self.preparing = None;
+                    self.flush_live()
+                }
                 _ => {}
             },
             EngineEvent::Assistant { message, .. } => {
@@ -1521,25 +1576,30 @@ impl App {
 
     /// A question to the person is open (permission, plan approval, AskUserQuestion):
     /// the turn waits on them, not on the model.
-    /// After a turn that reached the model: what it took, quietly under it
-    /// (`12s · $0.004`, or tokens for a model with no price); in plan mode,
-    /// how to go on.
+    /// After a turn that reached the model, quietly under it: the mode it ran in
+    /// (its square and name in the mode's colour), the model, how long it took and
+    /// the tokens it used: `■ Default · opus · 12s · 1.2k tokens`. No money: `/cost`
+    /// gives that when asked. In plan mode, how to go on.
     fn turn_summary(&mut self) {
         let (Some(since), true) = (self.busy_since, self.turn_requests > 0) else { return };
         let t = self.theme;
         let secs = since.elapsed().as_secs();
-        let spent = if self.status.cost_unknown {
-            let n = self.status.session_tokens.saturating_sub(self.turn_tokens_from);
-            (n > 0).then(|| format!("{} tokens", short_count(n)))
-        } else {
-            let c = self.status.cost - self.turn_cost_from;
-            (c > 0.0).then(|| if c < 0.01 { format!("${c:.3}") } else { format!("${c:.2}") })
-        };
-        let mut text = format!("{secs}s");
-        if let Some(s) = spent {
-            text.push_str(&format!(" · {s}"));
+        let mode = t.mode(&self.status.mode);
+        let sep = || Span::styled(" · ", t.subtle());
+        let mut spans = vec![
+            Span::raw("  "),
+            Span::styled(if t.color { "■ " } else { "" }, mode),
+            Span::styled(super::render::mode_name(&self.status.mode), mode),
+        ];
+        if !self.status.model.is_empty() {
+            spans.extend([sep(), Span::styled(self.status.model.clone(), t.dim())]);
         }
-        self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(text, t.subtle())]));
+        spans.extend([sep(), Span::styled(format!("{secs}s"), t.subtle())]);
+        let n = self.status.session_tokens.saturating_sub(self.turn_tokens_from);
+        if n > 0 {
+            spans.extend([sep(), Span::styled(format!("{} tokens", short_count(n)), t.subtle())]);
+        }
+        self.pending.push(Line::from(spans));
         if self.status.mode == "plan" && self.dialog.is_none() {
             self.gap();
             self.pending.push(Line::from(vec![
@@ -1548,6 +1608,40 @@ impl App {
                 Span::styled(" · shift+tab to leave plan mode and run it · type to revise", t.dim()),
             ]));
         }
+    }
+
+    /// What the model is preparing while it writes a tool call, in words:
+    /// `Preparing an edit to cart.py`, `Writing notes.md`, `Preparing a command`.
+    pub fn preparing(name: &str, target: Option<&str>) -> String {
+        let file = target.map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p).to_string()).filter(|f| !f.is_empty());
+        match (name, file) {
+            ("Edit" | "MultiEdit", Some(f)) => format!("Preparing an edit to {f}"),
+            ("Edit" | "MultiEdit", None) => "Preparing an edit".into(),
+            ("Write", Some(f)) => format!("Writing {f}"),
+            ("Write", None) => "Writing a file".into(),
+            ("NotebookEdit", Some(f)) => format!("Preparing an edit to {f}"),
+            ("Bash" | "PowerShell", _) => "Preparing a command".into(),
+            ("Task" | "Agent", _) => "Briefing an agent".into(),
+            ("TodoWrite", _) => "Updating the plan".into(),
+            _ => "Preparing the next step".into(),
+        }
+    }
+
+    /// The value of string field `key` in a JSON object still being streamed, once
+    /// its closing quote has arrived (escapes kept simple: `\"` and `\\`).
+    pub fn json_string_value(json: &str, key: &str) -> Option<String> {
+        let at = json.find(&format!("\"{key}\""))? + key.len() + 2;
+        let rest = json[at..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+        let mut out = String::new();
+        let mut chars = rest.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => return Some(out),
+                '\\' => out.push(chars.next()?),
+                c => out.push(c),
+            }
+        }
+        None
     }
 
     /// A tool call's header with its paths relative to the session's folder.
@@ -2829,6 +2923,26 @@ mod tests {
         assert_eq!(step_for(Look::Ledger), "  ran cargo test");
         assert_eq!(step_for(Look::Glow), "✓ Ran cargo test");
         assert_eq!(step_for(Look::Frame), "✓ Ran cargo test");
+        // A described command: its purpose, then the command itself, as a terminal shows it.
+        let mut a = app();
+        a.look = Look::Frame;
+        let r = Running {
+            id: "t".into(),
+            header: vec![],
+            name: "Bash".into(),
+            input: json!({"command": "python3 -m pytest -q\necho done", "description": "Run the cart tests"}),
+            since: Instant::now(),
+            step: None,
+            steps: 0,
+        };
+        a.commit_tool(r, ToolEnd::Failed);
+        let rows = texts(&a.take_pending());
+        assert_eq!(rows[rows.len() - 2], "✗ Run the cart tests · failed", "{rows:?}");
+        assert_eq!(rows[rows.len() - 1], "  $ python3 -m pytest -q …", "a second line is marked, not shown");
+        assert_eq!(
+            texts(&[Line::from(tool_header(&a.theme, "Bash", &json!({"command": "ls", "description": " "}), true))]),
+            ["Ran ls"]
+        );
         // A style arrives from the session by name.
         let mut a = app();
         a.on_event(UiEvent::Look("ledger".into()));
@@ -3218,5 +3332,34 @@ mod tests {
         assert!(a.queued.is_empty(), "not queued behind the turn");
         assert!(texts(&a.take_pending()).iter().any(|l| l.contains("Shift+Tab")));
         assert!(terminal_setup_text(false).contains("Alt+Enter") && terminal_setup_text(true).contains("works"));
+    }
+
+    #[test]
+    fn a_tool_call_being_written_says_what_is_being_prepared() {
+        use kodact_types::{Delta, StreamEvent};
+        let mut a = app();
+        let ev = |event| UiEvent::Engine(EngineEvent::Stream { event, parent_tool_use_id: None });
+        let start = ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "Write".into(),
+            input: json!({}),
+            cache_control: None,
+            provider: None,
+        };
+        a.on_event(ev(StreamEvent::ContentBlockStart { index: 0, content_block: start }));
+        assert_eq!(a.activity, "Writing a file");
+        let delta = |j: &str| StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::InputJsonDelta { partial_json: j.into() },
+        };
+        a.on_event(ev(delta(r#"{"file_path": "/repo/src/no"#)));
+        assert_eq!(a.activity, "Writing a file", "a path only counts once its quote closes");
+        a.on_event(ev(delta(r##"tes.md", "content": "# Notes"##)));
+        assert_eq!(a.activity, "Writing notes.md");
+        a.on_event(ev(StreamEvent::ContentBlockStop { index: 0 }));
+        assert!(a.preparing.is_none());
+        assert_eq!(App::preparing("Edit", Some("a/b/cart.py")), "Preparing an edit to cart.py");
+        assert_eq!(App::preparing("Bash", None), "Preparing a command");
+        assert_eq!(App::json_string_value(r#"{"path": "a\"b"}"#, "path").as_deref(), Some("a\"b"));
     }
 }

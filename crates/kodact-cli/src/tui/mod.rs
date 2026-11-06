@@ -535,6 +535,7 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
         recent: recent.clone(),
     };
     app.front = true;
+    app.first_run = recent.is_empty();
     app.endpoint = endpoint;
     app.branch = branch.unwrap_or_default();
     if !full {

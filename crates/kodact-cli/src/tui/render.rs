@@ -29,11 +29,15 @@ const MENU_ROWS: usize = 8;
 const LIVE_ROWS: usize = 3;
 /// The composer's placeholder, as KodAct's says it.
 pub const PLACEHOLDER: &str = "What shall we build today?";
+/// The default style's placeholder on a first run in a folder: an example of a request.
+pub const FIRST_RUN_PLACEHOLDER: &str = "What shall we build? Try \"fix the failing test\"";
 /// The frame style's placeholder while the model works.
 /// What the empty input says, for the moment: the welcome on the front page, the way
 /// on after an error or a plan, else a reply.
 fn placeholder(app: &App) -> &'static str {
-    if app.look != super::look::Look::Frame || !app.talked {
+    if app.look == super::look::Look::Frame && !app.talked && app.first_run {
+        FIRST_RUN_PLACEHOLDER
+    } else if app.look != super::look::Look::Frame || !app.talked {
         PLACEHOLDER
     } else if app.model_down {
         "Try again, or /model to choose another"
@@ -139,17 +143,10 @@ fn guess(s: &StatusView) -> &'static str {
     }
 }
 
-/// What the session has spent: its cost, or, for a model with no known
-/// price, the tokens it has used (nothing before the first request).
+/// What the session has used, in tokens (nothing before the first request).
+/// The UI shows no money: `/cost` and `/usage` give the session's cost when asked.
 fn spend(app: &App) -> Option<String> {
-    let s = &app.status;
-    match (s.cost_unknown, s.cost > 0.0) {
-        (false, _) => Some(format!("${:.2}", s.cost)),
-        // Part of the spend has no known price: show what is known as a lower bound.
-        (true, true) => Some(format!("${:.2}+", s.cost)),
-        // No price: what the session has used, not the context again (the meter shows that).
-        (true, false) => Some(s.session_tokens).filter(|n| *n > 0).map(|n| format!("{} used", tokens(n))),
-    }
+    Some(app.status.session_tokens).filter(|n| *n > 0).map(|n| format!("{} used", tokens(n)))
 }
 
 /// `s` in at most `max` columns, its end kept: `…/demo/proj`.
@@ -172,7 +169,7 @@ fn keep_end(s: &str, max: usize) -> String {
 }
 
 /// A permission mode as people say it.
-fn mode_name(mode: &str) -> String {
+pub(super) fn mode_name(mode: &str) -> String {
     match mode {
         "acceptEdits" => "Accept edits",
         "plan" => "Plan",
@@ -1297,7 +1294,7 @@ mod tests {
         assert_eq!(rows[0], format!("╭{}╮", "─".repeat(58)));
         assert_eq!(rows[1], format!("│ ❯ {PLACEHOLDER:<54} │"));
         assert_eq!(rows[2], format!("╰{}╯", "─".repeat(58)));
-        assert_eq!(rows[3], "  /p                             opus · ○ 88% left · $0.25");
+        assert_eq!(rows[3], "  /p                                     opus · ○ 88% left");
         assert_eq!(v.cursor, Some((4, 1)));
         // The placeholder is quiet but readable (muted, over 4.5:1); the prompt marker is KodAct's lime.
         assert_eq!(buf[(6, 1)].fg, crate::tui::palette::MUTED.color(Default::default(), false));
@@ -1437,10 +1434,12 @@ mod tests {
         let mut s = a.status.clone();
         s.cost = a.status.cost + 0.004;
         s.cost_unknown = false;
+        s.session_tokens = a.status.session_tokens + 1_200;
         a.on_event(UiEvent::Status(s));
         a.on_event(UiEvent::Idle);
         let lines: Vec<String> = a.take_pending().iter().map(crate::tui::text::plain).collect();
-        assert_eq!(lines.last().unwrap(), "  0s · $0.004", "{lines:?}");
+        // The mode, the model, the time and the tokens; no money.
+        assert_eq!(lines.last().unwrap(), "  Default · deep-thinking · 0s · 1.2k tokens", "{lines:?}");
         // Sub-agents: the word, and how many are done.
         let mut b = app(false);
         b.look = crate::tui::look::Look::Frame;
@@ -1553,7 +1552,7 @@ mod tests {
                 "│                                      │",
                 "│ Enter or y·n to answer · Esc to deny │",
                 "╰──────────────────────────────────────╯",
-                "  /p         opus · ○ 88% left · $0.25",
+                "  /p                 opus · ○ 88% left",
             ]
         );
         assert_eq!(v.cursor, None, "no cursor while a dialog is open");
@@ -1645,13 +1644,29 @@ mod tests {
         let session = rows.iter().find(|r| r.contains("Plan")).expect("the mode stays");
         assert!(!session.contains("gpt.example.net") && session.contains('…'), "{session}");
         assert!(rows.iter().all(|r| text_width(r) <= 60), "{rows:#?}");
-        // A priced model shows its cost.
+        // A priced model shows what it used too: the UI shows no money (/cost does).
         a.status.model = "opus".into();
         a.status.window_guessed = false;
         a.status.cost = 0.25;
         a.status.cost_unknown = false;
         let (rows, _) = draw(&live_view(&a, 80, 12), 80);
-        assert!(rows[n - 3].ends_with("○ 96% left  ·  $0.25 │"), "{rows:#?}");
+        assert!(rows[n - 3].ends_with("○ 96% left  ·  25.3k tokens used │"), "{rows:#?}");
+        assert!(rows.iter().all(|r| !r.contains('$')), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_first_run_suggests_a_request() {
+        let mut a = app(false);
+        a.look = crate::tui::look::Look::Frame;
+        a.first_run = true;
+        let rows = draw(&live_view(&a, 80, 12), 80).0.join("\n");
+        assert!(rows.contains(FIRST_RUN_PLACEHOLDER), "{rows}");
+        // With history here, the plain welcome; and other styles keep theirs.
+        a.first_run = false;
+        assert!(draw(&live_view(&a, 80, 12), 80).0.join("\n").contains(PLACEHOLDER));
+        a.first_run = true;
+        a.look = crate::tui::look::Look::Bare;
+        assert!(!draw(&live_view(&a, 80, 12), 80).0.join("\n").contains(FIRST_RUN_PLACEHOLDER));
     }
 
     #[test]
