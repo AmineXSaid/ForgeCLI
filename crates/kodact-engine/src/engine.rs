@@ -72,6 +72,18 @@ impl TimeLimit {
     }
 }
 
+/// The note that ends a turn cut by `--max-time`.
+const TIME_UP_MARKER: &str = "[The run reached its time limit (--max-time) and stopped here]";
+
+/// A spawned task stopped when its owner goes (the `--max-time` watch of one turn).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// The smallest reply budget a request is sized down to; with less room than this, it goes as
 /// it is, and a refusal for length compacts the conversation and tries again.
 const MIN_REPLY: u32 = 4_096;
@@ -665,6 +677,9 @@ pub struct Engine {
     /// The person's requests from the parts of the conversation compaction replaced, oldest
     /// first: each later compaction carries them on, word for word.
     carried_requests: Vec<String>,
+    /// The run reached its `--max-time` limit: the turn that was cut ends as the limit, not as
+    /// an interruption.
+    time_up: Arc<std::sync::atomic::AtomicBool>,
     verify: crate::verify::Tracker,
     guard: crate::stuck::LoopGuard,
     /// This turn's raised output cap, after a `max_tokens` stop.
@@ -774,6 +789,7 @@ impl Engine {
             output_cap: None,
             reattach_context: false,
             carried_requests: vec![],
+            time_up: Default::default(),
             reminders: vec![],
             start_source: "startup".into(),
             planning: false,
@@ -1871,6 +1887,15 @@ impl Engine {
         Ok(text.trim().to_string())
     }
 
+    /// The note that ends a cut turn in the conversation: the time limit, or an interruption.
+    fn stop_marker(&self, tools: bool) -> &'static str {
+        match (self.time_up.load(std::sync::atomic::Ordering::SeqCst), tools) {
+            (true, _) => TIME_UP_MARKER,
+            (false, false) => INTERRUPT_MARKER,
+            (false, true) => INTERRUPT_MARKER_TOOLS,
+        }
+    }
+
     fn new_turn_token(&self) -> CancellationToken {
         let t = CancellationToken::new();
         *self.handle.cancel.lock().unwrap() = t.clone();
@@ -1895,6 +1920,22 @@ impl Engine {
         self.adopt_model();
         let started = Instant::now();
         let cancel = self.new_turn_token();
+        // `--max-time` stops the run at its limit: the turn is cancelled as by an interrupt, a
+        // model call or a tool in flight included, and `finish` reports the limit. A turn that
+        // starts after the limit ends at once.
+        let _deadline = self.cfg.time_limit.map(|t| {
+            let left = t.remaining();
+            if left.is_zero() {
+                self.time_up.store(true, std::sync::atomic::Ordering::SeqCst);
+                cancel.cancel();
+            }
+            let (cancel, up) = (cancel.clone(), self.time_up.clone());
+            AbortOnDrop(tokio::spawn(async move {
+                tokio::time::sleep(left).await;
+                up.store(true, std::sync::atomic::Ordering::SeqCst);
+                cancel.cancel();
+            }))
+        });
         let mut turn = TurnAcc::default();
         let mut blocks = prompt.into_blocks();
         // Hooks see the prompt as typed: reminders that ride along with it (`@path` attachments)
@@ -2045,7 +2086,7 @@ impl Engine {
 
         loop {
             if cancel.is_cancelled() {
-                self.push_user(Message::user_text(INTERRUPT_MARKER), true, None, true);
+                self.push_user(Message::user_text(self.stop_marker(false)), true, None, true);
                 return self.finish(started, turn, ResultSubtype::Success, last_text, Some("interrupted".into()), None);
             }
             if let Some(max) = self.cfg.max_turns {
@@ -2098,7 +2139,7 @@ impl Engine {
             let mut msg = match outcome {
                 StreamOutcome::Done(m) => m,
                 StreamOutcome::Interrupted(partial) => {
-                    let mut marker = INTERRUPT_MARKER;
+                    let mut marker = self.stop_marker(false);
                     if let Some(p) = partial {
                         let ids: Vec<String> = p.to_message().tool_uses().map(|(id, _, _)| id.to_string()).collect();
                         self.push_assistant(p);
@@ -2109,7 +2150,7 @@ impl Engine {
                                 None,
                                 true,
                             );
-                            marker = INTERRUPT_MARKER_TOOLS;
+                            marker = self.stop_marker(true);
                         }
                     }
                     self.push_user(Message::user_text(marker), true, None, true);
@@ -2359,7 +2400,7 @@ impl Engine {
                 }
                 if interrupted {
                     cancel.cancel();
-                    self.push_user(Message::user_text(INTERRUPT_MARKER_TOOLS), true, None, true);
+                    self.push_user(Message::user_text(self.stop_marker(true)), true, None, true);
                     return self.finish(
                         started,
                         turn,
@@ -2840,12 +2881,23 @@ impl Engine {
     fn finish(
         &mut self,
         started: Instant,
-        turn: TurnAcc,
+        mut turn: TurnAcc,
         subtype: ResultSubtype,
         result: Option<String>,
         stop_reason: Option<String>,
         prompt_blocked: Option<String>,
     ) -> TurnResult {
+        // A turn cut by `--max-time` ends as the limit: an error a script can tell from success.
+        let (subtype, stop_reason) = if stop_reason.as_deref() == Some("interrupted")
+            && self.time_up.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            let text = "Reached the time limit (--max-time): the run stopped; the work done so far is left as it is.";
+            self.notice(NoticeLevel::Error, text.to_string());
+            turn.errors.push(text.to_string());
+            (ResultSubtype::ErrorDuringExecution, Some("max_time".to_string()))
+        } else {
+            (subtype, stop_reason)
+        };
         let structured_output = if self.cfg.json_schema.is_some() && subtype == ResultSubtype::Success {
             result.as_deref().and_then(|r| serde_json::from_str::<Value>(r.trim()).ok())
         } else {

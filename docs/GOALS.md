@@ -160,9 +160,11 @@ Each pillar lists what KodAct does about it and what shows that it works.
     while the run has time. In the deep-thinking run of 2026-10-09, 7 of 10
     trials ended after 0 turns on HTTP 429, and 6 runs across the jobs ended on
     a connection lost mid-reply;
-  - time awareness (`--max-time`): the limit is stated up front and one
-    reminder comes when a fifth of the time is left. Benchmark tasks have
-    hard time limits; a run cut off mid-change scores nothing;
+  - time awareness (`--max-time`): the limit is stated up front, one
+    reminder comes when a fifth of the time is left, and the run stops at the
+    limit with an error result (`stop_reason: "max_time"`), a call in flight
+    included. Benchmark tasks have hard time limits; a run cut off mid-change
+    scores nothing;
   - resumable sessions, and unattended headless runs.
 - **To build:**
   - a notes file;

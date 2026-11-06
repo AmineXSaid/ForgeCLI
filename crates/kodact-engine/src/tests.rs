@@ -1578,6 +1578,45 @@ async fn the_model_is_told_when_turns_run_low() {
     assert!(last_user_text(&reqs[3]).contains("put the better one back first"));
 }
 
+/// `--max-time` stops the run at its limit. In 090446d every one of 21 timeouts was killed from
+/// outside at the limit, mid-call, with no result: KodAct only warned the model. Now the turn is
+/// cut at the limit, a model call in flight included, and the result says so.
+#[tokio::test]
+async fn the_run_stops_at_its_time_limit_and_says_so() {
+    // A reply streamed slowly (600 ms between its events), under a 300 ms limit.
+    let slow = MockTurn::text("too late").with_delay(Duration::from_millis(600));
+    let h = Harness::new(vec![slow]);
+    let cfg =
+        EngineConfig { time_limit: Some(TimeLimit::starting_now(Duration::from_millis(300))), ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let t0 = std::time::Instant::now();
+    let r = e.submit(prompt("long job")).await;
+    assert!(t0.elapsed() < Duration::from_secs(2), "stopped at the limit, not after the reply: {:?}", t0.elapsed());
+    assert_eq!(r.subtype, ResultSubtype::ErrorDuringExecution);
+    assert!(r.is_error);
+    assert_eq!(r.stop_reason.as_deref(), Some("max_time"));
+    assert!(r.errors.iter().any(|e| e.contains("time limit (--max-time)")), "{:?}", r.errors);
+    // The conversation says why it stopped, not that the person interrupted.
+    let last = e.state.messages.last().unwrap().text();
+    assert!(last.contains("time limit") && !last.contains("interrupted by user"), "{last}");
+    // A turn that starts after the limit ends at once, without a model call.
+    let calls = h.provider.requests().len();
+    let r = e.submit(prompt("more")).await;
+    assert_eq!(r.stop_reason.as_deref(), Some("max_time"));
+    assert_eq!(h.provider.requests().len(), calls);
+}
+
+#[tokio::test]
+async fn a_run_inside_its_time_limit_ends_normally() {
+    let h = Harness::new(vec![MockTurn::text("done")]);
+    let cfg =
+        EngineConfig { time_limit: Some(TimeLimit::starting_now(Duration::from_secs(600))), ..Default::default() };
+    let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("quick job")).await;
+    assert_eq!(r.subtype, ResultSubtype::Success);
+    assert_eq!(r.result.as_deref(), Some("done"));
+}
+
 #[tokio::test]
 async fn the_model_is_told_the_time_limit_and_warned_near_the_end() {
     let first_text = |r: &kodact_types::MessagesRequest| r.messages[0].text();

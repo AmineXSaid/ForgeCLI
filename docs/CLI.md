@@ -169,9 +169,11 @@ the files as they are then). Other slash commands and `!shell` lines aren't scan
     reason that passes (rate limit, overload, server error, lost connection)
     instead of ending the run (contract C21);
   - `--max-time T` (`900`, `15m`, `1h`) tells the model its time limit up
-    front and warns it when a fifth of the time (at least a minute) is left.
-    It doesn't stop the run: the host that set the limit does (KodAct
-    extension, used for benchmark runs);
+    front, warns it when a fifth of the time (at least a minute) is left, and
+    stops the run at the limit: a model call or a tool in flight is cut, the
+    work done so far stays in place, and the result is an error with
+    `stop_reason: "max_time"` (KodAct extension; a script gets a result instead
+    of an outside kill);
   - `--fallback-model M` switches models on overload.
 - **Interrupting:** Ctrl-C stops the run; the result is written and the exit
   status is `130`.

@@ -180,3 +180,33 @@ def test_a_run_with_no_answer_is_its_own_verdict(tmp_path):
     }
     (trial.path / "agent" / "kodact.jsonl").write_text(json.dumps(end) + "\n")
     assert report.Trial(trial.path).verdict == "no answer"
+
+
+def test_a_run_kodact_stopped_at_its_time_limit_is_a_timeout(tmp_path):
+    # KodAct now stops at --max-time itself and writes a result, instead of being killed by
+    # Harbor at the limit; either way the trial ran out of time.
+    job = make_job(tmp_path, [("write-compressor", 0.0, 870, [])])
+    trial = job.trials[0]
+    end = {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "stop_reason": "max_time",
+        "num_turns": 6,
+        "errors": ["Reached the time limit (--max-time): the run stopped; the work done so far is left as it is."],
+    }
+    (trial.path / "agent" / "kodact.jsonl").write_text(json.dumps(end) + "\n")
+    assert report.Trial(trial.path).verdict == "timeout"
+
+
+def test_valgrind_that_cannot_start_in_the_verifier_is_a_verifier_error(tmp_path):
+    # custom-memory-heap-crash (090446d): the tests ran, but valgrind aborted under Docker's file
+    # descriptor limit, so the leak test judged nothing.
+    stdout = (
+        "--2766:0:libcfile Valgrind: FATAL: Private file creation failed.\n"
+        "FAILED ../tests/test_outputs.py::test_no_memory_leaks_with_valgrind\n"
+        "========================= 1 failed, 5 passed in 5.03s ==========================\n"
+    )
+    trial = make_trial(tmp_path, "custom-memory-heap-crash", "0", stdout, ran_tests=6)
+    assert trial.verdict == "verifier error"
+

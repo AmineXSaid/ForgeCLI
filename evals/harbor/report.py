@@ -64,6 +64,12 @@ VERIFIER_INFRA = re.compile(
     r"temporary failure in name resolution|connection refused|max retries exceeded)"
 )
 
+# The verifier's own tools could not run in the container, though its tests did: their result
+# says nothing about the agent's work. Valgrind under Docker's default file-descriptor limit
+# (about a billion) aborts before it starts (custom-memory-heap-crash, 090446d, whose fix passed
+# valgrind in the agent's own run once the limit was lowered).
+VERIFIER_ENV = re.compile(r"Valgrind: FATAL: Private file creation failed")
+
 REFUSAL = re.compile(r"(?i)\b(i can.?t help with|i cannot help with|i can.?t assist|i won.?t (help|assist)|against (my|the) polic)")
 GIVE_UP = re.compile(
     r"(?i)(i.?m sorry|unfortunately|not (realistic|feasible|possible|practical)|can.?t (reliably|realistically)|"
@@ -332,7 +338,8 @@ class Trial:
         # own dependencies or data and measured nothing.
         tests_ran = re.search(r"\b\d+ (passed|failed)\b", stdout)
         self.verifier_infra = bool(
-            (self.reward or 0) < 1 and not tests_ran and VERIFIER_INFRA.search(stdout)
+            (self.reward or 0) < 1
+            and ((not tests_ran and VERIFIER_INFRA.search(stdout)) or VERIFIER_ENV.search(stdout))
         )
         return {"summary": res.get("summary") or {}, "failed": failed, "stdout_tail": stdout.splitlines()[-VERIFIER_LINES:]}
 
@@ -341,7 +348,8 @@ class Trial:
         api_error = self.stop_reason == "api_error" or any("API Error" in e for e in self.errors)
         if self.reward is not None and self.reward >= 1:
             return "passed"
-        if self.exception == "AgentTimeoutError":
+        # Out of time: killed by Harbor at the limit, or stopped by KodAct itself (`--max-time`).
+        if self.exception == "AgentTimeoutError" or self.stop_reason == "max_time":
             return "timeout"
         if api_error:
             return "api error before any work" if not self.turns else "api error"

@@ -16,7 +16,8 @@ Configuration comes from the environment of the `harbor` process:
   attempt before giving up); `0` turns it off, for A/B runs.
 - `KODACT_HARBOR_TIME_LIMIT`: seconds for `--max-time`. By default the task's own
   agent time limit is used (read from the running trial), minus a margin, so
-  the model knows its deadline and is warned before it.
+  the model knows its deadline, is warned before it, and KodAct stops at it
+  with a result before Harbor's own limit.
 - `KODACT_HARBOR_HOSTS`: extra host names (comma-separated) to resolve on this
   machine and pin in each container's `/etc/hosts`. The endpoint's host
   (`KODACT_OPENAI_BASE_URL` or `KODACT_BASE_URL`) is always pinned, so an
