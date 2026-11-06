@@ -102,7 +102,10 @@ Each pillar lists what KodAct does about it and what shows that it works.
     - a tool call cut off by `max_tokens` is answered with an error, not
       sent as a failed turn;
     - cut-off text is continued, up to 3 times;
-    - the output cap is raised to 64k for the rest of the turn.
+    - the output cap is raised to 64k for the rest of the turn;
+    - no request asks for more reply than the model's window has left after
+      its prompt, so endpoints that count the reply against the window don't
+      refuse it; on a large window the cap goes out unchanged.
 - **To build:** recovery after a crash (resume an interrupted turn from the
   transcript).
 - **Measured by:** recovery rate, and turns wasted after the first error

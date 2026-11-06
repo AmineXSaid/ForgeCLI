@@ -72,6 +72,24 @@ impl TimeLimit {
     }
 }
 
+/// The smallest reply budget a request is sized down to; with less room than this, it goes as
+/// it is, and a refusal for length compacts the conversation and tries again.
+const MIN_REPLY: u32 = 4_096;
+
+/// A reply budget that fits the window: `cap`, but no more than what `window` has left after a
+/// `prompt` of that many tokens, less a margin for the parts of the prompt that are estimated (a
+/// fiftieth of the window, at least 1,024). Endpoints that count the requested output against the
+/// window (vLLM, LiteLLM and gateways in front of them) refuse a request whose prompt and cap add
+/// up to more than the window, even when the prompt alone fits: in 090446d, 7 summary calls asked
+/// for 32,000 tokens on top of a 68,000-token prompt in a 100,000 window, and one run ended on it.
+/// With room to spare (a large window, or a short conversation) this is `cap`, unchanged.
+pub(crate) fn fit_reply(cap: u32, window: u64, prompt: u64) -> u32 {
+    let margin = (window / 50).max(1_024);
+    let room = window.saturating_sub(prompt).saturating_sub(margin);
+    let fitted = room.max(u64::from(cap.min(MIN_REPLY)));
+    u32::try_from(fitted.min(u64::from(cap))).unwrap_or(cap)
+}
+
 /// Characters of the person's requests a compaction carries on: a tenth of the model's window
 /// (at about four characters a token), at least 2,000. Sized from the window, so a large model
 /// keeps every request whole and a small one keeps the task and the latest requests.
@@ -855,6 +873,16 @@ impl Engine {
         self.state.context_tokens + self.estimate_sent(&msgs[from..])
     }
 
+    /// The reply budget of the next request to `model`: the output cap, but no more than the
+    /// room the model's context window has left after the prompt ([`fit_reply`]). The window is
+    /// the model's own (its limits, `modelLimits`, `KODACT_CONTEXT_WINDOW`, what the endpoint
+    /// reports), never the `--autocompact` window, which may be set lower to compact early.
+    fn reply_budget(&self, model: &str) -> u32 {
+        let cap = self.output_cap.unwrap_or(self.cfg.max_output_tokens);
+        let window = kodact_api::models::model_info_or_default(model).context_window;
+        fit_reply(cap, window, self.projected_context_tokens())
+    }
+
     /// The window compaction is measured against, for `model`.
     pub fn context_window(&self, model: &str) -> u64 {
         self.compact_window(model)
@@ -1111,7 +1139,7 @@ impl Engine {
                 microcompacted: &self.state.microcompacted,
                 system: &self.system,
                 tools: self.offered_tools(),
-                max_output_tokens: self.output_cap.unwrap_or(self.cfg.max_output_tokens),
+                max_output_tokens: self.reply_budget(model),
                 json_schema: self.cfg.json_schema.as_ref(),
                 metadata_user_id: self.cfg.metadata_user_id.as_deref(),
                 provider_name: self.shared.provider.name(),

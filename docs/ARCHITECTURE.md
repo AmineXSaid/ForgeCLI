@@ -278,6 +278,19 @@ what follows it.
   but an interruption gets the second try and then the note, since the run
   can't go on without compacting.
 
+**Every request asks for no more reply than its window holds.** Endpoints that
+count the requested output against the window (vLLM, LiteLLM and gateways in
+front of them) refuse a request whose prompt and reply cap add up to more than
+the window, even when the prompt alone fits. So each request, summary calls
+included, asks for the output cap or the room the model's window has left after
+the prompt, whichever is smaller, less a margin for the estimated part of the
+prompt (a fiftieth of the window, at least 1,024 tokens), and never less than
+4,096 (or the cap): with less room than that, a refusal compacts and retries.
+The window is the model's own (its limits, `modelLimits`,
+`KODACT_CONTEXT_WINDOW`, what the endpoint reports), never the `--autocompact`
+window, which may be lower on purpose. On a large window, or early in a
+conversation, the cap goes out unchanged.
+
 Tests: `compact::c9_micro_clears_only_eligible_results`,
 `compact::c9_micro_is_sticky_across_requests`,
 `compact::c9_auto_triggers_at_threshold`,
@@ -287,6 +300,8 @@ Tests: `compact::c9_micro_clears_only_eligible_results`,
 `engine::an_empty_automatic_summary_is_not_sent_again_before_every_request`,
 `engine::the_note_without_the_model_keeps_the_first_and_latest_requests`,
 `engine::the_persons_requests_survive_every_compaction_word_for_word`,
+`engine::a_reply_budget_fits_what_the_window_has_left`,
+`engine::requests_ask_for_no_more_reply_than_the_window_holds`,
 `engine::the_requests_kept_scale_with_the_models_window`,
 `compact::tests::requests_keep_the_first_and_the_latest_within_the_budget`,
 `engine::an_empty_summary_is_recorded_and_retried_when_the_conversation_no_longer_fits`,

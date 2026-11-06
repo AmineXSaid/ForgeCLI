@@ -1506,6 +1506,46 @@ async fn the_persons_requests_survive_every_compaction_word_for_word() {
     assert!(resumed.carried_requests().is_empty());
 }
 
+/// The reply budget fits what the window has left, from the model's own window: a small window
+/// near full gets a smaller budget; a large window, or a short conversation, keeps the cap.
+#[test]
+fn a_reply_budget_fits_what_the_window_has_left() {
+    use crate::engine::fit_reply;
+    // 090446d: 32,000 asked on top of a 68,001-token prompt in a 100,000 window was refused.
+    assert_eq!(fit_reply(32_000, 100_000, 68_001), 100_000 - 68_001 - 2_000);
+    // The same conversation on a large window: the cap, unchanged.
+    assert_eq!(fit_reply(32_000, 1_000_000, 68_001), 32_000);
+    assert_eq!(fit_reply(64_000, 1_000_000, 900_000), 64_000);
+    // A short conversation on the small window: the cap.
+    assert_eq!(fit_reply(32_000, 100_000, 10_000), 32_000);
+    // Almost no room: a usable minimum, and a refusal then compacts; never more than the cap.
+    assert_eq!(fit_reply(32_000, 100_000, 99_500), 4_096);
+    assert_eq!(fit_reply(2_000, 100_000, 99_500), 2_000);
+}
+
+#[tokio::test]
+async fn requests_ask_for_no_more_reply_than_the_window_holds() {
+    // Two made-up models, so the limits set here touch nothing else.
+    use kodact_api::models::{configure_limits, Limits};
+    configure_limits("fit-small-window", Limits { context_window: Some(100_000), max_output: Some(32_000) });
+    configure_limits("fit-large-window", Limits { context_window: Some(1_000_000), max_output: Some(32_000) });
+    for (model, small) in [("fit-small-window", true), ("fit-large-window", false)] {
+        let h = Harness::new(vec![MockTurn::text("one").with_usage(usage(68_000)), MockTurn::text("two")]);
+        let cfg = EngineConfig { model: model.into(), ..Default::default() };
+        let mut e = h.engine_with(cfg, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+        e.submit(prompt("first")).await;
+        e.submit(prompt("second")).await;
+        let reqs = h.provider.requests();
+        assert_eq!(reqs[0].max_tokens, 32_000, "{model}: a short conversation keeps the cap");
+        let second = reqs[1].max_tokens;
+        if small {
+            assert!((28_000..30_000).contains(&second), "{model}: fitted to the room left, got {second}");
+        } else {
+            assert_eq!(second, 32_000, "{model}: a large window keeps the cap");
+        }
+    }
+}
+
 /// The requests kept are sized from the model's window, not from one endpoint: a large window
 /// keeps a long task whole; a small one keeps its beginning and says how much is cut.
 #[test]
