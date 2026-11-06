@@ -12,14 +12,18 @@ For each feature or harness change:
    running KodAct on their own project, at the terminal or in a script, not
    only on a benchmark. A change whose only effect is a benchmark score is not
    proposed.
-2. **Name the pillar** it serves (context management, failure recovery,
+2. **Check it against "Fix, don't fit"** in `docs/GOALS.md`, for every fix:
+   limits come from the model, never from the endpoint that showed the problem;
+   say how the fix behaves on a large model with a big context window; fix the
+   mechanism, not the task.
+3. **Name the pillar** it serves (context management, failure recovery,
    verification, tool design, long-horizon execution, or compatibility) and the
    metric it should move.
-3. **Add or update an eval task** in `evals/tasks/` that exercises it.
-4. **Measure it.** Run `kodact-eval` before and after (`kodact-eval run`, then
+4. **Add or update an eval task** in `evals/tasks/` that exercises it.
+5. **Measure it.** Run `kodact-eval` before and after (`kodact-eval run`, then
    `kodact-eval compare`), or, where no API key is available, state that the
    comparison is still owed.
-5. **Write the pillar in the commit message:** `Goals: <pillar> / <metric>`.
+6. **Write the pillar in the commit message:** `Goals: <pillar> / <metric>`.
 
 Compatibility work also cites its `docs/PARITY.md` row and test.
 
