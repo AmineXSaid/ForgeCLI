@@ -169,6 +169,9 @@ fn merge_usage(into: &mut Usage, from: &Usage) {
     if from.cache_read_input_tokens > 0 {
         into.cache_read_input_tokens = from.cache_read_input_tokens;
     }
+    if from.reasoning_output_tokens > 0 {
+        into.reasoning_output_tokens = from.reasoning_output_tokens;
+    }
     if from.server_tool_use.is_some() {
         into.server_tool_use = from.server_tool_use.clone();
     }

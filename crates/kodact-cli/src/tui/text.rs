@@ -207,32 +207,12 @@ impl Theme {
         line
     }
 
-    /// The person's own words (typed, and echoed into the conversation).
-    pub fn user_text(&self) -> Style {
-        if self.color && self.depth != Depth::Ansi16 {
-            Style::default().fg(palette::PROMPT_FG.color(self.depth, self.light))
-        } else {
-            Style::default()
-        }
-    }
-
     /// The highlighted row of a menu or dialog.
     pub fn selected(&self) -> Style {
         if self.color {
             self.accent().add_modifier(Modifier::BOLD)
         } else {
             Style::default().add_modifier(Modifier::REVERSED)
-        }
-    }
-
-    /// The frame style's raised surface (its panel, its menus, the echo of what
-    /// was sent): a shade off the background where the terminal has enough
-    /// colours, none in 16 colours, where the nearest grey is too light behind text.
-    pub fn raised(&self) -> Style {
-        if self.color && self.depth != Depth::Ansi16 {
-            Style::default().bg(palette::PROMPT_BG.color(self.depth, self.light))
-        } else {
-            Style::default()
         }
     }
 
@@ -400,6 +380,10 @@ impl Markdown {
                 }
                 let c = r.get(i).map(String::as_str).unwrap_or("");
                 let mut cell = inline(c, t);
+                // Code in a cell keeps its colour, not its shade: shaded blocks break the columns.
+                for s in &mut cell {
+                    s.style.bg = None;
+                }
                 if header {
                     for s in &mut cell {
                         s.style = s.style.patch(t.teal().add_modifier(Modifier::BOLD));
@@ -425,7 +409,8 @@ impl Markdown {
     /// One line. A code fence opens with its language on a gutter line and
     /// closes with the gutter's foot; code inside is highlighted.
     pub fn line(&mut self, raw: &str, t: &Theme) -> Option<Line<'static>> {
-        let gutter = |s: &'static str| Span::styled(s, t.hairline());
+        // The fence's rule in a quiet grey that still reads, so the frame never looks half-drawn.
+        let gutter = |s: &'static str| Span::styled(s, t.subtle());
         let trimmed = raw.trim_start();
         if let Some((marker, lang)) = self.fence.clone() {
             if trimmed.starts_with(marker.as_str())
@@ -969,8 +954,8 @@ fn hanging_indent(cells: &[(char, Style)], max: usize) -> usize {
     let lead = text.len() - text.trim_start_matches(' ').len();
     let rest = &text[lead..];
     let marker = [
-        "● ", "└ ", "❯ ", "▲ ", "✕ ", "· ", "• ", "◦ ", "▪ ", "✓ ", "○ ", "│ ", "› ", "↳ ", "- ", "* ", "> ", "‖ ",
-        "» ",
+        "● ", "└ ", "❯ ", "▲ ", "✕ ", "✗ ", "◆ ", "■ ", "· ", "• ", "◦ ", "▪ ", "✓ ", "○ ", "│ ", "› ", "↳ ", "- ",
+        "* ", "> ", "‖ ", "» ",
     ]
     .iter()
     .find(|m| rest.starts_with(**m))
@@ -1129,7 +1114,6 @@ mod tests {
         assert_eq!(line.spans[1].style.fg, Some(palette::STRONG.color(Depth::True, false)));
         assert_eq!(line.spans[2].style.fg, T.code().fg, "a span's own colour stays");
         assert!(T.code().bg.is_some(), "inline code on its own shade");
-        assert_ne!(T.user_text().fg, line.spans[0].style.fg, "the person's words are not the model's colour");
         let sixteen = Theme { depth: Depth::Ansi16, ..T };
         assert_eq!(sixteen.answer(Line::from("x")).spans[0].style.fg, None, "16 colours keep the terminal's own");
     }

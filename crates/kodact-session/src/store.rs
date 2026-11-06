@@ -185,9 +185,14 @@ fn summarize(path: &Path) -> Option<SessionSummary> {
                 s.message_count += 1;
                 if s.first_prompt.is_empty() && v["type"] == "user" && v.get("isMeta").is_none() {
                     let content = &v["message"]["content"];
-                    let text = content.as_str().map(str::to_string).or_else(|| {
+                    // What the person typed: KodAct's own reminders, sent with the first
+                    // message, never name the conversation.
+                    let text = content.as_str().map(typed_text).filter(|t| !t.is_empty()).or_else(|| {
                         content.as_array().and_then(|a| {
-                            a.iter().find_map(|b| b.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                            a.iter()
+                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                .map(typed_text)
+                                .find(|t| !t.is_empty())
                         })
                     });
                     if let Some(t) = text {
@@ -208,4 +213,35 @@ fn summarize(path: &Path) -> Option<SessionSummary> {
         }
     }
     (s.message_count > 0).then_some(s)
+}
+
+/// `text` without the `<system-reminder>` blocks KodAct adds to a message, trimmed.
+fn typed_text(text: &str) -> String {
+    const OPEN: &str = "<system-reminder>";
+    const CLOSE: &str = "</system-reminder>";
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(OPEN) {
+        out.push_str(&rest[..i]);
+        rest = match rest[i..].find(CLOSE) {
+            Some(j) => &rest[i + j + CLOSE.len()..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
+#[cfg(test)]
+mod typed_text_tests {
+    use super::typed_text;
+
+    #[test]
+    fn reminders_never_name_a_conversation() {
+        assert_eq!(typed_text("<system-reminder>\ncontext\n</system-reminder>"), "");
+        assert_eq!(typed_text("<system-reminder>x</system-reminder>\nfix the meter"), "fix the meter");
+        assert_eq!(typed_text("fix it <system-reminder>x</system-reminder> now"), "fix it  now");
+        assert_eq!(typed_text("plain"), "plain");
+        assert_eq!(typed_text("<system-reminder>unclosed"), "");
+    }
 }

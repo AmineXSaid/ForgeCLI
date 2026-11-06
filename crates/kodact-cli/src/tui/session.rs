@@ -69,6 +69,11 @@ pub fn status(d: &Driver) -> StatusView {
         context_pct,
         context_used: used > 0,
         window,
+        context_tokens: used,
+        compact_at: d.engine.autocompact_at(&d.handle().model()),
+        window_guessed: d.engine.cfg.autocompact_window.is_none()
+            && kodact_api::models::limits_source(&d.handle().model()) == kodact_api::models::LimitsSource::Guessed,
+        session_tokens: d.engine.state.total_usage.context_tokens(),
     }
 }
 
@@ -304,7 +309,11 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
     let view = driver.view();
     // Inputs that came in during a turn, in order.
     let mut queue: VecDeque<ToSession> = VecDeque::new();
-    loop {
+    // The endpoint's models, asked in the background so the first screen and
+    // `/model` never wait on a slow gateway. It also brings the context window
+    // the endpoint reports, which the context meter uses.
+    let mut listing = Some(prefetch_models(&driver));
+    'session: loop {
         // Subtasks that finished during the last turn are handed back before the next input.
         let _ = *finished.borrow_and_update();
         driver.deliver_subtasks();
@@ -349,24 +358,35 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
         let wait = driver.next_wait();
         let msg = match queue.pop_front() {
             Some(m) => Some(m),
-            None => tokio::select! {
-                msg = rx.recv() => msg,
-                // A scheduled task fires while idle; the UI shows the session busy until it ends.
-                _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
-                    if driver.task_due() {
-                        let _ = ui.send(UiEvent::Busy);
-                        while_busy(driver.run_due(&mut report), &view, &mut rx, &ui, &mut queue).await;
+            None => loop {
+                tokio::select! {
+                    msg = rx.recv() => break msg,
+                    // A scheduled task fires while idle; the UI shows the session busy until it ends.
+                    _ = tokio::time::sleep(wait.unwrap_or(far)), if wait.is_some() => {
+                        if driver.task_due() {
+                            let _ = ui.send(UiEvent::Busy);
+                            while_busy(driver.run_due(&mut report), &view, &mut rx, &ui, &mut queue).await;
+                        }
+                        continue 'session;
                     }
-                    continue;
+                    // One finished while idle: the next pass hands it back.
+                    _ = finished.changed() => continue 'session,
+                    // An immediate command answered after its turn left work: the next pass applies it.
+                    _ = view.effect_recorded() => continue 'session,
+                    // The background model listing came back: the meter takes the window it
+                    // reports. Still idle, so no new pass (that would say Idle again).
+                    got = async { listing.as_mut().unwrap().await }, if listing.is_some() => {
+                        listing = None;
+                        if let Some(why) = driver.accept_models(got.unwrap_or(None)) {
+                            tracing::debug!(%why, "model list");
+                        }
+                        let _ = ui.send(UiEvent::Status(status(&driver)));
+                    }
                 }
-                // One finished while idle: the next pass hands it back.
-                _ = finished.changed() => continue,
-                // An immediate command answered after its turn left work: the next pass applies it.
-                _ = view.effect_recorded() => continue,
             },
         };
         match msg {
-            Some(ToSession::Picker(text)) => match ready_picker(&mut driver, &text).await {
+            Some(ToSession::Picker(text)) => match ready_picker(&mut driver, &mut listing, &text).await {
                 Some(p) => {
                     let _ = ui.send(UiEvent::Picker(p));
                 }
@@ -377,7 +397,7 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
             Some(ToSession::Input(text)) => {
                 // A command typed without its choice opens a picker instead, and one with a
                 // screen (/diff, /context, /hooks, /agents) opens that.
-                ready_models(&mut driver, &text).await;
+                ready_models(&mut driver, &mut listing, &text).await;
                 if let Some(p) = picker(&driver, &text) {
                     let _ = ui.send(UiEvent::Picker(p));
                 } else if let Some(screen) = kodact_core::commands::screens::screen(&driver, &text) {
@@ -400,6 +420,29 @@ pub async fn run(mut driver: Driver, mut rx: mpsc::UnboundedReceiver<ToSession>,
     driver.shutdown("prompt_input_exit").await;
 }
 
+/// Await the MCP connections; when they take more than a moment, say which
+/// servers the start is waiting for, so a slow server never looks like a hung
+/// terminal. The line is cleared once they answer.
+async fn connecting<T>(lo: &kodact_core::LaunchOptions, connect: impl std::future::Future<Output = T>) -> T {
+    use std::io::Write;
+    let names: Vec<String> = kodact_core::resolve_mcp(lo).servers.into_iter().map(|s| s.name).collect();
+    tokio::pin!(connect);
+    if names.is_empty() {
+        return connect.await;
+    }
+    tokio::select! {
+        done = &mut connect => return done,
+        _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+    }
+    let mut err = std::io::stderr();
+    let _ = write!(err, "Connecting to MCP servers: {}…", names.join(", "));
+    let _ = err.flush();
+    let done = connect.await;
+    let _ = write!(err, "\r\x1b[2K");
+    let _ = err.flush();
+    done
+}
+
 /// Build the session for the UI, as the line REPL does: launch options, MCP,
 /// then a driver whose events and questions go to `ui`.
 pub async fn build(
@@ -407,7 +450,7 @@ pub async fn build(
     ui: mpsc::UnboundedSender<UiEvent>,
 ) -> Result<(Driver, Vec<String>), crate::exit::Fail> {
     let mut lo = crate::launch_options(o)?;
-    let (mcp, mcp_warnings) = kodact_core::connect_mcp(&lo).await;
+    let (mcp, mcp_warnings) = connecting(&lo, kodact_core::connect_mcp(&lo)).await;
     lo.mcp = Some(mcp.clone());
     let sink: Arc<dyn EventSink> = Arc::new(TuiSink(ui.clone()));
     let prompter: Arc<dyn PermissionPrompter> = Arc::new(TuiPrompter(ui));
@@ -425,19 +468,44 @@ pub async fn build(
     Ok((driver, warnings))
 }
 
-/// `/model` and the agents wizard offer the endpoint's own models: ask it first (once).
-async fn ready_models(driver: &mut kodact_core::Driver, text: &str) {
-    let t = text.trim_start();
-    if t.starts_with("/model") || t.starts_with("/agents") {
-        if let Some(why) = driver.load_models().await {
-            tracing::debug!(%why, "model list");
-        }
+/// The background listing of the endpoint's models.
+type Listing = tokio::sync::oneshot::Receiver<Option<Result<Vec<String>, kodact_api::ApiError>>>;
+
+/// Ask the endpoint for its models in the background.
+fn prefetch_models(driver: &kodact_core::Driver) -> Listing {
+    let provider = driver.engine.provider();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let _ = tx.send(provider.list_models().await);
+    });
+    rx
+}
+
+/// `/model` and the agents wizard offer the endpoint's own models: only the
+/// pickers need the list (`/model <name>` doesn't). The background listing is
+/// awaited when it is still on its way; otherwise it is asked (once, or again
+/// after a failure has cooled down).
+async fn ready_models(driver: &mut kodact_core::Driver, listing: &mut Option<Listing>, text: &str) {
+    let t = text.trim();
+    if t != "/model" && !t.starts_with("/agents") {
+        return;
+    }
+    let why = match listing.take() {
+        Some(rx) => driver.accept_models(rx.await.unwrap_or(None)),
+        None => driver.load_models().await,
+    };
+    if let Some(why) = why {
+        tracing::debug!(%why, "model list");
     }
 }
 
 /// The picker for `text`, with the model list ready.
-async fn ready_picker(driver: &mut kodact_core::Driver, text: &str) -> Option<kodact_core::commands::picker::Picker> {
-    ready_models(driver, text).await;
+async fn ready_picker(
+    driver: &mut kodact_core::Driver,
+    listing: &mut Option<Listing>,
+    text: &str,
+) -> Option<kodact_core::commands::picker::Picker> {
+    ready_models(driver, listing, text).await;
     picker(driver, text)
 }
 

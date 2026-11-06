@@ -4,6 +4,12 @@ description = "Hook events, matchers and the command runner (contract C11)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 kodact-platform.workspace = true

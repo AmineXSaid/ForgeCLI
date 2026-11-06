@@ -1,8 +1,9 @@
 //! KodAct's own marks for transcripts and the terminal UI, kept in one place so
 //! every front end draws the same ones.
 
-/// The first line of an answer: a dot on KodAct's timeline.
-pub const ANSWER: &str = "●";
+/// The first line of an answer: a small dot on KodAct's timeline (`●` and the other
+/// filling circles belong to the context gauge alone).
+pub const ANSWER: &str = "•";
 /// A tool call: `● Name(argument)`; in the terminal UI the dot takes the
 /// call's state (running, done, failed).
 pub const TOOL: &str = "●";

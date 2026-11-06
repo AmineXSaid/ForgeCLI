@@ -223,6 +223,36 @@ impl<B: Backend> Screen<B> {
     }
 }
 
+/// Columns left empty on each side of the full screen: 2, or none on a terminal too
+/// narrow to spare them.
+fn gutter(width: u16) -> u16 {
+    if width >= 40 {
+        2
+    } else {
+        0
+    }
+}
+
+/// Columns the transcript is set in from the input box's edge, so its marks (`●`, `❯`)
+/// line up with the box's `❯` and its text with the text typed in the box.
+const TRANSCRIPT_INDENT: u16 = 2;
+
+/// `lines` wrapped to `width` less the transcript's indent, each row indented.
+fn indented(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let indent = TRANSCRIPT_INDENT.min(width.saturating_sub(4));
+    text::wrap(lines, width - indent)
+        .into_iter()
+        .map(|l| {
+            if indent == 0 || l.spans.is_empty() {
+                return l;
+            }
+            let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent as usize))];
+            spans.extend(l.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// The full-screen UI: the whole window, and the transcript it keeps itself
 /// (wrapped once per width, as lines arrive).
 pub struct Full<B: Backend> {
@@ -245,8 +275,10 @@ impl<B: Backend> Full<B> {
         Ok(Full { terminal, transcript: vec![], wrapped: vec![], wrapped_w: 0, scroll: 0, max_scroll: 0, info })
     }
 
+    /// The width text is laid out in: the window less its gutters.
     pub fn width(&self) -> u16 {
-        self.terminal.size().map(|s| s.width).unwrap_or(80)
+        let w = self.terminal.size().map(|s| s.width).unwrap_or(80);
+        w - 2 * gutter(w)
     }
 
     pub fn rows(&self) -> u16 {
@@ -256,7 +288,7 @@ impl<B: Backend> Full<B> {
     /// Finished lines join the transcript. A view scrolled up stays where it is.
     pub fn commit(&mut self, lines: Vec<Line<'static>>) {
         let w = self.width();
-        let rows = text::wrap(lines.clone(), w);
+        let rows = indented(lines.clone(), w);
         if self.scroll > 0 {
             self.scroll += rows.len();
         }
@@ -273,16 +305,20 @@ impl<B: Backend> Full<B> {
 
     pub fn draw(&mut self, app: &App) -> std::io::Result<()> {
         let size = self.terminal.size()?;
-        if size.width != self.wrapped_w {
-            self.wrapped = text::wrap(self.transcript.clone(), size.width);
-            self.wrapped_w = size.width;
+        // A gutter on both sides, so text never touches the terminal's edge.
+        let pad = gutter(size.width);
+        let width = size.width - 2 * pad;
+        if width != self.wrapped_w {
+            self.wrapped = indented(self.transcript.clone(), width);
+            self.wrapped_w = width;
         }
-        let page = front::front_page(&app.theme, app.look, &self.info, size.width as usize);
-        let (view, max) = render::full_view(app, size.width, size.height, &self.wrapped, &page, self.scroll);
+        let page = front::front_page(&app.theme, app.look, &self.info, width as usize);
+        let (view, max) = render::full_view(app, width, size.height, &self.wrapped, &page, self.scroll);
         self.max_scroll = max;
         self.scroll = self.scroll.min(max);
         self.terminal.draw(|f| {
-            let area = f.area();
+            let full = f.area();
+            let area = ratatui::layout::Rect { x: full.x + pad, width, ..full };
             f.render_widget(Paragraph::new(view.lines.clone()), area);
             if let Some((x, y)) = view.cursor {
                 if x < area.width && y < area.height {
@@ -528,6 +564,9 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     let task = tokio::spawn(session::run(driver, rx, ui_tx));
     let guard = setup(full).map_err(|e| Fail::config(format!("cannot set up the terminal: {e}")))?;
     let draw_fail = |e: std::io::Error| Fail::config(format!("cannot draw on the terminal: {e}"));
+    if full {
+        app.transcript_indent = TRANSCRIPT_INDENT as usize;
+    }
     let mut screen = if full {
         Display::Full(Box::new(Full::new(CrosstermBackend::new(std::io::stdout()), info).map_err(draw_fail)?))
     } else {
@@ -823,6 +862,34 @@ mod tests {
     }
 
     #[test]
+    fn the_full_screen_keeps_a_gutter_on_both_sides() {
+        let theme = text::Theme { color: false, light: false, accent: None, depth: Default::default() };
+        let mut a = app::App::new(theme, vec![]);
+        a.submit("fix it".into());
+        a.front = false;
+        let mut f = Full::new(TestBackend::new(60, 24), front::FrontInfo::default()).unwrap();
+        assert_eq!(f.width(), 56, "text is laid out between the gutters");
+        f.commit(a.take_pending());
+        f.commit(vec![Line::from("x".repeat(70))]);
+        f.draw(&a).unwrap();
+        let rows = rows(f.terminal.backend());
+        for r in &rows {
+            let cells: Vec<char> = r.chars().collect();
+            assert!(cells.len() <= 58, "nothing in the right gutter: {r:?}");
+            assert!(cells.iter().take(2).all(|c| *c == ' '), "nothing in the left gutter: {r:?}");
+        }
+        // The transcript's marks line up with the box's `❯`, its text with the typed text.
+        let col = |r: &String, c: char| r.chars().position(|x| x == c);
+        let echoed = rows.iter().find(|r| r.contains("fix it")).expect("the message");
+        let boxed = rows.iter().find(|r| r.starts_with("  │ ❯")).expect("the box");
+        assert_eq!(col(echoed, '❯'), col(boxed, '❯'), "{rows:#?}");
+        assert!(rows.iter().any(|r| r == &format!("    {}", "x".repeat(54))), "long lines wrap inside: {rows:#?}");
+        // Too narrow to spare the columns: no gutter.
+        let f = Full::new(TestBackend::new(30, 8), front::FrontInfo::default()).unwrap();
+        assert_eq!(f.width(), 30);
+    }
+
+    #[test]
     fn commit_wraps_into_scrollback_above_the_viewport() {
         let mut s = Screen::new(Box::new(|| TestBackend::new(10, 6)), 2).unwrap();
         let view = LiveView { lines: vec![Line::from("> input")], cursor: Some((2, 0)) };
@@ -882,5 +949,382 @@ mod tests {
     #[test]
     fn osc52_carries_base64() {
         assert_eq!(osc52("hi"), "\x1b]52;c;aGk=\x07");
+    }
+}
+
+/// Screens drawn to HTML, to look at the full-screen UI without a terminal:
+/// `KODACT_SNAPSHOT_DIR=/tmp/s cargo test -p kodact-cli --bin kodact snapshots -- --ignored`.
+#[cfg(test)]
+mod snapshots {
+    use super::app::{App, StatusView, UiEvent};
+    use super::text::Theme;
+    use super::*;
+    use kodact_types::{ApiMessage, ContentBlock, Role, StopReason, Usage};
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+
+    fn css(c: Color, default: &str) -> String {
+        match c {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Reset => default.into(),
+            Color::White => "#e5e5e5".into(),
+            Color::Black => "#101214".into(),
+            Color::Gray | Color::DarkGray => "#8a8a8a".into(),
+            Color::LightGreen | Color::Green => "#9fe870".into(),
+            Color::Red | Color::LightRed => "#ff6b6b".into(),
+            Color::Yellow | Color::LightYellow => "#f5d76e".into(),
+            _ => default.into(),
+        }
+    }
+
+    fn html(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area;
+        let mut s = String::from(
+            "<!doctype html><meta charset=utf-8><style>body{margin:0;background:#0b0c0e}\
+             pre{margin:0;padding:8px;font:16px/1.15 'DejaVu Sans Mono',monospace;color:#d8d8d8;background:#0b0c0e}\
+             span{white-space:pre;display:inline-block;height:1.15em;vertical-align:top}</style><pre>",
+        );
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let c = &buf[(x, y)];
+                let mut st = format!("color:{};", css(c.fg, "#d8d8d8"));
+                if c.bg != Color::Reset {
+                    st.push_str(&format!("background:{};", css(c.bg, "transparent")));
+                }
+                if c.modifier.contains(ratatui::style::Modifier::BOLD) {
+                    st.push_str("font-weight:bold;");
+                }
+                if c.modifier.contains(ratatui::style::Modifier::DIM) {
+                    st.push_str("opacity:.6;");
+                }
+                let sym = c.symbol().replace('&', "&amp;").replace('<', "&lt;");
+                s.push_str(&format!("<span style=\"{st}\">{sym}</span>"));
+            }
+            s.push('\n');
+        }
+        s + "</pre>"
+    }
+
+    fn app() -> App {
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
+        a.front = true;
+        a.transcript_indent = TRANSCRIPT_INDENT as usize;
+        a.endpoint = "gpt.technica-engineering.net".into();
+        a.branch = "main".into();
+        a.on_event(UiEvent::Status(StatusView {
+            model: "quick-thinking".into(),
+            mode: "default".into(),
+            cwd: "/home/kryptonite/KodAct".into(),
+            cost: 0.0,
+            cost_unknown: true,
+            context_pct: Some(4),
+            context_used: true,
+            window: 200_000,
+            context_tokens: 8_800,
+            compact_at: 155_000,
+            window_guessed: true,
+            ..Default::default()
+        }));
+        a
+    }
+
+    fn info(recent: bool) -> front::FrontInfo {
+        front::FrontInfo {
+            version: "0.1.0".into(),
+            model: "quick-thinking".into(),
+            endpoint: "gpt.technica-engineering.net".into(),
+            folder: "~/KodAct".into(),
+            branch: Some("main".into()),
+            recent: if recent { vec![("fix the token meter".into(), "1m ago".into())] } else { vec![] },
+            ..Default::default()
+        }
+    }
+
+    fn shot_with(name: &str, a: &mut App, w: u16, h: u16, recent: bool) {
+        let Ok(dir) = std::env::var("KODACT_SNAPSHOT_DIR") else { return };
+        let mut f = Full::new(TestBackend::new(w, h), info(recent)).unwrap();
+        f.commit(a.take_pending());
+        f.draw(a).unwrap();
+        std::fs::write(format!("{dir}/{name}.html"), html(f.terminal.backend().buffer())).unwrap();
+    }
+
+    fn shot(name: &str, a: &mut App, w: u16, h: u16) {
+        shot_with(name, a, w, h, true)
+    }
+
+    fn msg(content: Vec<ContentBlock>, stop: StopReason, parent: Option<&str>) -> UiEvent {
+        UiEvent::Engine(kodact_engine::EngineEvent::Assistant {
+            message: ApiMessage {
+                id: "m".into(),
+                kind: "message".into(),
+                role: Role::Assistant,
+                model: "m".into(),
+                content,
+                stop_reason: Some(stop),
+                stop_sequence: None,
+                usage: Usage::default(),
+            },
+            uuid: "u".into(),
+            parent_tool_use_id: parent.map(str::to_string),
+        })
+    }
+
+    /// A model turn: a request, the answer, then the turn ends a few seconds and some
+    /// tokens later, as in a real session.
+    fn answer(a: &mut App, text: &str) {
+        let start = ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: Role::Assistant,
+            model: "m".into(),
+            content: vec![],
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage::default(),
+        };
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Stream {
+            event: kodact_types::StreamEvent::MessageStart { message: start },
+            parent_tool_use_id: None,
+        }));
+        a.on_event(msg(vec![ContentBlock::text(text)], StopReason::EndTurn, None));
+        a.busy_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(7));
+        let mut s = a.status.clone();
+        s.session_tokens += 9_400;
+        a.on_event(UiEvent::Status(s));
+        a.on_event(UiEvent::Idle);
+    }
+
+    fn call(id: &str, name: &str, input: serde_json::Value) -> ContentBlock {
+        ContentBlock::ToolUse { id: id.into(), name: name.into(), input, cache_control: None, provider: None }
+    }
+
+    fn done(a: &mut App, id: &str, out: &str, failed: bool, result: Option<serde_json::Value>) {
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::User {
+            message: kodact_types::Message::user(vec![ContentBlock::tool_result(id.to_string(), out, failed)]),
+            uuid: "r".into(),
+            tool_use_result: result,
+            is_meta: false,
+            parent_tool_use_id: None,
+        }));
+    }
+
+    #[test]
+    #[ignore]
+    fn snapshots() {
+        use serde_json::json;
+        // The screens as on the user's machine: their home folder, for `~` in paths.
+        // SAFETY: an ignored test run on its own; nothing else reads HOME meanwhile.
+        unsafe { std::env::set_var("HOME", "/home/kryptonite") };
+        // 1. First run here.
+        let mut a = app();
+        shot_with("01-front-first-run", &mut a, 140, 40, false);
+        // 2. Coming back: one conversation to resume.
+        let mut a = app();
+        shot("02-front-returning", &mut a, 140, 40);
+
+        // 3. A formatted answer: heading, list, code and a table.
+        let mut a = app();
+        a.submit("how do I add an index in postgres?".into());
+        a.front = false;
+        answer(
+            &mut a,
+            "## Adding an index\n\nTwo ways, depending on whether the table is busy:\n\n\
+             - **Plain**: locks writes while it builds.\n- **Concurrently**: no write lock, slower.\n\n\
+             ```sql\nCREATE INDEX CONCURRENTLY idx_users_email ON users (email);\n```\n\n\
+             | Option | Locks writes | Speed |\n|---|---|---|\n| `CREATE INDEX` | yes | fast |\n\
+             | `CREATE INDEX CONCURRENTLY` | no | slower |\n\nUse `CONCURRENTLY` on a live table.",
+        );
+        shot("03-answer-markdown", &mut a, 140, 36);
+
+        // 4. Tools: read, edit with its diff, a passing and a failing command, then the answer.
+        let mut a = app();
+        a.submit("fix the subtraction bug in calc.py and run the tests".into());
+        a.front = false;
+        a.on_event(msg(
+            vec![
+                ContentBlock::text("I'll look at the file first."),
+                call("r1", "Read", json!({"file_path": "/home/kryptonite/KodAct/src/calc.py"})),
+            ],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "r1",
+            "     1\tdef add(a, b):\n     2\t    return a - b",
+            false,
+            Some(
+                json!({"type": "text", "file": {"filePath": "/home/kryptonite/KodAct/src/calc.py", "numLines": 2, "startLine": 1, "totalLines": 2}}),
+            ),
+        );
+        a.on_event(msg(
+            vec![call(
+                "e1",
+                "Edit",
+                json!({"file_path": "/home/kryptonite/KodAct/src/calc.py", "old_string": "a - b", "new_string": "a + b"}),
+            )],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "e1",
+            "The file was updated",
+            false,
+            Some(json!({"filePath": "/home/kryptonite/KodAct/src/calc.py", "structuredPatch": [{
+            "oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 2,
+            "lines": [" def add(a, b):", "-    return a - b", "+    return a + b"]}]})),
+        );
+        a.on_event(msg(
+            vec![call("b1", "Bash", json!({"command": "pytest -q", "description": "Run the tests"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(
+            &mut a,
+            "b1",
+            "....F\nFAILED tests/test_calc.py::test_div - ZeroDivisionError\n1 failed, 4 passed in 0.12s",
+            true,
+            None,
+        );
+        a.on_event(msg(
+            vec![call("b2", "Bash", json!({"command": "pytest -q tests/test_calc.py::test_add"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        done(&mut a, "b2", ".\n1 passed in 0.03s", false, None);
+        answer(&mut a, "Fixed `add` (it subtracted). `test_add` passes; `test_div` was already failing on division by zero and is unrelated.");
+        shot("04-tools", &mut a, 140, 40);
+
+        // 5. Sub-agents at work.
+        let mut a = app();
+        a.submit("explore this repo with several agents".into());
+        a.front = false;
+        let mut content = vec![ContentBlock::text("I'll fan out 4 agents across the repo's areas.")];
+        for (i, what) in ["Explore core crates", "Explore tools crates", "Explore evals and docs", "Skim jobs and git"]
+            .iter()
+            .enumerate()
+        {
+            content.push(call(
+                &format!("t{i}"),
+                "Task",
+                json!({"description": what, "prompt": "p", "subagent_type": "Explore"}),
+            ));
+        }
+        a.on_event(msg(content, StopReason::ToolUse, None));
+        for (i, path) in [
+            (0, "crates/kodact-engine/src/engine.rs"),
+            (1, "crates/kodact-tools/src/bash.rs"),
+            (1, "crates/kodact-tools/src/edit.rs"),
+        ] {
+            a.on_event(msg(
+                vec![call("s", "Read", json!({"file_path": format!("/home/kryptonite/KodAct/{path}")}))],
+                StopReason::ToolUse,
+                Some(&format!("t{i}")),
+            ));
+        }
+        shot("05-subagents", &mut a, 140, 30);
+        // The wave's frames, for an animation of the scene.
+        for f in 0..12u64 {
+            let now = std::time::Instant::now();
+            for (i, r) in a.running.iter_mut().enumerate() {
+                r.since = now - std::time::Duration::from_millis(80 * f + 160 * i as u64);
+            }
+            shot(&format!("wave-{f:02}"), &mut a, 140, 30);
+        }
+
+        // 6. Working: an answer streaming in, the spinner, a queued message.
+        let mut a = app();
+        a.submit("summarize the README".into());
+        a.front = false;
+        a.live = "KodAct is a terminal coding agent that runs on the model you choose. It reads".into();
+        a.activity = "Writing".into();
+        a.submit("then list the open TODOs".into());
+        shot("06-working-with-queue", &mut a, 140, 24);
+
+        // 7. A permission question.
+        let mut a = app();
+        a.submit("clean the build folder".into());
+        a.front = false;
+        a.on_event(msg(
+            vec![call("p1", "Bash", json!({"command": "rm -rf build/", "description": "Delete the build folder"}))],
+            StopReason::ToolUse,
+            None,
+        ));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::mem::forget(rx);
+        a.on_event(UiEvent::Ask {
+            prompt: kodact_engine::PermissionPrompt {
+                tool_name: "Bash".into(),
+                tool_use_id: "p1".into(),
+                input: json!({"command": "rm -rf build/", "description": "Delete the build folder"}),
+                reason: String::new(),
+                suggestions: vec![],
+                blocked_path: None,
+            },
+            reply: tx,
+        });
+        shot("07-permission", &mut a, 140, 30);
+
+        // 8. The /model picker.
+        let mut a = app();
+        a.front = false;
+        let c = |l: &str, d: &str, cur: bool| kodact_core::commands::picker::Choice {
+            label: l.into(),
+            detail: d.into(),
+            pick: kodact_core::commands::picker::Pick::Run(String::new()),
+            current: cur,
+        };
+        a.on_event(UiEvent::Picker(kodact_core::commands::picker::Picker {
+            title: "Choose a model".into(),
+            choices: vec![
+                c("quick-thinking", "fast answers", true),
+                c("deep-thinking", "slower, reasons longer", false),
+                c("code-large", "long files", false),
+            ],
+        }));
+        shot("08-model-picker", &mut a, 140, 24);
+
+        // 9. A warning and an error.
+        let mut a = app();
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Notice {
+            level: kodact_engine::NoticeLevel::Warning,
+            text: "KodAct doesn't know the model quick-thinking: it assumes a 200,000-token context window. Set its limits with \"modelLimits\" in settings.".into(),
+        }));
+        a.submit("hi".into());
+        a.front = false;
+        a.on_event(UiEvent::Engine(kodact_engine::EngineEvent::Notice {
+            level: kodact_engine::NoticeLevel::Error,
+            text: "API Error: HTTP 400 (error) from https://gpt.technica-engineering.net/api/v1/chat/completions: {\"detail\":\"Model not found\"}".into(),
+        }));
+        a.on_event(UiEvent::Idle);
+        shot("09-warning-and-error", &mut a, 140, 20);
+
+        // 10. Plan mode, mid-conversation.
+        let mut a = app();
+        a.status.mode = "plan".into();
+        a.submit("plan a refactor of the session store".into());
+        a.front = false;
+        answer(&mut a, "Here's the plan:\n\n1. Split `store.rs` into reading and listing.\n2. Move titles into their own module.\n3. Add tests for each.");
+        shot("10-plan-mode", &mut a, 140, 22);
+
+        // 11. A small terminal: 80 by 24.
+        let mut a = app();
+        a.submit("what does this repo do?".into());
+        a.front = false;
+        answer(&mut a, "It's **KodAct**, a terminal coding agent written in Rust: a CLI, an engine that runs turns, tools, MCP, sessions and an eval harness.");
+        shot("11-small-terminal", &mut a, 80, 24);
+        let mut a = app();
+        shot("12-front-small-terminal", &mut a, 80, 24);
+
+        // 13. A long session nearing compaction: the gauge fills and turns amber, then red.
+        for (name, used) in [("13-context-amber", 118_000), ("14-context-red", 146_000)] {
+            let mut a = app();
+            a.status.context_tokens = used;
+            a.submit("keep going with the refactor".into());
+            a.front = false;
+            answer(&mut a, "Done with the session store; moving on to the transcript writer.");
+            shot(name, &mut a, 140, 14);
+        }
     }
 }

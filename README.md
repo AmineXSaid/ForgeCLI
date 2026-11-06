@@ -19,6 +19,17 @@ Under construction. `docs/PARITY.md` tracks every tool, flag, protocol message
 and command against the reference CLI, with the test that proves each one. `docs/ARCHITECTURE.md` holds
 the crate layout and the behavioural contracts (C1–C11).
 
+## Install
+
+From crates.io (the package is `kodact-cli`, the command is `kodact`):
+
+```bash
+cargo install kodact-cli
+kodact --help
+```
+
+The evaluation harness installs the same way: `cargo install kodact-eval`.
+
 ## Build
 
 ```bash

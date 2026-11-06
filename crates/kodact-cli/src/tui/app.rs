@@ -49,6 +49,15 @@ pub struct StatusView {
     pub context_used: bool,
     /// The model's context window, so the meter can follow a turn's requests.
     pub window: u64,
+    /// Tokens in context now, and where automatic compaction runs: the gauge shows the
+    /// room left between them.
+    pub context_tokens: u64,
+    pub compact_at: u64,
+    /// The window is KodAct's guess (an unknown model the endpoint gave no size for).
+    pub window_guessed: bool,
+    /// Tokens this session has used so far (every request's input and output), for
+    /// a model without a price.
+    pub session_tokens: u64,
 }
 
 /// From the session task to the UI.
@@ -88,6 +97,196 @@ pub enum UiEvent {
     Exit,
 }
 
+/// An `API Error: ...` notice as a person would say it: a headline (what went wrong,
+/// naming the model and the endpoint) and a next step with the short technical
+/// detail. `None` for anything else, which is shown as it is.
+pub fn human_api_error(text: &str, model: &str, endpoint: &str) -> Option<(String, String)> {
+    let rest = text.strip_prefix("API Error: ")?;
+    // "... Retrying in 6s (attempt 2)." stays as a tail on the headline.
+    let (rest, retry) = match rest.find(". Retrying in ") {
+        Some(i) => (&rest[..i], Some(rest[i + 2..].trim_end_matches('.').to_lowercase())),
+        None => (rest, None),
+    };
+    let host_of = |url: &str| {
+        let u = url.split("://").nth(1).unwrap_or(url);
+        let u = u.rsplit('@').next().unwrap_or(u);
+        u.split(['/', '?', ':']).next().unwrap_or(u).to_string()
+    };
+    let url = rest.split_whitespace().find(|w| w.starts_with("http://") || w.starts_with("https://"));
+    let host = url.map(|u| host_of(u.trim_end_matches(':'))).filter(|h| !h.is_empty()).unwrap_or_else(|| {
+        if endpoint.is_empty() {
+            "the endpoint".to_string()
+        } else {
+            endpoint.to_string()
+        }
+    });
+    let model = if model.is_empty() { "the model" } else { model };
+    // The server's own message, from a JSON body when there is one.
+    let body = rest.find('{').map(|i| &rest[i..]).unwrap_or("");
+    let said = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| {
+            ["/detail", "/error/message", "/message", "/error"]
+                .iter()
+                .find_map(|p| v.pointer(p).and_then(Value::as_str).map(str::to_string))
+        })
+        .unwrap_or_default();
+    let status: Option<u16> =
+        rest.strip_prefix("HTTP ").and_then(|r| r.split_whitespace().next()).and_then(|c| c.parse().ok());
+    let lower = format!("{rest} {said}").to_lowercase();
+    let detail = match (status, said.is_empty()) {
+        (Some(c), false) => format!("HTTP {c}: {said}"),
+        (Some(c), true) => format!("HTTP {c}"),
+        (None, _) => rest.split(':').next().unwrap_or(rest).trim().to_string(),
+    };
+    let (head, next) = if lower.contains("model not found")
+        || lower.contains("does not exist")
+        || lower.contains("unknown model")
+        || status == Some(404)
+    {
+        (format!("{model} isn't available on {host}"), format!("/model to choose another · {detail}"))
+    } else if matches!(status, Some(401) | Some(403)) {
+        (format!("{host} didn't accept the key"), format!("check KODACT_OPENAI_API_KEY or KODACT_API_KEY · {detail}"))
+    } else if status == Some(429) {
+        (format!("{host} is limiting requests"), format!("KodAct waits and retries · {detail}"))
+    } else if status.is_some_and(|c| c >= 500) {
+        (format!("{host} had an error"), format!("try again in a moment · {detail}"))
+    } else if lower.contains("could not connect")
+        || lower.contains("unreachable")
+        || lower.contains("lookup address")
+        || lower.contains("tls")
+        || lower.contains("timed out")
+        || lower.contains("error decoding")
+    {
+        (format!("Can't reach {host}"), format!("check the network and KODACT_OPENAI_BASE_URL · {detail}"))
+    } else {
+        let c = status?;
+        let why = if said.is_empty() { format!("HTTP {c}") } else { said.clone() };
+        (format!("{host} refused the request: {why}"), "/model or /status to check the setup".to_string())
+    };
+    let head = match retry {
+        Some(r) => format!("{head} · {r}"),
+        None => head,
+    };
+    Some((head, next))
+}
+
+/// `spans` with paths under `cwd` written from it (`src/calc.py`) and the home
+/// folder as `~`, so a step's row shows what matters in the columns it has.
+pub fn relative_spans(spans: Vec<Span<'static>>, cwd: &str) -> Vec<Span<'static>> {
+    let cwd = cwd.trim_end_matches('/');
+    let home = std::env::var("HOME").ok().filter(|h| h.len() > 1).map(|h| h.trim_end_matches('/').to_string());
+    spans
+        .into_iter()
+        .map(|mut s| {
+            let mut c = s.content.to_string();
+            if cwd.len() > 1 && c.contains(&format!("{cwd}/")) {
+                c = c.replace(&format!("{cwd}/"), "");
+            }
+            if let Some(h) = &home {
+                if c.contains(&format!("{h}/")) {
+                    c = c.replace(&format!("{h}/"), "~/");
+                }
+            }
+            s.content = c.into();
+            s
+        })
+        .collect()
+}
+
+/// A count of tokens in a few characters: `950`, `3.1k`, `1.2M`.
+fn short_count(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{:.1}k", n as f64 / 1e3).replace(".0k", "k"),
+        _ => format!("{:.1}M", n as f64 / 1e6).replace(".0M", "M"),
+    }
+}
+
+/// `s` in at most `max` characters, cut with `…`.
+fn fit_words(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Lines a failed result shows from its end.
+const FAILURE_LINES: usize = 5;
+
+/// A line of test-runner progress only (`....F.s`), which says nothing on its own.
+fn progress_only(l: &str) -> bool {
+    let l = l.trim();
+    !l.is_empty() && l.chars().all(|c| matches!(c, '.' | 'F' | 'E' | 's' | 'x' | 'X'))
+}
+
+/// A line that names an error, drawn in red in a failure's output.
+fn names_an_error(l: &str) -> bool {
+    let lower = l.to_lowercase();
+    ["error", "failed", "fail:", "panicked", "exception", "not found", "denied", "exit code", "traceback"]
+        .iter()
+        .any(|w| lower.contains(w))
+}
+
+/// How a tool call ended, for its row in the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEnd {
+    Done,
+    Failed,
+    /// The turn ended before it did (interrupted).
+    Stopped,
+}
+
+/// What a destructive command would do, in a few words, for the permission
+/// question: removing files, rewriting history, wiping a disk or a table.
+/// Files outside `cwd` (the project) are named as such.
+pub fn danger_of(tool: &str, input: &Value, cwd: &str) -> Option<String> {
+    if tool != "Bash" {
+        return None;
+    }
+    let cmd = input["command"].as_str()?;
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let has = |w: &str| words.contains(&w);
+    for (i, w) in words.iter().enumerate() {
+        if *w == "rm" {
+            let args: Vec<&str> =
+                words[i + 1..].iter().take_while(|a| !matches!(**a, "&&" | ";" | "||" | "|")).copied().collect();
+            let forced =
+                args.iter().any(|a| a.starts_with('-') && (a.contains('r') || a.contains('R') || a.contains('f')));
+            let paths: Vec<&str> = args.iter().filter(|a| !a.starts_with('-')).copied().collect();
+            if forced || !paths.is_empty() {
+                let cwd = cwd.trim_end_matches('/');
+                let outside = |p: &str| {
+                    let rooted = p.starts_with('~') || p.starts_with('/');
+                    rooted && !p.starts_with(&format!("{cwd}/")) && p != cwd || p.starts_with("..")
+                };
+                let out: Vec<&str> = paths.iter().copied().filter(|p| outside(p)).collect();
+                if !out.is_empty() && !cwd.is_empty() {
+                    return Some(format!("deletes files outside the project: {}", out.join(" ")));
+                }
+                return Some(format!("deletes files: {}", paths.join(" ")).trim_end_matches(": ").to_string());
+            }
+        }
+    }
+    let lower = cmd.to_ascii_lowercase();
+    let what = if has("git")
+        && (lower.contains("reset --hard") || lower.contains("clean -f") || lower.contains("checkout -- "))
+    {
+        "discards uncommitted changes"
+    } else if has("git") && lower.contains("push") && (lower.contains("--force") || has("-f")) {
+        "rewrites the remote branch"
+    } else if lower.contains("drop table") || lower.contains("drop database") || lower.contains("truncate table") {
+        "deletes data"
+    } else if has("mkfs") || words.iter().any(|w| w.starts_with("of=/dev/")) {
+        "overwrites a disk"
+    } else {
+        return None;
+    };
+    Some(what.to_string())
+}
+
 /// What the UI loop does for the app.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -111,6 +310,9 @@ struct Question {
 enum DialogKind {
     Permission {
         always: Option<String>,
+        /// What a destructive command would do (`deletes files: build/`): the answer
+        /// starts on Deny, and only `y` allows it.
+        danger: Option<String>,
     },
     Plan,
     Questions {
@@ -258,6 +460,9 @@ pub struct App {
     streamed: bool,
     /// The usage the current request reported so far (its start, then its deltas).
     request_usage: kodact_types::Usage,
+    /// The current request's reply has thinking in it: its output isn't carried into the next
+    /// request (over chat completions), so the live meter leaves it out.
+    request_thought: bool,
     /// When the open question was asked: the wait shown is the person's, not the turn's.
     pub asked_at: Option<Instant>,
     /// The last line already written to the terminal is blank.
@@ -286,6 +491,19 @@ pub struct App {
     pub keymap: super::keys::Keymap,
     /// The UI's style.
     pub look: super::look::Look,
+    /// Sub-agents that finished this turn, for the line that waits on the rest.
+    pub agents_done: usize,
+    /// The endpoint said the model isn't there: the session row marks it until a
+    /// request gets through or the model changes.
+    pub model_down: bool,
+    /// The turn so far: model requests, and the spend and tokens when it began.
+    turn_requests: usize,
+    turn_cost_from: f64,
+    turn_tokens_from: u64,
+    /// Something has been sent this session (the placeholder then asks for a reply).
+    pub talked: bool,
+    /// Columns the full screen sets the transcript in (0 inline): the live rows follow it.
+    pub transcript_indent: usize,
     /// The front screen is showing: nothing sent yet. The input is a centred box under the wordmark.
     pub front: bool,
     /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
@@ -329,9 +547,23 @@ pub fn result_lines(
         text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(160).collect()
     };
     if is_error {
-        let more = text.lines().filter(|l| !l.trim().is_empty()).count().saturating_sub(1);
-        let more = if more > 0 { format!(" (+{more} lines)") } else { String::new() };
-        return one(format!("{}{more}", first_line(text)), t.error());
+        // A failure shows its end, where the error is: the last lines, the ones that name
+        // the error in red, the rest quiet; what came before is counted.
+        let body: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty() && !progress_only(l)).collect();
+        if body.is_empty() {
+            return one("(no output)".into(), t.error());
+        }
+        let skip = body.len().saturating_sub(FAILURE_LINES);
+        let mut out = vec![];
+        if skip > 0 {
+            out.push(Line::from(vec![mark(), Span::styled(format!("… {skip} earlier lines"), t.dim())]));
+        }
+        for l in &body[skip..] {
+            let lead = if out.is_empty() { mark() } else { Span::raw(RESULT_INDENT) };
+            let st = if names_an_error(l) { t.error() } else { t.dim() };
+            out.push(Line::from(vec![lead, Span::styled(l.chars().take(200).collect::<String>(), st)]));
+        }
+        return out;
     }
     match (tool, structured) {
         ("Read", Some(v)) if v["type"] == "text" => {
@@ -406,18 +638,23 @@ pub fn result_lines(
             out
         }
         ("Bash", _) => {
-            let body: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            // A command that went well: its last lines, where the summary is, without
+            // progress dots (`....`); what came before is counted.
+            let all: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            let body: Vec<&str> = all.iter().copied().filter(|l| !progress_only(l)).collect();
+            let body = if body.is_empty() { all } else { body };
             if body.is_empty() {
                 return one("(no output)".into(), t.dim());
             }
+            let skip = body.len().saturating_sub(3);
             let mut out = vec![];
-            for (i, l) in body.iter().take(3).enumerate() {
-                let lead = if i == 0 { mark() } else { Span::raw(RESULT_INDENT) };
+            if skip > 0 {
+                out.push(Line::from(vec![mark(), Span::styled(format!("… {skip} earlier lines"), t.dim())]));
+            }
+            for l in &body[skip..] {
+                let lead = if out.is_empty() { mark() } else { Span::raw(RESULT_INDENT) };
                 let l: String = l.chars().take(200).collect();
                 out.push(Line::from(vec![lead, Span::styled(l, t.dim())]));
-            }
-            if body.len() > 3 {
-                out.push(Line::from(Span::styled(format!("{RESULT_INDENT}… +{} lines", body.len() - 3), t.dim())));
             }
             out
         }
@@ -439,6 +676,9 @@ pub struct Running {
     pub name: String,
     pub input: Value,
     pub since: Instant,
+    /// A sub-agent's latest step (`Reading src/lib.rs`) and how many it has taken.
+    pub step: Option<String>,
+    pub steps: usize,
 }
 
 /// What a tool call does, as a verb: past tense once it is done (`Ran`,
@@ -593,6 +833,7 @@ impl App {
             first_line: true,
             streamed: false,
             request_usage: Default::default(),
+            request_thought: false,
             asked_at: None,
             printed_blank: false,
             dialog: None,
@@ -612,17 +853,19 @@ impl App {
             viewer_page: std::cell::Cell::new(10),
             keymap: Default::default(),
             look: Default::default(),
+            transcript_indent: 0,
+            agents_done: 0,
+            model_down: false,
+            turn_requests: 0,
+            turn_cost_from: 0.0,
+            turn_tokens_from: 0,
+            talked: false,
             front: false,
             endpoint: String::new(),
             branch: String::new(),
             focus: false,
             held: None,
         }
-    }
-
-    /// The tokens the last request held in context.
-    pub fn context_tokens(&self) -> u64 {
-        self.request_usage.context_tokens()
     }
 
     // ---- scrollback ----
@@ -671,6 +914,11 @@ impl App {
         use super::look::Look;
         let t = self.theme;
         for line in lines {
+            // Blank lines before the answer's first words (models often open with "\n\n")
+            // would get the answer mark alone on its row.
+            if self.first_line && blank(&line) {
+                continue;
+            }
             let marker = if self.first_line { self.answer_mark() } else { Span::raw("  ") };
             if self.first_line {
                 self.gap();
@@ -762,15 +1010,21 @@ impl App {
                         .push(Line::from(vec![Span::styled(mark, t.subtle()), Span::styled(l.to_string(), t.bold())]));
                 }
             }
-            // The panel's echo: its edge in the mode the words were sent in, on the raised surface.
+            // The input's own mark, in the colour of the mode the words were sent in, then
+            // the words, bright and bold: what was typed reads as typed, with no surface.
             Look::Frame => {
-                let st =
-                    if t.color { t.raised().fg(super::palette::PROMPT_FG.color(t.depth, t.light)) } else { t.user() };
-                let edge = if t.color { st.patch(t.mode(&self.status.mode)) } else { t.bold() };
-                let edge_char = if t.color { "▎ " } else { "│ " };
-                for l in text.lines() {
-                    self.pending
-                        .push(Line::from(vec![Span::styled(edge_char, edge), Span::styled(format!(" {l}  "), st)]));
+                let mark = if t.color { t.mode(&self.status.mode) } else { t.bold() };
+                let words = if t.color {
+                    Style::default()
+                        .fg(super::palette::PROMPT_FG.color(t.depth, t.light))
+                        .add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    t.bold()
+                };
+                for (i, l) in text.lines().enumerate() {
+                    let lead =
+                        if i == 0 { Span::styled(format!("{} ", glyphs::PROMPT), mark) } else { Span::raw("  ") };
+                    self.pending.push(Line::from(vec![lead, Span::styled(l.to_string(), words)]));
                 }
             }
             Look::Status => {
@@ -804,7 +1058,8 @@ impl App {
     }
 
     /// A tool call's header into scrollback, its dot in the colour of how it ended.
-    fn commit_tool(&mut self, r: Running, dot: Style, failed: bool) {
+    fn commit_tool(&mut self, r: Running, end: ToolEnd) {
+        let failed = end == ToolEnd::Failed;
         use super::look::Look;
         self.gap();
         let t = self.theme;
@@ -828,12 +1083,23 @@ impl App {
             Look::Glow => {
                 let mut spans =
                     vec![if failed { Span::styled("✗ ", t.error()) } else { Span::styled("✓ ", t.accent()) }];
-                spans.extend(tool_header(&t, &r.name, &r.input, true));
+                spans.extend(self.header(&r.name, &r.input, true));
                 Line::from(spans)
             }
+            // The state as a glyph and, unless it went well, a word: never colour alone.
             _ => {
-                let mut spans = vec![Span::styled(format!("{} ", glyphs::TOOL), dot)];
-                spans.extend(tool_header(&t, &r.name, &r.input, true));
+                let (mark, st) = match end {
+                    ToolEnd::Done => ("✓", t.success()),
+                    ToolEnd::Failed => ("✗", t.error()),
+                    ToolEnd::Stopped => ("■", t.dim()),
+                };
+                let mut spans = vec![Span::styled(format!("{mark} "), st)];
+                spans.extend(self.header(&r.name, &r.input, true));
+                match end {
+                    ToolEnd::Failed => spans.push(Span::styled(" · failed", t.error())),
+                    ToolEnd::Stopped => spans.push(Span::styled(" · stopped", t.dim())),
+                    ToolEnd::Done => {}
+                }
                 Line::from(spans)
             }
         };
@@ -846,12 +1112,22 @@ impl App {
         let (mark, mark_st, st) = match level {
             NoticeLevel::Info => ("·", t.dim(), t.dim()),
             NoticeLevel::Warning => ("▲", t.warning(), Style::default()),
-            NoticeLevel::Error => ("✕", t.error(), t.error()),
+            NoticeLevel::Error => ("✗", t.error(), t.error()),
         };
         self.gap();
+        // An API error, rewritten for a person: what went wrong in a line, then what to do.
+        let human = human_api_error(text, &self.status.model, &self.endpoint);
+        if human.as_ref().is_some_and(|(head, _)| head.contains("isn't available on")) {
+            self.model_down = true;
+        }
+        let text = human.as_ref().map(|(head, _)| head.as_str()).unwrap_or(text);
+        // The mark in the column of every other mark (❯, ●, ✓), the words in the text's.
         for (i, l) in text.lines().enumerate() {
-            let lead = if i == 0 { Span::styled(format!("  {mark} "), mark_st) } else { Span::raw("    ") };
+            let lead = if i == 0 { Span::styled(format!("{mark} "), mark_st) } else { Span::raw("  ") };
             self.pending.push(Line::from(vec![lead, Span::styled(l.to_string(), st)]));
+        }
+        if let Some((_, next)) = human {
+            self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(next, t.dim())]));
         }
     }
 
@@ -867,7 +1143,12 @@ impl App {
                     self.reply_lines(&text, is_error);
                 }
             }
-            UiEvent::Status(s) => self.status = s,
+            UiEvent::Status(s) => {
+                if s.model != self.status.model {
+                    self.model_down = false;
+                }
+                self.status = s;
+            }
             UiEvent::Commands(c) => self.commands = c,
             UiEvent::Files(f) => self.files = f,
             UiEvent::Theme(name) => {
@@ -892,9 +1173,9 @@ impl App {
             UiEvent::Idle => {
                 self.flush_live();
                 for r in std::mem::take(&mut self.running) {
-                    let dot = self.theme.dim();
-                    self.commit_tool(r, dot, false);
+                    self.commit_tool(r, ToolEnd::Stopped);
                 }
+                self.turn_summary();
                 self.busy = false;
                 self.busy_since = None;
                 self.activity.clear();
@@ -919,12 +1200,25 @@ impl App {
         self.busy_since = Some(Instant::now());
         self.activity = "Working".into();
         self.first_line = true;
+        self.agents_done = 0;
+        self.turn_requests = 0;
+        self.turn_cost_from = self.status.cost;
+        self.turn_tokens_from = self.status.session_tokens;
+        self.talked = true;
         text
     }
 
     /// The context meter follows each request of a turn, not only its end.
     fn meter(&mut self) {
-        let used = self.request_usage.context_tokens();
+        // What the next request carries: the input, and the output unless it was thinking.
+        // The engine's own measure replaces this when the turn ends.
+        let u = &self.request_usage;
+        let input = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+        let shown = u.output_tokens.saturating_sub(u.reasoning_output_tokens);
+        let used = if self.request_thought { input } else { input + shown };
+        if used > 0 {
+            self.status.context_tokens = used;
+        }
         if used > 0 && self.status.window > 0 {
             self.status.context_pct = Some((used * 100 / self.status.window).min(100) as u8);
             self.status.context_used = true;
@@ -933,13 +1227,27 @@ impl App {
 
     fn on_engine(&mut self, e: EngineEvent) {
         match e {
-            // Sub-agents' own messages stay in their transcripts.
+            // Sub-agents' own messages stay in their transcripts; their steps show on the
+            // row of the call that runs them, so delegated work is never a silent wait.
+            EngineEvent::Assistant { message, parent_tool_use_id: Some(parent), .. } => {
+                if let Some(r) = self.running.iter_mut().find(|r| r.id == parent) {
+                    for b in &message.content {
+                        if let ContentBlock::ToolUse { name, input, .. } = b {
+                            let header = relative_spans(tool_header(&self.theme, name, input, false), &self.status.cwd);
+                            r.step = Some(header.iter().map(|s| s.content.as_ref()).collect());
+                            r.steps += 1;
+                        }
+                    }
+                }
+            }
             EngineEvent::Stream { parent_tool_use_id: Some(_), .. }
-            | EngineEvent::Assistant { parent_tool_use_id: Some(_), .. }
             | EngineEvent::User { parent_tool_use_id: Some(_), .. } => {}
             EngineEvent::Stream { event, .. } => match event {
                 StreamEvent::MessageStart { message } => {
                     self.streamed = false;
+                    self.request_thought = false;
+                    self.model_down = false;
+                    self.turn_requests += 1;
                     self.request_usage = message.usage;
                     self.meter();
                 }
@@ -952,6 +1260,7 @@ impl App {
                         u.cache_creation_input_tokens = usage.cache_creation_input_tokens;
                     }
                     u.output_tokens = u.output_tokens.max(usage.output_tokens);
+                    u.reasoning_output_tokens = u.reasoning_output_tokens.max(usage.reasoning_output_tokens);
                     self.meter();
                 }
                 StreamEvent::ContentBlockStart { content_block: ContentBlock::Text { .. }, .. } => {
@@ -975,6 +1284,7 @@ impl App {
                 }
                 StreamEvent::ContentBlockDelta { delta: Delta::ThinkingDelta { .. }, .. } => {
                     self.activity = "Thinking".into();
+                    self.request_thought = true;
                 }
                 StreamEvent::ContentBlockStop { .. } | StreamEvent::MessageStop => self.flush_live(),
                 _ => {}
@@ -993,14 +1303,20 @@ impl App {
                         ContentBlock::ToolUse { name, .. } if self.focus => self.activity = format!("Running {name}"),
                         ContentBlock::ToolUse { id, name, input, .. } => {
                             self.calls.insert(id.clone(), (name.clone(), input.clone()));
+                            let header = self.header(name, input, false);
                             self.running.push(Running {
                                 id: id.clone(),
-                                header: tool_header(&self.theme, name, input, false),
+                                header,
                                 name: name.clone(),
                                 input: input.clone(),
                                 since: Instant::now(),
+                                step: None,
+                                steps: 0,
                             });
-                            self.activity = format!("Running {name}");
+                            // In words: "Running pytest -q", "Reading src/lib.rs".
+                            let words: String =
+                                self.header(name, input, false).iter().map(|s| s.content.as_ref()).collect();
+                            self.activity = fit_words(&words, 48);
                         }
                         _ => {}
                     }
@@ -1016,10 +1332,12 @@ impl App {
                     if let ContentBlock::ToolResult { tool_use_id, content, is_error, .. } = b {
                         let tool = self.calls.remove(tool_use_id).map(|(n, _)| n).unwrap_or_default();
                         let failed = *is_error == Some(true);
+                        if matches!(tool.as_str(), "Task" | "Agent") {
+                            self.agents_done += 1;
+                        }
                         if let Some(i) = self.running.iter().position(|r| r.id == *tool_use_id) {
                             let r = self.running.remove(i);
-                            let dot = if failed { self.theme.error() } else { self.theme.success() };
-                            self.commit_tool(r, dot, failed);
+                            self.commit_tool(r, if failed { ToolEnd::Failed } else { ToolEnd::Done });
                         }
                         let lines = result_lines(
                             &self.theme,
@@ -1124,9 +1442,17 @@ impl App {
                 }
                 DialogKind::Plan
             }
-            _ => DialogKind::Permission { always: prompt.suggestions.first().and_then(rule_text) },
+            _ => DialogKind::Permission {
+                always: prompt.suggestions.first().and_then(rule_text),
+                danger: danger_of(&prompt.tool_name, &prompt.input, &self.status.cwd),
+            },
         };
-        self.dialog = Some(Dialog { prompt: Some(prompt), reply: Some(reply), kind, selected: 0, typing: None });
+        // A destructive command starts on Deny, so a stray Enter never runs it.
+        let selected = match &kind {
+            DialogKind::Permission { always, danger: Some(_) } => 1 + usize::from(always.is_some()),
+            _ => 0,
+        };
+        self.dialog = Some(Dialog { prompt: Some(prompt), reply: Some(reply), kind, selected, typing: None });
         self.asked_at = Some(Instant::now());
     }
 
@@ -1156,7 +1482,7 @@ impl App {
     pub fn dialog_options(&self) -> Vec<(String, String)> {
         let Some(d) = &self.dialog else { return vec![] };
         match &d.kind {
-            DialogKind::Permission { always } => {
+            DialogKind::Permission { always, .. } => {
                 let mut v = vec![("Allow once".to_string(), "y".to_string())];
                 if let Some(r) = always {
                     v.push((r.clone(), "a".to_string()));
@@ -1195,6 +1521,54 @@ impl App {
 
     /// A question to the person is open (permission, plan approval, AskUserQuestion):
     /// the turn waits on them, not on the model.
+    /// After a turn that reached the model: what it took, quietly under it
+    /// (`12s · $0.004`, or tokens for a model with no price); in plan mode,
+    /// how to go on.
+    fn turn_summary(&mut self) {
+        let (Some(since), true) = (self.busy_since, self.turn_requests > 0) else { return };
+        let t = self.theme;
+        let secs = since.elapsed().as_secs();
+        let spent = if self.status.cost_unknown {
+            let n = self.status.session_tokens.saturating_sub(self.turn_tokens_from);
+            (n > 0).then(|| format!("{} tokens", short_count(n)))
+        } else {
+            let c = self.status.cost - self.turn_cost_from;
+            (c > 0.0).then(|| if c < 0.01 { format!("${c:.3}") } else { format!("${c:.2}") })
+        };
+        let mut text = format!("{secs}s");
+        if let Some(s) = spent {
+            text.push_str(&format!(" · {s}"));
+        }
+        self.pending.push(Line::from(vec![Span::raw("  "), Span::styled(text, t.subtle())]));
+        if self.status.mode == "plan" && self.dialog.is_none() {
+            self.gap();
+            self.pending.push(Line::from(vec![
+                Span::styled("◆ ", t.teal()),
+                Span::styled("Plan ready", t.bold()),
+                Span::styled(" · shift+tab to leave plan mode and run it · type to revise", t.dim()),
+            ]));
+        }
+    }
+
+    /// A tool call's header with its paths relative to the session's folder.
+    fn header(&self, name: &str, input: &Value, done: bool) -> Vec<Span<'static>> {
+        relative_spans(tool_header(&self.theme, name, input, done), &self.status.cwd)
+    }
+
+    /// The destructive effect of the command the open question is about, if any.
+    pub fn dialog_danger(&self) -> Option<&str> {
+        match &self.dialog.as_ref()?.kind {
+            DialogKind::Permission { danger, .. } => danger.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The tool call the open question is about.
+    pub fn asking_for(&self) -> Option<&str> {
+        let d = self.dialog.as_ref()?;
+        matches!(d.kind, DialogKind::Permission { .. }).then(|| d.prompt.as_ref().map(|p| p.tool_use_id.as_str()))?
+    }
+
     pub fn waiting_for_answer(&self) -> bool {
         self.dialog.as_ref().is_some_and(|d| {
             matches!(d.kind, DialogKind::Permission { .. } | DialogKind::Plan | DialogKind::Questions { .. })
@@ -1218,9 +1592,9 @@ impl App {
         match &d.kind {
             DialogKind::Picker { picker, filter } => {
                 let body = if filter.is_empty() {
-                    vec!["Type to filter".to_string()]
+                    vec!["❯ type to filter".to_string()]
                 } else {
-                    vec![format!("Filter: {filter}")]
+                    vec![format!("❯ {filter}▏")]
                 };
                 (picker.title.clone(), body)
             }
@@ -1230,6 +1604,10 @@ impl App {
                 let mut body = vec![];
                 if p.tool_name == "Bash" {
                     body.extend(p.input["command"].as_str().unwrap_or("").lines().take(6).map(|l| format!("  {l}")));
+                    // Where it runs: a relative path means nothing without it.
+                    if !self.status.cwd.is_empty() {
+                        body.push(format!("  in {}", super::short_path(&self.status.cwd)));
+                    }
                     if let Some(d) = p.input["description"].as_str().filter(|d| !d.trim().is_empty()) {
                         body.push(format!("  {d}"));
                     }
@@ -1255,7 +1633,12 @@ impl App {
                 if !p.reason.is_empty() && p.reason != "this tool requires permission" {
                     body.push(p.reason.clone());
                 }
-                (format!("Approve {}?", tool_display_name(&p.tool_name)), body)
+                let title = if p.tool_name == "Bash" {
+                    "Run this command?".to_string()
+                } else {
+                    format!("Approve {}?", tool_display_name(&p.tool_name))
+                };
+                (title, body)
             }
             DialogKind::Plan => ("Go ahead with this plan?".into(), vec![]),
             DialogKind::Viewer { screen, .. } => (screen.title.clone(), vec![]),
@@ -1326,7 +1709,12 @@ impl App {
             }
             return vec![];
         }
-        if let DialogKind::Permission { always } = &d.kind {
+        if let DialogKind::Permission { always, danger } = &d.kind {
+            // A destructive command is allowed with `y` only: Enter on Allow just says so.
+            if danger.is_some() && key.code == KeyCode::Enter && d.selected + 1 < n {
+                self.hint = Some(("Press y to allow it; Enter or n denies".into(), Instant::now()));
+                return vec![];
+            }
             let pick = match key.code {
                 KeyCode::Char('y') => Some(0),
                 KeyCode::Char('a') if always.is_some() => Some(1),
@@ -1389,7 +1777,7 @@ impl App {
                 };
             }
             DialogKind::Viewer { .. } | DialogKind::Form { .. } => {}
-            DialogKind::Permission { always } => {
+            DialogKind::Permission { always, .. } => {
                 let always_row = always.is_some();
                 let suggestions = d.prompt.as_ref().map(|p| p.suggestions.clone()).unwrap_or_default();
                 let a = match (i, always_row) {
@@ -2038,7 +2426,7 @@ mod tests {
         typed(&mut a, "hello");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("hello".into())]);
         assert!(a.busy);
-        assert_eq!(texts(&a.take_pending()), ["", "│  hello  "]);
+        assert_eq!(texts(&a.take_pending()), ["", "❯ hello"]);
         typed(&mut a, "next");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "queued while a turn runs");
         assert_eq!(a.queued.len(), 1);
@@ -2077,11 +2465,11 @@ mod tests {
             text: "careful\nsecond".into(),
         }));
         let lines = a.take_pending();
-        assert_eq!(texts(&lines), ["", "  ▲ careful", "    second"]);
+        assert_eq!(texts(&lines), ["", "▲ careful", "  second"], "in the column of the other marks");
         assert_eq!(lines[1].spans[0].style, a.theme.warning());
         assert_eq!(lines[1].spans[1].style, Style::default(), "the words stay readable");
         a.on_event(UiEvent::Engine(EngineEvent::Notice { level: NoticeLevel::Error, text: "broke".into() }));
-        assert_eq!(texts(&a.take_pending()), ["", "  ✕ broke"]);
+        assert_eq!(texts(&a.take_pending()), ["", "✗ broke"]);
     }
 
     #[test]
@@ -2175,7 +2563,7 @@ mod tests {
         // /context typed mid-turn comes back as a screen while the question is open.
         let screen = kodact_core::commands::screens::Screen { title: "Context".into(), rows: vec![] };
         a.on_event(UiEvent::Screen(screen));
-        assert_eq!(a.dialog_text().0, "Approve Bash?", "the question stays");
+        assert_eq!(a.dialog_text().0, "Run this command?", "the question stays");
         assert!(rx.try_recv().is_err(), "and isn't answered");
         a.on_key(key(KeyCode::Char('1')));
         assert!(matches!(rx.try_recv(), Ok(PermissionAnswer::Allow { .. })));
@@ -2191,7 +2579,7 @@ mod tests {
         typed(&mut a, "/usage");
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/usage".into())], "sent, not queued");
         assert!(a.queued.is_empty() && a.busy, "the turn goes on");
-        assert_eq!(texts(&a.take_pending()), ["", "│  /usage  "], "echoed");
+        assert_eq!(texts(&a.take_pending()), ["", "❯ /usage"], "echoed");
         typed(&mut a, "/compact");
         assert!(a.on_key(key(KeyCode::Enter)).is_empty(), "not immediate: queued");
         assert_eq!(a.queued.len(), 1);
@@ -2229,6 +2617,35 @@ mod tests {
             usage: Usage { input_tokens: 300, output_tokens: 20, ..Default::default() },
         }));
         assert_eq!(b.status.context_pct, Some(32));
+        // A reply that thought: its output is reasoning the next request won't carry.
+        let mut c = app();
+        c.status.window = 1000;
+        c.on_event(ev(StreamEvent::MessageStart {
+            message: ApiMessage { usage: Usage::default(), ..start_message() },
+        }));
+        c.on_event(ev(StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: Delta::ThinkingDelta { thinking: "let me think".into() },
+        }));
+        let body: kodact_types::MessageDeltaBody = serde_json::from_str("{}").unwrap();
+        c.on_event(ev(StreamEvent::MessageDelta {
+            delta: body,
+            usage: Usage { input_tokens: 300, output_tokens: 400, ..Default::default() },
+        }));
+        assert_eq!(c.status.context_pct, Some(30), "the thinking isn't counted: 30%, not 70%");
+    }
+
+    fn start_message() -> ApiMessage {
+        ApiMessage {
+            id: "m".into(),
+            kind: "message".into(),
+            role: Role::Assistant,
+            model: "x".into(),
+            content: vec![],
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage::default(),
+        }
     }
 
     #[test]
@@ -2243,7 +2660,72 @@ mod tests {
         a.on_event(delta("I will walk"));
         assert_eq!(texts(&a.take_pending()), [""], "the blank line goes out with the first words");
         a.on_event(delta(" through it.\n"));
-        assert_eq!(texts(&a.take_pending()), ["● I will walk through it."], "and isn't added twice");
+        assert_eq!(texts(&a.take_pending()), ["• I will walk through it."], "and isn't added twice");
+    }
+
+    #[test]
+    fn api_errors_read_as_a_person_would_say_them() {
+        let h = |t: &str| human_api_error(t, "quick-thinking", "gpt.example.net");
+        // The texts KodAct's engine sends, from a real gateway run.
+        let (head, next) = h(r#"API Error: HTTP 400 (error) from https://gpt.technica-engineering.net/api/v1/chat/completions: {"detail":"Model not found"}"#).unwrap();
+        assert_eq!(head, "quick-thinking isn't available on gpt.technica-engineering.net");
+        assert_eq!(next, "/model to choose another · HTTP 400: Model not found");
+        let (head, _) = h("API Error: network error: could not connect to https://gw.example.com/v1/chat/completions: Host is unreachable (os error 113). Retrying in 6s (attempt 1).").unwrap();
+        assert_eq!(head, "Can't reach gw.example.com · retrying in 6s (attempt 1)");
+        let (head, next) =
+            h(r#"API Error: HTTP 401 from https://u:p@gw.example.com/v1: {"error":{"message":"bad key"}}"#).unwrap();
+        assert_eq!(head, "gw.example.com didn't accept the key", "no credentials from the URL");
+        assert!(next.contains("HTTP 401: bad key"));
+        assert!(h("API Error: HTTP 503 from https://gw.example.com/v1").unwrap().0.ends_with("had an error"));
+        assert!(h("Something else entirely").is_none(), "other notices stay as they are");
+        // On screen: the mark in the marks' column, the headline, then the next step.
+        let mut a = app();
+        a.status.model = "quick-thinking".into();
+        a.on_event(UiEvent::Engine(EngineEvent::Notice {
+            level: NoticeLevel::Error,
+            text: r#"API Error: HTTP 400 (error) from https://gw.example.com/v1/chat/completions: {"detail":"Model not found"}"#.into(),
+        }));
+        assert_eq!(
+            texts(&a.take_pending()),
+            [
+                "",
+                "✗ quick-thinking isn't available on gw.example.com",
+                "  /model to choose another · HTTP 400: Model not found"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_persons_message_takes_the_input_mark_in_its_modes_colour() {
+        let mut a = App::new(Theme { color: true, light: false, accent: None, depth: Default::default() }, vec![]);
+        a.look = crate::tui::look::Look::Frame;
+        a.echo_prompt("fix the cart\nand the tests");
+        let lines = a.take_pending();
+        assert_eq!(texts(&lines), ["", "❯ fix the cart", "  and the tests"], "later lines line up under the words");
+        let default_mark = lines[1].spans[0].style.fg;
+        assert_eq!(default_mark, a.theme.mode("default").fg);
+        assert!(lines[1].spans[1].style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        a.status.mode = "plan".into();
+        a.echo_prompt("plan it");
+        let lines = a.take_pending();
+        let plan = lines.iter().find(|l| plain(l).contains("plan it")).unwrap();
+        assert_eq!(plan.spans[0].style.fg, a.theme.mode("plan").fg);
+        assert_ne!(plan.spans[0].style.fg, default_mark, "the mark shows the mode it was sent in");
+    }
+
+    #[test]
+    fn an_answer_that_opens_with_blank_lines_keeps_its_mark_on_the_words() {
+        // Reasoning models behind OpenAI-compatible gateways often start the text with "\n\n".
+        let mut a = app();
+        a.echo_prompt("hi");
+        a.take_pending();
+        a.on_event(UiEvent::Engine(EngineEvent::Stream {
+            event: StreamEvent::ContentBlockStart { index: 0, content_block: ContentBlock::text("") },
+            parent_tool_use_id: None,
+        }));
+        a.on_event(delta("\n\n"));
+        a.on_event(delta("Hi there.\nSecond line.\n"));
+        assert_eq!(texts(&a.take_pending()), ["", "• Hi there.", "  Second line."]);
     }
 
     #[test]
@@ -2254,7 +2736,7 @@ mod tests {
             parent_tool_use_id: None,
         }));
         a.on_event(delta("Here is **the** plan:\n- step"));
-        assert_eq!(texts(&a.pending), ["", "● Here is the plan:"]);
+        assert_eq!(texts(&a.pending), ["", "• Here is the plan:"]);
         assert_eq!(a.live, "- step");
         a.on_event(delta(" one\n```sh\nls\n"));
         a.on_event(UiEvent::Engine(EngineEvent::Stream {
@@ -2304,7 +2786,7 @@ mod tests {
         }));
         assert_eq!(
             texts(&a.take_pending()),
-            ["", "● Ran cargo test", "  └ ok", "    2 passed"],
+            ["", "✓ Ran cargo test", "  └ ok", "    2 passed"],
             "the header goes out with its result; a command shows its first lines"
         );
         assert!(a.running.is_empty());
@@ -2320,7 +2802,7 @@ mod tests {
             a.echo_prompt("fix the cart");
             texts(&a.take_pending())
         };
-        assert_eq!(prompt_for(Look::Frame).last().unwrap(), "│  fix the cart  ", "the panel's echo");
+        assert_eq!(prompt_for(Look::Frame).last().unwrap(), "❯ fix the cart", "the input's mark, then the words");
         assert_eq!(prompt_for(Look::Bare).last().unwrap(), "› fix the cart");
         let card = prompt_for(Look::Card);
         assert!(card[card.len() - 2].starts_with("  you · "), "{card:?}");
@@ -2337,15 +2819,16 @@ mod tests {
                 name: "Bash".into(),
                 input: json!({"command": "cargo test"}),
                 since: Instant::now(),
+                step: None,
+                steps: 0,
             };
-            let dot = a.theme.success();
-            a.commit_tool(r, dot, false);
+            a.commit_tool(r, ToolEnd::Done);
             texts(&a.take_pending()).last().unwrap().clone()
         };
         assert_eq!(step_for(Look::Bare), "  ran cargo test");
         assert_eq!(step_for(Look::Ledger), "  ran cargo test");
         assert_eq!(step_for(Look::Glow), "✓ Ran cargo test");
-        assert_eq!(step_for(Look::Frame), "● Ran cargo test");
+        assert_eq!(step_for(Look::Frame), "✓ Ran cargo test");
         // A style arrives from the session by name.
         let mut a = app();
         a.on_event(UiEvent::Look("ledger".into()));
@@ -2372,11 +2855,33 @@ mod tests {
         assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  └ 2 lines, a new file"]);
         assert_eq!(texts(&result_lines(&t, "Bash", "", false, None)), ["  └ (no output)"]);
         let long = (1..=6).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        // A command that went well: its last lines, where the summary is.
         assert_eq!(
             texts(&result_lines(&t, "Bash", &long, false, None)),
-            ["  └ line 1", "    line 2", "    line 3", "    … +3 lines"]
+            ["  └ … 3 earlier lines", "    line 4", "    line 5", "    line 6"]
         );
-        assert_eq!(texts(&result_lines(&t, "Bash", "boom\nmore", true, None)), ["  └ boom (+1 lines)"]);
+        assert_eq!(
+            texts(&result_lines(&t, "Bash", ".\n1 passed in 0.03s", false, None)),
+            ["  └ 1 passed in 0.03s"],
+            "no progress dots"
+        );
+        // A failure shows the error, in red, with what led to it.
+        let pytest =
+            "Exit code 1\n....F\nFAILED tests/test_calc.py::test_div - ZeroDivisionError\n1 failed, 4 passed in 0.12s";
+        let failed = result_lines(&t, "Bash", pytest, true, None);
+        assert_eq!(
+            texts(&failed),
+            [
+                "  └ Exit code 1",
+                "    FAILED tests/test_calc.py::test_div - ZeroDivisionError",
+                "    1 failed, 4 passed in 0.12s"
+            ]
+        );
+        assert_eq!(failed[1].spans[1].style, t.error(), "the error line in red");
+        let many = (1..=9).map(|i| format!("step {i}")).collect::<Vec<_>>().join("\n") + "\nerror: boom";
+        let lines = texts(&result_lines(&t, "Bash", &many, true, None));
+        assert_eq!(lines[0], "  └ … 5 earlier lines");
+        assert_eq!(lines.last().unwrap(), "    error: boom");
     }
 
     #[test]
@@ -2473,7 +2978,7 @@ mod tests {
             destination: "localSettings".into(),
         }];
         a.on_event(UiEvent::Ask { prompt: p, reply: tx });
-        assert_eq!(a.dialog_text().0, "Approve Bash?");
+        assert_eq!(a.dialog_text().0, "Run this command?");
         assert_eq!(a.dialog_options()[1].0, "Always allow Bash(npm test)");
         a.on_key(key(KeyCode::Char('2')));
         match rx.try_recv().unwrap() {
@@ -2567,7 +3072,7 @@ mod tests {
         assert_eq!(a.dialog_options()[1].0, "Haiku ✔");
         typed(&mut a, "op");
         assert_eq!(a.dialog_options().len(), 1);
-        assert_eq!(a.dialog_text().1, ["Filter: op"]);
+        assert_eq!(a.dialog_text().1, ["❯ op▏"]);
         assert_eq!(a.on_key(key(KeyCode::Enter)), vec![Action::Send("/model opus".into())]);
         assert!(a.dialog.is_none());
         a.on_event(UiEvent::Idle);

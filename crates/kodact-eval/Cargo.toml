@@ -4,6 +4,12 @@ description = "Evaluation harness: runs kodact headless on a task suite and repo
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "kodact-eval"

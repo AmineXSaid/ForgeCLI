@@ -289,7 +289,7 @@ pub(super) fn doctor_checks(d: &Driver) -> Vec<crate::doctor::Check> {
 }
 
 fn release_notes() -> String {
-    include_str!("../../../../CHANGELOG.md").trim().to_string()
+    include_str!(env!("KODACT_CHANGELOG")).trim().to_string()
 }
 
 fn plugins(d: &Driver) -> String {

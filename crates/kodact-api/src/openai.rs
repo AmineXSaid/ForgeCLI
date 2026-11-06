@@ -591,6 +591,8 @@ impl ChunkTranslator {
         if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
             self.usage.input_tokens = u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
             self.usage.output_tokens = u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0);
+            self.usage.reasoning_output_tokens =
+                u.pointer("/completion_tokens_details/reasoning_tokens").and_then(Value::as_u64).unwrap_or(0);
             if let Some(c) = u.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64) {
                 self.usage.cache_read_input_tokens = c;
                 self.usage.input_tokens = self.usage.input_tokens.saturating_sub(c);
@@ -1286,6 +1288,29 @@ mod tests {
         assert_eq!((id.as_str(), name.as_str()), ("call_a", "Read"));
         assert_eq!(input["file_path"], "/x");
         assert_eq!(m.usage.input_tokens, 11);
+    }
+
+    #[test]
+    fn hidden_reasoning_is_counted_apart() {
+        // A gateway that reasons without sending the reasoning still counts it in completion_tokens.
+        let mut tr = ChunkTranslator::new("local");
+        let mut events = vec![];
+        for chunk in [
+            r#"{"id":"c1","choices":[{"delta":{"content":"Hi."}}]}"#,
+            r#"{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            r#"{"id":"c1","choices":[],"usage":{"prompt_tokens":9000,"completion_tokens":1200,
+                "completion_tokens_details":{"reasoning_tokens":1190}}}"#,
+            "[DONE]",
+        ] {
+            events.extend(tr.push(chunk).unwrap());
+        }
+        let mut acc = MessageAccumulator::new();
+        for e in &events {
+            acc.push(e).unwrap();
+        }
+        let m = acc.finish().unwrap();
+        assert_eq!(m.usage.output_tokens, 1200, "billed output keeps the reasoning");
+        assert_eq!(m.usage.reasoning_output_tokens, 1190);
     }
 
     #[test]

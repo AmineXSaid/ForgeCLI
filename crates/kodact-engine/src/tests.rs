@@ -658,6 +658,27 @@ async fn reasoning_the_provider_does_not_send_back_is_not_counted_as_context() {
     );
 }
 
+/// A gateway that reasons without sending the reasoning (only `reasoning_tokens` in its usage):
+/// the hidden reasoning isn't the conversation either.
+#[tokio::test]
+async fn hidden_reasoning_is_not_counted_as_context() {
+    let reply = MockTurn::text("noted").with_usage(kodact_types::Usage {
+        input_tokens: 5_000,
+        output_tokens: 12_000,
+        reasoning_output_tokens: 11_990,
+        ..Default::default()
+    });
+    let h = Harness::new(vec![reply, MockTurn::text("second answer")]);
+    h.provider.set_resends_reasoning(false);
+    let mut e = h.engine_with(small_window(), PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    e.submit(prompt("first")).await;
+    assert!(e.projected_context_tokens() < 5_100, "{}", e.projected_context_tokens());
+    // Every token still counts toward what the session used.
+    assert_eq!(e.state.total_usage.output_tokens, 12_000);
+    e.submit(prompt("second")).await;
+    assert_eq!(h.provider.requests().len(), 2, "no summary request");
+}
+
 /// A summary request is not the conversation: its size (the whole conversation plus the summary
 /// it wrote) used to become the conversation's after a failed attempt, and the size reported
 /// before a compaction.
