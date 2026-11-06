@@ -299,6 +299,21 @@ impl Tool for WebSearch {
 
 #[cfg(test)]
 mod tests {
+    /// Behind a TLS-inspecting proxy (a company's Zscaler, a sandbox's egress proxy), the proxy's
+    /// CA is in the system store or `SSL_CERT_FILE`, not among the built-in roots: WebFetch must
+    /// trust it, as curl and Python do. Needs the network, so it runs by hand:
+    /// `cargo test -p kodact-tools -- --ignored fetches_https_with_the_system_trust_store`.
+    #[tokio::test]
+    #[ignore]
+    async fn fetches_https_with_the_system_trust_store() {
+        let f = WebFetch::new(None);
+        // KODACT_TEST_FETCH_URL points it at a server whose CA only SSL_CERT_FILE knows.
+        let url = std::env::var("KODACT_TEST_FETCH_URL").unwrap_or_else(|_| "https://example.com/".into());
+        let url = reqwest::Url::parse(&url).unwrap();
+        let out = f.fetch(&url).await;
+        assert!(out.is_ok(), "{out:?}");
+    }
+
     use super::*;
 
     #[test]

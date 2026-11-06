@@ -714,3 +714,10 @@ is not done.
 
 **Errors** state what failed, the cause, and the next step. For example:
 `could not connect to http://…/v1/messages: Connection refused. Check KODACT_BASE_URL, your network connection and proxy settings.`
+
+**Proxies and certificates:** every HTTPS connection (the model API, WebFetch,
+HTTP and SSE MCP servers) goes through `HTTPS_PROXY` / `NO_PROXY` when set, and
+trusts both the built-in public roots and the system's certificate store,
+including a file named by `SSL_CERT_FILE` or a directory named by
+`SSL_CERT_DIR`. So behind a TLS-inspecting company proxy, KodAct trusts the
+proxy's CA wherever curl and Python on the same machine do.
