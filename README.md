@@ -41,7 +41,8 @@ On a new Debian or Ubuntu machine, WSL included, `scripts/setup-debian.sh`
 installs what the build, the tests and the Harbor runs need. It also makes
 every tool trust the certificate authority of a company proxy that re-signs
 HTTPS, taken from Windows' own trust store under WSL. Run it again at any
-time: it keeps what is in place, and `--check` only reports.
+time: it only adds what is missing and never changes a setting already there,
+yours or its own. `--check` only reports.
 
 ## Credentials
 

@@ -6,17 +6,20 @@
 #   scripts/setup-debian.sh --check       # the checks only: changes nothing
 #   scripts/setup-debian.sh --no-docker   # every step but Docker (cargo test doesn't need it)
 #
-# Source your env file first, so the checks cover your endpoint too. Each step keeps what is
-# already in place, so the script is safe to run again. Every change goes where nothing rewrites
-# it later, so it holds for every later build, test and Harbor run, after `wsl --shutdown`,
-# `git pull` and package upgrades. Nothing goes into WSL's /etc/resolv.conf or /etc/hosts
-# (rewritten at each start), into the certificate bundle itself (rebuilt by
+# Source your env file first, so the checks cover your endpoint too. The script only adds what
+# is missing and never changes or removes a setting that is already there, yours or an earlier
+# run's, so it is safe to run again and later runs keep what you set. Every change goes where
+# nothing rewrites it later, so it holds for every later build, test and Harbor run, after
+# `wsl --shutdown`, `git pull` and package upgrades. Nothing goes into WSL's /etc/resolv.conf or
+# /etc/hosts (rewritten at each start), into the certificate bundle itself (rebuilt by
 # update-ca-certificates) or into this repository (replaced by git pull):
-#   company CA     /usr/local/share/ca-certificates/kodact-company-ca-*.crt
-#   tool settings  ~/.kodact-certs.sh, read by ~/.bashrc (this script's own file)
-#   Docker DNS     the "dns" key of /etc/docker/daemon.json (other keys kept)
-#   WSL systemd    "systemd=true" under [boot] in /etc/wsl.conf (other settings kept)
-#   Rust, uv       ~/.cargo and ~/.local/bin (their installers put them on PATH)
+#   company CA     /usr/local/share/ca-certificates/kodact-company-ca-*.crt (files only added)
+#   tool settings  ~/.kodact-certs.sh, read by ~/.bashrc: missing lines are added; a line you
+#                  changed or commented out stays as it is
+#   Docker DNS     a "dns" key in /etc/docker/daemon.json, only when there is none yet
+#   WSL systemd    "systemd=true" under [boot] in /etc/wsl.conf, only when it says nothing yet
+#   Rust, uv       ~/.cargo and ~/.local/bin (their installers put them on PATH); an installed
+#                  Harbor, of any version, is kept
 # Your endpoint, key and run settings stay in your own env file: the script never writes it.
 #
 # Behind a proxy that inspects HTTPS (Zscaler and the like), sites arrive signed by the
@@ -53,7 +56,6 @@ SUDO=
 [ "$(id -u)" -eq 0 ] || SUDO=sudo
 DOCKER_CMD=(docker)
 INTERCEPTED=false # a site's certificate chain needs a CA beyond the public ones
-REACHED=false     # at least one site answered, so INTERCEPTED means something
 CA_CHANGED=false
 WORK=
 failures=()
@@ -242,7 +244,6 @@ step_ca() {
       fail "$site: no TLS answer on port 443 (network, DNS or proxy settings)"
       continue
     fi
-    REACHED=true
     if $judge && ! chain_verifies "$moz" "$WORK/$site.pem"; then INTERCEPTED=true; fi
     if chain_verifies "$BUNDLE" "$WORK/$site.pem"; then
       ok "$site: trusted"
@@ -283,37 +284,48 @@ step_ca() {
   done
 }
 
-# Tools that bring their own certificate list use the system store instead.
+# Tools that bring their own certificate list use the system store instead. Lines are only
+# added: a setting already in the file, changed or commented out, yours or an earlier run's,
+# stays exactly as it is.
 step_certs_env() {
   step "Certificate settings for every tool ($CERTS_ENV)"
-  local harbor_ca=false new="$WORK/certs.sh" v
-  # Once set, the Harbor CA stays: a network that stops inspecting HTTPS for a while (another
-  # network, the VPN off) must not change the next runs.
-  if $INTERCEPTED || grep -q '^export KODACT_HARBOR_CA_BUNDLE=' "$CERTS_ENV" 2>/dev/null; then harbor_ca=true; fi
-  {
-    echo "# Written by KodAct's scripts/setup-debian.sh, which may rewrite it: keep your own settings elsewhere."
-    echo "# Tools with their own certificate list (Python's requests and pip, uv, Node, cargo) use the"
-    echo "# system store instead, which holds the company CA when there is one."
-    for v in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE PIP_CERT NODE_EXTRA_CA_CERTS CARGO_HTTP_CAINFO GIT_SSL_CAINFO; do
-      echo "export $v=$BUNDLE"
-    done
-    echo "export SSL_CERT_DIR=/etc/ssl/certs"
-    echo "export UV_NATIVE_TLS=1 UV_SYSTEM_CERTS=1"
-    if $harbor_ca; then
-      echo "# HTTPS on this network is re-signed by a company CA: Harbor's task containers trust it too"
-      echo "# (evals/harbor/README.md, \"Behind a company proxy\"; job names get -hostca)."
-      echo "export KODACT_HARBOR_CA_BUNDLE=$BUNDLE"
+  local want=() missing=() names=() line var
+  for var in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE PIP_CERT NODE_EXTRA_CA_CERTS CARGO_HTTP_CAINFO GIT_SSL_CAINFO; do
+    want+=("export $var=$BUNDLE")
+  done
+  want+=("export SSL_CERT_DIR=/etc/ssl/certs" "export UV_NATIVE_TLS=1" "export UV_SYSTEM_CERTS=1")
+  # On a network that re-signs HTTPS, Harbor's task containers trust the company CA too. Once
+  # added it stays, so a day on another network doesn't change the next runs.
+  if $INTERCEPTED; then want+=("export KODACT_HARBOR_CA_BUNDLE=$BUNDLE"); fi
+  for line in "${want[@]}"; do
+    var="${line#export }"
+    var="${var%%=*}"
+    if ! grep -qE "^[[:space:]#]*(export[[:space:]]+)?$var=" "$CERTS_ENV" 2>/dev/null; then
+      missing+=("$line")
+      names+=("$var")
     fi
-  } >"$new"
-  if [ -f "$CERTS_ENV" ] && cmp -s "$new" "$CERTS_ENV"; then
+  done
+  if [ ${#missing[@]} -eq 0 ]; then
     ok "up to date"
   elif $CHECK; then
-    todo "$CERTS_ENV is missing or out of date"
-  elif ! $REACHED && [ -f "$CERTS_ENV" ]; then
-    note "no site answered, so $CERTS_ENV is left as it is"
+    todo "$CERTS_ENV doesn't set ${names[*]}"
   else
-    cp "$new" "$CERTS_ENV"
-    ok "written"
+    if [ ! -f "$CERTS_ENV" ]; then
+      {
+        echo "# Made by KodAct's scripts/setup-debian.sh. Its reruns only add settings that are missing:"
+        echo "# change any line, or comment one out to turn it off, and it stays that way."
+        echo "# Tools with their own certificate list (Python's requests and pip, uv, Node, cargo) use the"
+        echo "# system store instead, which holds the company CA when there is one."
+      } >"$CERTS_ENV"
+    fi
+    for line in "${missing[@]}"; do
+      if [[ "$line" == "export KODACT_HARBOR_CA_BUNDLE="* ]]; then
+        echo "# HTTPS on this network is re-signed by a company CA: Harbor's task containers trust it too"
+        echo "# (evals/harbor/README.md, \"Behind a company proxy\"; job names get -hostca)."
+      fi
+      echo "$line"
+    done >>"$CERTS_ENV"
+    ok "added ${names[*]}"
   fi
   if grep -qF '.kodact-certs.sh' "$BASHRC" 2>/dev/null; then
     ok "$BASHRC reads it"
@@ -405,13 +417,18 @@ step_harbor() {
     fi
   fi
   ok "$(uv --version)"
-  local tools
+  local tools have
   tools="$(uv tool list 2>/dev/null || true)"
-  if grep -qx "harbor v$HARBOR_VERSION" <<<"$tools"; then
-    ok "harbor $HARBOR_VERSION"
+  have="$(sed -n 's/^harbor v//p' <<<"$tools" | head -n 1)"
+  if [ "$have" = "$HARBOR_VERSION" ]; then
+    ok "harbor $have"
+  elif [ -n "$have" ]; then
+    ok "harbor $have, kept (kodact_agent.py is written for $HARBOR_VERSION)"
+  elif command -v harbor >/dev/null 2>&1; then
+    ok "harbor at $(command -v harbor), kept"
   elif $CHECK; then
-    todo "harbor $HARBOR_VERSION is not installed"
-  elif run_logged uv tool install --force --python 3.12 "harbor==$HARBOR_VERSION"; then
+    todo "harbor is not installed"
+  elif run_logged uv tool install --python 3.12 "harbor==$HARBOR_VERSION"; then
     ok "installed harbor $HARBOR_VERSION"
   else
     fail "uv tool install harbor==$HARBOR_VERSION failed (see above)"
@@ -449,9 +466,31 @@ install_docker() {
   ok "installed Docker Engine"
 }
 
-# Puts systemd=true under [boot] in $WSL_CONF, keeping everything else in it.
+# What [boot] in $WSL_CONF says about systemd ("true", "false"), or nothing.
+wsl_systemd_setting() {
+  python3 - "$WSL_CONF" <<'PY' 2>/dev/null || true
+import re, sys
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except OSError:
+    sys.exit(0)
+in_boot = False
+for line in lines:
+    s = line.strip()
+    if s.startswith("["):
+        in_boot = s.lower() == "[boot]"
+    elif in_boot:
+        m = re.match(r"systemd\s*=\s*(\S+)", s, re.I)
+        if m:
+            print(m.group(1).lower())
+            break
+PY
+}
+
+# Adds systemd=true under [boot] in $WSL_CONF, keeping everything else in it. A systemd line
+# already there, whatever it says, is left as it is.
 set_wsl_systemd() {
-  $SUDO python3 - "$WSL_CONF" <<'EOF'
+  $SUDO python3 - "$WSL_CONF" <<'PY'
 import re, sys
 path = sys.argv[1]
 try:
@@ -467,10 +506,7 @@ for line in lines:
             done = True
         in_boot = s.lower() == "[boot]"
     elif in_boot and re.match(r"systemd\s*=", s, re.I):
-        if not done:
-            out.append("systemd=true")
-            done = True
-        continue
+        sys.exit(0)  # it says something already: the owner's choice
     out.append(line)
 if in_boot and not done:
     out.append("systemd=true")
@@ -478,10 +514,24 @@ if in_boot and not done:
 if not done:
     out += ([""] if out else []) + ["[boot]", "systemd=true"]
 open(path, "w").write("\n".join(out) + "\n")
-EOF
+PY
 }
 
-# Sets the "dns" key of $DAEMON_JSON to the servers given, keeping every other key.
+# The "dns" value $DAEMON_JSON already has (as JSON), or nothing.
+daemon_dns() {
+  python3 - "$DAEMON_JSON" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    conf = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+if "dns" in conf:
+    print(json.dumps(conf["dns"]))
+PY
+}
+
+# Adds a "dns" key with the servers given to $DAEMON_JSON, keeping every other key. One that is
+# already there is never replaced (exit 3).
 set_docker_dns() {
   $SUDO python3 - "$DAEMON_JSON" "$@" <<'EOF'
 import json, os, sys
@@ -493,6 +543,8 @@ except FileNotFoundError:
     conf = {}
 except json.JSONDecodeError as e:
     sys.exit(f"{path} is not valid JSON ({e}); fix it, then rerun")
+if "dns" in conf:
+    sys.exit(3)
 conf["dns"] = servers
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path + ".tmp", "w") as f:
@@ -596,12 +648,18 @@ step_docker() {
     install_docker || return 0
   fi
   if is_wsl && ! has_systemd; then
-    if $CHECK; then
-      todo "WSL runs without systemd, so Docker doesn't start by itself"
-    else
-      set_wsl_systemd
-      todo "systemd is on in $WSL_CONF from the next start: run 'wsl --shutdown' in Windows PowerShell, reopen this terminal, then rerun this script"
-    fi
+    case "$(wsl_systemd_setting)" in
+      "")
+        if $CHECK; then
+          todo "WSL runs without systemd, so Docker doesn't start by itself"
+        else
+          set_wsl_systemd
+          todo "systemd is on in $WSL_CONF from the next start: run 'wsl --shutdown' in Windows PowerShell, reopen this terminal, then rerun this script"
+        fi
+        ;;
+      true) todo "systemd is on in $WSL_CONF but not running yet: run 'wsl --shutdown' in Windows PowerShell and reopen this terminal" ;;
+      *) note "$WSL_CONF turns systemd off (your setting, kept): start Docker with 'sudo service docker start' after each WSL start" ;;
+    esac
   fi
   docker_up || return 0
   ok "docker $("${DOCKER_CMD[@]}" version --format '{{.Server.Version}}' 2>/dev/null)"
@@ -613,7 +671,7 @@ step_docker() {
     fail "docker can't pull $TEST_IMAGE (see above)"
     return 0
   fi
-  local names=("${CONTAINER_NAMES[@]}") bad servers=() working=() s before="$WORK/daemon.json.before" had=false
+  local names=("${CONTAINER_NAMES[@]}") bad servers=() working=() s before="$WORK/daemon.json.before" had=false existing list
   bad="$(unresolved "" "${names[@]}")"
   if [ -z "$bad" ]; then
     ok "containers resolve ${names[*]}"
@@ -629,16 +687,20 @@ step_docker() {
       fail "containers can't resolve $bad, through the daemon or any of these DNS servers: ${servers[*]:-none}"
       note "see evals/harbor/README.md, \"Containers can't resolve names\"; then rerun with KODACT_DOCKER_DNS"
     elif $desktop; then
-      local list
       list="$(printf '"%s", ' "${working[@]}")"
       fail "containers can't resolve $bad: in Docker Desktop, Settings > Docker Engine, set \"dns\": [${list%, }], then Apply"
+    elif existing="$(daemon_dns)" && [ -n "$existing" ]; then
+      # A "dns" already there is the owner's (servers for the VPN, say): never replaced.
+      list="$(printf '"%s", ' "${working[@]}")"
+      fail "containers can't resolve $bad with the \"dns\": $existing in $DAEMON_JSON (kept as it is)"
+      note "servers that work from a container right now: [${list%, }]; to use them, change \"dns\" there and restart Docker"
     else
       if [ -f "$DAEMON_JSON" ]; then
         $SUDO cp "$DAEMON_JSON" "$before"
         had=true
       fi
       if ! set_docker_dns "${working[@]}"; then
-        fail "$DAEMON_JSON is not valid JSON, so it was left as it is: fix it, then rerun"
+        fail "$DAEMON_JSON couldn't take a \"dns\" key (not valid JSON, or one is there already): it was left as it is"
       else
         restart_docker || true
         bad="$(unresolved "" "${names[@]}")"

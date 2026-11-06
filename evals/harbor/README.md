@@ -20,8 +20,10 @@ The stream ends up in each trial's agent logs (`kodact.jsonl`,
 On Debian or Ubuntu, WSL included, `scripts/setup-debian.sh` does all of this,
 plus the certificate and DNS steps under "Things to check first". It writes
 only where nothing rewrites it later: not WSL's `/etc/resolv.conf` or
-`/etc/hosts`, which WSL regenerates at each start, and not this repository. So
-every later run keeps the setup. `scripts/setup-debian.sh --check` only reports.
+`/etc/hosts`, which WSL regenerates at each start, and not this repository. It
+also only adds what is missing: a setting already there, yours or an earlier
+run's, is never changed. So every later run keeps the setup, and what you set
+by hand. `scripts/setup-debian.sh --check` only reports.
 
 By hand, you need Docker, `uv` and Harbor:
 
@@ -280,10 +282,11 @@ certificates a few sites send. When the system doesn't trust them, it takes
 the authority that signed them from Windows' trust store (under WSL) or from
 the file `KODACT_CA_FILE` names, and never from the network. It saves that
 authority in `/usr/local/share/ca-certificates/`, which every later
-`update-ca-certificates` keeps. Then it writes `~/.kodact-certs.sh`, which
-every new shell reads. That file points Python, pip, uv, Node and cargo at the
-system store and, on such a network, sets `KODACT_HARBOR_CA_BUNDLE` for every
-later run.
+`update-ca-certificates` keeps. Then it adds to `~/.kodact-certs.sh`, which
+every new shell reads, the lines that file lacks. They point Python, pip, uv,
+Node and cargo at the system store and, on such a network, set
+`KODACT_HARBOR_CA_BUNDLE` for every later run. A line you change or comment out
+there stays that way.
 
 The task containers have the same problem. Their test scripts download tools
 (`uv`, packages) over HTTPS, so on such a network they fail and every task
@@ -359,10 +362,12 @@ before writing anything:
 - this machine's;
 - under WSL, Windows' own.
 
-It writes the servers that work to the `"dns"` key and leaves the other keys
-alone. If containers still can't resolve names after that, it puts the file
-back as it was. Don't edit WSL's `/etc/resolv.conf` instead: WSL rewrites it
-at every start.
+When the file has no `"dns"` key yet, it adds one with the servers that work
+and leaves the other keys alone. If containers still can't resolve names after
+that, it puts the file back as it was. A `"dns"` key already there is yours
+(company servers for the VPN, say), so it is never replaced: the script prints
+the servers that work instead. Don't edit WSL's `/etc/resolv.conf` either: WSL
+rewrites it at every start.
 
 ### Slow proxy: download the tests' packages once
 

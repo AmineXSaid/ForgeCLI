@@ -167,8 +167,7 @@ step_ca >"$T/out5" 2>&1
 expect "--check adds no CA" [ "$(find "$ANCHORS" -name '*.crt' | wc -l)" -eq 0 ]
 CHECK=false
 
-# --- ~/.kodact-certs.sh: written once, the Harbor CA kept once set -----------------------------
-REACHED=true
+# --- ~/.kodact-certs.sh: lines only added, never changed --------------------------------------
 INTERCEPTED=true
 step_certs_env >/dev/null 2>&1
 expect "the certificate settings name the bundle" grep -q "^export SSL_CERT_FILE=$BUNDLE\$" "$CERTS_ENV"
@@ -179,6 +178,39 @@ step_certs_env >/dev/null 2>&1
 expect "the Harbor CA stays once set" grep -q '^export KODACT_HARBOR_CA_BUNDLE=' "$CERTS_ENV"
 step_certs_env >/dev/null 2>&1
 expect "bashrc reads them once" [ "$(grep -c 'kodact-certs.sh' "$BASHRC")" -eq 1 ]
+# The owner's edits: a changed value, a line commented out, a line deleted, a line of their own.
+sed -i 's|^export SSL_CERT_FILE=.*|export SSL_CERT_FILE=/opt/my-bundle.pem|; s|^export PIP_CERT=|# export PIP_CERT=|; /^export NODE_EXTRA_CA_CERTS=/d' "$CERTS_ENV"
+echo 'export MY_OWN=1' >>"$CERTS_ENV"
+INTERCEPTED=true
+step_certs_env >/dev/null 2>&1
+expect "a value the owner changed is kept" grep -qx 'export SSL_CERT_FILE=/opt/my-bundle.pem' "$CERTS_ENV"
+expect "the changed value isn't added back beside it" [ "$(grep -c 'SSL_CERT_FILE=' "$CERTS_ENV")" -eq 1 ]
+expect "a line the owner commented out stays off" [ "$(grep -c 'PIP_CERT=' "$CERTS_ENV")" -eq 1 ]
+expect "the owner's own line is kept" grep -qx 'export MY_OWN=1' "$CERTS_ENV"
+expect "a missing line is added back" grep -qx "export NODE_EXTRA_CA_CERTS=$BUNDLE" "$CERTS_ENV"
+expect "the Harbor CA isn't added twice" [ "$(grep -c '^export KODACT_HARBOR_CA_BUNDLE=' "$CERTS_ENV")" -eq 1 ]
+
+# --- Harbor: an installed one, of any version, is kept -------------------------------------------
+mkdir -p "$T/uvbin"
+cat >"$T/uvbin/uv" <<EOF
+#!/bin/sh
+case "\$*" in
+  --version) echo "uv 0.0.0" ;;
+  "tool list") cat "$T/uv-tools" 2>/dev/null ;;
+  *) echo "\$*" >>"$T/uv-calls" ;;
+esac
+EOF
+chmod +x "$T/uvbin/uv"
+harbor_case() { # what uv tool list prints
+  printf '%s' "$1" >"$T/uv-tools"
+  : >"$T/uv-calls"
+  HOME="$T/home" PATH="$T/uvbin:/usr/bin:/bin" step_harbor >"$T/harbor.out" 2>&1
+}
+harbor_case $'harbor v0.25.1\n- harbor\n'
+expect "another Harbor version is kept" [ ! -s "$T/uv-calls" ]
+expect "it says the version it kept" grep -q 'harbor 0.25.1, kept' "$T/harbor.out"
+harbor_case ""
+expect "no Harbor: it installs the version kodact_agent.py is written for" grep -qx "tool install --python 3.12 harbor==$HARBOR_VERSION" "$T/uv-calls"
 
 # --- /etc/wsl.conf: systemd on, everything else kept -----------------------------------------
 WSL_CONF="$T/wsl.conf"
@@ -191,16 +223,25 @@ wsl_case() { # description, content before, content expected
 wsl_case "no file" "" $'[boot]\nsystemd=true'
 wsl_case "other sections kept" $'[network]\ngenerateResolvConf=false\n' $'[network]\ngenerateResolvConf=false\n\n[boot]\nsystemd=true'
 wsl_case "a [boot] command kept" $'[boot]\ncommand=echo hi\n[user]\ndefault=me\n' $'[boot]\ncommand=echo hi\nsystemd=true\n[user]\ndefault=me'
-wsl_case "systemd=false turned on" $'# mine\n[boot]\nsystemd = false\n' $'# mine\n[boot]\nsystemd=true'
+wsl_case "the owner's systemd=false is kept" $'# mine\n[boot]\nsystemd = false\n' $'# mine\n[boot]\nsystemd = false'
 wsl_case "already on: unchanged" $'[boot]\nsystemd=true\n' $'[boot]\nsystemd=true'
+printf '[boot]\nsystemd = False\n' >"$WSL_CONF"
+expect "wsl.conf: what it says about systemd is read" [ "$(wsl_systemd_setting)" = false ]
+rm -f "$WSL_CONF"
+expect "wsl.conf: no file says nothing" [ -z "$(wsl_systemd_setting)" ]
 
-# --- /etc/docker/daemon.json: only "dns" changes -----------------------------------------------
+# --- /etc/docker/daemon.json: a "dns" key added, never replaced ---------------------------------
 DAEMON_JSON="$T/docker/daemon.json"
 set_docker_dns 10.1.1.1 10.2.2.2
 expect "daemon.json: created" python3 -c "import json,sys; assert json.load(open('$DAEMON_JSON')) == {'dns': ['10.1.1.1', '10.2.2.2']}"
-printf '{"log-driver": "local", "dns": ["8.8.8.8"], "features": {"buildkit": true}}\n' >"$DAEMON_JSON"
+printf '{"log-driver": "local", "features": {"buildkit": true}}\n' >"$DAEMON_JSON"
 set_docker_dns 10.1.1.1
-expect "daemon.json: other keys kept" python3 -c "import json; d = json.load(open('$DAEMON_JSON')); assert d == {'log-driver': 'local', 'dns': ['10.1.1.1'], 'features': {'buildkit': True}}, d"
+expect "daemon.json: dns added, other keys kept" python3 -c "import json; d = json.load(open('$DAEMON_JSON')); assert d == {'log-driver': 'local', 'dns': ['10.1.1.1'], 'features': {'buildkit': True}}, d"
+printf '{"log-driver": "local", "dns": ["10.21.2.10"]}\n' >"$DAEMON_JSON"
+cp "$DAEMON_JSON" "$T/owner.json"
+refute "daemon.json: an existing dns key is refused" set_docker_dns 8.8.8.8
+expect "daemon.json: the owner's dns servers stay" cmp -s "$DAEMON_JSON" "$T/owner.json"
+expect "daemon.json: the existing dns is read" [ "$(daemon_dns)" = '["10.21.2.10"]' ]
 printf '{"log-driver": "local",\n' >"$DAEMON_JSON"
 cp "$DAEMON_JSON" "$T/broken.json"
 set_docker_dns 10.1.1.1 >/dev/null 2>&1
