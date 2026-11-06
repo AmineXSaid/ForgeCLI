@@ -12,7 +12,7 @@ For each feature or harness change:
    running KodAct on their own project, at the terminal or in a script, not
    only on a benchmark. A change whose only effect is a benchmark score is not
    proposed.
-2. **Check it against "Fix, don't fit"** in `docs/GOALS.md`, for every fix:
+2. **Check it against "Fix, don't fit"** in `docs/goal.md`, for every fix:
    limits come from the model, never from the endpoint that showed the problem;
    say how the fix behaves on a large model with a big context window; fix the
    mechanism, not the task.

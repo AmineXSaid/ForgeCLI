@@ -29,37 +29,14 @@ same model, the same tasks and repeated runs.
 
 ## Rule: fix, don't fit (read before every fix)
 
-KodAct runs on whatever model the person chooses. Today that may be a 27B
-model behind a company gateway, with a 100k window and a 32k reply cap.
-Tomorrow it may be a large model with a window of 200k to 1M tokens and
-longer replies. A problem found on one model, in one run or on one benchmark
-task is fixed in the harness, for every model. KodAct is never tuned to the
-case that showed it.
-
-Before proposing or making a fix, check it against each point:
-
-1. **Limits come from the model.** The context window, the reply cap and the
-   time left are read from the model's limits (`modelLimits`, what the
-   endpoint reports, the settings) and from the run. Thresholds are shares of
-   them. A constant sized for 100k or 32k is a fit.
-2. **It holds on a large model.** Say how the fix behaves on a large window
-   and a strong, fast model: it helps there or stays out of the way. A fix
-   that throttles a model that has room is a fit: lower caps, earlier
-   compaction, shorter replies, fewer tokens kept.
-3. **It fixes a mechanism, not a task.** The cause is named in what KodAct
-   does or fails to do, and the fix applies to any project. No task names,
-   file names or benchmark details in code, prompts or tests' logic.
-4. **The evidence spans cases.** It is checked across the tasks and runs
-   that show the problem, both ways: the failure goes away, and what worked
-   still works. One trial is a lead, not a reason.
-5. **Tests cover both ends.** Where a limit is involved, the tests run the
-   fix with a small and a large window (or reply cap), and the large case
-   behaves as before.
-6. **Prompts speak to every model.** A prompt rule is good practice for any
-   model, worded as such, not a workaround for one model's habits.
-
-A proposal states, next to its effect in real use, how it behaves on a large
-model.
+KodAct runs on whatever model the person chooses, from a small model behind
+a company gateway (a 100k window, a 32k reply cap) to a large one with a
+window of 200k to 1M tokens. A problem found on one model, run or benchmark
+task is fixed in the harness for every model, never tuned to the case that
+showed it: limits come from the model, a fix says how it behaves on a large
+model and must help there or stay out of the way, it fixes a mechanism and
+not a task, and the tests cover a small and a large window. The full rule,
+and how it is checked without a large model at hand, is in `docs/goal.md`.
 
 ## The five pillars
 
