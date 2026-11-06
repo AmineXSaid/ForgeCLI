@@ -37,6 +37,12 @@ cargo build --release
 ./target/release/kodact --help
 ```
 
+On a new Debian or Ubuntu machine, WSL included, `scripts/setup-debian.sh`
+installs what the build, the tests and the Harbor runs need. It also makes
+every tool trust the certificate authority of a company proxy that re-signs
+HTTPS, taken from Windows' own trust store under WSL. Run it again at any
+time: it keeps what is in place, and `--check` only reports.
+
 ## Credentials
 
 | Variable | Used for |

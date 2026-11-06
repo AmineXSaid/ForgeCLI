@@ -17,12 +17,18 @@ The stream ends up in each trial's agent logs (`kodact.jsonl`,
 
 ## Setup (once)
 
-You need Docker, `uv` and Harbor:
+On Debian or Ubuntu, WSL included, `scripts/setup-debian.sh` does all of this,
+plus the certificate and DNS steps under "Things to check first". It writes
+only where nothing rewrites it later: not WSL's `/etc/resolv.conf` or
+`/etc/hosts`, which WSL regenerates at each start, and not this repository. So
+every later run keeps the setup. `scripts/setup-debian.sh --check` only reports.
+
+By hand, you need Docker, `uv` and Harbor:
 
 ```bash
 docker run --rm hello-world
 curl -LsSf https://astral.sh/uv/install.sh | sh && source "$HOME/.local/bin/env"
-uv tool install --python 3.12 harbor     # Python 3.12: some 3.14 builds crash loading PyYAML
+uv tool install --python 3.12 harbor==0.24.0   # the version kodact_agent.py is written for; Python 3.12: some 3.14 builds crash loading PyYAML
 harbor --help
 ```
 
@@ -269,6 +275,16 @@ it to the system trust store (`/etc/pki/ca-trust/source/anchors/` then
 `sudo update-ca-trust`, or `/usr/local/share/ca-certificates/` then
 `sudo update-ca-certificates`).
 
+On Debian or Ubuntu, `scripts/setup-debian.sh` does this. It looks at the
+certificates a few sites send. When the system doesn't trust them, it takes
+the authority that signed them from Windows' trust store (under WSL) or from
+the file `KODACT_CA_FILE` names, and never from the network. It saves that
+authority in `/usr/local/share/ca-certificates/`, which every later
+`update-ca-certificates` keeps. Then it writes `~/.kodact-certs.sh`, which
+every new shell reads. That file points Python, pip, uv, Node and cargo at the
+system store and, on such a network, sets `KODACT_HARBOR_CA_BUNDLE` for every
+later run.
+
 The task containers have the same problem. Their test scripts download tools
 (`uv`, packages) over HTTPS, so on such a network they fail and every task
 scores 0, whatever the agent did. To work around it:
@@ -335,6 +351,18 @@ for s in $(grep nameserver /etc/resolv.conf | cut -d' ' -f2); do echo "$s: $(tim
 Then list only those in `/etc/docker/daemon.json` (`"dns": ["10.x.x.x", ...]`)
 and restart Docker; with Docker Desktop, in Settings > Docker Engine. Check with
 `docker run --rm alpine nslookup <your endpoint's host>`.
+
+`scripts/setup-debian.sh` makes this check when containers can't resolve
+public names. It tries each server from a container (`docker run --dns`),
+before writing anything:
+- the ones in `KODACT_DOCKER_DNS`;
+- this machine's;
+- under WSL, Windows' own.
+
+It writes the servers that work to the `"dns"` key and leaves the other keys
+alone. If containers still can't resolve names after that, it puts the file
+back as it was. Don't edit WSL's `/etc/resolv.conf` instead: WSL rewrites it
+at every start.
 
 ### Slow proxy: download the tests' packages once
 
