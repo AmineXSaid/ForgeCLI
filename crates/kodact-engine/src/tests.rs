@@ -991,6 +991,72 @@ async fn verify_accepts_a_check_after_the_last_change() {
     assert_eq!(plain.submit(prompt("write")).await.num_turns, 2);
 }
 
+/// An answer file is checked by reading it back: chess-best-move, gcode-to-text and
+/// password-recovery (090446d) each wrote their answer to a .txt, read it back, and were still
+/// told to run the project's checks. Code still needs a run: reading it back isn't a check.
+#[tokio::test]
+async fn an_answer_file_read_back_is_checked_but_code_is_not() {
+    let h = Harness::new(vec![]);
+    let answer = h.cwd().join("move.txt");
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": answer, "content": "g2g4\n"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": format!("cat {}", answer.display())})));
+    h.provider.push(MockTurn::text("done: move.txt holds g2g4"));
+    let mut e = verifying_engine(&h, &["true"]);
+    let r = e.submit(prompt("write the best move to move.txt")).await;
+    assert_eq!((r.num_turns, r.result.as_deref()), (3, Some("done: move.txt holds g2g4")), "no reminder");
+
+    // Read back with the Read tool counts too; a change after the read doesn't.
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": answer, "content": "e2e4\n"})));
+    h.provider.push(MockTurn::tool("Read", json!({"file_path": answer})));
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": answer, "content": "d2d4\n"})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::text("done, unchecked"));
+    let r = e.submit(prompt("change it")).await;
+    assert_eq!(r.num_turns, 5, "the last version wasn't read back: reminded");
+
+    // Code read back is still unchecked.
+    let code = h.cwd().join("solve.py");
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": code, "content": "print(1)\n"})));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": format!("cat {}", code.display())})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::text("done, not run"));
+    let r = e.submit(prompt("write solve.py")).await;
+    assert_eq!(r.num_turns, 4);
+    assert!(last_user_text(&h.provider.requests()[h.provider.requests().len() - 1]).contains("`solve.py`"));
+}
+
+/// After a reminder, another comes only once something changed since: in 090446d, 6 of the 8
+/// trials reminded got the same reminder twice for files that hadn't changed, after re-running
+/// checks the loop didn't recognize.
+#[tokio::test]
+async fn a_reminder_comes_once_per_set_of_changes() {
+    let h = Harness::new(vec![]);
+    let f = h.cwd().join("app.py");
+    let twice = EngineConfig {
+        verify: Some(crate::verify::VerifyConfig { commands: vec!["true".into()], max_reminders: 2 }),
+        ..Default::default()
+    };
+    // Reminded once; the model runs something the loop doesn't count, changes nothing, and ends.
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "x = 1\n"})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::tool("Bash", json!({"command": "ls"})));
+    h.provider.push(MockTurn::text("done, rechecked"));
+    let mut e = h.engine_with(twice, PermissionMode::BypassPermissions, Arc::new(DenyPrompter), json!({}));
+    let r = e.submit(prompt("write app.py")).await;
+    assert_eq!((r.num_turns, r.result.as_deref()), (4, Some("done, rechecked")));
+    assert_eq!(h.transcript_text().matches(r#""subtype":"verification""#).count(), 1);
+
+    // A new change after the first reminder brings the second.
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "x = 2\n"})));
+    h.provider.push(MockTurn::text("done"));
+    h.provider.push(MockTurn::tool("Write", json!({"file_path": f, "content": "x = 3\n"})));
+    h.provider.push(MockTurn::text("done again"));
+    h.provider.push(MockTurn::text("done, unverified"));
+    let r = e.submit(prompt("change it twice")).await;
+    assert_eq!(r.num_turns, 5);
+    assert_eq!(h.transcript_text().matches(r#""subtype":"verification""#).count(), 3);
+}
+
 #[tokio::test]
 async fn verify_sees_shell_writes_through_git_and_failed_checks() {
     let h = Harness::new(vec![]);

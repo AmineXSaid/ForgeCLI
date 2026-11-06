@@ -2799,6 +2799,19 @@ impl Engine {
         let Some(vc) = self.cfg.verify.clone() else { return };
         let mut refresh = false;
         for ((_, name, input), r) in calls.iter().zip(results) {
+            // A file read back: plain data read after its last change has been checked.
+            if r.denial.is_none() && !r.output.is_error {
+                if name == "Read" {
+                    if let Some(p) = input.get("file_path").and_then(Value::as_str) {
+                        self.verify.read_back.push((p.to_string(), r.writes_after));
+                    }
+                } else if name == "Bash" {
+                    let command = input.get("command").and_then(Value::as_str).unwrap_or_default();
+                    for f in crate::verify::files_viewed(command) {
+                        self.verify.read_back.push((f, r.writes_after));
+                    }
+                }
+            }
             if name != "Bash"
                 || r.denial.is_some()
                 || input.get("run_in_background").and_then(Value::as_bool) == Some(true)
@@ -2850,12 +2863,29 @@ impl Engine {
         if matches!(self.shared.permissions.read().unwrap().decide(&req), kodact_permissions::Decision::Deny { .. }) {
             return None;
         }
+        // One reminder per set of changes: after one, another comes only once something changed
+        // since. Without this, a re-check the loop doesn't recognize brought the same reminder
+        // back: 6 of the 8 trials reminded in 090446d got it twice for files that hadn't changed.
+        if let Some((at, fingerprint)) = self.verify.reminded_at {
+            let shell_changed = self.verify.shell_may_have_changed
+                && fingerprint.is_some()
+                && self.worktree_fingerprint().await != fingerprint;
+            if writes == at && !shell_changed {
+                return None;
+            }
+        }
         let root = &self.shared.tool_ctx.project_dir;
-        let files: Vec<String> = self
-            .shared
-            .history
+        let history = &self.shared.history;
+        let read_since_change = |p: &std::path::Path| {
+            crate::verify::is_data_file(p) && {
+                let last = history.last_write_len(p);
+                self.verify.read_back.iter().any(|(arg, at)| *at >= last && crate::verify::names_file(p, arg))
+            }
+        };
+        let files: Vec<String> = history
             .writes_since(self.verify.write_mark)
             .iter()
+            .filter(|p| !read_since_change(p))
             .map(|p| p.strip_prefix(root).unwrap_or(p).display().to_string())
             .collect();
         let shell = files.is_empty()
@@ -2873,6 +2903,7 @@ impl Engine {
             }
         };
         self.verify.reminders += 1;
+        self.verify.reminded_at = Some((writes, self.worktree_fingerprint().await));
         self.system_event("verification", reminder.record());
         self.notice(NoticeLevel::Info, "Changes not verified yet: asking the model to run the project's checks.");
         Some(reminder.text(&vc.commands))

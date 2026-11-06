@@ -121,7 +121,9 @@ Each pillar lists what KodAct does about it and what shows that it works.
     last change, the model gets a reminder (once by default) naming the files
     and the checks;
   - the reminder asks the final message to state what was verified and what
-    was not.
+    was not;
+  - one reminder per set of changes, and an answer or data file read back
+    after its last change counts as checked (task `answer-file`).
   - It is on by default; `KODACT_VERIFY=0` turns it off for A/B runs, and
     `kodact-eval` records `verify_reminders` per run.
 - **To build:** LSP diagnostics and formatter feedback after edits (the

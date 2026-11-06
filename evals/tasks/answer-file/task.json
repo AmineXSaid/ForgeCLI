@@ -1,0 +1,7 @@
+{
+  "instruction": "How many distinct users have at least one successful login (a line ending in `ok`) across the files in logs/? Write just the number to answer.txt.",
+  "check": "python3 \"$KODACT_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["data", "answer-file"],
+  "timeout_secs": 600
+}

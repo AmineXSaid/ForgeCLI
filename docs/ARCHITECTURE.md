@@ -409,6 +409,13 @@ the command line and doesn't count.
 
 A check that fails still counts as evidence.
 
+**Plain data read back is checked.** An answer, a table or a log that no
+program runs (`.txt`, `.csv`, `.tsv`, `.md`, `.log`, `.out`) counts as
+checked once it is read back after its last change: with Read, or a viewer
+or a comparison in Bash (`cat`, `head`, `tail`, `od`, `xxd`, `diff`, `cmp`
+and the like). Code and configuration still need a run of what uses them. A
+package's `__init__.py` counts as imported when inline code names the package.
+
 **The reminder:** when the model stops with unchecked changes, a meta user
 message names the changed files and the project's checks, asks for them to
 run, and asks the final answer to say what was and wasn't verified. When
@@ -417,7 +424,10 @@ fix it or say plainly that it fails. Each reminder:
 - is recorded and emitted as `system/verification` with
   `{kind, files, shell}` or `{kind, command}`;
 - comes before the Stop hook;
-- is limited to `verification.maxReminders` per turn (default 1).
+- is limited to `verification.maxReminders` per turn (default 1, 2 when
+  unattended);
+- comes once per set of changes: after one, another comes only when a file
+  was written, or the worktree changed through the shell, since.
 
 **No reminder when:**
 - the stop reason is `refusal`;
@@ -433,7 +443,11 @@ Tests: `engine::verify_reminds_once_when_changes_are_unchecked`,
 `verify::recognizes_a_program_run_on_a_changed_file`,
 `verify::recognizes_inline_code_that_names_a_changed_module`,
 `verify::eval_and_bench_scripts_are_checks`,
-`verify::here_document_bodies_are_data_not_commands`.
+`verify::here_document_bodies_are_data_not_commands`,
+`verify::a_package_is_imported_by_its_name`,
+`verify::files_read_back_are_named_and_plain_data_is_told_apart`,
+`engine::an_answer_file_read_back_is_checked_but_code_is_not`,
+`engine::a_reminder_comes_once_per_set_of_changes`.
 
 ### C13. Recovery
 

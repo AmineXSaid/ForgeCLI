@@ -134,6 +134,13 @@ impl FileHistory {
         self.state.lock().unwrap().writes.len()
     }
 
+    /// How many writes this turn had right after the last write of `path` (0 if it wasn't
+    /// written): a read of the file at a later count saw its last version.
+    pub fn last_write_len(&self, path: &Path) -> usize {
+        let st = self.state.lock().unwrap();
+        st.writes.iter().rposition(|p| p == path).map_or(0, |i| i + 1)
+    }
+
     /// Files written this turn after the first `mark` writes, first write first, without repeats.
     pub fn writes_since(&self, mark: usize) -> Vec<PathBuf> {
         let st = self.state.lock().unwrap();

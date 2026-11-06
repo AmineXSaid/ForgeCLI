@@ -578,8 +578,13 @@ fn references_changed(command: &str, changed: &[PathBuf]) -> bool {
     let ws = words(command);
     changed.iter().any(|c| {
         let name = c.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let stem = c.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-        if !name.is_empty() && command.contains(name) {
+        // A package's `__init__.py` is imported by the package's name: `from vectorops import dot`.
+        let stem = if name == "__init__.py" {
+            c.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("")
+        } else {
+            c.file_stem().and_then(|n| n.to_str()).unwrap_or("")
+        };
+        if !name.is_empty() && name != "__init__.py" && command.contains(name) {
             return true; // the file named directly, e.g. open('algo.py')
         }
         if stem.is_empty() {
@@ -696,6 +701,52 @@ pub(crate) struct Tracker {
     /// Checks still running in the background (they outlived their Bash timeout): the shell's ID,
     /// the command, and the file-history writes when it moved there.
     pub pending: Vec<(String, String, usize)>,
+    /// Files read back (Read, or a viewer like `cat` or `od`), as named, with the file-history
+    /// writes at the time: a plain data file read after its last change has been checked.
+    pub read_back: Vec<(String, usize)>,
+    /// The writes and the worktree fingerprint when the last reminder went out: another comes
+    /// only after something changed since.
+    pub reminded_at: Option<(usize, Option<u64>)>,
+}
+
+/// Plain data a task produces (an answer, a table, a log, notes): no program in the project runs
+/// it, so reading it back is how it gets checked. Code and configuration aren't here: they are
+/// checked by running what uses them.
+const DATA_EXTENSIONS: &[&str] = &["txt", "csv", "tsv", "md", "log", "out"];
+
+/// Is `path` plain data ([`DATA_EXTENSIONS`])?
+pub(crate) fn is_data_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| DATA_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Programs that read a file back for a look or a comparison.
+const VIEWERS: &[&str] =
+    &["cat", "head", "tail", "less", "more", "bat", "batcat", "nl", "od", "xxd", "hexdump", "diff", "cmp"];
+
+/// The files a Bash command reads back: `cat answer.txt`, `od -c out.txt | tail -3`,
+/// `diff out.csv expected.csv`.
+pub(crate) fn files_viewed(command: &str) -> Vec<String> {
+    let commands = strip_heredoc_bodies(command);
+    kodact_permissions::split_compound(&commands)
+        .iter()
+        .flat_map(|part| {
+            let all = words(part);
+            let w = skip_wrappers(&all);
+            match w.first() {
+                Some(f) if VIEWERS.contains(&program(f)) => {
+                    file_args(&w[1..]).into_iter().map(str::to_string).collect::<Vec<_>>()
+                }
+                _ => vec![],
+            }
+        })
+        .collect()
+}
+
+/// Does `arg`, as a command named it, name the written file `path`?
+pub(crate) fn names_file(path: &Path, arg: &str) -> bool {
+    is_changed(arg, std::slice::from_ref(&path.to_path_buf()))
 }
 
 /// What the model is reminded of.
@@ -914,6 +965,38 @@ mod tests {
         let short = [PathBuf::from("/app/ab.py")];
         assert!(!is_check(r#"python3 -c "x = 'ab'""#, none, &short), "a 2-letter string is not the module");
         assert!(is_check(r#"python3 -c "import ab""#, none, &short), "an import is, whatever the length");
+    }
+
+    #[test]
+    fn a_package_is_imported_by_its_name() {
+        // pypi-server (090446d): the package's __init__.py changed, and the check imported the
+        // package; the file's own stem (`__init__`) is never what code names.
+        let changed = vec![PathBuf::from("/app/vectorops/vectorops/__init__.py")];
+        assert!(is_check(
+            r#"python3 -c "from vectorops import dotproduct; assert dotproduct([1],[2]) == 2""#,
+            &[],
+            &changed
+        ));
+        assert!(!is_check(r#"python3 -c "import json; print(1)""#, &[], &changed));
+    }
+
+    #[test]
+    fn files_read_back_are_named_and_plain_data_is_told_apart() {
+        assert_eq!(
+            files_viewed("cat /app/move.txt && od -c /app/move.txt | tail -3"),
+            ["/app/move.txt", "/app/move.txt"]
+        );
+        assert_eq!(files_viewed("diff out.csv expected.csv"), ["out.csv", "expected.csv"]);
+        assert!(files_viewed("python3 solve.py && ls").is_empty());
+        for data in ["move.txt", "out.CSV", "notes.md", "run.log", "result.out", "table.tsv"] {
+            assert!(is_data_file(Path::new(data)), "{data}");
+        }
+        for code in ["solve.py", "config.toml", "package.json", "Makefile", "app.rs", "deploy.yaml"] {
+            assert!(!is_data_file(Path::new(code)), "{code}");
+        }
+        assert!(names_file(Path::new("/app/move.txt"), "move.txt"));
+        assert!(names_file(Path::new("/app/move.txt"), "./move.txt"));
+        assert!(!names_file(Path::new("/app/move.txt"), "remove.txt"));
     }
 
     #[test]
