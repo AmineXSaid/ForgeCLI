@@ -307,7 +307,11 @@ impl<B: Backend> Full<B> {
         let size = self.terminal.size()?;
         // A gutter on both sides, so text never touches the terminal's edge.
         let pad = gutter(size.width);
-        let width = size.width - 2 * pad;
+        let full_w = size.width - 2 * pad;
+        // The sidebar takes the right of a wide window, once the conversation has begun.
+        let side = app.sidebar && !app.front && size.width >= app::SIDEBAR_MIN_COLS;
+        let side_w = if side { render::SIDEBAR_W } else { 0 };
+        let width = full_w - side_w - if side { 2 } else { 0 };
         if width != self.wrapped_w {
             self.wrapped = indented(self.transcript.clone(), width);
             self.wrapped_w = width;
@@ -320,6 +324,17 @@ impl<B: Backend> Full<B> {
             let full = f.area();
             let area = ratatui::layout::Rect { x: full.x + pad, width, ..full };
             f.render_widget(Paragraph::new(view.lines.clone()), area);
+            if side {
+                let rect = ratatui::layout::Rect { x: area.x + width + 2, width: side_w, ..full };
+                let lines = render::sidebar(app, side_w as usize, full.height as usize);
+                let t = app.theme;
+                let surface = if t.color && t.depth != palette::Depth::Ansi16 {
+                    ratatui::style::Style::default().bg(palette::PROMPT_BG.color(t.depth, t.light))
+                } else {
+                    ratatui::style::Style::default()
+                };
+                f.render_widget(Paragraph::new(lines).style(surface), rect);
+            }
             if let Some((x, y)) = view.cursor {
                 if x < area.width && y < area.height {
                     f.set_cursor_position((area.x + x, area.y + y));
@@ -536,6 +551,7 @@ pub async fn run(prompt: Option<String>, o: Opts) -> Result<i32, Fail> {
     };
     app.front = true;
     app.first_run = recent.is_empty();
+    app.mcp = info.mcp.clone();
     app.endpoint = endpoint;
     app.branch = branch.unwrap_or_default();
     if !full {
@@ -888,6 +904,50 @@ mod tests {
         // Too narrow to spare the columns: no gutter.
         let f = Full::new(TestBackend::new(30, 8), front::FrontInfo::default()).unwrap();
         assert_eq!(f.width(), 30);
+    }
+
+    #[test]
+    fn ctrl_b_opens_the_sidebar_on_a_wide_screen() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let theme = text::Theme { color: false, light: false, accent: None, depth: Default::default() };
+        let mut a = app::App::new(theme, vec![]);
+        a.submit("add an age check to signups".into());
+        a.front = false;
+        a.mcp = vec![("jira".into(), "connected".into()), ("figma".into(), "failed".into())];
+        a.todos = vec![
+            ("completed".into(), "Read the form".into()),
+            ("in_progress".into(), "Add the field".into()),
+            ("pending".into(), "Run the tests".into()),
+        ];
+        a.on_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(a.sidebar);
+        let mut f = Full::new(TestBackend::new(160, 30), front::FrontInfo::default()).unwrap();
+        f.commit(a.take_pending());
+        f.draw(&a).unwrap();
+        let wide = rows(f.terminal.backend());
+        let all = wide.join("\n");
+        for want in [
+            "add an age check to signups",
+            "Context",
+            "MCP",
+            "● jira",
+            "figma  failed",
+            "Plan",
+            "✓ Read the form",
+            "▸ Add the field",
+            "○ Run the tests",
+        ] {
+            assert!(all.contains(want), "{want}\n{all}");
+        }
+        // The sidebar is on the right; the conversation keeps the left.
+        let col = wide.iter().find_map(|r| r.chars().collect::<String>().find("Context")).unwrap();
+        assert!(col >= 160 - render::SIDEBAR_W as usize - 2, "{col}");
+        // Too narrow: no sidebar, whatever the switch says; Ctrl+B again closes it.
+        let mut f = Full::new(TestBackend::new(120, 30), front::FrontInfo::default()).unwrap();
+        f.draw(&a).unwrap();
+        assert!(!rows(f.terminal.backend()).join("\n").contains("MCP"));
+        a.on_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(!a.sidebar);
     }
 
     #[test]

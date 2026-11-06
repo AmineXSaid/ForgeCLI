@@ -385,6 +385,7 @@ pub const KEYS: &[(&str, &str, Option<&str>)] = &[
     ("Ctrl+U / Ctrl+K", "Delete to the start / end of the line", None),
     ("Alt+B / Alt+F, Ctrl+Left / Ctrl+Right", "Word left / right", None),
     ("Ctrl+L", "Redraw the screen", Some("redraw")),
+    ("Ctrl+B", "Show or hide the sidebar (full screen, 140+ columns)", Some("toggleSidebar")),
 ];
 
 /// The shortcuts in effect, one per line: the defaults, or with `keybindings.json`
@@ -509,6 +510,14 @@ pub struct App {
     pub front: bool,
     /// No earlier conversation in this folder: the welcome shows an example request.
     pub first_run: bool,
+    /// The sidebar is open (Ctrl+B, full screen from [`SIDEBAR_MIN_COLS`] columns).
+    pub sidebar: bool,
+    /// The session's title for the sidebar: its first prompt, on one line.
+    pub title: String,
+    /// MCP servers and their state: (name, status).
+    pub mcp: Vec<(String, String)>,
+    /// The model's latest plan (TodoWrite): (status, content).
+    pub todos: Vec<(String, String)>,
     /// Where requests go (`127.0.0.1:11434`), for the line under the front screen's input.
     pub endpoint: String,
     /// The git branch, for the status style's bar (empty outside a repository).
@@ -834,6 +843,22 @@ fn diff_rows(hunks: &[Value], [removed, added, quiet, rule]: [Style; 4], width: 
     out
 }
 
+/// The width from which the full screen can show the sidebar.
+pub const SIDEBAR_MIN_COLS: u16 = 140;
+
+/// A TodoWrite call's items: (status, content).
+pub fn todo_items(input: &Value) -> Vec<(String, String)> {
+    input["todos"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            (t["status"].as_str().unwrap_or("pending").to_string(), t["content"].as_str().unwrap_or("").to_string())
+        })
+        .filter(|(_, c)| !c.trim().is_empty())
+        .collect()
+}
+
 /// A sub-agent tool: the call that runs another agent.
 pub fn is_agent_tool(name: &str) -> bool {
     matches!(name, "Task" | "Agent")
@@ -1009,6 +1034,10 @@ impl App {
             talked: false,
             front: false,
             first_run: false,
+            sidebar: false,
+            title: String::new(),
+            mcp: vec![],
+            todos: vec![],
             endpoint: String::new(),
             branch: String::new(),
             focus: false,
@@ -1112,6 +1141,9 @@ impl App {
 
     /// Write the person's prompt into scrollback.
     pub fn echo_prompt(&mut self, text: &str) {
+        if self.title.is_empty() {
+            self.title = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+        }
         use super::look::Look;
         self.gap();
         let t = self.theme;
@@ -1469,6 +1501,12 @@ impl App {
             EngineEvent::Assistant { message, .. } => {
                 self.flush_live();
                 for b in &message.content {
+                    // The model's plan, for the sidebar.
+                    if let ContentBlock::ToolUse { name, input, .. } = b {
+                        if name == "TodoWrite" {
+                            self.todos = todo_items(input);
+                        }
+                    }
                     match b {
                         ContentBlock::Text { text, .. } if !self.streamed && !text.trim().is_empty() => {
                             self.first_line = true;
@@ -2389,6 +2427,10 @@ impl App {
             if let Some(a) = self.search_key(key) {
                 return a;
             }
+        }
+        if ctrl && key.code == KeyCode::Char('b') {
+            self.sidebar = !self.sidebar;
+            return vec![];
         }
         if ctrl && key.code == KeyCode::Char('r') {
             let draft = self.editor.text();

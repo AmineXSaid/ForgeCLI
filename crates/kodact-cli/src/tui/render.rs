@@ -597,6 +597,87 @@ fn room_left(s: &StatusView) -> u8 {
     }
 }
 
+/// The sidebar's width, columns.
+pub const SIDEBAR_W: u16 = 34;
+
+/// The sidebar, `w` columns by `h` rows: the session's title, the room left in its
+/// context and what it has used, the model, its MCP servers, the plan (the active
+/// step in lime, done ones quiet), and at the foot the folder and the branch.
+pub fn sidebar(app: &App, w: usize, h: usize) -> Vec<Line<'static>> {
+    let t = app.theme;
+    let s = &app.status;
+    let pad = |l: Line<'static>| {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(l.spans);
+        Line::from(spans)
+    };
+    let inner = w.saturating_sub(2).max(1);
+    let heading = |text: &str| Line::from(Span::styled(text.to_string(), t.subtle()));
+    let mut out: Vec<Line<'static>> = vec![Line::default()];
+    let title = if app.title.is_empty() { "New session".to_string() } else { app.title.clone() };
+    for l in text::wrap(vec![Line::from(Span::styled(title, t.bold()))], inner as u16).into_iter().take(3) {
+        out.push(l);
+    }
+    out.push(Line::default());
+    out.push(heading("Context"));
+    if s.context_pct.is_some() {
+        out.push(Line::from(gauge(&t, s)));
+    }
+    if s.session_tokens > 0 {
+        out.push(Line::from(Span::styled(format!("{} used", tokens(s.session_tokens)), t.dim())));
+    }
+    if !s.model.is_empty() {
+        out.push(Line::from(Span::styled(fit(&s.model, inner), t.dim())));
+    }
+    if !app.mcp.is_empty() {
+        out.push(Line::default());
+        out.push(heading("MCP"));
+        for (name, status) in &app.mcp {
+            let (dot, st) = match status.as_str() {
+                "connected" => ("● ", t.success()),
+                "failed" => ("● ", t.error()),
+                _ => ("○ ", t.subtle()),
+            };
+            let word = if status == "connected" { String::new() } else { format!("  {status}") };
+            out.push(Line::from(vec![
+                Span::styled(dot, st),
+                Span::raw(fit(name, inner.saturating_sub(2 + word.len()))),
+                Span::styled(word, t.subtle()),
+            ]));
+        }
+    }
+    if !app.todos.is_empty() {
+        out.push(Line::default());
+        out.push(heading("Plan"));
+        for (status, content) in &app.todos {
+            let (mark, st) = match status.as_str() {
+                "completed" => ("✓ ", t.subtle()),
+                "in_progress" => ("▸ ", t.accent()),
+                _ => ("○ ", t.dim()),
+            };
+            let body = if status == "in_progress" { t.accent() } else { st };
+            let rows =
+                text::wrap(vec![Line::from(Span::styled(content.clone(), body))], inner.saturating_sub(2) as u16);
+            for (i, r) in rows.into_iter().take(2).enumerate() {
+                let mut spans = vec![if i == 0 { Span::styled(mark, st) } else { Span::raw("  ") }];
+                spans.extend(r.spans);
+                out.push(Line::from(spans));
+            }
+        }
+    }
+    // The folder and the branch at the foot.
+    let mut foot = vec![Line::from(Span::styled(keep_end(&super::short_path(&s.cwd), inner), t.subtle()))];
+    if !app.branch.is_empty() {
+        foot.push(Line::from(Span::styled(fit(&format!("⎇ {}", app.branch), inner), t.subtle())));
+    }
+    let room = h.saturating_sub(foot.len() + 1);
+    out.truncate(room);
+    out.resize(room, Line::default());
+    out.extend(foot);
+    out.push(Line::default());
+    out.into_iter().map(pad).collect()
+}
+
 /// The context gauge: a shape that fills as the conversation nears compaction
 /// (`○ ◔ ◑ ◕ ●`), then the room left: `◔ 72% left`. Lime while there is room,
 /// amber from 30% left, red from 10%; `~` when the window is a guess.

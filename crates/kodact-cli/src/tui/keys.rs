@@ -182,6 +182,7 @@ pub const ACTIONS: &[(&str, &[&str], &str)] = &[
     ("wordLeft", &["alt+b", "ctrl+left"], "Word left"),
     ("wordRight", &["alt+f", "ctrl+right"], "Word right"),
     ("redraw", &["ctrl+l"], "Redraw the screen"),
+    ("toggleSidebar", &["ctrl+b"], "Show or hide the sidebar"),
     ("showKeys", &["?"], "Show the shortcuts (empty prompt)"),
 ];
 
