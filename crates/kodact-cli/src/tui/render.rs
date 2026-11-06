@@ -888,14 +888,18 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         spans.extend(r.header.iter().skip(skip * 2).cloned());
         if is_agent(&r.name) {
             spans.push(Span::styled(format!("  {}s", ran.as_secs()), t.subtle()));
-            if let Some(step) = &r.step {
+            if r.steps > 0 {
                 let n = if r.steps == 1 { "1 step".to_string() } else { format!("{} steps", r.steps) };
-                spans.push(Span::styled(format!(" · {n} · "), t.subtle()));
-                spans.push(Span::styled(step.clone(), t.dim()));
+                spans.push(Span::styled(format!(" · {n}"), t.subtle()));
             }
         }
         spinner.push(Line::default());
         spinner.extend(text::wrap(vec![Line::from(spans)], tw as u16).into_iter().take(2));
+        // Its latest steps in a small tree under it, so delegated work stays visible.
+        if is_agent(&r.name) && !r.trail.is_empty() {
+            let tree = super::app::agent_tree(&t, &r.trail, true);
+            spinner.extend(tree.into_iter().map(|l| text::wrap(vec![l], tw as u16).swap_remove(0)));
+        }
     }
     // A permission question shows its own waiting row: no second line saying so.
     let asked_row = app.asking_for().is_some_and(|id| app.running.iter().any(|r| r.id == id));
@@ -2079,7 +2083,13 @@ mod tests {
         let agents: Vec<&String> = rows.iter().filter(|r| r.contains(" running  ")).collect();
         assert_eq!(agents.len(), 5, "{rows:#?}");
         assert!(agents.iter().all(|r| !r.contains("Delegating")), "the line below says they're agents: {agents:#?}");
-        assert!(agents[0].contains("1 step · Reading src/lib.rs"), "its latest step, from the folder: {}", agents[0]);
+        assert!(agents[0].ends_with("1 step"), "how many steps: {}", agents[0]);
+        let first = rows.iter().position(|r| r.contains(" running  ")).unwrap();
+        assert_eq!(
+            rows[first + 1].trim(),
+            "└ Reading src/lib.rs",
+            "its latest step under it, from the folder: {rows:#?}"
+        );
         assert!(rows.iter().any(|r| r.contains("Waiting for 5 agents…")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("Running Task")), "{rows:#?}");
         // The wave: three dots bobbing up and down, each behind the one before, in lime.

@@ -598,46 +598,9 @@ pub fn result_lines(
             }
             let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
             let mut out = one(format!("{}, {}", plural(added, "addition"), plural(removed, "removal")), t.dim());
-            let mut shown = 0;
-            for h in &hunks {
-                let (mut old, mut new) = (h["oldStart"].as_u64().unwrap_or(1), h["newStart"].as_u64().unwrap_or(1));
-                for l in h["lines"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-                    let (sign, body) = l.split_at(l.chars().next().map(char::len_utf8).unwrap_or(0));
-                    let (num, style) = match sign {
-                        "-" => {
-                            old += 1;
-                            (old - 1, t.removed())
-                        }
-                        "+" => {
-                            new += 1;
-                            (new - 1, t.added())
-                        }
-                        _ => {
-                            old += 1;
-                            new += 1;
-                            (new - 1, t.dim())
-                        }
-                    };
-                    if sign != "-" && sign != "+" {
-                        continue; // context lines: only the changes are shown
-                    }
-                    if shown == DIFF_LINES {
-                        break;
-                    }
-                    shown += 1;
-                    out.push(Line::from(vec![
-                        Span::raw(RESULT_INDENT),
-                        Span::styled(format!("{num:>4} {sign} {body}"), style),
-                    ]));
-                }
-            }
-            let changed = added + removed;
-            if changed > shown {
-                out.push(Line::from(Span::styled(
-                    format!("{RESULT_INDENT}… {} more changed lines", changed - shown),
-                    t.dim(),
-                )));
-            }
+            // The changes themselves are laid out when the transcript is, at its width:
+            // side by side on a wide terminal, one column on a narrow one.
+            out.push(diff_placeholder(t, &hunks));
             out
         }
         ("Bash", _) => {
@@ -682,6 +645,8 @@ pub struct Running {
     /// A sub-agent's latest step (`Reading src/lib.rs`) and how many it has taken.
     pub step: Option<String>,
     pub steps: usize,
+    /// Every step a sub-agent has taken, in words, for its tree.
+    pub trail: Vec<String>,
 }
 
 /// What a tool call does, as a verb: past tense once it is done (`Ran`,
@@ -743,6 +708,157 @@ pub fn tool_header(t: &Theme, name: &str, input: &Value, done: bool) -> Vec<Span
         _ => spans.push(Span::styled(arg, t.dim())),
     }
     spans
+}
+
+/// The start of a placeholder line that stands for a diff until it is laid out.
+const DIFF_MARK: &str = "\u{e000}kodact-diff";
+/// Width from which a diff is drawn side by side.
+pub const SPLIT_DIFF_COLS: u16 = 140;
+
+/// A line that stands for an edit's changes: the styles they are drawn in, and
+/// the hunks. [`lay_out`] turns it into rows at the width of the moment.
+fn diff_placeholder(t: &Theme, hunks: &[Value]) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(DIFF_MARK, t.removed()),
+        Span::styled("", t.added()),
+        Span::styled("", t.dim()),
+        Span::styled("", t.hairline()),
+        Span::raw(Value::Array(hunks.to_vec()).to_string()),
+    ])
+}
+
+/// Lines ready to wrap at `width`: each diff placeholder becomes its rows (side by
+/// side from [`SPLIT_DIFF_COLS`], else one column), every other line stays as it is.
+pub fn lay_out(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let mut out = Vec::with_capacity(lines.len());
+    for l in lines {
+        match l.spans.first() {
+            Some(s) if s.content == DIFF_MARK && l.spans.len() == 5 => {
+                let styles = [l.spans[0].style, l.spans[1].style, l.spans[2].style, l.spans[3].style];
+                let hunks: Vec<Value> = serde_json::from_str(&l.spans[4].content).unwrap_or_default();
+                out.extend(diff_rows(&hunks, styles, width));
+            }
+            _ => out.push(l),
+        }
+    }
+    out
+}
+
+/// One changed line of a diff: its number in the old or new file, and its text.
+struct Changed {
+    num: u64,
+    body: String,
+}
+
+/// An edit's changed lines, as rows: removed and added runs paired side by side when
+/// `width` allows, else one column with `-` and `+`. At most [`DIFF_LINES`] rows.
+fn diff_rows(hunks: &[Value], [removed, added, quiet, rule]: [Style; 4], width: u16) -> Vec<Line<'static>> {
+    // Runs of removals followed by additions, in order.
+    let mut runs: Vec<(Vec<Changed>, Vec<Changed>)> = vec![];
+    let mut cur: (Vec<Changed>, Vec<Changed>) = (vec![], vec![]);
+    for h in hunks {
+        let (mut old, mut new) = (h["oldStart"].as_u64().unwrap_or(1), h["newStart"].as_u64().unwrap_or(1));
+        for l in h["lines"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            let (sign, body) = l.split_at(l.chars().next().map(char::len_utf8).unwrap_or(0));
+            match sign {
+                "-" => {
+                    if !cur.1.is_empty() {
+                        runs.push(std::mem::take(&mut cur));
+                    }
+                    cur.0.push(Changed { num: old, body: body.to_string() });
+                    old += 1;
+                }
+                "+" => {
+                    cur.1.push(Changed { num: new, body: body.to_string() });
+                    new += 1;
+                }
+                _ => {
+                    if !cur.0.is_empty() || !cur.1.is_empty() {
+                        runs.push(std::mem::take(&mut cur));
+                    }
+                    old += 1;
+                    new += 1;
+                }
+            }
+        }
+        if !cur.0.is_empty() || !cur.1.is_empty() {
+            runs.push(std::mem::take(&mut cur));
+        }
+    }
+    let changed: usize = runs.iter().map(|(r, a)| r.len() + a.len()).sum();
+    let mut out = vec![];
+    let mut shown = 0;
+    if width >= SPLIT_DIFF_COLS {
+        // Side by side: the old line on the left, the new one on the right.
+        let half = (width as usize).saturating_sub(RESULT_INDENT.len() + 3) / 2;
+        let cell = |c: Option<&Changed>, st: Style| -> Span<'static> {
+            let text = match c {
+                Some(c) => format!("{:>4}  {}", c.num, c.body),
+                None => String::new(),
+            };
+            let text: String = text.chars().take(half).collect();
+            let pad = half.saturating_sub(super::text::width(&text));
+            Span::styled(format!("{text}{}", " ".repeat(pad)), st)
+        };
+        'runs: for (rem, add) in &runs {
+            for i in 0..rem.len().max(add.len()) {
+                if out.len() == DIFF_LINES {
+                    break 'runs;
+                }
+                shown += usize::from(rem.get(i).is_some()) + usize::from(add.get(i).is_some());
+                out.push(Line::from(vec![
+                    Span::raw(RESULT_INDENT),
+                    cell(rem.get(i), removed),
+                    Span::styled(" │ ", rule),
+                    cell(add.get(i), added),
+                ]));
+            }
+        }
+    } else {
+        'one: for (rem, add) in &runs {
+            for (sign, c, st) in rem.iter().map(|c| ("-", c, removed)).chain(add.iter().map(|c| ("+", c, added))) {
+                if out.len() == DIFF_LINES {
+                    break 'one;
+                }
+                shown += 1;
+                out.push(Line::from(vec![
+                    Span::raw(RESULT_INDENT),
+                    Span::styled(format!("{:>4} {sign} {}", c.num, c.body), st),
+                ]));
+            }
+        }
+    }
+    if changed > shown {
+        out.push(Line::from(Span::styled(format!("{RESULT_INDENT}… {} more changed lines", changed - shown), quiet)));
+    }
+    out
+}
+
+/// A sub-agent tool: the call that runs another agent.
+pub fn is_agent_tool(name: &str) -> bool {
+    matches!(name, "Task" | "Agent")
+}
+
+/// A sub-agent's steps as a small tree under its row. While it runs, the last three;
+/// once done, the first, how many more, and the last two.
+pub fn agent_tree(t: &Theme, trail: &[String], running: bool) -> Vec<Line<'static>> {
+    let rows: Vec<String> = if running {
+        trail[trail.len().saturating_sub(3)..].to_vec()
+    } else if trail.len() <= 4 {
+        trail.to_vec()
+    } else {
+        let more = trail.len() - 3;
+        vec![trail[0].clone(), format!("… {more} more"), trail[trail.len() - 2].clone(), trail[trail.len() - 1].clone()]
+    };
+    let n = rows.len();
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let branch = if i + 1 == n { "└ " } else { "├ " };
+            let st = if r.starts_with('…') { t.subtle() } else { t.dim() };
+            Line::from(vec![Span::raw("  "), Span::styled(branch, t.hairline()), Span::styled(fit_words(&r, 120), st)])
+        })
+        .collect()
 }
 
 /// A shell command's description, when the model gave one: what the command is for.
@@ -1136,6 +1252,10 @@ impl App {
             }
         };
         self.pending.push(line);
+        // A sub-agent's work, kept small: its first step, how many more, its last two.
+        if !self.look.plain_steps() && is_agent_tool(&r.name) && !r.trail.is_empty() {
+            self.pending.extend(agent_tree(&t, &r.trail, false));
+        }
         // A described command: the command itself under its purpose, as a terminal shows it.
         if !self.look.plain_steps() && shell_description(&r.name, &r.input).is_some() {
             self.pending.push(shell_command_line(&t, &r.input));
@@ -1269,8 +1389,10 @@ impl App {
                     for b in &message.content {
                         if let ContentBlock::ToolUse { name, input, .. } = b {
                             let header = relative_spans(tool_header(&self.theme, name, input, false), &self.status.cwd);
-                            r.step = Some(header.iter().map(|s| s.content.as_ref()).collect());
+                            let words: String = header.iter().map(|s| s.content.as_ref()).collect();
+                            r.step = Some(words.clone());
                             r.steps += 1;
+                            r.trail.push(words);
                         }
                     }
                 }
@@ -1367,6 +1489,7 @@ impl App {
                                 since: Instant::now(),
                                 step: None,
                                 steps: 0,
+                                trail: Vec::new(),
                             });
                             // In words: "Running pytest -q", "Reading src/lib.rs".
                             let words: String =
@@ -2915,6 +3038,7 @@ mod tests {
                 since: Instant::now(),
                 step: None,
                 steps: 0,
+                trail: Vec::new(),
             };
             a.commit_tool(r, ToolEnd::Done);
             texts(&a.take_pending()).last().unwrap().clone()
@@ -2923,6 +3047,27 @@ mod tests {
         assert_eq!(step_for(Look::Ledger), "  ran cargo test");
         assert_eq!(step_for(Look::Glow), "✓ Ran cargo test");
         assert_eq!(step_for(Look::Frame), "✓ Ran cargo test");
+        // A finished sub-agent keeps a short tree: its first step, how many more, its last two.
+        let mut a = app();
+        a.look = Look::Frame;
+        let r = Running {
+            id: "t".into(),
+            header: vec![],
+            name: "Task".into(),
+            input: json!({"description": "find the parser"}),
+            since: Instant::now(),
+            step: None,
+            steps: 6,
+            trail: (1..=6).map(|i| format!("Read f{i}.rs")).collect(),
+        };
+        a.commit_tool(r, ToolEnd::Done);
+        let rows = texts(&a.take_pending());
+        assert_eq!(
+            rows[rows.len() - 4..],
+            ["  ├ Read f1.rs", "  ├ … 3 more", "  ├ Read f5.rs", "  └ Read f6.rs"],
+            "{rows:?}"
+        );
+        assert_eq!(agent_tree(&a.theme, &["a".into(), "b".into()], true).len(), 2, "a short trail is shown whole");
         // A described command: its purpose, then the command itself, as a terminal shows it.
         let mut a = app();
         a.look = Look::Frame;
@@ -2934,6 +3079,7 @@ mod tests {
             since: Instant::now(),
             step: None,
             steps: 0,
+            trail: Vec::new(),
         };
         a.commit_tool(r, ToolEnd::Failed);
         let rows = texts(&a.take_pending());
@@ -2961,10 +3107,24 @@ mod tests {
             "oldStart": 1, "oldLines": 3, "newStart": 1, "newLines": 3,
             "lines": [" def add(a, b):", "-    return a - b", "+    return a + b", ""]
         }]});
+        // The changes are laid out at the width of the moment: one column when narrow...
+        let lines = result_lines(&t, "Edit", "The file was updated", false, Some(&edit));
         assert_eq!(
-            texts(&result_lines(&t, "Edit", "The file was updated", false, Some(&edit))),
+            texts(&lay_out(lines.clone(), 100)),
             ["  └ 1 addition, 1 removal", "       2 -     return a - b", "       2 +     return a + b"]
         );
+        // ...side by side from 140 columns: the old line on the left, the new on the right.
+        let wide = texts(&lay_out(lines, 160));
+        assert_eq!(wide.len(), 2, "{wide:?}");
+        let (old, new) = wide[1].split_once(" │ ").expect("two halves");
+        assert_eq!(old.trim(), "2      return a - b");
+        assert_eq!(new.trim(), "2      return a + b");
+        assert!(crate::tui::text::width(&wide[1]) <= 160);
+        // A long edit: at most DIFF_LINES rows, the rest counted.
+        let many: Vec<Value> = (0..40).map(|i| json!(format!("+line {i}"))).collect();
+        let big = json!({"structuredPatch": [{"oldStart": 1, "newStart": 1, "lines": many}]});
+        let rows = texts(&lay_out(result_lines(&t, "Edit", "", false, Some(&big)), 100));
+        assert_eq!(rows.last().unwrap(), &format!("    … {} more changed lines", 40 - DIFF_LINES));
         let write = json!({"type": "create", "filePath": "/p/new.txt", "content": "a\nb\n", "structuredPatch": []});
         assert_eq!(texts(&result_lines(&t, "Write", "x", false, Some(&write))), ["  └ 2 lines, a new file"]);
         assert_eq!(texts(&result_lines(&t, "Bash", "", false, None)), ["  └ (no output)"]);

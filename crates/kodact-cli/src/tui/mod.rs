@@ -186,7 +186,7 @@ impl<B: Backend> Screen<B> {
 
     /// Write finished lines into scrollback, above the viewport.
     pub fn commit(&mut self, lines: Vec<Line<'static>>) -> std::io::Result<()> {
-        let rows = text::wrap(lines, self.width());
+        let rows = text::wrap(app::lay_out(lines, self.width()), self.width());
         for chunk in rows.chunks(COMMIT_CHUNK) {
             let chunk = chunk.to_vec();
             self.terminal.insert_before(chunk.len() as u16, |buf| Paragraph::new(chunk).render(buf.area, buf))?;
@@ -240,7 +240,7 @@ const TRANSCRIPT_INDENT: u16 = 2;
 /// `lines` wrapped to `width` less the transcript's indent, each row indented.
 fn indented(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
     let indent = TRANSCRIPT_INDENT.min(width.saturating_sub(4));
-    text::wrap(lines, width - indent)
+    text::wrap(app::lay_out(lines, width - indent), width - indent)
         .into_iter()
         .map(|l| {
             if indent == 0 || l.spans.is_empty() {
@@ -336,7 +336,7 @@ impl<B: Backend> Full<B> {
     /// The transcript as text with ANSI styles, wrapped to `cols`, for the
     /// terminal's scrollback once the full screen has closed.
     pub fn transcript_text(&self, cols: u16) -> Vec<String> {
-        text::wrap(self.transcript.clone(), cols).iter().map(brand::ansi).collect()
+        text::wrap(app::lay_out(self.transcript.clone(), cols), cols).iter().map(brand::ansi).collect()
     }
 }
 
