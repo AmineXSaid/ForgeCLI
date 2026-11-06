@@ -394,10 +394,32 @@ with `{"text", "cwd"}`:
   a `└`, red on error:
   - Read: `40 lines` or `40 of 120 lines`;
   - Edit, MultiEdit, Write: `1 addition, 1 removal`, then the changed lines
-    with their numbers, `-` red and `+` green (at most 16); a new file:
-    `12 lines, a new file`;
-  - Bash: the first 3 output lines, then `… +N lines`, or `(no output)`;
+    with their numbers (at most 16 rows): from 140 columns side by side,
+    the old line on the left in red and the new one on the right in green;
+    narrower, one column, `-` red and `+` green. The diff is laid out each
+    time the transcript is (`app::lay_out`), so a resize redraws it; a new
+    file: `12 lines, a new file`;
+  - Bash: a command with a description reads as its purpose, then the
+    command on its own line in the code colour (`✓ Run the cart tests` /
+    `$ python3 -m pytest -q`); without one, `Ran <command>`. Then its last 3
+    output lines, or `(no output)`;
   - anything else: `first line (+N lines)`.
+- **While the model writes a tool call**, the working line says what it is
+  preparing: `Preparing an edit to cart.py…`, `Writing notes.md…`,
+  `Preparing a command…`; the file name once its path has arrived.
+- **Sub-agents**: a running one shows its step count on its row and its
+  last 3 steps in a tree under it; once done, the transcript keeps its first
+  step, `… N more`, and its last two. The plain styles keep one line.
+- **The turn footer**: under each answer, `■ Default · opus · 12s · 1.2k
+  tokens`: the mode (square and name in its colour), the model, the time and
+  the tokens the turn used. The UI shows no money anywhere; `/cost` and
+  `/usage` give it when asked.
+- **The sidebar** (full screen from 140 columns, Ctrl+B, the
+  `toggleSidebar` action): the session's title (its first prompt), the room
+  left in the context, the tokens used and the model, the MCP servers (a
+  failed one in red and named), the plan from TodoWrite (done quiet, the
+  active step in lime, the rest open), and the folder and branch at its
+  foot. Never on the welcome page, inline, or on a narrower window.
 - **Approvals**: a box titled `◆ Approve <tool>?`. A command shows its lines
   and description, an edit its change, and any other tool every argument it
   will be sent (each line of each value). Choices: `Allow once` (y), the
@@ -406,8 +428,9 @@ with `{"text", "cwd"}`:
   `◆ Waiting for your answer (Ns …)`, timed from when the question was
   asked, not from the turn's start.
 - **The input** sits in a rounded box; the status line under it shows the
-  model, the context meter and the cost, or for a model with no price the
-  tokens in context.
+  model, the context meter and the tokens used (no money). On a first run in
+  a folder the default style's placeholder suggests a request: `What shall
+  we build? Try "fix the failing test"`.
 - Events of sub-agents (those with a `parent_tool_use_id`) are not shown.
 - **Your prompts**: `> text`, in the user style.
 - **Local command output**: `  ↳  ` on the first line, then indented.
@@ -440,6 +463,7 @@ with `{"text", "cwd"}`:
 | 1-9 in a dialog | Choose that option |
 | Space in a multi-select question | Toggle the option |
 | Ctrl+L | Redraw |
+| Ctrl+B | Show or hide the sidebar (full screen, 140+ columns) |
 
 Pasted text (bracketed paste) is inserted as typed, newlines included.
 

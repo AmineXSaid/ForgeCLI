@@ -104,6 +104,7 @@ working unless they are bound to something else or to `"none"`. A bad entry
 | `killToStart`, `killToEnd` | Ctrl+U, Ctrl+K | Delete to the start, end of the line |
 | `wordLeft`, `wordRight` | Alt+B / Ctrl+Left, Alt+F / Ctrl+Right | Word left, right |
 | `redraw` | Ctrl+L | Redraw the screen |
+| `toggleSidebar` | Ctrl+B | Show or hide the sidebar (full screen, 140+ columns) |
 | `showKeys` | `?` | Show the shortcuts (empty prompt) |
 
 When you leave, KodAct prints `Resume this conversation with: kodact --resume <id>`.
