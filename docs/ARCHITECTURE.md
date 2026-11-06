@@ -1128,6 +1128,15 @@ task asks for the best possible. A borderline pass on a measurement that
 varies between runs is run again, and its margin is reported. Test:
 `prompts::the_prompt_says_to_finish_once_the_target_is_met`.
 
+It also asks for work to go into files as it goes (code and long text written
+step by step, a large file in parts) rather than composed whole in the
+reasoning, which may not be kept and is cut at the reply limit; and, when an
+output format is given, for that output to hold exactly it, with diagnostics on
+stderr or left out. After a reply cut off while all reasoning, the act reminder
+asks for a draft in progress to be written to its file. Tests:
+`prompts::the_prompt_says_to_work_in_files_and_keep_output_formats_exact`,
+`engine::a_reply_that_was_all_reasoning_gets_it_back_where_it_is_not_kept`.
+
 ## Configuration names
 
 - **Environment:** only `KODACT_*` variables are read, the API ones included:

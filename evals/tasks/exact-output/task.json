@@ -1,0 +1,7 @@
+{
+  "instruction": "Write stats.py that reads data/readings.csv and prints the mean temperature of each sensor, in the order sensors first appear in the file, one line per sensor in exactly this format: `Sensor {id} mean: {value:.1f}`. Another program reads this output.",
+  "check": "python3 \"$KODACT_EVAL_TASK_DIR/hidden/check.py\"",
+  "pillar": "verification",
+  "tags": ["python", "output-format"],
+  "timeout_secs": 600
+}

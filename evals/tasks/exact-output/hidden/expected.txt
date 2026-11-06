@@ -1,0 +1,4 @@
+Sensor S4 mean: 5.2
+Sensor S2 mean: 21.4
+Sensor S9 mean: 37.2
+Sensor S7 mean: -3.3

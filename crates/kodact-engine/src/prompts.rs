@@ -208,6 +208,22 @@ mod tests {
         }
     }
 
+    /// Two rules for every model and mode (090446d). Drafts go into files as the work goes:
+    /// about a sixth of the run's output was reasoning cut at the reply limit, much of it whole
+    /// programs drafted there and lost. A given output format is all that output holds:
+    /// modernize-scientific-stack printed an extra line per station before the asked one, and
+    /// the program reading the output took the wrong number.
+    #[test]
+    fn the_prompt_says_to_work_in_files_and_keep_output_formats_exact() {
+        for autonomous in [false, true] {
+            let (b, _) = build_system(&SystemPromptOptions { autonomous, ..Default::default() }, &env());
+            let t = &b[0].text;
+            assert!(t.contains("Work in files as you go"), "autonomous: {autonomous}");
+            assert!(t.contains("build a large file in parts, rather than composing all of it in your reasoning"));
+            assert!(t.contains("that output holds exactly it: no extra lines"));
+        }
+    }
+
     /// winning-avg-corewars (231fd6b): an imp-based warrior lost 0-100 in seven tries (replies 44
     /// to 79), including after the model wrote "imps are useless" at reply 58, while the parameter
     /// sweeps that moved stone from 59 to 75 wins got less of the time. The score is in free-form

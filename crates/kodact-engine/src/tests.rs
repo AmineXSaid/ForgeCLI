@@ -1396,6 +1396,8 @@ async fn a_reply_that_was_all_reasoning_gets_it_back_where_it_is_not_kept() {
     e.submit(prompt("write data.comp")).await;
     let asked = last_user_text(&h.provider.requests()[1]);
     assert!(!asked.contains(end) && asked.contains("Do not restart the analysis"), "{asked}");
+    // A draft lost to the limit goes into its file next, not into another draft.
+    assert!(asked.contains("write it to its file now, in parts if it is long"), "{asked}");
 }
 
 #[tokio::test]

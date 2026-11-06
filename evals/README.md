@@ -38,6 +38,7 @@ and stderr.
 | verify-program-arg | verification | Fix a config file and check it by running the unchanged tool on it (`python3 route.py routes.conf /api/v2/users`); the verification loop must count a program run on a changed file as a check (`verify_reminders`) |
 | verify-commit | verification | Fix a bug, run the tests, commit (the workspace is a git repo); committing changes no file, so the verification loop must not ask to verify again (`verify_reminders`) |
 | answer-file | verification | Count the distinct users with a successful login across two logs and write just the number to answer.txt; some users appear only on denied lines. Reading the answer back is its check, so the verification loop must not ask for the project's checks (`verify_reminders`) |
+| exact-output | verification | Write stats.py that prints one line per sensor in a given format, which another program reads; the check takes stdout as it is, so an extra line of diagnostics fails it |
 | rename-symbol | long-horizon | Rename across modules, an aliased import and a module-qualified call |
 | split-module | long-horizon | Split a module into a package and keep the public API |
 | stop-at-target | long-horizon | Meet a stated target (pack the items into at most 33 bins), then write the result to bins.txt. The optimum (31) is reachable but not asked for: turns and minutes show whether the agent stops once the target is met, and the bins.txt step catches stopping before the task is done |

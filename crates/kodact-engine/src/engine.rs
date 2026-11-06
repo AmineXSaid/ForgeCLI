@@ -230,7 +230,8 @@ const CONTINUE_PROMPT: &str = "<system-reminder>\nYour reply was cut off by the 
 const ACT_PROMPT: &str = "<system-reminder>\nYour reply reached the output token limit while you were still \
                           reasoning, before you answered or took any action. Do not restart the analysis. Act on \
                           what you have now: take the next concrete step (run a command, make an edit, or give your \
-                          answer), then continue from its result.\n</system-reminder>";
+                          answer), then continue from its result. If you were drafting code or text, write it to its \
+                          file now, in parts if it is long, instead of drafting it again.\n</system-reminder>";
 /// What happened, as the two reminders above and below say it.
 const ACT_CUTOFF: &str = "Your reply reached the output token limit while you were still reasoning, before you \
                           answered or took any action.";
