@@ -5,7 +5,7 @@
 use kodact_core::glyphs;
 use std::time::{Duration, Instant};
 
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
@@ -1144,18 +1144,13 @@ fn is_agent(name: &str) -> bool {
 /// The time the sub-agent scanner's head takes per cell.
 const SCAN_STEP: Duration = Duration::from_millis(90);
 
-/// Cells in the sub-agent scanner.
-const SCAN_W: usize = 8;
+/// Cells in the sub-agent scanner: short, so it marks the row without crowding it.
+const SCAN_W: usize = 5;
 
-/// The scanner's blues, from the head back along its trail, then the unlit cells:
-/// (hex, the ANSI colour for 16-colour terminals).
-const SCAN_BLUES: [(u32, Color); 5] = [
-    (0x5ab4ff, Color::LightBlue),
-    (0x3f8fd9, Color::Blue),
-    (0x2c6aa6, Color::Blue),
-    (0x1f4a78, Color::DarkGray),
-    (0x1c2530, Color::DarkGray),
-];
+/// The scanner's colours, from the head back along its trail, then the unlit
+/// cells: KodAct's turquoise fading toward the page, in either theme.
+const SCAN_SHADES: [palette::Role; 5] =
+    [palette::TEAL, palette::TEAL_TRAIL[0], palette::TEAL_TRAIL[1], palette::TEAL_TRAIL[2], palette::HAIRLINE];
 
 /// Where the scanner's head is at `frame`, sweeping one cell a step to the end and
 /// back, and which way it is going (true: right).
@@ -1169,9 +1164,9 @@ fn scan_head(frame: usize) -> (usize, bool) {
     }
 }
 
-/// A sub-agent's working sign: a row of small blocks with a bright blue head
-/// sweeping back and forth and a trail fading behind it (`■■■■■■■■`), then a space.
-/// One text row, eight cells wide. Without colour the head and trail are drawn
+/// A sub-agent's working sign: a row of small blocks with a bright turquoise head
+/// sweeping back and forth and a trail fading behind it (`■■■■■`), then a space.
+/// One text row, five cells wide. Without colour the head and trail are drawn
 /// in shapes (`■`, `▪`) over dots, so the motion still shows.
 fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
     let (head, right) = scan_head((ran.as_millis() / SCAN_STEP.as_millis()) as usize);
@@ -1181,8 +1176,7 @@ fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
         let behind = if right { head.checked_sub(x) } else { x.checked_sub(head) };
         let level = behind.map(|b| b.min(4)).unwrap_or(4);
         let (sym, style) = if t.color {
-            let (hex, ansi) = SCAN_BLUES[level];
-            ("■", Style::default().fg(palette::ink(hex, t.depth, ansi)))
+            ("■", Style::default().fg(SCAN_SHADES[level].color(t.depth, t.light)))
         } else {
             (["■", "▪", "▪", "·", "·"][level], if level == 0 { t.bold() } else { Style::default() })
         };
@@ -2093,7 +2087,7 @@ mod tests {
         assert!(agents[0].contains("1 step · Reading src/lib.rs"), "its latest step, from the folder: {}", agents[0]);
         assert!(rows.iter().any(|r| r.contains("Waiting for 5 agents…")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("Running Task")), "{rows:#?}");
-        // The scanner: one row of eight blocks, a bright blue head sweeping back and forth
+        // The scanner: one row of five blocks, a bright turquoise head sweeping back and forth
         // with a fading trail behind it.
         let t = crate::tui::text::Theme {
             color: true,
@@ -2101,24 +2095,26 @@ mod tests {
             accent: None,
             depth: crate::tui::palette::Depth::True,
         };
-        let heads: Vec<usize> = (0..14).map(|f| scan_head(f).0).collect();
-        assert_eq!(heads, [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1], "to the end and back, a cell a step");
+        let heads: Vec<usize> = (0..8).map(|f| scan_head(f).0).collect();
+        assert_eq!(heads, [0, 1, 2, 3, 4, 3, 2, 1], "to the end and back, a cell a step");
         let at = |f: u64| scanner(&t, SCAN_STEP * f as u32);
         let frame = at(3);
         let text: String = frame.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "■■■■■■■■ ", "one row, eight cells");
-        let head = Style::default().fg(crate::tui::palette::ink(SCAN_BLUES[0].0, t.depth, SCAN_BLUES[0].1));
-        assert_eq!(frame[3].style, head, "the head is the brightest blue");
+        assert_eq!(text, "■■■■■ ", "one row, five cells");
+        let head = Style::default().fg(crate::tui::palette::TEAL.color(t.depth, false));
+        assert_eq!(frame[3].style, head, "the head is the palette's turquoise");
+        assert_eq!(frame[3].style.fg, t.teal().fg, "the same teal as headings and plan mode");
         assert_ne!(frame[2].style, frame[3].style, "a trail behind it, fading");
-        assert_eq!(frame[4].style, frame[7].style, "ahead of it: unlit");
+        let unlit = Style::default().fg(crate::tui::palette::HAIRLINE.color(t.depth, false));
+        assert_eq!(frame[4].style, unlit, "ahead of it: unlit");
         // Going back, the trail is on the other side.
-        let back = at(9);
-        assert_eq!(back[5].style, head);
-        assert_ne!(back[6].style, back[4].style, "the trail follows the head home");
+        let back = at(6);
+        assert_eq!(back[2].style, head);
+        assert_ne!(back[3].style, back[1].style, "the trail follows the head home");
         // Without colour, shapes carry the motion.
         let mono = crate::tui::text::Theme { color: false, ..t };
         let text: String = scanner(&mono, SCAN_STEP * 3).iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "·▪▪■···· ");
+        assert_eq!(text, "·▪▪■· ");
     }
 
     #[test]
