@@ -1141,17 +1141,29 @@ fn is_agent(name: &str) -> bool {
     matches!(name, "Task" | "Agent")
 }
 
-/// How long the sub-agent wave's bright dot rests on each dot.
-const WAVE_STEP: Duration = Duration::from_millis(160);
+/// The time between frames of the sub-agent wave.
+const WAVE_STEP: Duration = Duration::from_millis(80);
 
-/// A sub-agent's working sign: three dots with a bright lime one moving along
-/// them (`•••`), then a space.
+/// Frames in one full rise and fall of a dot.
+const WAVE_FRAMES: usize = 12;
+
+/// A dot at each of the four heights of a braille cell, bottom to top.
+const WAVE_DOTS: [&str; 4] = ["⡀", "⠄", "⠂", "⠁"];
+
+/// A sub-agent's working sign: three lime dots bobbing up and down in a travelling
+/// wave, each a third of a cycle behind the one before, then a space.
 fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
-    let at = (ran.as_millis() / WAVE_STEP.as_millis()) as usize % 3;
-    (0..3)
-        .map(|i| Span::styled("•", if i == at { t.accent() } else { t.hairline() }))
-        .chain(std::iter::once(Span::raw(" ")))
-        .collect()
+    let frame = (ran.as_millis() / WAVE_STEP.as_millis()) as usize;
+    let mut text = String::new();
+    for i in 0..3 {
+        let phase = (frame + WAVE_FRAMES - i * WAVE_FRAMES / 3 % WAVE_FRAMES) % WAVE_FRAMES;
+        let angle = phase as f64 / WAVE_FRAMES as f64 * std::f64::consts::TAU;
+        // 0 (bottom) to 3 (top), following a sine.
+        let height = ((angle.sin() + 1.0) * 1.5).round() as usize;
+        text.push_str(WAVE_DOTS[height.min(3)]);
+    }
+    text.push(' ');
+    vec![Span::styled(text, t.accent())]
 }
 
 /// The session row inside the default style's box, `room` columns: the mode in
@@ -2049,22 +2061,29 @@ mod tests {
         let start = a.running[0].since;
         let v = live_view_at(&a, 100, 40, start + Duration::from_millis(250));
         let (rows, _) = draw(&v, 100);
-        let agents: Vec<&String> = rows.iter().filter(|r| r.contains("••• running")).collect();
+        let agents: Vec<&String> = rows.iter().filter(|r| r.contains(" running  ")).collect();
         assert_eq!(agents.len(), 5, "{rows:#?}");
         assert!(agents.iter().all(|r| !r.contains("Delegating")), "the line below says they're agents: {agents:#?}");
         assert!(agents[0].contains("1 step · Reading src/lib.rs"), "its latest step, from the folder: {}", agents[0]);
         assert!(rows.iter().any(|r| r.contains("Waiting for 5 agents…")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("Running Task")), "{rows:#?}");
-        // The wave moves: its bright lime dot steps along the three.
+        // The wave: three dots bobbing up and down, each behind the one before, in lime.
         let t = crate::tui::text::Theme { color: true, light: false, accent: None, depth: Default::default() };
-        let lit = |ms: u64| scanner(&t, Duration::from_millis(ms)).iter().position(|s| s.style == t.accent());
-        assert_eq!(
-            (lit(0), lit(160), lit(320), lit(480)),
-            (Some(0), Some(1), Some(2), Some(0)),
-            "dot by dot, then again"
+        let at = |ms: u64| -> String {
+            scanner(&t, Duration::from_millis(ms)).iter().map(|s| s.content.to_string()).collect()
+        };
+        let height = |c: char| WAVE_DOTS.iter().position(|d| d.starts_with(c)).unwrap();
+        let frames: Vec<Vec<usize>> =
+            (0..WAVE_FRAMES as u64).map(|f| at(f * 80).trim_end().chars().map(height).collect()).collect();
+        assert!(frames.iter().all(|f| f.len() == 3), "three dots: {frames:?}");
+        assert!(
+            frames.iter().any(|f| f[0] == 3) && frames.iter().any(|f| f[0] == 0),
+            "each rises to the top and falls to the bottom"
         );
-        let text: String = scanner(&t, Duration::ZERO).iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "••• ");
+        assert!(frames.windows(2).all(|w| w[0][0].abs_diff(w[1][0]) <= 1), "one height at a time: smooth");
+        assert_ne!(frames[0][0], frames[0][1], "the dots are out of step: a wave");
+        assert_eq!(at(0), at(WAVE_FRAMES as u64 * 80), "it repeats");
+        assert_eq!(scanner(&t, Duration::ZERO)[0].style, t.accent());
     }
 
     #[test]
