@@ -133,6 +133,11 @@ API key and about an hour of model time. From the repository root:
    target/release/kodact-eval compare evals/results/baseline evals/results/my-change
    ```
 
+   `scripts/eval-ab.sh --before <commit> --repeat 3 -- --model sonnet --dangerously-skip-permissions`
+   does both sides in one go: it builds `<commit>` in a worktree and HEAD here, runs
+   HEAD's tasks on each with the same model, window and arguments, and prints this
+   table. Each side's directory records the commit and the window in `ab.txt`.
+
 **Reading the A/B report.** `compare` prints one table: pass rate, cost per
 task, turns per task, wall time, false-finish rate (the agent said it was
 done but the check failed), invalid-call rate (tool calls that errored) and
