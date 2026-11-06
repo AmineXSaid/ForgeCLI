@@ -1225,10 +1225,10 @@ mod snapshots {
         }
         shot("05-subagents", &mut a, 140, 30);
         // The wave's frames, for an animation of the scene.
-        for f in 0..16u64 {
+        for f in 0..14u64 {
             let now = std::time::Instant::now();
             for (i, r) in a.running.iter_mut().enumerate() {
-                r.since = now - std::time::Duration::from_millis(100 * f + 300 * i as u64);
+                r.since = now - std::time::Duration::from_millis(90 * f + 270 * i as u64);
             }
             shot(&format!("wave-{f:02}"), &mut a, 140, 30);
         }

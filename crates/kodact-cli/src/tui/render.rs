@@ -5,7 +5,7 @@
 use kodact_core::glyphs;
 use std::time::{Duration, Instant};
 
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
@@ -879,7 +879,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
         let mut spans = if is_agent(&r.name) {
             // A sub-agent: a wave of dots and the word for it, so
             // its state never rests on the motion or the colour alone.
-            let mut v = wave(&t, ran).1;
+            let mut v = scanner(&t, ran);
             v.push(Span::styled("running  ", t.dim()));
             v
         } else {
@@ -897,8 +897,7 @@ fn live_view_inner(app: &App, width: u16, max_height: u16, now: Instant, front_b
                 spans.push(Span::styled(step.clone(), t.dim()));
             }
         }
-        // A sub-agent's wave rises into the row above its own.
-        spinner.push(if is_agent(&r.name) { Line::from(wave(&t, ran).0) } else { Line::default() });
+        spinner.push(Line::default());
         spinner.extend(text::wrap(vec![Line::from(spans)], tw as u16).into_iter().take(2));
     }
     // A permission question shows its own waiting row: no second line saying so.
@@ -1142,48 +1141,55 @@ fn is_agent(name: &str) -> bool {
     matches!(name, "Task" | "Agent")
 }
 
-/// The time between frames of the sub-agent wave.
-const WAVE_STEP: Duration = Duration::from_millis(100);
+/// The time the sub-agent scanner's head takes per cell.
+const SCAN_STEP: Duration = Duration::from_millis(90);
 
-/// Frames in one full rise and fall of a dot (1.6 s).
-const WAVE_FRAMES: usize = 16;
+/// Cells in the sub-agent scanner.
+const SCAN_W: usize = 8;
 
-/// The wave's dots: a dot's height, 0 (the bottom of its row) to 3 (the top of the
-/// row above), at `frame`, each dot a quarter of a cycle behind the one before.
-fn wave_heights(frame: usize) -> [usize; 3] {
-    let mut out = [0; 3];
-    for (i, h) in out.iter_mut().enumerate() {
-        let phase = (frame + WAVE_FRAMES * 4 - i * WAVE_FRAMES / 4) % WAVE_FRAMES;
-        let angle = phase as f64 / WAVE_FRAMES as f64 * std::f64::consts::TAU;
-        *h = (((angle.sin() + 1.0) * 1.5).round() as usize).min(3);
+/// The scanner's blues, from the head back along its trail, then the unlit cells:
+/// (hex, the ANSI colour for 16-colour terminals).
+const SCAN_BLUES: [(u32, Color); 5] = [
+    (0x5ab4ff, Color::LightBlue),
+    (0x3f8fd9, Color::Blue),
+    (0x2c6aa6, Color::Blue),
+    (0x1f4a78, Color::DarkGray),
+    (0x1c2530, Color::DarkGray),
+];
+
+/// Where the scanner's head is at `frame`, sweeping one cell a step to the end and
+/// back, and which way it is going (true: right).
+fn scan_head(frame: usize) -> (usize, bool) {
+    let period = 2 * (SCAN_W - 1);
+    let i = frame % period;
+    if i < SCAN_W - 1 {
+        (i, true)
+    } else {
+        (period - i, false)
     }
-    out
 }
 
-/// A sub-agent's working sign: three square lime dots (half blocks, a pixel each)
-/// bobbing up and down over two rows in a travelling wave, a space between them.
-/// Returns the row above's part and the row's own, each ending in a space; the
-/// dot at the crest is the brightest.
-fn wave(t: &text::Theme, ran: Duration) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
-    let heights = wave_heights((ran.as_millis() / WAVE_STEP.as_millis()) as usize);
-    let (mut upper, mut lower) = (vec![], vec![]);
-    for (i, h) in heights.iter().enumerate() {
-        let st = if *h == 3 { t.accent().add_modifier(ratatui::style::Modifier::BOLD) } else { t.accent() };
-        let (u, l) = match h {
-            3 => ("▀", " "),
-            2 => ("▄", " "),
-            1 => (" ", "▀"),
-            _ => (" ", "▄"),
+/// A sub-agent's working sign: a row of small blocks with a bright blue head
+/// sweeping back and forth and a trail fading behind it (`■■■■■■■■`), then a space.
+/// One text row, eight cells wide. Without colour the head and trail are drawn
+/// in shapes (`■`, `▪`) over dots, so the motion still shows.
+fn scanner(t: &text::Theme, ran: Duration) -> Vec<Span<'static>> {
+    let (head, right) = scan_head((ran.as_millis() / SCAN_STEP.as_millis()) as usize);
+    let mut out = vec![];
+    for x in 0..SCAN_W {
+        // How far behind the head this cell is (0 is the head), on the side it came from.
+        let behind = if right { head.checked_sub(x) } else { x.checked_sub(head) };
+        let level = behind.map(|b| b.min(4)).unwrap_or(4);
+        let (sym, style) = if t.color {
+            let (hex, ansi) = SCAN_BLUES[level];
+            ("■", Style::default().fg(palette::ink(hex, t.depth, ansi)))
+        } else {
+            (["■", "▪", "▪", "·", "·"][level], if level == 0 { t.bold() } else { Style::default() })
         };
-        let gap = if i < 2 { " " } else { "" };
-        upper.push(Span::styled(u, st));
-        lower.push(Span::styled(l, st));
-        upper.push(Span::raw(gap));
-        lower.push(Span::raw(gap));
+        out.push(Span::styled(sym, style));
     }
-    upper.push(Span::raw(" "));
-    lower.push(Span::raw(" "));
-    (upper, lower)
+    out.push(Span::raw(" "));
+    out
 }
 
 /// The session row inside the default style's box, `room` columns: the mode in
@@ -2087,37 +2093,32 @@ mod tests {
         assert!(agents[0].contains("1 step · Reading src/lib.rs"), "its latest step, from the folder: {}", agents[0]);
         assert!(rows.iter().any(|r| r.contains("Waiting for 5 agents…")), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("Running Task")), "{rows:#?}");
-        // The wave: three square dots bobbing over two rows, out of step, slowly.
-        let t = crate::tui::text::Theme { color: true, light: false, accent: None, depth: Default::default() };
-        let frames: Vec<[usize; 3]> = (0..WAVE_FRAMES).map(wave_heights).collect();
-        assert!(
-            frames.iter().any(|f| f[0] == 3) && frames.iter().any(|f| f[0] == 0),
-            "top of the row above to the foot of its own"
-        );
-        assert!(
-            frames.windows(2).all(|w| (0..3).all(|i| w[0][i].abs_diff(w[1][i]) <= 1)),
-            "one half-row a step: smooth"
-        );
-        assert!(frames.iter().any(|f| f[0] != f[1]), "out of step: a wave");
-        assert_eq!(wave_heights(0), wave_heights(WAVE_FRAMES), "it repeats");
-        assert!(
-            WAVE_STEP * WAVE_FRAMES as u32 >= Duration::from_millis(1500),
-            "slow: a rise and fall takes 1.5 s or more"
-        );
-        // Drawn: each dot is one half block in one of the two rows; the other row is blank there.
-        for f in 0..WAVE_FRAMES as u64 {
-            let (up, low) = wave(&t, Duration::from_millis(f * 100));
-            let up: String = up.iter().map(|s| s.content.as_ref()).collect();
-            let low: String = low.iter().map(|s| s.content.as_ref()).collect();
-            assert_eq!((up.chars().count(), low.chars().count()), (6, 6), "{up:?} {low:?}");
-            for c in [0, 2, 4] {
-                let (u, l) = (up.chars().nth(c).unwrap(), low.chars().nth(c).unwrap());
-                assert!((u == ' ') != (l == ' '), "one dot per column: {up:?} {low:?}");
-            }
-        }
-        // The agent's row and the row above both carry the wave.
-        let rows_with_dots = rows.iter().filter(|r| r.contains('▀') || r.contains('▄')).count();
-        assert!(rows_with_dots >= 5, "{rows:#?}");
+        // The scanner: one row of eight blocks, a bright blue head sweeping back and forth
+        // with a fading trail behind it.
+        let t = crate::tui::text::Theme {
+            color: true,
+            light: false,
+            accent: None,
+            depth: crate::tui::palette::Depth::True,
+        };
+        let heads: Vec<usize> = (0..14).map(|f| scan_head(f).0).collect();
+        assert_eq!(heads, [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1], "to the end and back, a cell a step");
+        let at = |f: u64| scanner(&t, SCAN_STEP * f as u32);
+        let frame = at(3);
+        let text: String = frame.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "■■■■■■■■ ", "one row, eight cells");
+        let head = Style::default().fg(crate::tui::palette::ink(SCAN_BLUES[0].0, t.depth, SCAN_BLUES[0].1));
+        assert_eq!(frame[3].style, head, "the head is the brightest blue");
+        assert_ne!(frame[2].style, frame[3].style, "a trail behind it, fading");
+        assert_eq!(frame[4].style, frame[7].style, "ahead of it: unlit");
+        // Going back, the trail is on the other side.
+        let back = at(9);
+        assert_eq!(back[5].style, head);
+        assert_ne!(back[6].style, back[4].style, "the trail follows the head home");
+        // Without colour, shapes carry the motion.
+        let mono = crate::tui::text::Theme { color: false, ..t };
+        let text: String = scanner(&mono, SCAN_STEP * 3).iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "·▪▪■···· ");
     }
 
     #[test]
